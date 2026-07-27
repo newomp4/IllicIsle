@@ -77,11 +77,15 @@ export const CELLS = {
 
   tuft:      [0, 6], fernLeaf:  [1, 6], driftwood:  [2, 6], flame:     [3, 6],
   pickle:    [4, 6], onion:     [5, 6], tomato:     [6, 6], bacon:     [7, 6],
+
+  templeStone:[0, 7], templeGlyph:[1, 7], hangVine: [2, 7], bird:      [3, 7],
+  birdWing:  [4, 7], bug:        [5, 7], monolith:  [6, 7], bone:      [7, 7],
 };
 
 /* Cells that need real transparency (cut-out foliage, flames, …). */
 const ALPHA_CELLS = new Set([
-  'palmFrond', 'jungleLeaf', 'leafBush', 'flower', 'vine', 'tuft', 'fernLeaf', 'flame',
+  'palmFrond', 'jungleLeaf', 'leafBush', 'flower', 'vine', 'tuft', 'fernLeaf',
+  'flame', 'hangVine',
 ]);
 
 export function cellUV(name) {
@@ -601,6 +605,105 @@ export function buildAtlas() {
     }
   });
 
+  /* ---- temple masonry: mossy cut limestone blocks ---- */
+  P('templeStone', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 46, 10, 46, 7, rng, 2);
+    for (let j = 0; j < s; j += 8) {
+      const off = (j / 8) % 2 ? 8 : 0;
+      x.fillStyle = 'rgba(18,20,14,.72)';
+      x.fillRect(ox, oy + j, s, 1);
+      for (let i = 0; i < s; i += 16) x.fillRect(ox + ((i + off) % s), oy + j, 1, 8);
+    }
+    // moss creeping in the joints
+    for (let i = 0; i < 26; i++) {
+      x.fillStyle = hsl(88 + rng() * 26, 34, 22 + rng() * 16);
+      x.fillRect(ox + ((rng() * s) | 0), oy + ((rng() * s) | 0), 1 + rng() * 3, 1 + rng() * 2);
+    }
+    speck(x, ox, oy, s, s, 14, hsl(40, 8, 60), rng, 1);
+  });
+
+  /* ---- carved temple glyph panel ---- */
+  P('templeGlyph', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 46, 10, 42, 6, rng, 2);
+    x.fillStyle = 'rgba(14,16,10,.8)';
+    x.fillRect(ox + 3, oy + 3, s - 6, s - 6);
+    x.fillStyle = hsl(48, 12, 54);
+    x.fillRect(ox + 5, oy + 5, s - 10, s - 10);
+    // concentric maze-ish carving
+    x.fillStyle = 'rgba(16,18,12,.8)';
+    for (let i = 7; i < s / 2; i += 4) {
+      x.fillRect(ox + i, oy + i, s - i * 2, 1);
+      x.fillRect(ox + i, oy + s - i - 1, s - i * 2 - 6, 1);
+      x.fillRect(ox + i, oy + i, 1, s - i * 2);
+    }
+    for (let i = 0; i < 14; i++) {
+      x.fillStyle = hsl(90, 30, 24);
+      x.fillRect(ox + ((rng() * s) | 0), oy + ((rng() * s) | 0), 2, 2);
+    }
+  });
+
+  /* ---- long hanging vine with leaves, cut out ---- */
+  P('hangVine', (x, ox, oy, s) => {
+    const mid = ox + s / 2;
+    for (let j = 0; j < s; j++) {
+      const sway = Math.sin(j * 0.22) * 3;
+      x.fillStyle = hsl(96 + rng() * 16, 42, 14 + rng() * 12);
+      x.fillRect(mid + sway, oy + j, 2, 1);
+      if (j % 5 === 2) {
+        const w = 3 + (rng() * 4 | 0);
+        const side = (j / 5) % 2 ? 1 : -1;
+        x.fillStyle = hsl(104 + rng() * 18, 44, 18 + rng() * 14);
+        x.fillRect(mid + sway + (side > 0 ? 2 : -w), oy + j, w, 3);
+      }
+    }
+  });
+
+  /* ---- parrot body ---- */
+  P('bird', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 6, 78, 46, 8, rng, 2);
+    x.fillStyle = hsl(48, 90, 56);
+    x.fillRect(ox, oy + s - 10, s, 5);
+    x.fillStyle = hsl(200, 70, 44);
+    x.fillRect(ox, oy + s - 5, s, 5);
+  });
+  P('birdWing', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 200, 66, 42, 9, rng, 2);
+    x.fillStyle = hsl(140, 60, 38);
+    x.fillRect(ox, oy, s, 8);
+    x.fillStyle = hsl(48, 88, 58);
+    x.fillRect(ox, oy + s - 7, s, 7);
+  });
+
+  /* ---- beetle ---- */
+  P('bug', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 24, 30, 14, 6, rng, 2);
+    x.fillStyle = hsl(40, 40, 34);
+    x.fillRect(ox + s / 2 - 1, oy, 2, s);
+    speck(x, ox, oy, s, s, 8, hsl(48, 50, 48), rng, 1);
+  });
+
+  /* ---- monolith skin: dark basalt with faint etched circuitry ---- */
+  P('monolith', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 220, 6, 16, 6, rng, 2);
+    x.strokeStyle = 'rgba(120,190,180,.30)';
+    x.lineWidth = 1;
+    for (let i = 0; i < 7; i++) {
+      const y0 = 3 + ((rng() * (s - 6)) | 0);
+      x.beginPath();
+      x.moveTo(ox + 2, oy + y0);
+      x.lineTo(ox + 6 + rng() * 8, oy + y0);
+      x.lineTo(ox + 6 + rng() * 8, oy + y0 + 4 + rng() * 6);
+      x.stroke();
+    }
+    speck(x, ox, oy, s, s, 10, 'rgba(150,220,210,.45)', rng, 1);
+  });
+
+  /* ---- weathered bone ---- */
+  P('bone', (x, ox, oy, s) => {
+    noiseFill(x, ox, oy, s, s, 44, 14, 78, 6, rng, 2);
+    speck(x, ox, oy, s, s, 14, hsl(38, 16, 58), rng, 2);
+  });
+
   /* ---- FACE: the idol's smile, drawn across cells (0,4)-(1,4) ---- */
   paintFace(x, CELLS.face[0] * CELL, CELLS.face[1] * CELL, CELL * 2, CELL, rng);
 
@@ -741,6 +844,85 @@ export function buildWaterTexture() {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestMipmapLinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Surf foam: a horizontal band, dense at the seaward edge, ragged inland. */
+export function buildFoamTexture() {
+  const W = 128, H = 32;
+  const { c, x } = cv(W, H);
+  const rng = makeRng(31415);
+  x.clearRect(0, 0, W, H);
+  for (let j = 0; j < H; j++) {
+    // v=0 is the outer (sea) edge: solid. v=1 is the inland edge: broken up.
+    const t = j / H;
+    for (let i = 0; i < W; i++) {
+      const n = rng();
+      const cover = (1 - t) * 1.25 - 0.15 + Math.sin(i * 0.19 + t * 5) * 0.16;
+      if (n > cover) continue;
+      const v = 226 + rng() * 29;
+      x.fillStyle = `rgba(${v | 0},${v | 0},${(v - 6) | 0},${0.55 + (1 - t) * 0.45})`;
+      x.fillRect(i, j, 1, 1);
+    }
+  }
+  // bubble specks along the leading edge
+  for (let i = 0; i < 120; i++) {
+    x.fillStyle = 'rgba(255,255,255,.8)';
+    x.fillRect((rng() * W) | 0, (rng() * H * 0.5) | 0, 1 + (rng() * 2 | 0), 1);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestMipmapLinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * Words scratched into wet sand — used for the castaways' HELP and the
+ * Rogue Agents' mark. Drawn as dark furrows with a bright lip, alpha cut
+ * so it lies on the beach as a decal.
+ */
+export function buildSandWritingTexture(text, opts = {}) {
+  const W = 512, H = 160;
+  const { c, x } = cv(W, H);
+  const rng = makeRng(opts.seed ?? 606);
+  x.clearRect(0, 0, W, H);
+
+  const size = opts.size ?? 120;
+  x.font = `bold ${size}px "Arial Black", Impact, sans-serif`;
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+
+  // sunlit lip on the upper edge of each furrow
+  x.fillStyle = 'rgba(255,244,214,.85)';
+  x.fillText(text, W / 2, H / 2 - 5);
+  // the furrow itself
+  x.fillStyle = 'rgba(92,72,42,.92)';
+  x.fillText(text, W / 2, H / 2);
+  // shadowed inner edge
+  x.fillStyle = 'rgba(58,44,24,.65)';
+  x.fillText(text, W / 2 + 2, H / 2 + 3);
+
+  // rough the strokes up so it reads as dragged by hand, not printed
+  const img = x.getImageData(0, 0, W, H);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    if (rng() < 0.20) d[i + 3] = 0;
+    else d[i + 3] = Math.min(255, d[i + 3] * (0.7 + rng() * 0.5));
+  }
+  x.putImageData(img, 0, 0);
+
+  // scuffed sand kicked around the letters
+  for (let i = 0; i < 260; i++) {
+    x.fillStyle = `rgba(110,88,54,${0.10 + rng() * 0.20})`;
+    x.fillRect((rng() * W) | 0, (rng() * H) | 0, 1 + (rng() * 3 | 0), 1);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }

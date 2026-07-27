@@ -173,14 +173,54 @@ export function facePatch(radius, phiSpan, thetaFrom, thetaTo, segs = 8) {
   return g;
 }
 
-/** Randomly nudge every vertex — instant "hand-modelled in 1997". */
-export function jitterVerts(geo, amount, rng) {
+/* A stable hash from a quantised position, so two vertices that sit on top
+   of each other always get the same offset. */
+function posHash(x, y, z, salt) {
+  const q = (v) => Math.round(v * 512);
+  let h = q(x) * 374761393 ^ q(y) * 668265263 ^ q(z) * 2147483647 ^ salt * 97;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return ((h >>> 0) % 100000) / 100000;
+}
+
+/**
+ * Randomly nudge vertices — instant "hand-modelled in 1997".
+ *
+ * IcosahedronGeometry and friends are NON-INDEXED: every triangle carries
+ * its own copy of each corner. Offsetting those copies independently rips
+ * the surface into loose, cracked triangles, which is what broken rocks
+ * look like. So the offset is derived from the vertex POSITION rather than
+ * drawn per-vertex — coincident copies move identically and the shell
+ * stays watertight.
+ */
+export function jitterVerts(geo, amount, rng, salt) {
   const p = geo.attributes.position;
+  const s = salt !== undefined ? salt : ((rng ? rng() : Math.random()) * 65536) | 0;
   for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
     p.setXYZ(i,
-      p.getX(i) + (rng() - 0.5) * amount,
-      p.getY(i) + (rng() - 0.5) * amount,
-      p.getZ(i) + (rng() - 0.5) * amount);
+      x + (posHash(x, y, z, s) - 0.5) * amount,
+      y + (posHash(x, y, z, s + 1) - 0.5) * amount,
+      z + (posHash(x, y, z, s + 2) - 0.5) * amount);
+  }
+  p.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Push vertices out along their own radius by a hashed amount — a lumpy but
+ * strictly star-shaped solid. Better than jitterVerts for boulders because
+ * it can never fold the surface through itself.
+ */
+export function lumpify(geo, amount, rng, salt) {
+  const p = geo.attributes.position;
+  const s = salt !== undefined ? salt : ((rng ? rng() : Math.random()) * 65536) | 0;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const len = Math.hypot(x, y, z) || 1e-5;
+    const k = 1 + (posHash(x, y, z, s) - 0.5) * 2 * amount;
+    p.setXYZ(i, (x / len) * len * k, (y / len) * len * k, (z / len) * len * k);
   }
   p.needsUpdate = true;
   geo.computeVertexNormals();

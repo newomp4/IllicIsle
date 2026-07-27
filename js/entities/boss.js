@@ -349,7 +349,7 @@ export class Hector {
   constructor(scene, mats, arena, hooks = {}) {
     this.scene = scene;
     this.mats = mats;
-    this.arena = arena;            // { center, radius, floorY, groundAt(x,z) }
+    this.arena = arena;            // { box:{minX,maxX,minZ,maxZ}, floorY, groundAt }
     this.hooks = hooks;            // { onDamagePlayer, onSay, onPhase, onDefeat, sfx }
     this.rng = makeRng(31337);
 
@@ -357,8 +357,9 @@ export class Hector {
     this.parts = this.mesh.userData.parts;
     scene.add(this.mesh);
 
-    this.pos = new THREE.Vector3(arena.center.x, 0, arena.center.z - 9);
+    this.pos = new THREE.Vector3(0, 0, -6);
     this.pos.y = arena.groundAt ? arena.groundAt(this.pos.x, this.pos.z) : arena.floorY;
+    this.homeZ = -6;
     this.facing = 0;
     this.vel = new THREE.Vector3();
 
@@ -647,8 +648,7 @@ export class Hector {
         const d = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
         if (d < 2.6) this.hooks.onDamagePlayer?.(1, 'charge');
 
-        const edge = Math.hypot(this.pos.x - this.arena.center.x, this.pos.z - this.arena.center.z);
-        if (this.timer > 1.5 || edge > this.arena.radius - 4.5) {
+        if (this.timer > 1.5 || this.atArenaEdge()) {
           this.state = 'recover';
           this.timer = 0;
           this.winded = 2.6;
@@ -704,16 +704,19 @@ export class Hector {
   stepMove(dt) {
     this.pos.x += this.vel.x * dt;
     this.pos.z += this.vel.z * dt;
-    // stay in the arena
-    const dx = this.pos.x - this.arena.center.x;
-    const dz = this.pos.z - this.arena.center.z;
-    const d = Math.hypot(dx, dz);
-    const lim = this.arena.radius - 3.2;
-    if (d > lim) {
-      this.pos.x = this.arena.center.x + dx / d * lim;
-      this.pos.z = this.arena.center.z + dz / d * lim;
-    }
+    const b = this.arena.box;
+    const M = 3.4;                       // he's wide; keep him off the walls
+    this.pos.x = Math.min(Math.max(this.pos.x, b.minX + M), b.maxX - M);
+    this.pos.z = Math.min(Math.max(this.pos.z, b.minZ + M), b.maxZ - M);
     this.pos.y = this.groundAt(this.pos.x, this.pos.z);
+  }
+
+  /** True once he's run far enough into a wall to end a charge. */
+  atArenaEdge() {
+    const b = this.arena.box;
+    const M = 5.0;
+    return this.pos.x < b.minX + M || this.pos.x > b.maxX - M
+        || this.pos.z < b.minZ + M || this.pos.z > b.maxZ - M;
   }
 
   /** Follow the real cave floor, not a flat plane, so he never sinks. */
@@ -812,7 +815,7 @@ export class Hector {
         w.hitPlayer = true;
         this.hooks.onDamagePlayer?.(1, 'wave');
       }
-      if (w.life <= 0 || w.r > this.arena.radius * 1.4) {
+      if (w.life <= 0 || w.r > 56) {
         this.scene.remove(w.mesh);
         w.mesh.material.dispose();
         this.waves.splice(i, 1);

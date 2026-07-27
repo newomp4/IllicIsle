@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>IllicIsle — The Idol of Isla Dorada</title>
-<meta name="description" content="A PS1-style castaway adventure. Search the island, follow the four marks, dethrone El Bass Presidente, and claim the Golden Idol of Chris Illich." />
-<meta property="og:title" content="IllicIsle" />
+<title>Illic Isle — The Idol of Isla Dorada</title>
+<meta name="description" content="A PS1-style castaway adventure. Wash ashore, follow the Rogue Agents' map, wake the four Rogue Pendulums, and take the Golden Idol of Chris Illich from El Bass Presidente." />
+<meta property="og:title" content="Illic Isle" />
 <meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illich." />
 <link rel="stylesheet" href="css/style.css" />
+<link rel="preload" href="fonts/pressstart2p.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="fonts/silkscreen.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23140d08'/%3E%3Crect x='5' y='2' width='6' height='4' fill='%23ffd24a'/%3E%3Crect x='4' y='6' width='8' height='6' fill='%23e0a92b'/%3E%3Crect x='3' y='12' width='10' height='2' fill='%23a8761c'/%3E%3C/svg%3E" />
 </head>
 <body>
@@ -19,9 +21,9 @@
 <!-- ============ LOADING ============ -->
 <div id="loading" class="screen">
   <div class="load-inner">
-    <div class="load-logo">ILLICISLE</div>
+    <div class="load-logo">ILLIC ISLE</div>
     <div class="load-bar"><div id="load-fill"></div></div>
-    <div id="load-text" class="load-text">NOW LOADING…</div>
+    <div id="load-text" class="load-text">NOW LOADING</div>
     <div class="load-hint">DO NOT TURN OFF YOUR CONSOLE</div>
   </div>
 </div>
@@ -31,14 +33,14 @@
   <div class="title-vign"></div>
   <div class="title-inner">
     <div class="title-sup">THE LEGEND OF</div>
-    <h1 class="title-logo">ILLIC<span>ISLE</span></h1>
-    <div class="title-sub">— THE IDOL OF ISLA DORADA —</div>
+    <h1 class="title-logo">ILLIC<span class="l2">ISLE</span></h1>
+    <div class="title-sub">THE IDOL OF ISLA DORADA</div>
     <div class="title-menu">
-      <button class="mbtn" data-act="start">▶ BEGIN CASTAWAY</button>
+      <button class="mbtn" data-act="start">&#9654; BEGIN CASTAWAY</button>
       <button class="mbtn" data-act="controls">CONTROLS</button>
       <button class="mbtn" data-act="options">OPTIONS</button>
     </div>
-    <div class="title-foot">© 1998 DORADA SOFTWORKS · <span id="title-hint">CLICK TO PLAY</span></div>
+    <div class="title-foot">&copy; 1998 DORADA SOFTWORKS<br /><span id="title-hint">CLICK TO PLAY</span></div>
   </div>
 </div>
 
@@ -49,16 +51,17 @@
     <table class="ctrl-table">
       <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td>Move</td></tr>
       <tr><td><kbd>MOUSE</kbd></td><td>Look around</td></tr>
-      <tr><td><kbd>SHIFT</kbd></td><td>Sprint (drains stamina)</td></tr>
+      <tr><td><kbd>SHIFT</kbd></td><td>Sprint</td></tr>
       <tr><td><kbd>SPACE</kbd></td><td>Jump</td></tr>
-      <tr><td><kbd>E</kbd></td><td>Interact / pick up / read</td></tr>
-      <tr><td><kbd>LEFT CLICK</kbd></td><td>Throw coconut</td></tr>
-      <tr><td><kbd>TAB</kbd></td><td>Journal &amp; marks</td></tr>
-      <tr><td><kbd>C</kbd></td><td>Toggle 1st / 3rd person</td></tr>
+      <tr><td><kbd>E</kbd></td><td>Interact / read / pick up</td></tr>
+      <tr><td><kbd>CLICK</kbd></td><td>Throw coconut</td></tr>
+      <tr><td><kbd>M</kbd></td><td>Map</td></tr>
+      <tr><td><kbd>TAB</kbd></td><td>Journal</td></tr>
+      <tr><td><kbd>C</kbd></td><td>1st / 3rd person</td></tr>
       <tr><td><kbd>ESC</kbd></td><td>Pause</td></tr>
     </table>
-    <p class="tip">Tip: coconuts grow under palm trees. You will need them.</p>
-    <button class="mbtn back-btn">◀ BACK</button>
+    <p class="tip">Coconuts grow under the palms. You will need them.</p>
+    <button class="mbtn back-btn">&#9664; BACK</button>
   </div>
 </div>
 
@@ -66,12 +69,29 @@
 <div id="options" class="screen hidden panel-screen">
   <div class="panel">
     <h2>OPTIONS</h2>
+
+    <div class="opt-row">
+      <label>MOUSE SENSITIVITY</label>
+      <div class="opt-choices" id="opt-sens">
+        <button data-v="0.9">LOW</button>
+        <button data-v="1.4" class="on">NORMAL</button>
+        <button data-v="2.1">HIGH</button>
+        <button data-v="3.0">VERY HIGH</button>
+      </div>
+    </div>
+    <div class="opt-row">
+      <label>INVERT VERTICAL LOOK</label>
+      <div class="opt-choices" id="opt-invert">
+        <button data-v="0" class="on">OFF</button>
+        <button data-v="1">ON</button>
+      </div>
+    </div>
     <div class="opt-row">
       <label>RENDER RESOLUTION</label>
       <div class="opt-choices" id="opt-res">
-        <button data-v="180">240×180 (PSX)</button>
-        <button data-v="224" class="on">320×224 (PSX)</button>
-        <button data-v="320">427×320</button>
+        <button data-v="180">240x180</button>
+        <button data-v="224" class="on">320x224</button>
+        <button data-v="320">427x320</button>
         <button data-v="0">NATIVE</button>
       </div>
     </div>
@@ -92,9 +112,9 @@
     <div class="opt-row">
       <label>FOLIAGE DENSITY</label>
       <div class="opt-choices" id="opt-density">
-        <button data-v="0.5">LOW</button>
+        <button data-v="0.55">LOW</button>
         <button data-v="1" class="on">NORMAL</button>
-        <button data-v="1.5">LUSH</button>
+        <button data-v="1.45">LUSH</button>
       </div>
     </div>
     <div class="opt-row">
@@ -104,8 +124,8 @@
         <button data-v="1" class="on">ON</button>
       </div>
     </div>
-    <p class="tip">Foliage density applies on next island load.</p>
-    <button class="mbtn back-btn">◀ BACK</button>
+    <p class="tip">Foliage density applies on the next island load.</p>
+    <button class="mbtn back-btn">&#9664; BACK</button>
   </div>
 </div>
 
@@ -119,16 +139,16 @@
   </div>
 
   <div id="hud-right">
-    <div id="ammo"><span class="ammo-ico">◕</span><span id="ammo-count">0</span></div>
-    <div id="marks">MARKS <span id="marks-count">0</span>/4</div>
+    <div id="ammo"><span class="ammo-ico">&#9679;</span><span id="ammo-count">0</span></div>
+    <div id="marks">PENDULUMS <span id="marks-count">0</span>/4</div>
   </div>
 
-  <div id="objective"><span class="obj-label">OBJECTIVE</span><span id="objective-text">—</span></div>
+  <div id="objective"><span class="obj-label">OBJECTIVE</span><span id="objective-text">&mdash;</span></div>
 
-  <div id="prompt" class="hidden"><kbd>E</kbd> <span id="prompt-text"></span></div>
+  <div id="prompt" class="hidden"><kbd>E</kbd><span id="prompt-text"></span></div>
 
   <div id="boss-bar" class="hidden">
-    <div class="boss-name">HECTOR &mdash; &ldquo;EL BASS PRESIDENTE&rdquo;</div>
+    <div class="boss-name">HECTOR &mdash; EL BASS PRESIDENTE</div>
     <div class="boss-track"><div id="boss-fill"></div><div id="boss-chip"></div></div>
     <div id="boss-phase">TERM ONE</div>
   </div>
@@ -138,12 +158,19 @@
   <div id="heal-flash"></div>
 </div>
 
+<!-- ============ INTRO CINEMATIC ============ -->
+<div id="intro" class="screen hidden">
+  <div class="intro-bars"></div>
+  <div id="intro-text"></div>
+  <div id="intro-skip">PRESS ANY KEY TO SKIP</div>
+</div>
+
 <!-- ============ DIALOG / READING ============ -->
 <div id="reader" class="screen hidden">
   <div class="reader-box">
-    <div class="reader-head" id="reader-head">MARK I</div>
+    <div class="reader-head" id="reader-head">NOTE</div>
     <div class="reader-body" id="reader-body"></div>
-    <div class="reader-foot">[ <kbd>E</kbd> / <kbd>SPACE</kbd> CONTINUE ]</div>
+    <div class="reader-foot">[ <kbd>E</kbd> CONTINUE ]</div>
   </div>
 </div>
 
@@ -152,7 +179,28 @@
   <div class="panel journal-panel">
     <h2>CASTAWAY'S JOURNAL</h2>
     <div id="journal-entries"></div>
-    <button class="mbtn back-btn">◀ CLOSE <kbd>TAB</kbd></button>
+    <button class="mbtn back-btn">&#9664; CLOSE</button>
+  </div>
+</div>
+
+<!-- ============ MAP ============ -->
+<div id="map" class="screen hidden panel-screen">
+  <div class="panel map-panel">
+    <h2>ROGUE AGENTS' CHART</h2>
+    <canvas id="map-canvas" width="320" height="320"></canvas>
+    <div class="map-legend" id="map-legend"></div>
+    <button class="mbtn back-btn">&#9664; CLOSE</button>
+  </div>
+</div>
+
+<!-- ============ DIAL PUZZLE ============ -->
+<div id="dials" class="screen hidden panel-screen">
+  <div class="panel">
+    <h2>THE SEALED DOOR</h2>
+    <p class="tip" id="dial-hint">Four sockets. The Pendulums know the order.</p>
+    <div class="dial-row" id="dial-row"></div>
+    <p class="tip"><kbd>&#8592;</kbd><kbd>&#8594;</kbd> choose socket &middot; <kbd>&#8593;</kbd><kbd>&#8595;</kbd> change glyph &middot; <kbd>E</kbd> confirm</p>
+    <button class="mbtn back-btn">&#9664; STEP BACK</button>
   </div>
 </div>
 
@@ -161,7 +209,7 @@
   <div class="panel">
     <h2>PAUSED</h2>
     <div class="title-menu">
-      <button class="mbtn" data-act="resume">▶ RESUME</button>
+      <button class="mbtn" data-act="resume">&#9654; RESUME</button>
       <button class="mbtn" data-act="controls">CONTROLS</button>
       <button class="mbtn" data-act="options">OPTIONS</button>
       <button class="mbtn danger" data-act="quit">QUIT TO TITLE</button>
@@ -174,7 +222,7 @@
   <div class="death-inner">
     <div class="death-title">YOU DIED</div>
     <div class="death-sub" id="death-sub">The isle keeps what it takes.</div>
-    <button class="mbtn" id="respawn-btn">↺ WASH ASHORE AGAIN</button>
+    <button class="mbtn" id="respawn-btn">&#8634; WASH ASHORE AGAIN</button>
   </div>
 </div>
 
@@ -189,18 +237,18 @@
       Behind you, Hector waved. The staff was already growing back.
     </p>
     <div class="title-menu">
-      <button class="mbtn" data-act="share">📋 COPY BRAG</button>
-      <button class="mbtn" data-act="again">↺ PLAY AGAIN</button>
+      <button class="mbtn" data-act="share">COPY BRAG</button>
+      <button class="mbtn" data-act="again">&#8634; PLAY AGAIN</button>
     </div>
-    <div class="ending-foot">THANK YOU FOR PLAYING · DORADA SOFTWORKS</div>
+    <div class="ending-foot">THANK YOU FOR PLAYING &middot; DORADA SOFTWORKS</div>
   </div>
 </div>
 
-<!-- ============ ROTATE / MOBILE NOTICE ============ -->
+<!-- ============ MOBILE NOTICE ============ -->
 <div id="nomobile" class="screen hidden">
   <div class="panel">
     <h2>KEYBOARD + MOUSE REQUIRED</h2>
-    <p class="tip">IllicIsle needs a mouse and keyboard. Open this on a desktop or laptop, sailor.</p>
+    <p class="tip">Illic Isle needs a mouse and keyboard. Open this on a desktop or laptop, sailor.</p>
     <button class="mbtn" id="nomobile-anyway">TRY ANYWAY</button>
   </div>
 </div>

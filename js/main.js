@@ -172,6 +172,8 @@ function quitToTitle() {
 document.querySelectorAll('.back-btn').forEach((b) => {
   b.addEventListener('click', () => {
     if (b.closest('#journal')) { game?.toggleJournal(); return; }
+    if (b.closest('#map')) { game?.toggleMap(); return; }
+    if (b.closest('#dials')) { game?.closeDials(); return; }
     closePanel();
   });
 });
@@ -189,10 +191,11 @@ screens.ending.querySelectorAll('.mbtn').forEach((b) => {
     if (act === 'again') {
       hide(screens.ending);
       // give the sanctum idol its pedestal back
-      game.sanctumIdol.position.y = 2.4 + 2.45;
-      game.sanctumIdol.scale.setScalar(1.35);
-      game.caveSeal.seal.visible = true;
-      game.caveSeal.bars.forEach((x) => (x.visible = true));
+      game.sanctumIdol.position.y = 2.6 + 2.45;
+      game.sanctumIdol.rotation.y = 0;
+      game.sanctumIdol.scale.setScalar(1.3);
+      game.templeSeal.seal.visible = true;
+      game.templeSeal.bars.forEach((x) => (x.visible = true));
       if (game.hector) {
         game.hector.dispose();
         game.hector = null;
@@ -201,7 +204,7 @@ screens.ending.querySelectorAll('.mbtn').forEach((b) => {
       game.pipeline.fade = 1;
       beginGame();
     } else if (act === 'share') {
-      const txt = game.endingSummary || 'I found the Idol of Chris Illich on IllicIsle.';
+      const txt = game.endingSummary || 'I found the Idol of Chris Illich on Illic Isle.';
       try {
         await navigator.clipboard.writeText(`${txt}\n${location.href}`);
         b.textContent = '✓ COPIED';
@@ -250,12 +253,16 @@ function applySettingsToUI() {
   mark('opt-crt', game.settings.crt ? 1 : 0);
   mark('opt-density', game.settings.density);
   mark('opt-audio', game.settings.audio ? 1 : 0);
+  mark('opt-sens', game.settings.sens);
+  mark('opt-invert', game.settings.invert ? 1 : 0);
 
   wireOption('opt-res', 'res', (v) => parseInt(v, 10));
   wireOption('opt-jitter', 'jitter', (v) => v === '1');
   wireOption('opt-crt', 'crt', (v) => v === '1');
   wireOption('opt-density', 'density', (v) => parseFloat(v));
   wireOption('opt-audio', 'audio', (v) => v === '1');
+  wireOption('opt-sens', 'sens', (v) => parseFloat(v));
+  wireOption('opt-invert', 'invert', (v) => v === '1');
 }
 
 /* ===========================================================

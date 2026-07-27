@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { ps1ify } from '../lib/ps1.js';
 import {
   mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint,
-  limb, arcPanel, facePatch, jitterVerts,
+  limb, arcPanel, facePatch,
 } from '../lib/geo.js';
 import { applyCell, applyRegion, CELLS, makeRng, buildChestTexture, buildBaseBandTexture } from '../lib/textures.js';
 

@@ -3,112 +3,140 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { RetroPipeline, setJitterEnabled, setTime, ps1ify } from './lib/ps1.js';
+import { RetroPipeline, setJitterEnabled, setTime } from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
-import { mergeGeos, ico, tint, plane } from './lib/geo.js';
+import { mergeGeos, tint, plane } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
+import { Cutscene, setCinemaBars } from './lib/cutscene.js';
 import { UI } from './ui.js';
 
 import {
-  buildTerrain, buildOcean, buildFoam, buildSky, buildClouds,
+  buildTerrain, buildOcean, buildSurf, buildSky, buildClouds,
   heightAt, slopeAt, biomeAt, findBeach, ISLAND,
 } from './world/terrain.js';
 import {
   buildPropMaterials, scatterIsland, LANDMARKS, findGround,
-  buildShipwreck, buildCampfire, buildMarkStone, buildShrine, buildCairn,
-  buildCaveDoor, buildCoconutPile, buildCoconutMesh, buildTorch,
+  buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting,
+  buildRoguePendulum, buildCoconutPile, buildCoconutMesh, buildSatchel,
+  buildBirdFlock, buildCritters, GLYPHS,
 } from './world/props.js';
 import { buildIdolMaterials, buildIdol, buildIdolShrine } from './world/idol.js';
-import { buildCave, caveHeight, CAVE } from './world/cave.js';
+import { buildTemple, templeHeight, TEMPLE } from './world/temple.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
 
 /* ===========================================================
    STORY
-   =========================================================== */
-export const MARKS = [
+   ===========================================================
+   Four Rogue Pendulums stand in the jungle. Each carries a glyph
+   and a position in the sequence. Read all four, then set the
+   temple door's sockets to match.
+*/
+export const PENDULUMS = [
   {
-    id: 0, title: 'MARK I — THE GROVE',
-    place: 'grove',
-    hint: 'A ring of palms, planted by hands. Nothing on this island grows in a circle by accident.',
+    id: 0, place: 'pend2', order: 1, glyph: 'EYE',
+    title: 'PENDULUM I — THE LONG COUNT',
+    hint: 'North, high on the ridge, where the trees give up.',
     text:
-`"MARK I. Set at the ring of palms, where the isle feeds
-those who look up.
+`ROGUE PENDULUM 01 — "THE LONG COUNT"
+Installed by the Rogue Agents. Do not stop it.
 
-The fruit is heavy. The fruit is hard. The fruit is,
-if you are clever, a weapon.
+The bob has not stopped in four hundred years and
+nobody who works here knows what it is counting
+down to.
 
-Take all you can carry. You will not be reasoning
-with what waits below."`,
+Struck into the plate beneath the slot:
+    POSITION  I
+    GLYPH     THE EYE`,
   },
   {
-    id: 1, title: 'MARK II — THE OVERLOOK',
-    place: 'overlook',
-    hint: 'High ground. Somewhere the whole island lies flat beneath you.',
+    id: 1, place: 'pend3', order: 2, glyph: 'SPIRAL',
+    title: 'PENDULUM II — THE DROWNED BELL',
+    hint: 'East, past the lagoon, where the ground goes soft.',
     text:
-`"MARK II. Set at the high stone, where the isle
-shows its own face.
+`ROGUE PENDULUM 02 — "THE DROWNED BELL"
 
-From here you may see the throat: a black mouth
-in the red cliff to the north.
+Half sunk. Still swinging. When the water is high
+it rings against its own housing, once, and the
+birds go quiet for a full minute afterwards.
 
-It is sealed. Four marks, four lights. Find them all
-and it will open for you, whether or not it wants to."`,
+    POSITION  II
+    GLYPH     THE SPIRAL`,
   },
   {
-    id: 2, title: 'MARK III — THE SUNKEN SHRINE',
-    place: 'lagoon',
-    hint: 'They built something at the water on the eastern shore. The jungle has been eating it ever since.',
+    id: 2, place: 'pend1', order: 3, glyph: 'SUN',
+    title: 'PENDULUM III — THE LISTENING POST',
+    hint: 'West, deep in, under the heaviest canopy on the island.',
     text:
-`"MARK III. Set at the shrine, which we built for the
-Idol and then could not keep.
+`ROGUE PENDULUM 03 — "THE LISTENING POST"
 
-Understand what you are taking. The Idol of Chris
-Illich was cast by people who loved him more than
-was strictly advisable.
+There is a chair bolted to the inside of this one.
+Somebody sat here a long time. There are eleven
+years of tally marks on the door frame and then
+they stop.
 
-It is gold. It is heavy. It is smiling. Isla Dorada
-is named for it and not the other way around."`,
+    POSITION  III
+    GLYPH     THE SUN`,
   },
   {
-    id: 3, title: 'MARK IV — THE HOLLOW',
-    place: 'hollow',
-    hint: 'Something is tucked away in the northeast, down among the rocks where the light gives up.',
+    id: 3, place: 'pend4', order: 4, glyph: 'MOON',
+    title: 'PENDULUM IV — THE LAST TRANSMISSION',
+    hint: 'Northwest, the far shoulder, where nothing grows straight.',
     text:
-`"MARK IV. Set at the hollow, and set here last,
-because I did not want to write it.
+`ROGUE PENDULUM 04 — "THE LAST TRANSMISSION"
 
-A man came ashore eleven years ago. He found a staff
-in the dark and the staff feeds him and it has never
-once stopped.
+Scratched into the basalt, recent, by hand:
 
-He calls himself EL BASS PRESIDENTE. He has held
-every office on this island, all of them at the same
-time, all of them uncontested.
+  "we were never supposed to find the idol
+   we were supposed to make sure nobody else did
+   i am sorry about the door
+   set them in order and it opens
+   - R.A."
 
-He is not hungry. He is not sorry. He is not going
-to let you past.
-
-Aim for the orb. That's where it all comes from."`,
+    POSITION  IV
+    GLYPH     THE MOON`,
   },
 ];
 
+/** Left-to-right solution for the temple door. */
+export const DOOR_CODE = ['EYE', 'SPIRAL', 'SUN', 'MOON'];
+
 const JOURNAL_INTRO = {
-  id: -1, title: 'THE CASTAWAY\'S JOURNAL',
+  title: 'THE CASTAWAY\'S JOURNAL',
   text:
 `Day one.
 
 The storm took the ship, the crew, and most of my
-good sense. It did not take my purpose.
+good sense. It did not take the reason I came.
 
-Somewhere on this rock sleeps the Idol of Chris
-Illich, cast in gold, hidden by people who thought
-better of what they'd made.
+Somewhere on this island is the Idol of Chris
+Illich, cast in gold by people who thought better
+of what they'd made.
 
-Four stone marks guard the way to it. Find them all
-and the isle opens its throat.
+There are others here. There were, anyway.`,
+};
 
-Do not eat anything you did not personally climb for.`,
+const LETTER = {
+  title: 'A LETTER FROM THE ROGUE AGENTS',
+  text:
+`To whoever gets this far —
+
+We are the Rogue Agents. We were posted to Isla
+Dorada to keep the Idol lost. We built four
+Pendulums to mark the way in, and then we sealed
+the way in, and then we could not get back out.
+
+There are only two things on this island that will
+get you off it: the Idol of Chris Illich, and the
+man who is sitting on it.
+
+The chart is enclosed. Four Pendulums, four glyphs,
+four positions. Read all four and the temple door
+will take the order.
+
+Do not eat anything he offers you.
+
+                                        - R.A.`,
 };
 
 /* ===========================================================
@@ -119,30 +147,27 @@ export class Game {
     this.canvas = canvas;
     this.clock = new THREE.Clock();
     this.time = 0;
-    this.state = 'boot';   // boot | title | island | cave | dead | ending
+    this.state = 'boot';   // boot|title|intro|island|temple|dead|ending
     this.paused = false;
 
     this.settings = {
-      res: 224,
-      jitter: true,
-      crt: true,
-      density: 1,
-      audio: true,
+      res: 224, jitter: true, crt: true, density: 1, audio: true,
+      sens: 1.4, invert: false,
     };
     this.loadSettings();
 
     this.audio = new GameAudio();
     this.ui = new UI(this.audio);
 
-    this.input = {
-      fwd: false, back: false, left: false, right: false,
-      sprint: false, jump: false,
-    };
+    this.input = { fwd: false, back: false, left: false, right: false, sprint: false, jump: false };
     this.mouse = { locked: false };
 
     this.coconuts = [];
-    this.pickups = [];
-    this.marksFound = new Set();
+    this.found = new Set();       // pendulum ids read
+    this.hasChart = false;
+    this.dialState = [0, 0, 0, 0];
+    this.dialSel = 0;
+    this.doorSolved = false;
     this.stats = { started: 0, deaths: 0, thrown: 0, hits: 0 };
 
     this._initRenderer();
@@ -151,22 +176,19 @@ export class Game {
 
   /* ---------- settings ---------- */
   loadSettings() {
-    try {
-      const s = JSON.parse(localStorage.getItem('illicisle.settings') || '{}');
-      Object.assign(this.settings, s);
-    } catch (e) { /* first run */ }
+    try { Object.assign(this.settings, JSON.parse(localStorage.getItem('illicisle.settings') || '{}')); }
+    catch (e) { /* first run */ }
   }
   saveSettings() {
-    try { localStorage.setItem('illicisle.settings', JSON.stringify(this.settings)); } catch (e) { /* private mode */ }
+    try { localStorage.setItem('illicisle.settings', JSON.stringify(this.settings)); }
+    catch (e) { /* private mode */ }
   }
 
   /* ---------- renderer ---------- */
   _initRenderer() {
     this.renderer = new THREE.WebGLRenderer({
-      canvas: this.canvas,
-      antialias: false,
-      powerPreference: 'high-performance',
-      stencil: false,
+      canvas: this.canvas, antialias: false,
+      powerPreference: 'high-performance', stencil: false,
     });
     this.renderer.setPixelRatio(1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -177,8 +199,7 @@ export class Game {
     this.pipeline.setCRT(this.settings.crt);
     setJitterEnabled(this.settings.jitter);
 
-    this.camera = new THREE.PerspectiveCamera(68, 1, 0.35, 460);
-
+    this.camera = new THREE.PerspectiveCamera(66, 1, 0.35, 460);
     this._resize();
     window.addEventListener('resize', () => this._resize());
   }
@@ -196,6 +217,10 @@ export class Game {
     this.pipeline.setCRT(this.settings.crt);
     setJitterEnabled(this.settings.jitter);
     this.audio.setEnabled(this.settings.audio);
+    if (this.player) {
+      this.player.sensitivity = this.settings.sens;
+      this.player.invertY = this.settings.invert;
+    }
     this.saveSettings();
   }
 
@@ -209,48 +234,44 @@ export class Game {
       return fn();
     };
 
-    await step('GENERATING TEXTURES', 0.08, () => {
+    await step('GENERATING TEXTURES', 0.06, () => {
       this.atlas = buildAtlas();
       this.propMats = buildPropMaterials(this.atlas);
       this.idolMats = buildIdolMaterials(this.atlas);
     });
 
-    await step('RAISING ISLA DORADA', 0.22, () => {
+    await step('RAISING ISLA DORADA', 0.18, () => {
       this._buildIslandScene();
-      // Resolve the cave mouth before anything is planted, so the jungle can
-      // be told to leave room for it.
-      this.caveDoorPos = this._findCliffSpot(LANDMARKS.caveDoor.x, LANDMARKS.caveDoor.z);
+      this.templeDoorPos = this._findTempleSpot();
     });
 
-    await step('PLANTING JUNGLE', 0.42, () => {
+    await step('PLANTING THE JUNGLE', 0.42, () => {
       this.colliders = [];
       const clearZones = Object.keys(LANDMARKS).map((k) => ({
-        x: LANDMARKS[k].x, z: LANDMARKS[k].z, r: 12,
+        x: LANDMARKS[k].x, z: LANDMARKS[k].z, r: 15,
       }));
-      // a generous apron in front of the arch so you can see it coming
-      clearZones.push({ x: this.caveDoorPos.x, z: this.caveDoorPos.z, r: 20 });
+      clearZones.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, r: 22 });
       scatterIsland(this.islandScene, this.propMats, makeRng(2468),
         this.settings.density, this.colliders, clearZones);
     });
 
-    await step('PLACING RUINS', 0.62, () => {
-      this._buildLandmarks();
-    });
+    await step('RAISING THE PENDULUMS', 0.62, () => this._buildLandmarks());
 
-    await step('CARVING THE THROAT', 0.78, () => {
-      this.caveScene = buildCave(this.idolMats, this.propMats);
+    await step('OPENING THE TEMPLE', 0.78, () => {
+      this.templeScene = buildTemple(this.idolMats, this.propMats);
       this._buildSanctum();
     });
 
-    await step('CASTING THE IDOL', 0.90, () => {
-      this._buildTitleScene();
-    });
+    await step('CASTING THE IDOL', 0.90, () => this._buildTitleScene());
 
     await step('READY', 1.0, () => {
       this.player = new Player(this.islandScene, this.propMats, this.camera);
       this.player.setColliders(this.colliders);
       this.player.bounds = ISLAND.playRadius;
-      this.player.onFootstep = (b) => this.audio.sfx(`step_${b === 'water' ? 'water' : b === 'sand' ? 'sand' : b === 'rock' ? 'rock' : 'jungle'}`);
+      this.player.sensitivity = this.settings.sens;
+      this.player.invertY = this.settings.invert;
+      this.player.onFootstep = (b) => this.audio.sfx(
+        `step_${b === 'water' ? 'water' : b === 'sand' ? 'sand' : b === 'rock' ? 'rock' : 'jungle'}`);
       this.player.onJump = () => this.audio.sfx('jump');
       this.player.onLand = (v) => { if (v > 11) this.audio.sfx('land'); };
       this.player.onBounds = () => this._boundsWarn();
@@ -263,16 +284,15 @@ export class Game {
      =========================================================== */
   _buildIslandScene() {
     const scene = new THREE.Scene();
-    const FOG = 0xbfd8dd;
     scene.background = new THREE.Color(0x8fc4dd);
-    scene.fog = new THREE.Fog(FOG, 70, 300);
+    // Tight enough that the jungle feels enclosed, open enough to see surf.
+    scene.fog = new THREE.Fog(0xb4d0d4, 46, 235);
 
-    scene.add(new THREE.AmbientLight(0xa8c8d8, 1.15));
-    const sun = new THREE.DirectionalLight(0xfff0cf, 1.5);
+    scene.add(new THREE.AmbientLight(0x9cb8c4, 1.05));
+    const sun = new THREE.DirectionalLight(0xfff0cf, 1.45);
     sun.position.set(-60, 90, 40);
     scene.add(sun);
-    const bounce = new THREE.HemisphereLight(0xcfe8f5, 0x6a7a3a, 0.7);
-    scene.add(bounce);
+    scene.add(new THREE.HemisphereLight(0xcfe8f5, 0x4a5a28, 0.75));
 
     this.terrain = buildTerrain(this.atlas);
     scene.add(this.terrain);
@@ -280,14 +300,20 @@ export class Game {
     this.ocean = buildOcean();
     scene.add(this.ocean);
 
-    this.foam = buildFoam();
-    scene.add(this.foam);
+    this.surf = buildSurf();
+    scene.add(this.surf);
 
     this.sky = buildSky('#2f74ab', '#93c8de', '#f6dfae');
     scene.add(this.sky);
 
     this.clouds = buildClouds(makeRng(31));
     scene.add(this.clouds);
+
+    this.birds = buildBirdFlock(makeRng(77), this.propMats, 22);
+    scene.add(this.birds);
+
+    this.critters = buildCritters(makeRng(88), this.propMats, heightAt, 26);
+    scene.add(this.critters);
 
     this.islandScene = scene;
   }
@@ -298,195 +324,242 @@ export class Game {
     this.interactables = [];
     this.tickers = [];
 
-    /* ---- shipwreck + camp (spawn) ---- */
+    /* ---- shipwreck + castaway camp (spawn) ---- */
     const W = LANDMARKS.wreck;
     let wg = findGround(W.x, W.z, { rng, ...W });
-    // hard guarantee: if the search drifted off the sand, walk the bearing
-    // out to the waterline instead. You always wake up on a beach.
     if (wg.y < 0.7 || wg.y > 3.0) wg = findBeach(Math.atan2(W.z, W.x), 1.5);
 
     const wreck = buildShipwreck(rng, this.propMats);
     wreck.position.set(wg.x, wg.y - 0.3, wg.z);
     wreck.rotation.y = Math.atan2(wg.x, wg.z) + 1.2;
     scene.add(wreck);
-    this.colliders.push({ x: wg.x, z: wg.z, r: 3.4 });
+    this.colliders.push({ x: wg.x, z: wg.z, r: 3.2 });
 
-    // everything else in camp goes *inland* of the wreck, never seaward
     const inX = -wg.x / Math.hypot(wg.x, wg.z);
     const inZ = -wg.z / Math.hypot(wg.x, wg.z);
-    // Only a few paces up the sand — far enough to be clear of the hull,
-    // close enough that you still open your eyes on a beach.
-    const sx = wg.x + inX * 3.5, sz = wg.z + inZ * 3.5;
+    const sx = wg.x + inX * 4, sz = wg.z + inZ * 4;
     this.spawn = { x: sx, y: Math.max(heightAt(sx, sz), 0.6) + 1, z: sz };
+    this.wreckPos = wg;
+
+    // the camp of the ones who got here first
+    const cg = findGround(wg.x + inX * 9 + 6, wg.z + inZ * 9, { rng, radius: 7, minH: 1.0, maxH: 4, maxSlope: 0.18 });
+    const camp = buildCastawayCamp(rng, this.propMats);
+    camp.position.set(cg.x, cg.y, cg.z);
+    camp.rotation.y = Math.atan2(cg.x, cg.z) + 2.1;
+    scene.add(camp);
+    this.colliders.push({ x: cg.x, z: cg.z, r: 1.5 });
 
     const fire = buildCampfire(rng, this.propMats);
-    const fg = findGround(wg.x + inX * 7, wg.z + inZ * 7, { rng, radius: 4, minH: 0.9, maxH: 4.5, maxSlope: 0.18 });
+    const fg = findGround(wg.x + inX * 7, wg.z + inZ * 7, { rng, radius: 4, minH: 0.9, maxH: 4, maxSlope: 0.18 });
     fire.position.set(fg.x, fg.y, fg.z);
     scene.add(fire);
     this.tickers.push(fire.userData.flames);
     this.campfire = fire;
 
-    // the journal, sitting by the fire
+    // HELP dragged into the sand beside the camp
+    const helpPos = findGround(wg.x + inX * 2 - 12, wg.z + inZ * 2 - 6,
+      { rng, radius: 10, minH: 0.7, maxH: 2.4, maxSlope: 0.13 });
+    const help = buildSandWriting('HELP', this.propMats, { width: 17, height: 5.5, seed: 12 });
+    help.position.set(helpPos.x, helpPos.y, helpPos.z);
+    help.rotation.y = Math.atan2(helpPos.x, helpPos.z) + Math.PI;
+    help.userData.drape(heightAt, helpPos.x, helpPos.z);
+    scene.add(help);
+
+    // the Rogue Agents' own mark, on a far beach
+    const RS = LANDMARKS.rogueSand;
+    const rsg = findGround(RS.x, RS.z, { rng, ...RS });
+    const rogueWord = buildSandWriting('ROGUE', this.propMats, { width: 22, height: 6, seed: 99 });
+    rogueWord.position.set(rsg.x, rsg.y, rsg.z);
+    rogueWord.rotation.y = Math.atan2(rsg.x, rsg.z) + Math.PI;
+    rogueWord.userData.drape(heightAt, rsg.x, rsg.z);
+    scene.add(rogueWord);
+    this.rogueSandPos = rsg;
+
+    // journal by the fire
     this.interactables.push({
-      kind: 'journal',
-      x: fg.x + 1.6, z: fg.z + 1.2, y: fg.y,
-      r: 3.0,
+      kind: 'journal', x: fg.x + 1.2, z: fg.z + 0.9, y: fg.y, r: 2.6,
       prompt: 'Read your journal',
-      once: false,
-      mesh: this._makeJournalProp(fg.x + 1.6, fg.y + 0.25, fg.z + 1.2, scene),
     });
 
-    /* ---- the four marks ---- */
-    this.markMeshes = [];
-    MARKS.forEach((m, i) => {
-      const L = LANDMARKS[m.place];
+    // the satchel with the chart
+    const satPos = findGround(cg.x + 1.6, cg.z + 1.4, { rng, radius: 3, minH: 0.9, maxH: 4, maxSlope: 0.2 });
+    const satchel = buildSatchel(rng, this.propMats);
+    satchel.position.set(satPos.x, satPos.y, satPos.z);
+    scene.add(satchel);
+    this.tickers.push(satchel);
+    this.satchel = satchel;
+    this.interactables.push({
+      kind: 'letter', x: satPos.x, z: satPos.z, y: satPos.y, r: 2.6,
+      prompt: 'Take the Rogue Agents\' satchel', once: true, taken: false, mesh: satchel,
+    });
+
+    /* ---- the four Rogue Pendulums ---- */
+    this.pendulumMeshes = [];
+    PENDULUMS.forEach((p, i) => {
+      const L = LANDMARKS[p.place];
       const g = findGround(L.x, L.z, { rng, ...L });
-      const stone = buildMarkStone(this.propMats, i);
-      stone.position.set(g.x, g.y - 0.2, g.z);
-      stone.rotation.y = rng() * Math.PI * 2;
-      scene.add(stone);
-      this.tickers.push(stone);
-      this.markMeshes.push(stone);
-      this.colliders.push({ x: g.x, z: g.z, r: 1.1 });
+      const tower = buildRoguePendulum(rng, this.propMats, i, p.glyph, p.order);
+      tower.position.set(g.x, g.y - 0.3, g.z);
+      tower.rotation.y = Math.atan2(-g.x, -g.z) + (rng() - 0.5) * 0.5;
+      scene.add(tower);
+      this.tickers.push(tower);
+      this.pendulumMeshes.push(tower);
+      this.colliders.push({ x: g.x, z: g.z, r: 2.0 });
       this.interactables.push({
-        kind: 'mark', index: i,
-        x: g.x, y: g.y, z: g.z, r: 3.4,
-        prompt: 'Read the mark',
-        once: true, taken: false,
-        mesh: stone,
+        kind: 'pendulum', index: i, x: g.x, y: g.y, z: g.z, r: 4.2,
+        prompt: 'Read the Pendulum plate', once: true, taken: false, mesh: tower,
       });
-      m.world = { x: g.x, z: g.z };
+      p.world = { x: g.x, z: g.z };
     });
-
-    /* ---- shrine at the lagoon (dressing for Mark III) ---- */
-    const S = LANDMARKS.lagoon;
-    const sg = findGround(S.x - 6, S.z + 6, { rng, ...S, radius: 11 });
-    const shrine = buildShrine(rng, this.propMats);
-    shrine.position.set(sg.x, sg.y - 0.4, sg.z);
-    scene.add(shrine);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      this.colliders.push({ x: sg.x + Math.cos(a) * 5.2, z: sg.z + Math.sin(a) * 5.2, r: 0.6 });
-    }
-
-    /* ---- cairn at the overlook ---- */
-    const O = LANDMARKS.overlook;
-    const og = findGround(O.x, O.z, { rng, ...O, radius: 12 });
-    const cairn = buildCairn(rng, this.propMats);
-    cairn.position.set(og.x + 4, og.y, og.z + 3);
-    scene.add(cairn);
-    this.colliders.push({ x: og.x + 4, z: og.z + 3, r: 1.2 });
 
     /* ---- coconut piles ---- */
     this.coconutPiles = [];
-    const groveL = LANDMARKS.grove;
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const px = groveL.x + Math.cos(a) * (4 + rng() * 3);
-      const pz = groveL.z + Math.sin(a) * (4 + rng() * 3);
-      this._addCoconutPile(scene, px, pz, rng);
-    }
-    // a few more scattered near the beach so you're never stranded
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 22; i++) {
       const a = rng() * Math.PI * 2;
-      const r = 60 + rng() * 45;
-      const g = findGround(Math.cos(a) * r, Math.sin(a) * r, { rng, radius: 14, minH: 1.2, maxSlope: 0.22 });
-      this._addCoconutPile(scene, g.x, g.z, rng);
+      const r = 50 + rng() * 110;
+      const g = findGround(Math.cos(a) * r, Math.sin(a) * r,
+        { rng, radius: 16, minH: 1.0, maxH: 30, maxSlope: 0.24 });
+      const pile = buildCoconutPile(rng, this.propMats);
+      pile.position.set(g.x, g.y, g.z);
+      scene.add(pile);
+      this.coconutPiles.push({ mesh: pile, x: g.x, z: g.z, y: g.y, cooldown: 0 });
     }
 
-    /* ---- the sealed cave door (position resolved during terrain build) ---- */
-    const dg = this.caveDoorPos;
-    const signTex = buildSignTexture(['THE THROAT', 'OF THE ISLE'], '#2e1a10', '#ffcf5a');
-    const door = buildCaveDoor(rng, this.propMats, signTex);
-    door.position.set(dg.x, dg.y - 0.5, dg.z);
-    // Face the arch down-slope, away from the mount's centre, so you meet it
-    // head-on walking up. Aiming it at the world origin instead points it
-    // into the hillside.
-    door.rotation.y = Math.atan2(dg.x - ISLAND.mount.x, dg.z - ISLAND.mount.z);
+    /* ---- the temple door ---- */
+    const dg = this.templeDoorPos;
+    const door = this._buildTempleDoor(rng, dg);
     scene.add(door);
-    this.caveDoor = door;
-    this.caveDoorPos = dg;
-    door.userData.setSockets(0);
-    door.userData.torches.forEach((t) => this.tickers.push(t.userData.flames));
-    this.colliders.push({ x: dg.x, z: dg.z, r: 2.2 });
-
+    this.templeDoor = door;
+    this.colliders.push({ x: dg.x, z: dg.z, r: 2.4 });
     this.interactables.push({
-      kind: 'caveDoor',
-      x: dg.x, y: dg.y, z: dg.z, r: 6.0,
-      prompt: 'Examine the seal',
-      once: false,
-      mesh: door,
+      kind: 'templeDoor', x: dg.x, y: dg.y, z: dg.z, r: 6.5,
+      prompt: 'Examine the sealed door',
     });
 
-    /* ---- compass points of interest ---- */
-    this.ui.setCompassPois([
-      { label: '⌂', x: this.spawn.x, z: this.spawn.z, kind: 'poi' },
-      ...MARKS.map((m, i) => ({
-        label: `✦${i + 1}`, x: m.world.x, z: m.world.z, kind: 'goal', hidden: false, markIndex: i,
-      })),
-      { label: '▼CAVE', x: dg.x, z: dg.z, kind: 'goal' },
-    ]);
+    this._refreshCompass();
   }
 
-  _addCoconutPile(scene, x, z, rng) {
-    const g = findGround(x, z, { rng, radius: 6, minH: 1.0, maxSlope: 0.28 });
-    const pile = buildCoconutPile(rng, this.propMats);
-    pile.position.set(g.x, g.y, g.z);
-    scene.add(pile);
-    this.coconutPiles.push({ mesh: pile, x: g.x, z: g.z, y: g.y, cooldown: 0 });
+  /** A stepped stone doorway set into the ridge, with four glyph sockets. */
+  _buildTempleDoor(rng, dg) {
+    const group = new THREE.Group();
+    const P = [];
+    const STONE = new THREE.Color(0x8d8770);
+
+    // stepped ziggurat face
+    for (let i = 0; i < 4; i++) {
+      const w = 17 - i * 2.4, h = 2.2, d = 4 - i * 0.5;
+      const s = mergeGeos([tint(
+        (() => { const g = new THREE.BoxGeometry(w, h, d); return g; })(), STONE)]);
+      const mesh = new THREE.Mesh(s, this.propMats.opaque);
+      mesh.position.set(0, 1.1 + i * h, -i * 1.5);
+      group.add(mesh);
+    }
+
+    // the doorway itself
+    const frameParts = [];
+    for (const side of [-1, 1]) {
+      const jamb = new THREE.BoxGeometry(1.5, 8, 2.2);
+      const g = mergeGeos([tint(jamb, STONE.clone().multiplyScalar(0.9))]);
+      const m = new THREE.Mesh(g, this.propMats.opaque);
+      m.position.set(side * 3.2, 4, 1.4);
+      group.add(m);
+    }
+    const lintel = new THREE.Mesh(
+      mergeGeos([tint(new THREE.BoxGeometry(9, 1.8, 2.4), STONE.clone().multiplyScalar(0.8))]),
+      this.propMats.opaque);
+    lintel.position.set(0, 8.6, 1.4);
+    group.add(lintel);
+
+    // dark interior
+    const mouth = new THREE.Mesh(
+      mergeGeos([tint(new THREE.PlaneGeometry(5.2, 7.6), new THREE.Color(0x070a06))]),
+      this.propMats.opaque);
+    mouth.position.set(0, 3.9, 0.9);
+    group.add(mouth);
+
+    // the slab that blocks it, which sinks when solved
+    const slab = new THREE.Mesh(
+      mergeGeos([tint(new THREE.BoxGeometry(5.4, 7.8, 0.9), STONE.clone().multiplyScalar(1.05))]),
+      this.propMats.opaque);
+    slab.position.set(0, 3.9, 1.3);
+    group.add(slab);
+    group.userData.slab = slab;
+
+    // four sockets across the lintel
+    const sockets = [];
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(
+        mergeGeos([tint(new THREE.BoxGeometry(1.5, 1.5, 0.3), new THREE.Color(0x2c3038))]),
+        this.propMats.opaque);
+      m.position.set((i - 1.5) * 1.9, 8.6, 2.7);
+      group.add(m);
+      sockets.push(m);
+    }
+    group.userData.sockets = sockets;
+
+    const light = new THREE.PointLight(0x8fe6d0, 1.1, 16, 1.8);
+    light.position.set(0, 8.6, 3.4);
+    group.add(light);
+    group.userData.light = light;
+
+    group.position.set(dg.x, dg.y - 0.6, dg.z);
+    group.rotation.y = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+    group.userData.open = 0;
+    group.userData.setOpen = (a) => {
+      group.userData.open = a;
+      slab.position.y = 3.9 - a * 8.2;
+      light.intensity = 1.1 + a * 2.2;
+    };
+    return group;
   }
 
-  _makeJournalProp(x, y, z, scene) {
-    const g = plane(0.5, 0.36, 'paper');
-    g.rotateX(-Math.PI / 2 + 0.2);
-    tint(g, new THREE.Color(0xe8dcb8));
-    const m = new THREE.Mesh(mergeGeos([g]), this.propMats.opaque);
-    m.position.set(x, y, z);
-    m.rotation.y = 0.6;
-    scene.add(m);
-    return m;
-  }
-
-  /** Find a spot on the mount's south face for the cave mouth: high enough
-   *  to read as "up the volcano", steep enough that an arch looks set into
-   *  the hillside, and facing south so you can actually see it coming. */
-  _findCliffSpot(hintX, hintZ) {
+  /** Somewhere on the ridge's south face, high but climbable. */
+  _findTempleSpot() {
     let best = null, bestScore = -Infinity;
-    for (let a = -1.1; a <= 1.1; a += 0.05) {
-      for (let r = 26; r < 52; r += 1.0) {
-        const x = ISLAND.mount.x + Math.sin(a) * r;
-        const z = ISLAND.mount.z + Math.cos(a) * r;   // +Z from the mount = south face
+    for (let a = -1.0; a <= 1.0; a += 0.04) {
+      for (let r = 30; r < 74; r += 1.0) {
+        const x = ISLAND.ridge.x + Math.sin(a) * r;
+        const z = ISLAND.ridge.z + Math.cos(a) * r;
         const h = heightAt(x, z);
-        if (h < 19 || h > 31) continue;
+        // The ridge's south face runs roughly 38 (low) to 60 (high); sit the
+        // doorway partway up it so there's still mountain overhead.
+        if (h < 34 || h > 50) continue;
         const s = slopeAt(x, z);
-        if (s > 0.32) continue;                        // must be walkable up to
-
-        // The mountain has to keep climbing behind the arch, otherwise the
-        // door ends up silhouetted on a ridge line instead of set into a
-        // cliff face.
-        const rise = heightAt(x - Math.sin(a) * 12, z - Math.cos(a) * 12) - h;
-        if (rise < 7) continue;
-
-        const score = -Math.abs(h - 25) * 1.2 - Math.abs(a) * 6
-          - Math.abs(s - 0.20) * 22 + Math.min(rise, 18) * 1.4;
+        if (s > 0.30) continue;
+        const rise = heightAt(x - Math.sin(a) * 14, z - Math.cos(a) * 14) - h;
+        if (rise < 4) continue;
+        const score = -Math.abs(h - 41) * 1.2 - Math.abs(a) * 6
+          - Math.abs(s - 0.16) * 20 + Math.min(rise, 16) * 1.3;
         if (score > bestScore) { bestScore = score; best = { x, y: h, z }; }
       }
     }
-    return best || { x: hintX, y: heightAt(hintX, hintZ), z: hintZ };
+    return best || { x: LANDMARKS.temple.x, y: heightAt(LANDMARKS.temple.x, LANDMARKS.temple.z), z: LANDMARKS.temple.z };
+  }
+
+  _refreshCompass() {
+    const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi' }];
+    if (this.hasChart) {
+      PENDULUMS.forEach((p, i) => pois.push({
+        label: ['I', 'II', 'III', 'IV'][p.order - 1],
+        x: p.world.x, z: p.world.z, kind: 'goal',
+        hidden: this.found.has(p.id), pendIndex: i,
+      }));
+      pois.push({ label: 'TEMPLE', x: this.templeDoorPos.x, z: this.templeDoorPos.z, kind: 'goal' });
+    }
+    this.ui.setCompassPois(pois);
   }
 
   /* ===========================================================
-     CAVE SANCTUM
+     SANCTUM / TITLE
      =========================================================== */
   _buildSanctum() {
-    const D = CAVE.daisCenter;
-    this.sanctumIdol = buildIdolShrine(this.idolMats, this.propMats, { curls: 62 });
-    this.sanctumIdol.position.set(D.x, CAVE.daisHeight + 2.45, D.z);
-    this.sanctumIdol.scale.setScalar(1.35);
-    this.caveScene.add(this.sanctumIdol);
-
-    this.caveCaches = this.caveScene.userData.caches;
-    this.caveSeal = this.caveScene.userData.seal;
+    const D = TEMPLE.daisCenter;
+    this.sanctumIdol = buildIdolShrine(this.idolMats, this.propMats, { curls: 74 });
+    this.sanctumIdol.position.set(D.x, TEMPLE.daisHeight + 2.45, D.z);
+    this.sanctumIdol.scale.setScalar(1.3);
+    this.templeScene.add(this.sanctumIdol);
+    this.templeCaches = this.templeScene.userData.caches;
+    this.templeSeal = this.templeScene.userData.seal;
   }
 
   _buildTitleScene() {
@@ -495,19 +568,14 @@ export class Game {
     scene.fog = new THREE.Fog(0x140d16, 8, 30);
     scene.add(new THREE.AmbientLight(0x8a7a68, 1.5));
 
-    // three-point rig: warm key, cool fill, hot rim to pop the curls
     const key = new THREE.DirectionalLight(0xfff4d8, 2.6);
-    key.position.set(3, 5, 6);
-    scene.add(key);
+    key.position.set(3, 5, 6); scene.add(key);
     const fill = new THREE.DirectionalLight(0x9fc0e0, 1.0);
-    fill.position.set(-5, 1, 3);
-    scene.add(fill);
+    fill.position.set(-5, 1, 3); scene.add(fill);
     const rim = new THREE.DirectionalLight(0xffb05a, 2.0);
-    rim.position.set(-3, 4, -5);
-    scene.add(rim);
+    rim.position.set(-3, 4, -5); scene.add(rim);
 
-    this.titleIdol = buildIdolShrine(this.idolMats, this.propMats, { curls: 76, keyIntensity: 0.7 });
-    // The bust runs y 0..2.5, so drop it so its middle sits on the origin.
+    this.titleIdol = buildIdolShrine(this.idolMats, this.propMats, { curls: 78, keyIntensity: 0.7 });
     this.titleIdol.position.set(0, -1.25, 0);
     scene.add(this.titleIdol);
 
@@ -519,79 +587,85 @@ export class Game {
      EVENTS
      =========================================================== */
   _bindEvents() {
-    const kd = (e) => this._key(e, true);
-    const ku = (e) => this._key(e, false);
-    window.addEventListener('keydown', kd);
-    window.addEventListener('keyup', ku);
+    window.addEventListener('keydown', (e) => this._key(e, true));
+    window.addEventListener('keyup', (e) => this._key(e, false));
 
     document.addEventListener('pointerlockchange', () => {
       this.mouse.locked = document.pointerLockElement === this.canvas;
-      if (!this.mouse.locked && (this.state === 'island' || this.state === 'cave')
-        && !this.ui.readerActive && !this.ui.journalOpen && !this.paused) {
+      if (!this.mouse.locked && this.playing && !this.anyOverlayOpen() && !this.paused) {
         this.pause(true);
       }
     });
 
     window.addEventListener('mousemove', (e) => {
       if (!this.mouse.locked || this.paused) return;
-      const s = 0.0024;
-      this.player?.addPitchYaw(e.movementX * s, e.movementY * s);
+      if (this.anyOverlayOpen()) return;
+      const dx = Math.abs(e.movementX) > 220 ? 0 : e.movementX;
+      const dy = Math.abs(e.movementY) > 220 ? 0 : e.movementY;
+      this.player?.addPitchYaw(dx, dy);
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
-      if (this.state !== 'island' && this.state !== 'cave') return;
+      if (this.state === 'cutscene') { this.skipCutscene(); return; }
+      if (!this.playing) return;
       if (!this.mouse.locked) { this._requestLock(); return; }
-      if (this.paused || this.ui.readerActive) return;
+      if (this.paused || this.anyOverlayOpen()) return;
       if (e.button === 0) this.throwCoconut();
     });
 
-    window.addEventListener('blur', () => {
-      if (this.state === 'island' || this.state === 'cave') this.pause(true);
-    });
+    window.addEventListener('blur', () => { if (this.playing) this.pause(true); });
   }
 
-  _requestLock() {
-    this.canvas.requestPointerLock?.();
+  get playing() { return this.state === 'island' || this.state === 'temple'; }
+  anyOverlayOpen() {
+    return this.ui.readerActive || this.ui.journalOpen || this.ui.mapOpen || this.ui.dialsOpen;
   }
+
+  _requestLock() { this.canvas.requestPointerLock?.(); }
 
   _key(e, down) {
     const k = e.code;
     const I = this.input;
     switch (k) {
-      case 'KeyW': case 'ArrowUp': I.fwd = down; break;
-      case 'KeyS': case 'ArrowDown': I.back = down; break;
-      case 'KeyA': case 'ArrowLeft': I.left = down; break;
-      case 'KeyD': case 'ArrowRight': I.right = down; break;
+      case 'KeyW': case 'ArrowUp': if (!this.ui.dialsOpen) I.fwd = down; break;
+      case 'KeyS': case 'ArrowDown': if (!this.ui.dialsOpen) I.back = down; break;
+      case 'KeyA': case 'ArrowLeft': if (!this.ui.dialsOpen) I.left = down; break;
+      case 'KeyD': case 'ArrowRight': if (!this.ui.dialsOpen) I.right = down; break;
       case 'ShiftLeft': case 'ShiftRight': I.sprint = down; break;
-      case 'Space':
-        I.jump = down;
-        if (down) e.preventDefault();
-        break;
+      case 'Space': I.jump = down; if (down) e.preventDefault(); break;
       default: break;
     }
-
     if (!down) return;
 
-    if (k === 'KeyE' || k === 'Space' || k === 'Enter') {
-      if (this.ui.readerActive) { this.ui.advanceReader(); return; }
-    }
-    if (k === 'KeyE') { this.interact(); return; }
-    if (k === 'KeyC') {
-      if (this.state === 'island' || this.state === 'cave') {
-        const third = this.player.toggleView();
-        this.ui.toast(third ? 'THIRD PERSON' : 'FIRST PERSON', 'gold', 1200);
-        this.audio.sfx('select');
-      }
-      return;
-    }
-    if (k === 'Tab') {
+    if (this.state === 'cutscene') { this.skipCutscene(); return; }
+
+    // dial puzzle grabs the arrows
+    if (this.ui.dialsOpen) {
+      if (k === 'ArrowLeft') { this.dialSel = (this.dialSel + 3) % 4; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
+      else if (k === 'ArrowRight') { this.dialSel = (this.dialSel + 1) % 4; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
+      else if (k === 'ArrowUp' || k === 'KeyW') { this.cycleDial(1); }
+      else if (k === 'ArrowDown' || k === 'KeyS') { this.cycleDial(-1); }
+      else if (k === 'KeyE' || k === 'Enter') { this.submitDials(); }
+      else if (k === 'Escape') { this.closeDials(); }
       e.preventDefault();
-      if (this.state === 'island' || this.state === 'cave') this.toggleJournal();
       return;
     }
+
+    if ((k === 'KeyE' || k === 'Enter') && this.ui.readerActive) { this.ui.advanceReader(); return; }
+    if (k === 'KeyE') { this.interact(); return; }
+
+    if (k === 'KeyC' && this.playing) {
+      const third = this.player.toggleView();
+      this.ui.toast(third ? 'THIRD PERSON' : 'FIRST PERSON', 'gold', 1100);
+      this.audio.sfx('select');
+      return;
+    }
+    if (k === 'Tab') { e.preventDefault(); if (this.playing) this.toggleJournal(); return; }
+    if (k === 'KeyM') { if (this.playing) this.toggleMap(); return; }
     if (k === 'Escape') {
       if (this.ui.journalOpen) { this.toggleJournal(); return; }
-      if (this.state === 'island' || this.state === 'cave') this.pause(!this.paused);
+      if (this.ui.mapOpen) { this.toggleMap(); return; }
+      if (this.playing) this.pause(!this.paused);
       return;
     }
   }
@@ -602,65 +676,315 @@ export class Game {
   startTitle() {
     this.state = 'title';
     this.ui.hide();
-    this.audio.playMusic('island');
+    this.audio.playMusic('title');
   }
 
   startGame() {
-    this.state = 'island';
     this.paused = false;
-    this.stats.started = performance.now();
-    this.marksFound.clear();
+    this.stats = { started: performance.now(), deaths: 0, thrown: 0, hits: 0 };
+    this.found.clear();
+    this.hasChart = false;
+    this.doorSolved = false;
+    this.dialState = [0, 0, 0, 0];
     this.coconutCount = 3;
     this.scene = this.islandScene;
 
     this.player.hp = this.player.maxHp;
     this.player.stamina = 1;
-    this.player.teleport(this.spawn.x, this.spawn.y + 2, this.spawn.z, Math.PI * 0.85);
     this.player.mesh.removeFromParent();
     this.islandScene.add(this.player.mesh);
     this.player.setColliders(this.colliders);
+    this.player.teleport(this.spawn.x, this.spawn.y + 1, this.spawn.z,
+      Math.atan2(-this.spawn.x, -this.spawn.z));
 
     this.interactables.forEach((i) => { if (i.once) i.taken = false; });
-    this.markMeshes.forEach((m) => (m.visible = true));
-    this.caveDoor.userData.setOpen(0);
-    this.caveDoor.userData.setSockets(0);
-    this.caveOpen = false;
+    this.pendulumMeshes.forEach((m) => (m.visible = true));
+    if (this.satchel) this.satchel.visible = true;
+    this.templeDoor.userData.setOpen(0);
     this.hectorDefeated = false;
     this.idolTaken = false;
+    this.bossTriggered = false;
     this.clearCoconuts();
+    this._refreshCompass();
+    this.updateSockets();
 
-    this.ui.show();
-    this.ui.showBoss(false);
-    this.ui.setObjective('Get your bearings. Read your journal by the fire.');
+    this.playIntro();
+  }
+
+  /* ===========================================================
+     CUTSCENES
+     =========================================================== */
+
+  /** Enter a scripted-camera sequence. `scene` is what to render under it. */
+  playCutscene(spec, scene) {
+    this.cutScene = scene || this.scene;
+    this.state = 'cutscene';
+    this.ui.hide();
+    this.ui.setPrompt(null);
+    document.exitPointerLock?.();
+    setCinemaBars(true);
+    this.cutsceneObj = new Cutscene(this.camera, spec);
+  }
+
+  skipCutscene() {
+    if (this.state !== 'cutscene') return;
+    this.cutsceneObj?.skip();
+  }
+
+  updateCutscene(dt) {
+    // world keeps breathing under the camera
+    if (this.cutScene === this.islandScene) this.tickIslandWorld(dt);
+    else {
+      this.templeScene.userData.tick?.(this.time, dt);
+      this.sanctumIdol?.userData.tick?.(this.time);
+      if (this.hector) this.hector.update(dt, this.time, this.player);
+    }
+    this.cutsceneObj?.update(dt);
+  }
+
+  /* ---------- opening ---------- */
+  playIntro() {
+    const s = this.spawn;
+    const out = Math.hypot(s.x, s.z) || 1;
+    const seaward = new THREE.Vector3(s.x / out * (out + 62), 3.0, s.z / out * (out + 62));
+    const overCamp = new THREE.Vector3(s.x + 6, s.y + 9, s.z + 12);
+    const behind = new THREE.Vector3(s.x - 5, s.y + 2.6, s.z + 6);
+    const wreck = this.wreckPos;
+
+    this.pipeline.fade = 0;
     this.audio.playMusic('island');
-    this._requestLock();
 
-    setTimeout(() => this.ui.toast('YOU WASHED ASHORE', 'gold', 3200), 400);
-    setTimeout(() => this.ui.toast('Find the four Marks · press TAB for your journal', 'gold', 4200), 2600);
+    this.playCutscene({
+      shots: [
+        { // drifting in off the water toward the beach
+          dur: 6.5, ease: 'linear',
+          from: seaward,
+          to: new THREE.Vector3().lerpVectors(seaward, new THREE.Vector3(s.x, s.y + 3, s.z), 0.62),
+          look: new THREE.Vector3(s.x, s.y + 1.4, s.z),
+        },
+        { // sweep over the wreck
+          dur: 5.5,
+          from: new THREE.Vector3(wreck.x + 14, wreck.y + 7, wreck.z + 16),
+          to: new THREE.Vector3(wreck.x - 8, wreck.y + 4, wreck.z + 8),
+          look: new THREE.Vector3(wreck.x, wreck.y + 2, wreck.z),
+        },
+        { // settle behind the castaway
+          dur: 5.0, ease: 'easeOut',
+          from: overCamp, to: behind,
+          look: () => new THREE.Vector3(this.player.pos.x, this.player.pos.y + 1.3, this.player.pos.z),
+        },
+      ],
+      text: [
+        { at: 0.6, until: 5.6, text: 'ISLA DORADA.\nNobody comes here on purpose.' },
+        { at: 7.0, until: 11.6, text: 'The storm took the ship, the crew,\nand most of your good sense.' },
+        { at: 12.4, until: 16.6, text: 'It did not take the reason you came.' },
+      ],
+      events: [
+        { at: 0.0, fn: () => this.fade(1, 2400) },
+        { at: 6.4, fn: () => this.audio.sfx('stinger') },
+        { at: 15.8, fn: () => this.fade(0, 1000) },
+      ],
+      onDone: () => this.endIntro(),
+    }, this.islandScene);
+  }
+
+  endIntro() {
+    setCinemaBars(false);
+    this.state = 'island';
+    this.fade(1, 700);
+    this.ui.show();
+    this.ui.setObjective('Look around the camp. Somebody was here before you.');
+    this._requestLock();
+    setTimeout(() => this.ui.toast('WASHED ASHORE — ISLA DORADA', 'gold', 3600), 400);
+  }
+
+  /* ---------- Hector goes down ---------- */
+  playDefeatCutscene() {
+    const H = this.hector;
+    const hp = () => new THREE.Vector3(H.pos.x, H.pos.y, H.pos.z);
+    const chest = () => new THREE.Vector3(H.pos.x, H.pos.y + 2.4, H.pos.z);
+    const orb = () => H.gemWorldPos(new THREE.Vector3());
+    const D = TEMPLE.daisCenter;
+
+    this.playCutscene({
+      shots: [
+        { // hard in on the orb as it fails
+          dur: 3.0, ease: 'easeOut', shake: 0.10,
+          from: () => orb().add(new THREE.Vector3(2.6, 0.8, 3.4)),
+          to: () => orb().add(new THREE.Vector3(1.4, 0.2, 1.8)),
+          lookFrom: orb, lookTo: orb,
+        },
+        { // pull back: the man himself, folding up
+          dur: 4.0,
+          from: () => hp().add(new THREE.Vector3(5, 3.4, 9)),
+          to: () => hp().add(new THREE.Vector3(-1, 5.6, 13)),
+          lookFrom: chest,
+          lookTo: () => hp().add(new THREE.Vector3(0, 1.2, 0)),
+        },
+        { // the seal lets go and the dais opens up
+          dur: 4.6, ease: 'smooth',
+          from: new THREE.Vector3(D.x + 10, 9, D.z + 22),
+          to: new THREE.Vector3(D.x, 6.5, D.z + 12),
+          look: new THREE.Vector3(D.x, TEMPLE.daisHeight + 3.4, D.z),
+        },
+      ],
+      text: [
+        { at: 3.4, until: 7.2, text: 'THE ETERNAL COMBO IS BROKEN.' },
+        { at: 8.2, until: 11.4, text: 'The seal remembers whose it was.' },
+      ],
+      events: [
+        {
+          at: 0.7, fn: () => {
+            this.audio.sfx('orbShatter');
+            const orbMesh = H.parts.orb;
+            orbMesh.visible = false;
+            H.parts.orbLight.intensity = 0;
+          },
+        },
+        { at: 1.0, fn: () => this.audio.sfx('bossDie') },
+        { at: 3.2, fn: () => this.audio.sfx('rumble') },
+        {
+          at: 7.6, fn: () => {
+            const s = this.templeSeal;
+            s.seal.visible = false;
+            s.bars.forEach((b) => (b.visible = false));
+            this.audio.sfx('door');
+          },
+        },
+      ],
+      onDone: () => {
+        setCinemaBars(false);
+        this.state = 'temple';
+        this.ui.show();
+        this.ui.setObjective('Take the Idol.');
+        this.audio.playMusic('temple');
+        this._requestLock();
+        setTimeout(() => {
+          this.showReader('HECTOR — EL BASS PRESIDENTE',
+`"...fine.
+
+Take it. Take the little gold man. He was never
+much company anyway — always smiling, never once
+said a word about the food.
+
+Eleven years I held every office on this island.
+Eleven years. Unopposed.
+
+Go on. I'll be fine.
+
+I have snacks."`);
+        }, 900);
+      },
+    }, this.templeScene);
+  }
+
+  /* ---------- claiming the Idol ---------- */
+  playIdolCutscene() {
+    const D = TEMPLE.daisCenter;
+    const idol = this.sanctumIdol;
+    const base = TEMPLE.daisHeight + 2.45;
+    const idolAt = (h) => new THREE.Vector3(D.x, base + h, D.z);
+    const t0 = { v: 0 };
+
+    // drive the idol's own rise from the cutscene clock
+    this._idolRise = (dt) => {
+      t0.v = Math.min(1, t0.v + dt / 5.0);
+      const k = t0.v;
+      idol.position.y = base + k * 3.0;
+      idol.rotation.y += dt * (0.5 + k * 1.6);
+      idol.scale.setScalar(1.3 + k * 0.45);
+    };
+
+    this.playCutscene({
+      shots: [
+        { // low, reverent push-in from the steps
+          dur: 4.0, ease: 'easeOut',
+          from: new THREE.Vector3(D.x + 1.2, TEMPLE.daisHeight + 1.2, D.z + 13),
+          to: new THREE.Vector3(D.x + 0.4, TEMPLE.daisHeight + 2.4, D.z + 6.2),
+          look: idolAt(1.2),
+        },
+        { // orbit as it lifts
+          dur: 5.0, ease: 'linear',
+          from: new THREE.Vector3(D.x + 5.4, TEMPLE.daisHeight + 4.2, D.z + 5.4),
+          to: new THREE.Vector3(D.x - 5.4, TEMPLE.daisHeight + 5.6, D.z + 5.0),
+          lookFrom: idolAt(1.6), lookTo: idolAt(3.2),
+        },
+        { // close on the face, then bloom out
+          dur: 3.4, ease: 'easeIn',
+          from: new THREE.Vector3(D.x - 1.6, TEMPLE.daisHeight + 6.4, D.z + 4.6),
+          to: new THREE.Vector3(D.x - 0.3, TEMPLE.daisHeight + 6.0, D.z + 2.4),
+          look: idolAt(3.4),
+        },
+      ],
+      text: [
+        { at: 1.0, until: 5.4, text: 'THE IDOL OF CHRIS ILLICH' },
+        { at: 6.4, until: 10.4, text: 'Cast by people who loved him\nmore than was strictly advisable.' },
+      ],
+      events: [
+        { at: 0.2, fn: () => this.audio.sfx('idolRise') },
+        { at: 4.2, fn: () => this.audio.sfx('stinger') },
+        { at: 9.6, fn: () => this.audio.sfx('victory') },
+        {
+          at: 10.4, fn: () => {
+            this.pipeline.tint.setRGB(1, 0.92, 0.7);
+            this.pipeline.tintAmt = 0;
+            this._bloom = 0.001;
+          },
+        },
+      ],
+      onDone: () => {
+        this._idolRise = null;
+        this._bloom = null;
+        this.pipeline.tintAmt = 0;
+        setCinemaBars(false);
+        this.showEnding();
+      },
+    }, this.templeScene);
   }
 
   pause(on) {
-    if (this.state !== 'island' && this.state !== 'cave') return;
+    if (!this.playing) return;
     this.paused = on;
     document.getElementById('pause').classList.toggle('hidden', !on);
-    if (on) {
-      document.exitPointerLock?.();
-    } else {
-      this._requestLock();
-    }
+    if (on) document.exitPointerLock?.();
+    else this._requestLock();
   }
 
   toggleJournal() {
-    const entries = [
-      { found: true, title: JOURNAL_INTRO.title, text: JOURNAL_INTRO.text },
-      ...MARKS.map((m) => ({
-        found: this.marksFound.has(m.id),
-        title: m.title,
-        text: m.text,
-        hint: m.hint,
-      })),
-    ];
+    const entries = [{ found: true, title: JOURNAL_INTRO.title, text: JOURNAL_INTRO.text }];
+    if (this.hasChart) entries.push({ found: true, title: LETTER.title, text: LETTER.text });
+    for (const p of PENDULUMS) {
+      entries.push({
+        found: this.found.has(p.id), title: p.title, text: p.text,
+        hint: this.hasChart ? p.hint : 'You have nothing to go on yet.',
+      });
+    }
     const open = this.ui.toggleJournal(entries);
+    this.audio.sfx('page');
+    if (open) document.exitPointerLock?.();
+    else if (!this.paused) this._requestLock();
+  }
+
+  toggleMap() {
+    if (!this.hasChart) {
+      this.audio.sfx('deny');
+      this.ui.toast('You have no chart.', 'bad', 1500);
+      return;
+    }
+    const marks = PENDULUMS.map((p) => ({
+      x: p.world.x, z: p.world.z,
+      label: ['I', 'II', 'III', 'IV'][p.order - 1],
+      found: this.found.has(p.id),
+      glyph: this.found.has(p.id) ? p.glyph : null,
+    }));
+    const open = this.ui.toggleMap({
+      heightAt, radius: ISLAND.shore + 12,
+      marks,
+      temple: this.templeDoorPos,
+      player: this.player.pos,
+      wreck: this.wreckPos,
+      rogue: this.rogueSandPos,
+    });
     this.audio.sfx('page');
     if (open) document.exitPointerLock?.();
     else if (!this.paused) this._requestLock();
@@ -670,60 +994,45 @@ export class Game {
      INTERACTION
      =========================================================== */
   nearestInteractable() {
-    if (this.state === 'cave') return this.caveInteractable();
     const p = this.player.pos;
     let best = null, bestD = Infinity;
+
+    if (this.state === 'temple') {
+      const de = Math.hypot(p.x - TEMPLE.entrance.x, p.z - TEMPLE.entrance.z);
+      if (de < 5.5) { bestD = de; best = { kind: 'templeExit', prompt: 'Climb back to the jungle' }; }
+      for (const c of this.templeCaches) {
+        if (c.cooldown > 0) continue;
+        const d = Math.hypot(p.x - c.x, p.z - c.z);
+        if (d < 3.0 && d < bestD && this.coconutCount < 8) {
+          bestD = d; best = { kind: 'cache', cache: c, prompt: 'Gather coconuts' };
+        }
+      }
+      if (this.hectorDefeated && !this.idolTaken) {
+        const D = TEMPLE.daisCenter;
+        const d = Math.hypot(p.x - D.x, p.z - D.z);
+        // generous: the dais is wide and this is the last action in the game
+        if (d < 8.0 && d < bestD) { bestD = d; best = { kind: 'takeIdol', prompt: 'TAKE THE IDOL OF CHRIS ILLICH' }; }
+      }
+      return best;
+    }
+
     for (const it of this.interactables) {
       if (it.once && it.taken) continue;
       const d = Math.hypot(p.x - it.x, p.z - it.z);
       if (d < it.r && d < bestD) { bestD = d; best = it; }
     }
-    // coconut piles
     for (const pile of this.coconutPiles) {
       if (pile.cooldown > 0) continue;
       const d = Math.hypot(p.x - pile.x, p.z - pile.z);
-      if (d < 2.8 && d < bestD && this.coconutCount < 8) {
-        bestD = d;
-        best = { kind: 'coconutPile', pile, prompt: 'Gather coconuts' };
-      }
-    }
-    return best;
-  }
-
-  caveInteractable() {
-    const p = this.player.pos;
-    let best = null, bestD = Infinity;
-
-    // exit
-    const de = Math.hypot(p.x - CAVE.entrance.x, p.z - CAVE.entrance.z);
-    if (de < 4.5) { bestD = de; best = { kind: 'caveExit', prompt: 'Climb back to the surface' }; }
-
-    // coconut caches
-    for (const c of this.caveCaches) {
-      if (c.cooldown > 0) continue;
-      const d = Math.hypot(p.x - c.x, p.z - c.z);
-      if (d < 3.0 && d < bestD && this.coconutCount < 8) {
-        bestD = d;
-        best = { kind: 'caveCache', cache: c, prompt: 'Gather coconuts' };
-      }
-    }
-
-    // the idol
-    if (this.hectorDefeated && !this.idolTaken) {
-      const D = CAVE.daisCenter;
-      const d = Math.hypot(p.x - D.x, p.z - D.z);
-      if (d < 4.5 && d < bestD) {
-        bestD = d;
-        best = { kind: 'takeIdol', prompt: 'TAKE THE IDOL OF CHRIS ILLICH' };
+      if (d < 2.6 && d < bestD && this.coconutCount < 8) {
+        bestD = d; best = { kind: 'coconutPile', pile, prompt: 'Gather coconuts' };
       }
     }
     return best;
   }
 
   interact() {
-    if (this.paused || this.ui.journalOpen) return;
-    if (this.state !== 'island' && this.state !== 'cave') return;
-
+    if (this.paused || this.anyOverlayOpen() || !this.playing) return;
     const it = this.nearestInteractable();
     if (!it) return;
 
@@ -731,52 +1040,49 @@ export class Game {
       case 'journal':
         this.audio.sfx('page');
         this.showReader(JOURNAL_INTRO.title, JOURNAL_INTRO.text);
-        this.ui.setObjective('Find the four Marks scattered across the island.');
         break;
 
-      case 'mark': {
-        const m = MARKS[it.index];
-        if (this.marksFound.has(m.id)) return;
+      case 'letter': {
         it.taken = true;
-        this.marksFound.add(m.id);
+        this.hasChart = true;
+        if (it.mesh) it.mesh.visible = false;
         this.audio.sfx('pickup');
-        this.showReader(m.title, m.text);
-        this.ui.setMarks(this.marksFound.size, 4);
-        this.caveDoor.userData.setSockets(this.marksFound.size);
+        this.showReader(LETTER.title, LETTER.text);
+        this.ui.setObjective('Find all four Rogue Pendulums. Press M for the chart.');
+        this._refreshCompass();
+        setTimeout(() => this.ui.toast('CHART ACQUIRED — PRESS M', 'jade', 3600), 600);
+        break;
+      }
 
-        // fade the mark's compass pip
-        const poi = this.ui.compassPois.find((p) => p.markIndex === it.index);
-        if (poi) poi.hidden = true;
-
-        it.mesh.userData.taken = true;
-        const glyph = it.mesh.userData.glyph;
-        if (glyph) glyph.visible = false;
-
-        if (this.marksFound.size >= 4) {
-          this.caveOpen = true;
-          this.ui.setObjective('All four Marks found. The seal in the red cliff has opened.');
-          setTimeout(() => {
-            this.ui.toast('THE THROAT OF THE ISLE HAS OPENED', 'gold', 4500);
-            this.audio.sfx('door');
-          }, 900);
+      case 'pendulum': {
+        const p = PENDULUMS[it.index];
+        if (this.found.has(p.id)) return;
+        it.taken = true;
+        this.found.add(p.id);
+        this.audio.sfx('pickup');
+        this.showReader(p.title, p.text);
+        this.ui.setMarks(this.found.size, 4);
+        this._refreshCompass();
+        if (this.found.size >= 4) {
+          this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
+          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 700);
         } else {
-          this.ui.setObjective(`Marks found: ${this.marksFound.size}/4. Keep searching.`);
+          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
         }
         break;
       }
 
-      case 'caveDoor':
-        if (this.caveOpen && this.caveDoor.userData.openAmount > 0.85) {
-          this.enterCave();
-        } else {
+      case 'templeDoor':
+        if (this.doorSolved) { this.enterTemple(); return; }
+        if (this.found.size < 4) {
           this.audio.sfx('deny');
-          const n = this.marksFound.size;
-          this.showReader('THE SEAL',
-            `Four sockets. ${n} of them are lit.\n\n` +
-            (n === 0
-              ? 'Nothing here will move for you yet.'
-              : `Find ${4 - n} more Mark${4 - n === 1 ? '' : 's'} and come back.`));
+          this.showReader('THE SEALED DOOR',
+            `Four sockets in the lintel, each worn into a shallow ring.\n\n` +
+            `You have read ${this.found.size} of the four Pendulums. ` +
+            `Without all of them you have no idea what order these go in.`);
+          return;
         }
+        this.openDials();
         break;
 
       case 'coconutPile': {
@@ -785,11 +1091,10 @@ export class Game {
         it.pile.cooldown = 25;
         it.pile.mesh.visible = false;
         this.audio.sfx('coconut');
-        this.ui.toast(`+${got} COCONUTS`, 'gold', 1500);
+        this.ui.toast(`+${got} COCONUTS`, 'gold', 1400);
         break;
       }
-
-      case 'caveCache': {
+      case 'cache': {
         const got = Math.min(8 - this.coconutCount, 4);
         this.coconutCount += got;
         it.cache.cooldown = 14;
@@ -798,21 +1103,66 @@ export class Game {
         this.ui.toast(`+${got} COCONUTS`, 'gold', 1400);
         break;
       }
-
-      case 'caveExit':
-        this.exitCave();
-        break;
-
-      case 'takeIdol':
-        this.takeIdol();
-        break;
+      case 'templeExit': this.exitTemple(); break;
+      case 'takeIdol': this.takeIdol(); break;
     }
   }
 
   showReader(head, body) {
     document.exitPointerLock?.();
-    this.ui.showReader(head, body, () => {
-      if (!this.paused) this._requestLock();
+    this.ui.showReader(head, body, () => { if (!this.paused) this._requestLock(); });
+  }
+
+  /* ---------- dial puzzle ---------- */
+  openDials() {
+    document.exitPointerLock?.();
+    this.dialSel = 0;
+    this.ui._onDialClick = (i) => {
+      if (i === this.dialSel) this.cycleDial(1);
+      else { this.dialSel = i; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
+    };
+    this.ui.openDials(this.dialState, this.dialSel, this.knownGlyphHint());
+    this.audio.sfx('page');
+  }
+  knownGlyphHint() {
+    return PENDULUMS
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((p) => (this.found.has(p.id) ? `${['I', 'II', 'III', 'IV'][p.order - 1]}=${p.glyph}` : '?'))
+      .join('   ');
+  }
+  cycleDial(dir) {
+    this.dialState[this.dialSel] = (this.dialState[this.dialSel] + dir + GLYPHS.length) % GLYPHS.length;
+    this.ui.renderDials(this.dialState, this.dialSel);
+    this.audio.sfx('select');
+  }
+  submitDials() {
+    const ok = this.dialState.every((v, i) => GLYPHS[v] === DOOR_CODE[i]);
+    if (!ok) {
+      this.audio.sfx('deny');
+      this.ui.shakeDials();
+      this.ui.toast('The sockets grind, and settle back.', 'bad', 2000);
+      return;
+    }
+    this.doorSolved = true;
+    this.closeDials();
+    this.audio.sfx('door');
+    this.ui.toast('THE DOOR REMEMBERS THE ORDER', 'jade', 4000);
+    this.ui.setObjective('The temple is open. Go down.');
+    this.updateSockets();
+  }
+  closeDials() {
+    this.ui.closeDials();
+    if (!this.paused) this._requestLock();
+  }
+  updateSockets() {
+    const socks = this.templeDoor.userData.sockets;
+    socks.forEach((s, i) => {
+      const on = this.doorSolved;
+      const c = s.geometry.attributes.color;
+      const col = on ? [1.0, 0.84, 0.30] : [0.17, 0.19, 0.22];
+      for (let v = 0; v < c.count; v++) c.setXYZ(v, col[0], col[1], col[2]);
+      c.needsUpdate = true;
     });
   }
 
@@ -826,35 +1176,32 @@ export class Game {
       const tick = () => {
         const k = Math.min(1, (performance.now() - t0) / ms);
         this.pipeline.fade = from + (to - from) * k;
-        if (k < 1) requestAnimationFrame(tick);
-        else res();
+        if (k < 1) requestAnimationFrame(tick); else res();
       };
       tick();
     });
   }
 
-  async enterCave() {
+  async enterTemple() {
     if (this.transitioning) return;
     this.transitioning = true;
     this.player.frozen = true;
     await this.fade(0, 550);
 
-    this.state = 'cave';
-    this.scene = this.caveScene;
+    this.state = 'temple';
+    this.scene = this.templeScene;
     this.player.mesh.removeFromParent();
-    this.caveScene.add(this.player.mesh);
+    this.templeScene.add(this.player.mesh);
     this.player.setColliders([]);
-    this.player.teleport(CAVE.entrance.x, caveHeight(CAVE.entrance.x, CAVE.entrance.z) + 0.5, CAVE.entrance.z - 1, Math.PI);
-
-    // clear anything mid-air
+    this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z) + 0.5,
+      TEMPLE.entrance.z - 2, Math.PI);
     this.clearCoconuts();
 
     if (!this.hector) {
-      this.hector = new Hector(this.caveScene, this.propMats, {
-        center: CAVE.center,
-        radius: CAVE.radius,
-        floorY: caveHeight(0, 0),
-        groundAt: caveHeight,
+      this.hector = new Hector(this.templeScene, this.propMats, {
+        box: { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ },
+        floorY: templeHeight(0, 0),
+        groundAt: templeHeight,
       }, {
         onDamagePlayer: (n, src) => this.hurtPlayer(n, src),
         onSay: (t, ms) => this.ui.toast(t, 'bad', ms),
@@ -864,11 +1211,11 @@ export class Game {
       });
     }
 
-    this.audio.playMusic('cave');
-    this.ui.setObjective('Descend. Something down here has been eating for eleven years.');
+    this.audio.playMusic('temple');
+    this.ui.setObjective('Something has been living down here for eleven years.');
     this.ui.setCompassPois([
-      { label: '↑OUT', x: CAVE.entrance.x, z: CAVE.entrance.z, kind: 'poi' },
-      { label: '★IDOL', x: CAVE.daisCenter.x, z: CAVE.daisCenter.z, kind: 'goal' },
+      { label: 'OUT', x: TEMPLE.entrance.x, z: TEMPLE.entrance.z, kind: 'poi' },
+      { label: 'IDOL', x: TEMPLE.daisCenter.x, z: TEMPLE.daisCenter.z, kind: 'goal' },
     ]);
 
     this.player.frozen = false;
@@ -877,7 +1224,7 @@ export class Game {
     this._requestLock();
   }
 
-  async exitCave() {
+  async exitTemple() {
     if (this.transitioning) return;
     if (this.hector?.active && !this.hector.dead) {
       this.ui.toast('HE IS NOT DONE TALKING', 'bad', 1800);
@@ -893,30 +1240,18 @@ export class Game {
     this.player.mesh.removeFromParent();
     this.islandScene.add(this.player.mesh);
     this.player.setColliders(this.colliders);
-    const d = this.caveDoorPos;
-    const out = new THREE.Vector3(d.x, d.z).normalize();
-    this.player.teleport(d.x * 1.06, d.y + 2, d.z * 1.06, Math.atan2(d.x, d.z));
+    const d = this.templeDoorPos;
+    this.player.teleport(d.x * 1.03, d.y + 2, d.z * 1.03, Math.atan2(d.x, d.z));
     this.clearCoconuts();
 
     this.audio.playMusic('island');
     this.ui.showBoss(false);
-    this._restoreIslandCompass();
+    this._refreshCompass();
 
     this.player.frozen = false;
     await this.fade(1, 600);
     this.transitioning = false;
     this._requestLock();
-  }
-
-  _restoreIslandCompass() {
-    this.ui.setCompassPois([
-      { label: '⌂', x: this.spawn.x, z: this.spawn.z, kind: 'poi' },
-      ...MARKS.map((m, i) => ({
-        label: `✦${i + 1}`, x: m.world.x, z: m.world.z, kind: 'goal',
-        hidden: this.marksFound.has(m.id), markIndex: i,
-      })),
-      { label: '▼CAVE', x: this.caveDoorPos.x, z: this.caveDoorPos.z, kind: 'goal' },
-    ]);
   }
 
   /* ===========================================================
@@ -925,7 +1260,7 @@ export class Game {
   throwCoconut() {
     if (this.coconutCount <= 0) {
       this.audio.sfx('deny');
-      this.ui.toast('OUT OF COCONUTS', 'bad', 1200);
+      this.ui.toast('OUT OF COCONUTS', 'bad', 1100);
       return;
     }
     if (this.throwCooldown > 0) return;
@@ -940,12 +1275,8 @@ export class Game {
     const dir = this.player.throwDir();
     mesh.position.copy(pos);
     this.scene.add(mesh);
-
     this.coconuts.push({
-      mesh,
-      pos: pos.clone(),
-      vel: dir.multiplyScalar(30),
-      life: 5,
+      mesh, pos: pos.clone(), vel: dir.multiplyScalar(30), life: 5,
       spin: new THREE.Vector3(Math.random() * 10, Math.random() * 10, Math.random() * 10),
     });
   }
@@ -956,9 +1287,8 @@ export class Game {
   }
 
   updateCoconuts(dt) {
-    const inCave = this.state === 'cave';
-    const groundOf = inCave ? caveHeight : heightAt;
-
+    const inTemple = this.state === 'temple';
+    const groundOf = inTemple ? templeHeight : heightAt;
     for (let i = this.coconuts.length - 1; i >= 0; i--) {
       const c = this.coconuts[i];
       c.vel.y -= 24 * dt;
@@ -969,35 +1299,22 @@ export class Game {
       c.mesh.rotation.y += c.spin.y * dt;
 
       let done = false;
-
-      if (inCave && this.hector) {
+      if (inTemple && this.hector) {
         const hit = this.hector.testHit(c.pos, 0.45);
         if (hit) {
           done = true;
           this.stats.hits++;
-          if (hit.kind === 'gem') {
-            this.audio.sfx('gemHit');
-            this.ui.toast('THE ORB! CRITICAL!', 'gold', 1100);
-          } else if (hit.kind === 'nugget') {
-            this.ui.toast('NUGGET DOWN', 'gold', 800);
-          }
+          if (hit.kind === 'gem') { this.audio.sfx('gemHit'); this.ui.toast('THE ORB! CRITICAL!', 'gold', 1000); }
+          else if (hit.kind === 'nugget') this.ui.toast('NUGGET DOWN', 'gold', 700);
         }
       }
-
-      if (!done && c.pos.y < groundOf(c.pos.x, c.pos.z) - 0.1) {
-        done = true;
-        this.audio.sfx('splat');
-      }
+      if (!done && c.pos.y < groundOf(c.pos.x, c.pos.z) - 0.1) { done = true; this.audio.sfx('splat'); }
       if (!done && c.life <= 0) done = true;
-
-      if (done) {
-        c.mesh.removeFromParent();
-        this.coconuts.splice(i, 1);
-      }
+      if (done) { c.mesh.removeFromParent(); this.coconuts.splice(i, 1); }
     }
   }
 
-  hurtPlayer(n, source) {
+  hurtPlayer(n) {
     if (!this.player.damage(n)) return;
     this.audio.sfx('hurt');
     this.ui.flashDamage();
@@ -1008,53 +1325,29 @@ export class Game {
 
   onBossPhase(p) {
     if (p === 2) {
-      this.hector.say('YOU HAVEN\'T EVEN SEEN THE SIDES.', 3000);
+      this.hector.say("YOU HAVEN'T EVEN SEEN THE SIDES.", 3000);
       this.ui.setBoss(this.hector.hpFrac, 'TERM TWO');
     } else if (p === 3) {
-      this.hector.say('I HAVEN\'T BEEN HUNGRY IN ELEVEN YEARS!', 3400);
+      this.hector.say("I HAVEN'T BEEN HUNGRY IN ELEVEN YEARS!", 3400);
       this.ui.setBoss(this.hector.hpFrac, 'TERM THREE — NO LIMITS');
     }
     this.audio.sfx('bossIntro');
   }
 
-  async onBossDefeat() {
+  onBossDefeat() {
     this.hectorDefeated = true;
-    this.audio.sfx('bossDie');
     this.audio.stopMusic();
     this.ui.showBoss(false);
-    this.ui.setObjective('Take the Idol.');
-
-    setTimeout(() => this.ui.toast('the staff rolls away. the orb goes out.', 'gold', 4200), 1800);
-    setTimeout(() => {
-      this.showReader('HECTOR — EL BASS PRESIDENTE',
-`"...fine.
-
-Take it. Take the little gold man. He was never
-much company anyway — always smiling, never
-once said a word about the food.
-
-Eleven years I held every office on this island.
-Eleven years. Unopposed.
-
-Go on. I'll be fine.
-
-I have snacks."`);
-    }, 4200);
-
-    setTimeout(() => {
-      // drop the seal
-      const s = this.caveSeal;
-      s.seal.visible = false;
-      s.bars.forEach((b) => (b.visible = false));
-      this.audio.sfx('door');
-      this.audio.playMusic('cave');
-    }, 3000);
+    this.clearCoconuts();
+    // let his collapse animation get a beat in before the camera takes over
+    setTimeout(() => this.playDefeatCutscene(), 700);
   }
 
   onDeath() {
     this.audio.sfx('die');
     this.audio.stopMusic();
     this.stats.deaths++;
+    this.deathScene = this.scene;
     this.state = 'dead';
     document.exitPointerLock?.();
     const subs = [
@@ -1064,8 +1357,7 @@ I have snacks."`);
       'Democracy is a delicious idea.',
       'He did not even use the good staff.',
     ];
-    document.getElementById('death-sub').textContent =
-      subs[Math.floor(Math.random() * subs.length)];
+    document.getElementById('death-sub').textContent = subs[Math.floor(Math.random() * subs.length)];
     setTimeout(() => {
       document.getElementById('death').classList.remove('hidden');
       this.ui.hide();
@@ -1080,56 +1372,35 @@ I have snacks."`);
     this.player.stamina = 1;
 
     if (this.hector && this.hector.active && !this.hector.dead) {
-      // restart the fight, fully
       this.hector.hp = this.hector.maxHp;
       this.hector.phase = 1;
       this.hector.state = 'sleep';
       this.hector.active = false;
       this.hector.clearProjectiles();
-      this.hector.pos.set(CAVE.center.x, 0, CAVE.center.z - 9);
+      this.hector.pos.set(0, templeHeight(0, -6), -6);
       this.ui.showBoss(false);
       this.bossTriggered = false;
     }
 
-    if (this.state === 'dead') {
-      if (this.scene === this.caveScene) {
-        this.state = 'cave';
-        this.player.teleport(CAVE.entrance.x, caveHeight(CAVE.entrance.x, CAVE.entrance.z) + 0.5, CAVE.entrance.z - 1, Math.PI);
-        this.audio.playMusic('cave');
-      } else {
-        this.state = 'island';
-        this.player.teleport(this.spawn.x, this.spawn.y + 2, this.spawn.z, Math.PI * 0.85);
-        this.audio.playMusic('island');
-      }
+    if (this.deathScene === this.templeScene) {
+      this.state = 'temple';
+      this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z) + 0.5,
+        TEMPLE.entrance.z - 2, Math.PI);
+      this.audio.playMusic('temple');
+    } else {
+      this.state = 'island';
+      this.player.teleport(this.spawn.x, this.spawn.y + 1, this.spawn.z, Math.atan2(-this.spawn.x, -this.spawn.z));
+      this.audio.playMusic('island');
     }
     this.coconutCount = Math.max(this.coconutCount, 3);
     this._requestLock();
   }
 
-  async takeIdol() {
+  takeIdol() {
     if (this.idolTaken) return;
     this.idolTaken = true;
-    this.audio.sfx('victory');
     this.player.frozen = true;
-    document.exitPointerLock?.();
-
-    this.ui.toast('THE IDOL OF CHRIS ILLICH', 'gold', 4000);
-    // lift it off the pedestal
-    const idol = this.sanctumIdol;
-    const t0 = performance.now();
-    const startY = idol.position.y;
-    const lift = () => {
-      const k = Math.min(1, (performance.now() - t0) / 2600);
-      idol.position.y = startY + k * 2.6;
-      idol.rotation.y += 0.02;
-      idol.scale.setScalar(1.35 + k * 0.5);
-      if (k < 1) requestAnimationFrame(lift);
-    };
-    lift();
-
-    await new Promise((r) => setTimeout(r, 2800));
-    await this.fade(0, 1200);
-    this.showEnding();
+    this.playIdolCutscene();
   }
 
   showEnding() {
@@ -1141,7 +1412,7 @@ I have snacks."`);
     const ss = String(secs % 60).padStart(2, '0');
     const acc = this.stats.thrown ? Math.round((this.stats.hits / this.stats.thrown) * 100) : 0;
     this.endingSummary =
-      `IllicIsle — cleared in ${mm}:${ss}, ${this.stats.deaths} death${this.stats.deaths === 1 ? '' : 's'}, ${acc}% coconut accuracy. El Bass Presidente has been term-limited.`;
+      `Illic Isle — cleared in ${mm}:${ss}, ${this.stats.deaths} death${this.stats.deaths === 1 ? '' : 's'}, ${acc}% coconut accuracy. El Bass Presidente has been term-limited.`;
     document.getElementById('ending-stats').innerHTML =
       `TIME <b>${mm}:${ss}</b><br>DEATHS <b>${this.stats.deaths}</b><br>` +
       `COCONUTS THROWN <b>${this.stats.thrown}</b><br>ACCURACY <b>${acc}%</b>`;
@@ -1163,103 +1434,94 @@ I have snacks."`);
     this.time += dt;
     setTime(this.time);
 
-    // fade the damage tint out
-    if (this.pipeline.tintAmt > 0) {
-      this.pipeline.tintAmt = Math.max(0, this.pipeline.tintAmt - dt * 1.4);
-    }
+    if (this.pipeline.tintAmt > 0) this.pipeline.tintAmt = Math.max(0, this.pipeline.tintAmt - dt * 1.4);
     if (this.throwCooldown > 0) this.throwCooldown -= dt;
     if (this._boundsCd > 0) this._boundsCd -= dt;
 
-    if (this.state === 'title') { this.updateTitle(dt); return; }
-    if (this.state === 'ending') { this.updateTitle(dt); return; }
-    if (this.state !== 'island' && this.state !== 'cave') return;
+    if (this.state === 'title' || this.state === 'ending') { this.updateTitle(dt); return; }
+    if (this.state === 'cutscene') {
+      if (this._idolRise) this._idolRise(dt);
+      if (this._bloom != null) {
+        this._bloom = Math.min(1, this._bloom + dt * 1.6);
+        this.pipeline.tintAmt = this._bloom;
+      }
+      this.updateCutscene(dt);
+      return;
+    }
+    if (!this.playing) return;
 
-    const frozen = this.paused || this.ui.readerActive || this.ui.journalOpen;
+    const frozen = this.paused || this.anyOverlayOpen();
+    const inTemple = this.state === 'temple';
 
     if (!frozen) {
-      const inCave = this.state === 'cave';
       this.player.update(dt, this.input, {
-        groundOf: inCave ? caveHeight : heightAt,
-        water: !inCave,
-        bounds: !inCave,
-        insideRadius: inCave ? CAVE.radius - 1.5 : 0,
-        insideCenter: CAVE.center,
+        groundOf: inTemple ? templeHeight : heightAt,
+        water: !inTemple,
+        bounds: !inTemple,
+        insideBox: inTemple
+          ? { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ }
+          : null,
       });
       this.updateCoconuts(dt);
     } else {
-      // still keep the camera glued to the player
-      this.player.updateCamera(dt, this.state === 'cave' ? caveHeight : heightAt);
+      this.player.updateCamera(dt, inTemple ? templeHeight : heightAt);
     }
 
-    if (this.state === 'island') this.updateIsland(dt, frozen);
-    else this.updateCave(dt, frozen);
+    if (inTemple) this.updateTemple(dt, frozen);
+    else { this.tickIslandWorld(dt); this.updateIslandLogic(dt, frozen); }
 
-    /* ---------- HUD ---------- */
     this.ui.setHearts(this.player.hp, this.player.maxHp);
     this.ui.setStamina(this.player.stamina);
     this.ui.setAmmo(this.coconutCount);
-    this.ui.setMarks(this.marksFound.size, 4);
+    this.ui.setMarks(this.found.size, 4);
     this.ui.updateCompass(this.player.yaw, this.player.pos.x, this.player.pos.z);
 
     const it = frozen ? null : this.nearestInteractable();
     this.ui.setPrompt(it ? it.prompt : null);
   }
 
-  updateIsland(dt, frozen) {
+  /** Ambient island motion — also runs during the intro. */
+  tickIslandWorld(dt) {
     const t = this.time;
     this.ocean.userData.tick(t);
-    this.foam.userData.tick(t);
+    this.surf.userData.tick(t);
     this.clouds.userData.tick(t, dt);
+    this.birds.userData.tick(t, dt);
+    this.critters.userData.tick(t, dt, this.player?.pos);
     this.sky.position.copy(this.camera.position);
-
     for (const g of this.tickers) g.userData?.tick?.(t, dt);
-
-    // campfire flicker
     if (this.campfire) {
-      this.campfire.userData.light.intensity = 2.0 + Math.sin(t * 11) * 0.5 + Math.sin(t * 6.3) * 0.3;
-    }
-
-    // coconut pile respawns
-    for (const p of this.coconutPiles) {
-      if (p.cooldown > 0) {
-        p.cooldown -= dt;
-        if (p.cooldown <= 0) p.mesh.visible = true;
-      }
-    }
-
-    // the seal grinds open once all four Marks are in
-    const door = this.caveDoor.userData;
-    const want = this.caveOpen ? 1 : 0;
-    if (door.openAmount !== want) {
-      const next = THREE.MathUtils.clamp(door.openAmount + dt * 0.28 * (want ? 1 : -1), 0, 1);
-      door.setOpen(next);
-    }
-
-    // walking into an open cave mouth takes you in
-    if (this.caveOpen && door.openAmount > 0.85 && !this.transitioning && !frozen) {
-      const d = Math.hypot(this.player.pos.x - this.caveDoorPos.x, this.player.pos.z - this.caveDoorPos.z);
-      if (d < 3.0) this.enterCave();
+      this.campfire.userData.light.intensity = 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
     }
   }
 
-  updateCave(dt, frozen) {
+  updateIslandLogic(dt, frozen) {
+    for (const p of this.coconutPiles) {
+      if (p.cooldown > 0) { p.cooldown -= dt; if (p.cooldown <= 0) p.mesh.visible = true; }
+    }
+    const door = this.templeDoor.userData;
+    const want = this.doorSolved ? 1 : 0;
+    if (door.open !== want) door.setOpen(THREE.MathUtils.clamp(door.open + dt * 0.4 * (want ? 1 : -1), 0, 1));
+
+    if (this.doorSolved && door.open > 0.85 && !this.transitioning && !frozen) {
+      const d = Math.hypot(this.player.pos.x - this.templeDoorPos.x, this.player.pos.z - this.templeDoorPos.z);
+      if (d < 3.2) this.enterTemple();
+    }
+  }
+
+  updateTemple(dt, frozen) {
     const t = this.time;
-    this.caveScene.userData.tick?.(t, dt);
+    this.templeScene.userData.tick?.(t, dt);
     this.sanctumIdol.userData.tick?.(t);
 
-    for (const c of this.caveCaches) {
-      if (c.cooldown > 0) {
-        c.cooldown -= dt;
-        if (c.cooldown <= 0) c.mesh.visible = true;
-      }
+    for (const c of this.templeCaches) {
+      if (c.cooldown > 0) { c.cooldown -= dt; if (c.cooldown <= 0) c.mesh.visible = true; }
     }
-
     if (!this.hector) return;
 
-    // wake him when you commit to the arena
     if (!this.bossTriggered && !this.hectorDefeated) {
-      const d = Math.hypot(this.player.pos.x, this.player.pos.z - 6);
-      if (d < 17) {
+      const d = Math.hypot(this.player.pos.x, this.player.pos.z - 8);
+      if (d < 20) {
         this.bossTriggered = true;
         this.hector.wake();
         this.audio.sfx('bossIntro');
@@ -1276,9 +1538,8 @@ I have snacks."`);
     if (!frozen) this.hector.update(dt, t, this.player);
     if (this.hector.active && !this.hector.dead) {
       this.ui.setBoss(this.hector.hpFrac);
-      // standing on him hurts
       const d = Math.hypot(this.player.pos.x - this.hector.pos.x, this.player.pos.z - this.hector.pos.z);
-      if (d < 2.3 && this.hector.state !== 'defeat') this.hurtPlayer(1, 'touch');
+      if (d < 2.3 && this.hector.state !== 'defeat') this.hurtPlayer(1);
     }
   }
 
@@ -1286,8 +1547,6 @@ I have snacks."`);
     const t = this.time;
     this.titleIdol.rotation.y += dt * 0.28;
     this.titleIdol.userData.tick?.(t);
-    // Aim left of the bust so it composes into the right third of frame,
-    // leaving the left clear for the logo and menu.
     this.titleCam.position.set(
       -0.2 + Math.sin(t * 0.11) * 0.7,
       1.15 + Math.sin(t * 0.37) * 0.16,
@@ -1301,6 +1560,8 @@ I have snacks."`);
       this.titleCam.aspect = this.camera.aspect;
       this.titleCam.updateProjectionMatrix();
       this.pipeline.render(this.titleScene, this.titleCam, dt);
+    } else if (this.state === 'cutscene' && this.cutScene) {
+      this.pipeline.render(this.cutScene, this.camera, dt);
     } else if (this.scene) {
       this.pipeline.render(this.scene, this.camera, dt);
     }

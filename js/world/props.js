@@ -1,13 +1,23 @@
 /* ===========================================================
    props.js — everything you can bump into on Isla Dorada.
    Each prop type is merged into one geometry and drawn with an
-   InstancedMesh, so ~600 pieces of scenery cost ~12 draw calls.
+   InstancedMesh, so ~2000 pieces of scenery cost ~20 draw calls.
+
+   SCALE CONTRACT: the castaway is 1.75 units tall. Ground clutter
+   must stay under ~1.2 so it never eats the camera; anything the
+   player walks through should be shin-to-waist height.
    =========================================================== */
 
 import * as THREE from 'three';
 import { ps1ify } from '../lib/ps1.js';
-import { mergeGeos, box, cyl, cone, ico, plane, place, tint, jitterVerts, bendY, taper } from '../lib/geo.js';
+import {
+  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint,
+  limb, jitterVerts, lumpify, bendY, taper,
+} from '../lib/geo.js';
+import { buildSandWritingTexture, buildSignTexture } from '../lib/textures.js';
 import { heightAt, slopeAt, biomeAt, ISLAND } from './terrain.js';
+
+export const PLAYER_HEIGHT = 1.75;
 
 /* ---------- shared materials ---------- */
 export function buildPropMaterials(atlas) {
@@ -17,161 +27,211 @@ export function buildPropMaterials(atlas) {
 
   const cutout = ps1ify(new THREE.MeshLambertMaterial({
     map: atlas, vertexColors: true,
-    transparent: false, alphaTest: 0.5, side: THREE.DoubleSide,
-  }), { flat: true, wind: 0.09 });
+    alphaTest: 0.5, side: THREE.DoubleSide,
+  }), { flat: true, wind: 0.10 });
 
   const cutoutStill = ps1ify(new THREE.MeshLambertMaterial({
     map: atlas, vertexColors: true,
-    transparent: false, alphaTest: 0.5, side: THREE.DoubleSide,
+    alphaTest: 0.5, side: THREE.DoubleSide,
   }), { flat: true });
 
   const emissive = ps1ify(new THREE.MeshBasicMaterial({
     map: atlas, vertexColors: true,
-    transparent: false, alphaTest: 0.4, side: THREE.DoubleSide,
+    alphaTest: 0.4, side: THREE.DoubleSide,
   }), { flat: true });
 
-  return { opaque, cutout, cutoutStill, emissive };
-}
+  // flat-on-the-ground decals (sand writing, scorch marks)
+  const decal = new THREE.MeshLambertMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  });
 
-/* ===========================================================
-   PROP GEOMETRY BUILDERS
-   Each returns { opaque, cutout, r } where r is a collision radius
-   (0 = walk through it).
-   =========================================================== */
+  return { opaque, cutout, cutoutStill, emissive, decal };
+}
 
 const G = (n) => new THREE.Color(n);
 
-/* ---------- palm tree ---------- */
-function buildPalm(rng, variant) {
-  const H = 8.5 + rng() * 7 + variant * 0.8;
-  const lean = (rng() - 0.5) * 3.6;
-  const leanZ = (rng() - 0.5) * 3.0;
+/* ===========================================================
+   TREES — four distinct height tiers so the canopy has structure
+   ===========================================================
+   sapling   3.5 -  6    waist-to-two-storey scrub
+   sub       8   - 13    the bulk of the forest
+   canopy    16  - 22    what you walk under
+   emergent  26  - 34    rare giants that break the roof
+*/
+const TIERS = {
+  sapling:  { h: [3.5, 6],   r: 0.16, crown: 0.55, colR: 0.30 },
+  sub:      { h: [8, 13],    r: 0.30, crown: 0.85, colR: 0.55 },
+  canopy:   { h: [16, 22],   r: 0.46, crown: 1.25, colR: 0.80 },
+  emergent: { h: [26, 34],   r: 0.66, crown: 1.75, colR: 1.10 },
+};
 
-  const trunk = cyl(0.30, 0.62, H, 7, 'bark', { pos: [0, H / 2, 0] });
+/* ---------- palm ---------- */
+function buildPalm(rng, tierName) {
+  const T = TIERS[tierName];
+  const H = T.h[0] + rng() * (T.h[1] - T.h[0]);
+  const lean = (rng() - 0.5) * (H * 0.22);
+  const leanZ = (rng() - 0.5) * (H * 0.18);
+  const rBase = T.r * 1.9, rTop = T.r * 0.95;
+
+  const trunk = cyl(rTop, rBase, H, 7, 'bark', { pos: [0, H / 2, 0] });
   bendY(trunk, lean, 'x', 2.1);
   bendY(trunk, leanZ, 'z', 2.1);
-  tint(trunk, G(0xb59a72).multiplyScalar(0.86 + rng() * 0.28));
+  tint(trunk, G(0xb59a72).multiplyScalar(0.82 + rng() * 0.3));
 
-  // root flare
-  const root = cyl(0.62, 1.05, 1.1, 7, 'bark', { pos: [0, 0.45, 0] });
+  const root = cyl(rBase, rBase * 1.7, H * 0.09, 7, 'bark', { pos: [0, H * 0.04, 0] });
   tint(root, G(0x9c8360));
 
-  const crownX = lean, crownZ = leanZ;
+  const cx = lean, cz = leanZ;
   const opaqueParts = [trunk, root];
   const cutoutParts = [];
 
-  // fronds
-  const n = 7 + ((rng() * 3) | 0);
+  const n = 7 + ((rng() * 4) | 0);
+  const frondLen = T.crown * 4.4;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 + rng() * 0.4;
-    const len = 4.6 + rng() * 2.4;
-    const wid = 1.5 + rng() * 0.6;
-    const droop = 0.55 + rng() * 0.55;
+    const len = frondLen * (0.8 + rng() * 0.45);
+    const wid = T.crown * (1.0 + rng() * 0.4);
+    const droop = 0.5 + rng() * 0.6;
 
     const f = plane(wid, len, 'palmFrond');
-    // base at the origin, blade running up +Y
     f.translate(0, len / 2, 0);
-    // droop the far half downward
     const p = f.attributes.position;
     for (let v = 0; v < p.count; v++) {
       const t = p.getY(v) / len;
-      p.setY(v, p.getY(v) - Math.pow(t, 2) * len * droop * 0.75);
-      p.setZ(v, p.getZ(v) + Math.sin(t * Math.PI) * 0.25);
+      p.setY(v, p.getY(v) - Math.pow(t, 2) * len * droop * 0.8);
+      p.setZ(v, p.getZ(v) + Math.sin(t * Math.PI) * len * 0.06);
     }
     p.needsUpdate = true;
     f.computeVertexNormals();
 
-    place(f, { rot: [0.55 + rng() * 0.3, a, 0], pos: [crownX, H, crownZ] });
-    tint(f, G(0xffffff).multiplyScalar(0.72 + rng() * 0.5));
+    place(f, { rot: [0.5 + rng() * 0.35, a, 0], pos: [cx, H, cz] });
+    tint(f, G(0xffffff).multiplyScalar(0.66 + rng() * 0.55));
     cutoutParts.push(f);
   }
 
-  // crown knot
-  const knot = ico(0.7, 0, 'bark', { pos: [crownX, H - 0.15, crownZ] });
+  const knot = ico(T.crown * 0.55, 0, 'bark', { pos: [cx, H - T.crown * 0.12, cz] });
   tint(knot, G(0x8d7550));
   opaqueParts.push(knot);
 
-  // coconuts
-  const cn = (rng() * 4) | 0;
-  for (let i = 0; i < cn; i++) {
-    const a = rng() * Math.PI * 2;
-    const c = ico(0.36, 0, 'coconut', {
-      pos: [crownX + Math.cos(a) * 0.62, H - 0.5 - rng() * 0.5, crownZ + Math.sin(a) * 0.62],
-    });
-    tint(c, G(0x9c7c50));
-    opaqueParts.push(c);
+  // coconuts only on trees you could plausibly knock them out of
+  if (tierName === 'sub' || tierName === 'canopy') {
+    const cn = (rng() * 4) | 0;
+    for (let i = 0; i < cn; i++) {
+      const a = rng() * Math.PI * 2;
+      const c = ico(0.28, 0, 'coconut', {
+        pos: [cx + Math.cos(a) * T.crown * 0.5, H - T.crown * 0.4 - rng() * 0.4, cz + Math.sin(a) * T.crown * 0.5],
+      });
+      tint(c, G(0x9c7c50));
+      opaqueParts.push(c);
+    }
   }
 
-  return { opaque: mergeGeos(opaqueParts), cutout: mergeGeos(cutoutParts), r: 0.75 };
+  return { opaque: mergeGeos(opaqueParts), cutout: mergeGeos(cutoutParts), r: rBase * 0.85 };
 }
 
 /* ---------- broadleaf jungle tree ---------- */
-function buildJungleTree(rng) {
-  const H = 7 + rng() * 6;
-  const trunk = cyl(0.42, 0.85, H, 6, 'barkDark', { pos: [0, H / 2, 0] });
-  bendY(trunk, (rng() - 0.5) * 1.6, 'x', 2);
-  tint(trunk, G(0x7d6a4c).multiplyScalar(0.85 + rng() * 0.3));
+function buildJungleTree(rng, tierName) {
+  const T = TIERS[tierName];
+  const H = T.h[0] + rng() * (T.h[1] - T.h[0]);
+  const rBase = T.r * 2.4, rTop = T.r * 1.1;
+
+  const trunk = cyl(rTop, rBase, H, 7, 'barkDark', { pos: [0, H / 2, 0] });
+  bendY(trunk, (rng() - 0.5) * H * 0.10, 'x', 2);
+  tint(trunk, G(0x7d6a4c).multiplyScalar(0.8 + rng() * 0.35));
 
   const opaqueParts = [trunk];
-  // buttress roots
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + rng();
-    const r = box(0.34, 1.6, 1.0, 'barkDark', {
-      pos: [Math.cos(a) * 0.62, 0.7, Math.sin(a) * 0.62], rot: [0, -a, 0.24],
+
+  // buttress roots — the signature of a big rainforest tree
+  const buttresses = tierName === 'sapling' ? 0 : (tierName === 'sub' ? 3 : 5);
+  for (let i = 0; i < buttresses; i++) {
+    const a = (i / buttresses) * Math.PI * 2 + rng();
+    const bh = H * 0.16, bl = rBase * 2.2;
+    const r = box(rBase * 0.34, bh, bl, 'barkDark', {
+      pos: [Math.cos(a) * rBase * 0.9, bh * 0.45, Math.sin(a) * rBase * 0.9],
+      rot: [0, -a, 0.22],
     });
     tint(r, G(0x6f5c42));
     opaqueParts.push(r);
   }
 
+  // branches on the larger tiers
   const cutoutParts = [];
-  const canopy = 3 + ((rng() * 3) | 0);
-  for (let i = 0; i < canopy; i++) {
+  if (tierName === 'canopy' || tierName === 'emergent') {
+    const nb = 3 + ((rng() * 3) | 0);
+    for (let i = 0; i < nb; i++) {
+      const a = (i / nb) * Math.PI * 2 + rng() * 0.6;
+      const y0 = H * (0.55 + rng() * 0.3);
+      const reach = T.crown * (1.6 + rng() * 1.2);
+      const b = limb(
+        [0, y0, 0],
+        [Math.cos(a) * reach, y0 + reach * 0.42, Math.sin(a) * reach],
+        T.r * 0.42, T.r * 0.18, 'barkDark', 5
+      );
+      tint(b, G(0x6f5c42));
+      opaqueParts.push(b);
+    }
+  }
+
+  const canopyBlobs = tierName === 'sapling' ? 2 : (tierName === 'sub' ? 3 : 5);
+  for (let i = 0; i < canopyBlobs; i++) {
     const a = rng() * Math.PI * 2;
-    const rad = rng() * 1.9;
-    const blob = ico(1.9 + rng() * 1.5, 0, 'leafBush', {
-      pos: [Math.cos(a) * rad, H - 0.4 + rng() * 1.7, Math.sin(a) * rad],
-      scale: [1.35, 0.78, 1.35],
+    const rad = rng() * T.crown * 1.5;
+    const size = T.crown * (1.5 + rng() * 1.1);
+    const blob = ico(size, 0, 'leafBush', {
+      pos: [Math.cos(a) * rad, H - T.crown * 0.3 + rng() * T.crown * 1.3, Math.sin(a) * rad],
+      scale: [1.35, 0.7, 1.35],
     });
-    tint(blob, G(0xffffff).multiplyScalar(0.62 + rng() * 0.5));
+    tint(blob, G(0xffffff).multiplyScalar(0.55 + rng() * 0.5));
     cutoutParts.push(blob);
   }
-  // a few big hanging leaves
-  for (let i = 0; i < 5; i++) {
-    const a = rng() * Math.PI * 2;
-    const l = plane(1.7, 2.8, 'jungleLeaf');
-    l.translate(0, 1.4, 0);
-    place(l, { rot: [1.0 + rng() * 0.5, a, 0], pos: [Math.cos(a) * 1.5, H - 0.9, Math.sin(a) * 1.5] });
-    tint(l, G(0xffffff).multiplyScalar(0.7 + rng() * 0.4));
-    cutoutParts.push(l);
+
+  // hanging vines off the canopy — the thing that makes jungle read as jungle
+  if (tierName !== 'sapling') {
+    const nv = 2 + ((rng() * 4) | 0);
+    for (let i = 0; i < nv; i++) {
+      const a = rng() * Math.PI * 2;
+      const rad = T.crown * (0.8 + rng() * 1.3);
+      const vlen = H * (0.22 + rng() * 0.34);
+      const v = plane(0.7, vlen, 'hangVine');
+      v.translate(0, -vlen / 2, 0);
+      place(v, {
+        rot: [0, a + rng(), 0],
+        pos: [Math.cos(a) * rad, H - T.crown * 0.4, Math.sin(a) * rad],
+      });
+      tint(v, G(0xffffff).multiplyScalar(0.65 + rng() * 0.4));
+      cutoutParts.push(v);
+    }
   }
 
-  return { opaque: mergeGeos(opaqueParts), cutout: mergeGeos(cutoutParts), r: 0.95 };
+  return { opaque: mergeGeos(opaqueParts), cutout: mergeGeos(cutoutParts), r: rBase * 0.9 };
 }
 
-/* ---------- bush ---------- */
+/* ===========================================================
+   GROUND COVER — deliberately small
+   =========================================================== */
 function buildBush(rng) {
   const parts = [];
-  const n = 3 + ((rng() * 3) | 0);
-  const s = 0.85 + rng() * 0.9;
+  const n = 3;
+  const s = 0.40 + rng() * 0.30;          // ~0.75-1.15 tall
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI + rng() * 0.5;
-    const q = plane(2.2 * s, 1.9 * s, 'leafBush');
-    q.translate(0, 0.95 * s, 0);
-    place(q, { rot: [0, a, 0], pos: [(rng() - .5) * 0.5, 0, (rng() - .5) * 0.5] });
-    tint(q, G(0xffffff).multiplyScalar(0.62 + rng() * 0.55));
+    const q = plane(2.0 * s, 1.7 * s, 'leafBush');
+    q.translate(0, 0.85 * s, 0);
+    place(q, { rot: [0, a, 0], pos: [(rng() - .5) * 0.3, 0, (rng() - .5) * 0.3] });
+    tint(q, G(0xffffff).multiplyScalar(0.55 + rng() * 0.5));
     parts.push(q);
   }
   return { opaque: null, cutout: mergeGeos(parts), r: 0 };
 }
 
-/* ---------- fern ---------- */
 function buildFern(rng) {
   const parts = [];
-  const n = 5 + ((rng() * 4) | 0);
+  const n = 5 + ((rng() * 3) | 0);
+  const s = 0.50 + rng() * 0.28;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 + rng() * 0.5;
-    const len = 1.5 + rng() * 1.1;
-    const f = plane(0.95, len, 'fernLeaf');
+    const len = (1.3 + rng() * 0.8) * s;
+    const f = plane(0.8 * s, len, 'fernLeaf');
     f.translate(0, len / 2, 0);
     const p = f.attributes.position;
     for (let v = 0; v < p.count; v++) {
@@ -179,61 +239,71 @@ function buildFern(rng) {
       p.setY(v, p.getY(v) - Math.pow(t, 2) * len * 0.55);
     }
     p.needsUpdate = true;
-    place(f, { rot: [0.75 + rng() * 0.35, a, 0] });
-    tint(f, G(0xffffff).multiplyScalar(0.66 + rng() * 0.5));
+    place(f, { rot: [0.8 + rng() * 0.3, a, 0] });
+    tint(f, G(0xffffff).multiplyScalar(0.6 + rng() * 0.5));
     parts.push(f);
   }
   return { opaque: null, cutout: mergeGeos(parts), r: 0 };
 }
 
-/* ---------- grass tuft ---------- */
 function buildTuft(rng) {
   const parts = [];
-  const s = 0.8 + rng() * 0.7;
+  const s = 0.34 + rng() * 0.26;          // ankle height
   for (let i = 0; i < 2; i++) {
-    const q = plane(1.5 * s, 1.0 * s, 'tuft');
-    q.translate(0, 0.5 * s, 0);
+    const q = plane(1.2 * s, 0.9 * s, 'tuft');
+    q.translate(0, 0.45 * s, 0);
     place(q, { rot: [0, (i / 2) * Math.PI + rng(), 0] });
-    tint(q, G(0xffffff).multiplyScalar(0.7 + rng() * 0.45));
+    tint(q, G(0xffffff).multiplyScalar(0.62 + rng() * 0.45));
     parts.push(q);
   }
   return { opaque: null, cutout: mergeGeos(parts), r: 0 };
 }
 
-/* ---------- flower patch ---------- */
 function buildFlowers(rng) {
   const parts = [];
   for (let i = 0; i < 3; i++) {
-    const q = plane(0.85, 0.85, 'flower');
-    place(q, { rot: [0, rng() * Math.PI, 0], pos: [(rng() - .5) * 1.2, 0.42 + rng() * 0.3, (rng() - .5) * 1.2] });
+    const q = plane(0.42, 0.42, 'flower');
+    place(q, { rot: [0, rng() * Math.PI, 0], pos: [(rng() - .5) * 0.7, 0.26 + rng() * 0.14, (rng() - .5) * 0.7] });
     parts.push(q);
-    const stem = plane(0.1, 0.5, 'vine');
-    place(stem, { rot: [0, rng() * Math.PI, 0], pos: [0, 0.2, 0] });
-    parts.push(stem);
+  }
+  return { opaque: null, cutout: mergeGeos(parts), r: 0 };
+}
+
+/** A big monstera-style leaf sitting low — used sparingly for silhouette. */
+function buildBigLeaf(rng) {
+  const parts = [];
+  const n = 3 + ((rng() * 2) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + rng();
+    const len = 0.9 + rng() * 0.5;
+    const l = plane(0.75, len, 'jungleLeaf');
+    l.translate(0, len / 2, 0);
+    place(l, { rot: [0.95 + rng() * 0.3, a, 0], pos: [0, 0.18, 0] });
+    tint(l, G(0xffffff).multiplyScalar(0.6 + rng() * 0.45));
+    parts.push(l);
   }
   return { opaque: null, cutout: mergeGeos(parts), r: 0 };
 }
 
 /* ---------- rock ---------- */
 function buildRock(rng, big) {
-  const s = big ? 1.8 + rng() * 2.6 : 0.5 + rng() * 1.1;
+  const s = big ? 1.4 + rng() * 2.0 : 0.32 + rng() * 0.6;
   const g = ico(s, 0, 'rock');
-  jitterVerts(g, s * 0.42, rng);
-  g.scale(1, 0.72 + rng() * 0.5, 1);
-  g.translate(0, s * 0.34, 0);
-  tint(g, G(0xffffff).multiplyScalar(0.72 + rng() * 0.45));
+  lumpify(g, 0.30, rng);
+  g.scale(1, 0.7 + rng() * 0.5, 1);
+  g.translate(0, s * 0.3, 0);
+  tint(g, G(0xffffff).multiplyScalar(0.68 + rng() * 0.45));
   return { opaque: mergeGeos([g]), cutout: null, r: big ? s * 0.8 : 0 };
 }
 
-/* ---------- driftwood ---------- */
 function buildDriftwood(rng) {
   const parts = [];
   const n = 1 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
-    const len = 1.6 + rng() * 3;
-    const g = cyl(0.16 + rng() * 0.1, 0.2 + rng() * 0.12, len, 5, 'driftwood', {
+    const len = 1.2 + rng() * 2.2;
+    const g = cyl(0.12 + rng() * 0.08, 0.15 + rng() * 0.1, len, 5, 'driftwood', {
       rot: [Math.PI / 2 + (rng() - .5) * 0.5, rng() * 3, (rng() - .5) * 0.4],
-      pos: [(rng() - .5) * 1.4, 0.2, (rng() - .5) * 1.4],
+      pos: [(rng() - .5) * 1.1, 0.14, (rng() - .5) * 1.1],
     });
     tint(g, G(0xd8cbb0).multiplyScalar(0.8 + rng() * 0.3));
     parts.push(g);
@@ -241,13 +311,30 @@ function buildDriftwood(rng) {
   return { opaque: mergeGeos(parts), cutout: null, r: 0 };
 }
 
-/* ---------- shell / small beach dressing ---------- */
 function buildShell(rng) {
-  const g = ico(0.24 + rng() * 0.14, 0, 'shell');
+  const g = ico(0.16 + rng() * 0.1, 0, 'shell');
   g.scale(1.4, 0.5, 1);
-  g.translate(0, 0.1, 0);
+  g.translate(0, 0.07, 0);
   tint(g, G(0xffffff).multiplyScalar(0.85 + rng() * 0.3));
   return { opaque: mergeGeos([g]), cutout: null, r: 0 };
+}
+
+/** Ground vine strands snaking over the jungle floor. */
+function buildGroundVine(rng) {
+  const parts = [];
+  let x = 0, z = 0, dir = rng() * Math.PI * 2;
+  for (let i = 0; i < 5; i++) {
+    const len = 0.9 + rng() * 1.1;
+    const g = cyl(0.045, 0.055, len, 4, 'vine', {
+      pos: [x + Math.sin(dir) * len / 2, 0.06, z + Math.cos(dir) * len / 2],
+      rot: [Math.PI / 2, dir, 0],
+    });
+    tint(g, G(0x8fbf6a).multiplyScalar(0.55 + rng() * 0.4));
+    parts.push(g);
+    x += Math.sin(dir) * len; z += Math.cos(dir) * len;
+    dir += (rng() - 0.5) * 1.3;
+  }
+  return { opaque: mergeGeos(parts), cutout: null, r: 0 };
 }
 
 /* ===========================================================
@@ -282,23 +369,23 @@ class Batcher {
   }
 }
 
-/* Named landmarks, all verified against the height function: the wreck
-   sits on real sand, the overlook on the mount's shoulder, the shrine on
-   the lip of the lagoon. */
+/* Named landmarks — all verified against the height function. */
 export const LANDMARKS = {
-  wreck: { x: -27, z: 100, minH: 0.8, maxH: 2.6, maxSlope: 0.16, radius: 9 },
-  grove: { x: -70, z: 19, minH: 6, maxH: 20, maxSlope: 0.18, radius: 8 },
-  overlook: { x: -22, z: -44, minH: 24, maxH: 46, maxSlope: 0.28, radius: 9 },
-  lagoon: { x: 58, z: 30, minH: 2.6, maxH: 12, maxSlope: 0.18, radius: 9 },
-  hollow: { x: 70, z: -34, minH: 10, maxH: 28, maxSlope: 0.30, radius: 9 },
-  caveDoor: { x: 8, z: -32, minH: 24, maxH: 42, maxSlope: 0.34, radius: 6 },
+  wreck:    { x: -46, z: 154, minH: 0.7, maxH: 2.6, maxSlope: 0.14, radius: 14 },
+  pend1:    { x: -108, z: 46,  minH: 10, maxH: 24, maxSlope: 0.26, radius: 14 },
+  pend2:    { x: 36,  z: -116, minH: 30, maxH: 48, maxSlope: 0.28, radius: 14 },
+  pend3:    { x: 128, z: -30,  minH: 8,  maxH: 22, maxSlope: 0.26, radius: 14 },
+  pend4:    { x: -70, z: -122, minH: 12, maxH: 28, maxSlope: 0.26, radius: 14 },
+  lagoon:   { x: 86,  z: 58,   minH: 6,  maxH: 18, maxSlope: 0.2,  radius: 14 },
+  rogueSand:{ x: 128, z: -96,  minH: 0.8, maxH: 3.2, maxSlope: 0.12, radius: 16 },
+  temple:   { x: 6,   z: -46,  minH: 34, maxH: 50, maxSlope: 0.30, radius: 10 },
 };
 
 /** Find a sane spot near a target: on land, gentle slope, above water. */
 export function findGround(x, z, opts = {}) {
-  const { minH = 1.2, maxH = 30, maxSlope = 0.3, radius = 26, rng = Math.random } = opts;
+  const { minH = 1.2, maxH = 40, maxSlope = 0.3, radius = 26, rng = Math.random } = opts;
   let best = null, bestScore = -Infinity;
-  for (let i = 0; i < 220; i++) {
+  for (let i = 0; i < 300; i++) {
     const a = rng() * Math.PI * 2;
     const r = Math.sqrt(rng()) * radius;
     const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
@@ -314,23 +401,33 @@ export function findGround(x, z, opts = {}) {
 /* ===========================================================
    SCATTER THE ISLAND
    =========================================================== */
-/**
- * @param {Array<{x,z,r}>} clearZones keep-out circles (landmarks, the cave
- *        mouth) so set pieces never end up buried in palm trunks.
- */
 export function scatterIsland(scene, mats, rng, density, colliders, clearZones = []) {
   const B = new Batcher(mats);
 
-  const PALMS = 5, JTREES = 4, BUSHES = 3, FERNS = 3, TUFTS = 2, ROCKS = 4;
-  for (let i = 0; i < PALMS; i++) B.addVariant('palm' + i, buildPalm(rng, i));
-  for (let i = 0; i < JTREES; i++) B.addVariant('jtree' + i, buildJungleTree(rng));
-  for (let i = 0; i < BUSHES; i++) B.addVariant('bush' + i, buildBush(rng));
-  for (let i = 0; i < FERNS; i++) B.addVariant('fern' + i, buildFern(rng));
-  for (let i = 0; i < TUFTS; i++) B.addVariant('tuft' + i, buildTuft(rng));
-  for (let i = 0; i < 2; i++) B.addVariant('flowers' + i, buildFlowers(rng));
-  for (let i = 0; i < ROCKS; i++) B.addVariant('rock' + i, buildRock(rng, false));
-  for (let i = 0; i < 3; i++) B.addVariant('bigrock' + i, buildRock(rng, true));
-  for (let i = 0; i < 2; i++) B.addVariant('drift' + i, buildDriftwood(rng));
+  /* variant pools */
+  const POOL = {
+    palmSap: 2, palmSub: 4, palmCan: 3, palmEmg: 2,
+    treeSap: 2, treeSub: 4, treeCan: 3, treeEmg: 2,
+    bush: 3, fern: 3, tuft: 2, flowers: 2, bigleaf: 2,
+    rock: 3, bigrock: 3, drift: 2, gvine: 2,
+  };
+  for (let i = 0; i < POOL.palmSap; i++) B.addVariant('palmSap' + i, buildPalm(rng, 'sapling'));
+  for (let i = 0; i < POOL.palmSub; i++) B.addVariant('palmSub' + i, buildPalm(rng, 'sub'));
+  for (let i = 0; i < POOL.palmCan; i++) B.addVariant('palmCan' + i, buildPalm(rng, 'canopy'));
+  for (let i = 0; i < POOL.palmEmg; i++) B.addVariant('palmEmg' + i, buildPalm(rng, 'emergent'));
+  for (let i = 0; i < POOL.treeSap; i++) B.addVariant('treeSap' + i, buildJungleTree(rng, 'sapling'));
+  for (let i = 0; i < POOL.treeSub; i++) B.addVariant('treeSub' + i, buildJungleTree(rng, 'sub'));
+  for (let i = 0; i < POOL.treeCan; i++) B.addVariant('treeCan' + i, buildJungleTree(rng, 'canopy'));
+  for (let i = 0; i < POOL.treeEmg; i++) B.addVariant('treeEmg' + i, buildJungleTree(rng, 'emergent'));
+  for (let i = 0; i < POOL.bush; i++) B.addVariant('bush' + i, buildBush(rng));
+  for (let i = 0; i < POOL.fern; i++) B.addVariant('fern' + i, buildFern(rng));
+  for (let i = 0; i < POOL.tuft; i++) B.addVariant('tuft' + i, buildTuft(rng));
+  for (let i = 0; i < POOL.flowers; i++) B.addVariant('flowers' + i, buildFlowers(rng));
+  for (let i = 0; i < POOL.bigleaf; i++) B.addVariant('bigleaf' + i, buildBigLeaf(rng));
+  for (let i = 0; i < POOL.rock; i++) B.addVariant('rock' + i, buildRock(rng, false));
+  for (let i = 0; i < POOL.bigrock; i++) B.addVariant('bigrock' + i, buildRock(rng, true));
+  for (let i = 0; i < POOL.drift; i++) B.addVariant('drift' + i, buildDriftwood(rng));
+  for (let i = 0; i < POOL.gvine; i++) B.addVariant('gvine' + i, buildGroundVine(rng));
   B.addVariant('shell0', buildShell(rng));
 
   const m = new THREE.Matrix4();
@@ -339,29 +436,27 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
   const v = new THREE.Vector3();
   const one = new THREE.Vector3(1, 1, 1);
 
-  const put = (key, x, y, z, yaw, s, tiltNormal = false) => {
+  const put = (key, x, y, z, yaw, s, tilt = false) => {
     v.set(x, y, z);
-    e.set(0, yaw, 0);
-    if (tiltNormal) e.set((rng() - .5) * 0.16, yaw, (rng() - .5) * 0.16);
+    e.set(tilt ? (rng() - .5) * 0.12 : 0, yaw, tilt ? (rng() - .5) * 0.12 : 0);
     q.setFromEuler(e);
     m.compose(v, q, one.clone().multiplyScalar(s));
     B.add(key, m);
   };
-
+  const pick = (base, n) => base + ((rng() * n) | 0);
   const addCollider = (x, z, r) => { if (r > 0) colliders.push({ x, z, r }); };
 
-  const tries = Math.round(5200 * density);
+  const tries = Math.round(26000 * density);
 
   for (let i = 0; i < tries; i++) {
     const a = rng() * Math.PI * 2;
-    const rad = Math.sqrt(rng()) * (ISLAND.shore + 6);
+    const rad = Math.sqrt(rng()) * (ISLAND.shore + 4);
     const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
     const h = heightAt(x, z);
-    if (h < 0.25 || h > 34) continue;
+    if (h < 0.25 || h > 44) continue;
     const slope = slopeAt(x, z);
     const biome = biomeAt(x, z);
 
-    // keep the landmarks and the cave approach clear
     let blocked = false;
     for (const c of clearZones) {
       if ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r * c.r) { blocked = true; break; }
@@ -373,49 +468,59 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
 
     if (biome === 'sand') {
       if (slope > 0.3) continue;
-      if (roll < 0.13) {
-        const k = 'palm' + ((rng() * PALMS) | 0);
-        const s = 0.85 + rng() * 0.4;
-        put(k, x, h - 0.3, z, yaw, s, true);
-        addCollider(x, z, 0.7 * s);
-      } else if (roll < 0.28) put('tuft' + ((rng() * TUFTS) | 0), x, h - 0.1, z, yaw, 0.7 + rng() * 0.5);
-      else if (roll < 0.34) put('drift' + ((rng() * 2) | 0), x, h, z, yaw, 0.9 + rng() * 0.6);
-      else if (roll < 0.40) put('shell0', x, h, z, yaw, 1);
-      else if (roll < 0.46) put('rock' + ((rng() * ROCKS) | 0), x, h - 0.15, z, yaw, 0.7 + rng() * 0.7);
-    } else if (biome === 'jungle') {
-      if (roll < 0.20) {
-        const k = 'jtree' + ((rng() * JTREES) | 0);
-        const s = 0.85 + rng() * 0.45;
-        put(k, x, h - 0.3, z, yaw, s, true);
-        addCollider(x, z, 0.95 * s);
-      } else if (roll < 0.31) {
-        const k = 'palm' + ((rng() * PALMS) | 0);
-        const s = 0.8 + rng() * 0.45;
-        put(k, x, h - 0.3, z, yaw, s, true);
-        addCollider(x, z, 0.7 * s);
-      } else if (roll < 0.58) put('bush' + ((rng() * BUSHES) | 0), x, h - 0.15, z, yaw, 0.8 + rng() * 0.7);
-      else if (roll < 0.78) put('fern' + ((rng() * FERNS) | 0), x, h - 0.1, z, yaw, 0.8 + rng() * 0.6);
-      else if (roll < 0.90) put('tuft' + ((rng() * TUFTS) | 0), x, h - 0.1, z, yaw, 0.8 + rng() * 0.6);
-      else if (roll < 0.95) put('flowers' + ((rng() * 2) | 0), x, h, z, yaw, 0.9 + rng() * 0.5);
-      else put('rock' + ((rng() * ROCKS) | 0), x, h - 0.15, z, yaw, 0.7 + rng() * 0.8);
-    } else if (biome === 'rock') {
-      if (roll < 0.16) {
-        const s = 0.7 + rng() * 0.8;
-        put('bigrock' + ((rng() * 3) | 0), x, h - 0.4, z, yaw, s, true);
-        addCollider(x, z, 2.0 * s);
-      } else if (roll < 0.42) put('rock' + ((rng() * ROCKS) | 0), x, h - 0.2, z, yaw, 0.8 + rng() * 1.1, true);
-      else if (roll < 0.55) put('tuft' + ((rng() * TUFTS) | 0), x, h - 0.1, z, yaw, 0.6 + rng() * 0.4);
-    }
-  }
+      // Beaches stay open — a thin fringe of palms and not much else.
+      if (roll < 0.055) {
+        const k = pick('palmSub', POOL.palmSub);
+        const s = 0.9 + rng() * 0.3;
+        put(k, x, h - 0.25, z, yaw, s, true);
+        addCollider(x, z, 0.6 * s);
+      } else if (roll < 0.075) {
+        const k = pick('palmCan', POOL.palmCan);
+        put(k, x, h - 0.25, z, yaw, 0.9 + rng() * 0.25, true);
+        addCollider(x, z, 0.9);
+      } else if (roll < 0.12) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
+      else if (roll < 0.145) put(pick('drift', POOL.drift), x, h, z, yaw, 0.9 + rng() * 0.5);
+      else if (roll < 0.175) put('shell0', x, h, z, yaw, 1);
+      else if (roll < 0.20) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.6);
 
-  /* A deliberate ring of palms marks the grove — Mark I lives here. */
-  const gv = LANDMARKS.grove;
-  for (let i = 0; i < 9; i++) {
-    const a = (i / 9) * Math.PI * 2;
-    const x = gv.x + Math.cos(a) * 9.5, z = gv.z + Math.sin(a) * 9.5;
-    const h = heightAt(x, z);
-    put('palm' + (i % PALMS), x, h - 0.3, z, a + Math.PI, 1.15, false);
-    addCollider(x, z, 0.85);
+    } else if (biome === 'jungle') {
+      /* Dense, layered forest. Trees dominate; ground clutter is kept
+         sparse and short so it never fills the camera. */
+      if (roll < 0.020) {                                   // emergent giants
+        const k = rng() < 0.5 ? pick('treeEmg', POOL.treeEmg) : pick('palmEmg', POOL.palmEmg);
+        put(k, x, h - 0.4, z, yaw, 0.9 + rng() * 0.25, true);
+        addCollider(x, z, 1.7);
+      } else if (roll < 0.115) {                            // canopy layer
+        const k = rng() < 0.55 ? pick('treeCan', POOL.treeCan) : pick('palmCan', POOL.palmCan);
+        put(k, x, h - 0.35, z, yaw, 0.85 + rng() * 0.35, true);
+        addCollider(x, z, 1.15);
+      } else if (roll < 0.300) {                            // sub-canopy bulk
+        const k = rng() < 0.6 ? pick('treeSub', POOL.treeSub) : pick('palmSub', POOL.palmSub);
+        put(k, x, h - 0.3, z, yaw, 0.85 + rng() * 0.4, true);
+        addCollider(x, z, 0.8);
+      } else if (roll < 0.375) {                            // saplings
+        const k = rng() < 0.5 ? pick('treeSap', POOL.treeSap) : pick('palmSap', POOL.palmSap);
+        put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true);
+      } else if (roll < 0.415) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
+      else if (roll < 0.445) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
+      else if (roll < 0.468) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
+      else if (roll < 0.482) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
+      else if (roll < 0.492) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.500) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.512) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.7);
+
+    } else if (biome === 'rock') {
+      if (roll < 0.045) {
+        const s = 0.7 + rng() * 0.7;
+        put(pick('bigrock', POOL.bigrock), x, h - 0.3, z, yaw, s, true);
+        addCollider(x, z, 1.6 * s);
+      } else if (roll < 0.115) put(pick('rock', POOL.rock), x, h - 0.15, z, yaw, 0.8 + rng() * 1.0, true);
+      else if (roll < 0.165) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.6 + rng() * 0.4);
+      else if (roll < 0.205) {
+        const k = pick('treeSap', POOL.treeSap);
+        put(k, x, h - 0.2, z, yaw, 0.8 + rng() * 0.3, true);
+      }
+    }
   }
 
   return B.build(scene);
@@ -429,71 +534,58 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
 export function buildShipwreck(rng, mats) {
   const group = new THREE.Group();
   const opaque = [], cutout = [];
-
-  // hull ribs
   const HULL_LEN = 15;
+
   for (let i = 0; i < 9; i++) {
     const t = i / 8;
-    const w = 3.6 * Math.sin(Math.PI * (0.18 + t * 0.72));
-    const rib = box(0.34, 3.2, 0.5, 'planks', {
-      pos: [0, 1.1, (t - 0.5) * HULL_LEN], rot: [0, 0, 0],
-    });
+    const w = 3.4 * Math.sin(Math.PI * (0.18 + t * 0.72));
+    const rib = box(0.32, 3.0, 0.46, 'planks', { pos: [0, 1.0, (t - 0.5) * HULL_LEN] });
     tint(rib, G(0x8b7048));
     opaque.push(rib);
     for (const side of [-1, 1]) {
-      const p = box(0.3, 2.6, 0.42, 'planks', {
-        pos: [side * w, 1.0 + rng() * 0.3, (t - 0.5) * HULL_LEN],
+      const p = box(0.28, 2.4, 0.4, 'planks', {
+        pos: [side * w, 0.95 + rng() * 0.3, (t - 0.5) * HULL_LEN],
         rot: [0, 0, side * (0.35 + rng() * 0.2)],
       });
       tint(p, G(0x7d6440).multiplyScalar(0.85 + rng() * 0.35));
       opaque.push(p);
     }
   }
-  // planking
   for (let i = 0; i < 16; i++) {
     const side = i % 2 ? 1 : -1;
-    const y = 0.5 + ((i / 2) | 0) * 0.55;
-    const p = box(0.22, 0.5, HULL_LEN * (0.9 - i * 0.02), 'planks', {
-      pos: [side * (3.0 - (i / 2) * 0.28), y, (rng() - .5) * 1.4],
+    const y = 0.5 + ((i / 2) | 0) * 0.5;
+    const p = box(0.2, 0.46, HULL_LEN * (0.9 - i * 0.02), 'planks', {
+      pos: [side * (2.8 - (i / 2) * 0.26), y, (rng() - .5) * 1.4],
       rot: [0, (rng() - .5) * 0.06, side * 0.3],
     });
     tint(p, G(0x8b7048).multiplyScalar(0.8 + rng() * 0.4));
     opaque.push(p);
   }
-  // deck
-  const deck = box(5.4, 0.3, 9, 'planks', { pos: [0, 2.3, -1.6], rot: [0.06, 0, 0.04] });
-  tint(deck, G(0x6f5a3a));
-  opaque.push(deck);
+  const deck = box(5.0, 0.28, 9, 'planks', { pos: [0, 2.1, -1.6], rot: [0.06, 0, 0.04] });
+  tint(deck, G(0x6f5a3a)); opaque.push(deck);
 
-  // snapped mast
-  const mast = cyl(0.28, 0.42, 8.5, 6, 'planks', { pos: [0, 5.6, -1.6], rot: [0.34, 0, 0.16] });
-  tint(mast, G(0x7a6340));
-  opaque.push(mast);
-  const spar = cyl(0.16, 0.2, 5.5, 5, 'planks', { pos: [-0.8, 8.4, -3.6], rot: [0, 0.3, Math.PI / 2] });
-  tint(spar, G(0x7a6340));
-  opaque.push(spar);
+  const mast = cyl(0.24, 0.36, 7.5, 6, 'planks', { pos: [0, 5.0, -1.6], rot: [0.34, 0, 0.16] });
+  tint(mast, G(0x7a6340)); opaque.push(mast);
+  const spar = cyl(0.14, 0.17, 4.8, 5, 'planks', { pos: [-0.8, 7.4, -3.4], rot: [0, 0.3, Math.PI / 2] });
+  tint(spar, G(0x7a6340)); opaque.push(spar);
 
-  // torn sail
-  const sail = plane(5.2, 4.4, 'sail', { pos: [-0.8, 6.6, -3.4], rot: [0.2, 0.3, 0.1] });
-  tint(sail, G(0xd8cdb2));
-  cutout.push(sail);
+  const sail = plane(4.6, 3.8, 'sail', { pos: [-0.8, 5.8, -3.2], rot: [0.2, 0.3, 0.1] });
+  tint(sail, G(0xd8cdb2)); cutout.push(sail);
 
-  // crates and barrels
   for (let i = 0; i < 5; i++) {
     const a = rng() * Math.PI * 2, r = 5 + rng() * 6;
-    const c = box(1.1, 1.1, 1.1, 'planks', {
-      pos: [Math.cos(a) * r, 0.55, Math.sin(a) * r], rot: [(rng() - .5) * .3, rng() * 3, (rng() - .5) * .3],
+    const c = box(0.9, 0.9, 0.9, 'planks', {
+      pos: [Math.cos(a) * r, 0.45, Math.sin(a) * r], rot: [(rng() - .5) * .3, rng() * 3, (rng() - .5) * .3],
     });
     tint(c, G(0x8b7048).multiplyScalar(0.8 + rng() * 0.4));
     opaque.push(c);
   }
   for (let i = 0; i < 3; i++) {
     const a = rng() * Math.PI * 2, r = 6 + rng() * 5;
-    const b = cyl(0.6, 0.72, 1.5, 8, 'planks', {
-      pos: [Math.cos(a) * r, 0.7, Math.sin(a) * r], rot: [Math.PI / 2 * (rng() > .5 ? 1 : 0), rng() * 3, 0],
+    const b = cyl(0.5, 0.6, 1.25, 8, 'planks', {
+      pos: [Math.cos(a) * r, 0.6, Math.sin(a) * r], rot: [rng() > .5 ? Math.PI / 2 : 0, rng() * 3, 0],
     });
-    tint(b, G(0x76603e));
-    opaque.push(b);
+    tint(b, G(0x76603e)); opaque.push(b);
   }
 
   group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
@@ -501,41 +593,41 @@ export function buildShipwreck(rng, mats) {
   return group;
 }
 
-/** Campfire with animated flames — your only comfort. */
+/** Campfire. Deliberately knee-high — it was towering over the player. */
 export function buildCampfire(rng, mats) {
   const group = new THREE.Group();
   const opaque = [];
   for (let i = 0; i < 9; i++) {
     const a = (i / 9) * Math.PI * 2;
-    const s = ico(0.3 + rng() * 0.16, 0, 'rock', {
-      pos: [Math.cos(a) * 1.05, 0.12, Math.sin(a) * 1.05], rot: [rng(), rng(), rng()],
+    const s = ico(0.16 + rng() * 0.08, 0, 'rock', {
+      pos: [Math.cos(a) * 0.6, 0.07, Math.sin(a) * 0.6], rot: [rng(), rng(), rng()],
     });
     tint(s, G(0x8a8070).multiplyScalar(0.8 + rng() * 0.4));
     opaque.push(s);
   }
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2;
-    const l = cyl(0.11, 0.15, 1.5, 5, 'torchWood', {
-      pos: [Math.cos(a) * 0.3, 0.42, Math.sin(a) * 0.3], rot: [0.9, a, 0],
+    const l = cyl(0.07, 0.09, 0.82, 5, 'torchWood', {
+      pos: [Math.cos(a) * 0.17, 0.24, Math.sin(a) * 0.17], rot: [0.95, a, 0],
     });
     tint(l, G(0x4a3524));
     opaque.push(l);
   }
   group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
 
-  const flames = buildFlameCluster(mats, 4, 1.0);
-  flames.position.y = 0.55;
+  const flames = buildFlameCluster(mats, 4, 0.42);   // ~0.75 tall total
+  flames.position.y = 0.26;
   group.add(flames);
   group.userData.flames = flames;
 
-  const light = new THREE.PointLight(0xff9a3c, 2.2, 22, 1.6);
-  light.position.y = 1.3;
+  const light = new THREE.PointLight(0xff9a3c, 2.0, 16, 1.6);
+  light.position.y = 0.8;
   group.add(light);
   group.userData.light = light;
   return group;
 }
 
-/** Reusable crossed-billboard flame. */
+/** Reusable crossed-billboard flame. `scale` ≈ half the final height. */
 export function buildFlameCluster(mats, count = 3, scale = 1) {
   const g = new THREE.Group();
   for (let i = 0; i < count; i++) {
@@ -545,7 +637,6 @@ export function buildFlameCluster(mats, count = 3, scale = 1) {
     tint(q, G(0xffffff));
     const mesh = new THREE.Mesh(mergeGeos([q]), mats.emissive);
     mesh.userData.phase = i * 1.7;
-    mesh.userData.base = scale;
     g.add(mesh);
   }
   g.userData.tick = (t) => {
@@ -553,136 +644,184 @@ export function buildFlameCluster(mats, count = 3, scale = 1) {
       const p = m.userData.phase;
       const s = 0.82 + Math.sin(t * 9 + p) * 0.13 + Math.sin(t * 14.3 + p * 2) * 0.07;
       m.scale.set(0.9 + Math.sin(t * 11 + p) * 0.1, s, 1);
-      m.position.y = Math.sin(t * 7 + p) * 0.05;
+      m.position.y = Math.sin(t * 7 + p) * 0.04;
     }
   };
   return g;
 }
 
-/** Wall torch used in the cave. */
+/** Wall torch used in the temple. */
 export function buildTorch(mats) {
   const group = new THREE.Group();
-  const stick = cyl(0.07, 0.1, 1.2, 5, 'torchWood', { pos: [0, 0.6, 0], rot: [0.3, 0, 0] });
+  const stick = cyl(0.06, 0.08, 0.9, 5, 'torchWood', { pos: [0, 0.45, 0], rot: [0.3, 0, 0] });
   tint(stick, G(0x4a3524));
   group.add(new THREE.Mesh(mergeGeos([stick]), mats.opaque));
-  const f = buildFlameCluster(mats, 3, 0.62);
-  f.position.set(0, 1.05, 0.18);
+  const f = buildFlameCluster(mats, 3, 0.34);
+  f.position.set(0, 0.8, 0.14);
   group.add(f);
   group.userData.flames = f;
-  const light = new THREE.PointLight(0xffa040, 1.9, 17, 1.7);
-  light.position.set(0, 1.4, 0.2);
+  const light = new THREE.PointLight(0xffa040, 1.9, 16, 1.7);
+  light.position.set(0, 1.1, 0.15);
   group.add(light);
   group.userData.light = light;
   return group;
 }
 
-/** A carved stone Mark. Picking one up is the core collectible loop. */
-export function buildMarkStone(mats, index) {
+/* ===========================================================
+   ROGUE PENDULUM
+   ===========================================================
+   Abandoned monolith towers left in the jungle by the Rogue
+   Agents. A dark basalt shaft with a slot near the top, and a
+   heavy brass bob swinging inside it — still swinging, which is
+   the part nobody can explain.
+*/
+export const GLYPHS = ['SUN', 'MOON', 'EYE', 'SPIRAL'];
+
+export function buildRoguePendulum(rng, mats, index, glyph, order) {
   const group = new THREE.Group();
-  const opaque = [];
+  const opaque = [], cutout = [];
+  const H = 13 + rng() * 3;
 
-  const base = cyl(1.15, 1.45, 0.5, 8, 'stone', { pos: [0, 0.25, 0] });
-  tint(base, G(0x9a9184));
-  opaque.push(base);
-
-  const slab = box(1.5, 2.3, 0.34, 'runes', { pos: [0, 1.45, 0], rot: [-0.09, 0, 0] });
-  tint(slab, G(0xbfb49f));
-  opaque.push(slab);
-
-  const cap = box(1.75, 0.26, 0.5, 'stone', { pos: [0, 2.66, -0.1] });
-  tint(cap, G(0x8f877a));
-  opaque.push(cap);
-
+  // stepped plinth
   for (let i = 0; i < 3; i++) {
-    const s = ico(0.3, 0, 'moss', { pos: [(i - 1) * 0.7, 0.42, 0.5], rot: [i, i * 2, 0] });
-    tint(s, G(0x7f9a5c));
+    const w = 4.4 - i * 0.7;
+    const s = box(w, 0.5, w, 'templeStone', { pos: [0, 0.25 + i * 0.5, 0] });
+    tint(s, G(0x6f6a58).multiplyScalar(0.85 + rng() * 0.3));
     opaque.push(s);
   }
 
+  // the shaft: tapered, faceted, very dark
+  const shaft = cyl(0.85, 1.35, H, 6, 'monolith', { pos: [0, 1.5 + H / 2, 0] });
+  taper(shaft, 0.82);
+  tint(shaft, G(0x3a4048));
+  opaque.push(shaft);
+
+  // the slot the bob swings in
+  const slotY = 1.5 + H * 0.72;
+  for (const side of [-1, 1]) {
+    const post = box(0.34, 3.4, 0.5, 'monolith', { pos: [side * 0.95, slotY, 0] });
+    tint(post, G(0x323840)); opaque.push(post);
+  }
+  const lintel = box(2.5, 0.45, 0.8, 'monolith', { pos: [0, slotY + 1.8, 0] });
+  tint(lintel, G(0x2c323a)); opaque.push(lintel);
+
+  // capstone
+  const cap = cone(1.5, 2.0, 6, 'monolith', { pos: [0, 1.5 + H + 0.7, 0] });
+  tint(cap, G(0x2a3038)); opaque.push(cap);
+
+  // glyph plate, front facing
+  const plate = box(1.5, 1.5, 0.22, 'templeGlyph', { pos: [0, 4.6, 1.15] });
+  tint(plate, G(0xbfae90)); opaque.push(plate);
+
+  // vines reclaiming it
+  for (let i = 0; i < 8; i++) {
+    const a = rng() * Math.PI * 2;
+    const vlen = 2.4 + rng() * 4;
+    const v = plane(0.75, vlen, 'hangVine');
+    v.translate(0, -vlen / 2, 0);
+    place(v, { rot: [0, a, (rng() - .5) * 0.3], pos: [Math.cos(a) * 1.15, 2 + rng() * (H * 0.7), Math.sin(a) * 1.15] });
+    tint(v, G(0xffffff).multiplyScalar(0.6 + rng() * 0.4));
+    cutout.push(v);
+  }
+  for (let i = 0; i < 5; i++) {
+    const a = rng() * Math.PI * 2;
+    const b = plane(1.6, 1.3, 'leafBush', { pos: [Math.cos(a) * 2.1, 0.9, Math.sin(a) * 2.1], rot: [0, a, 0] });
+    tint(b, G(0xffffff).multiplyScalar(0.6 + rng() * 0.4));
+    cutout.push(b);
+  }
+
   group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
+  group.add(new THREE.Mesh(mergeGeos(cutout), mats.cutoutStill));
 
-  // hovering glyph so you can spot it through the ferns
-  const glyph = plane(0.9, 0.9, 'crystal');
-  const gm = new THREE.Mesh(mergeGeos([tint(glyph, G(0xffe27a))]), mats.emissive);
-  gm.position.set(0, 3.4, 0);
-  group.add(gm);
-  group.userData.glyph = gm;
+  /* ---- the bob, on its own pivot so it can swing ---- */
+  const pivot = new THREE.Group();
+  pivot.position.set(0, slotY + 1.7, 0);
+  group.add(pivot);
 
-  const light = new THREE.PointLight(0xffd24a, 1.4, 12, 2);
-  light.position.set(0, 2.6, 0.6);
-  group.add(light);
+  const bobParts = [];
+  const rod = cyl(0.05, 0.05, 3.0, 4, 'metal', { pos: [0, -1.5, 0] });
+  tint(rod, G(0x8a8478)); bobParts.push(rod);
+  const bob = ico(0.55, 0, 'gold', { pos: [0, -3.1, 0], scale: [1, 1.25, 1] });
+  tint(bob, G(0xd9b45e)); bobParts.push(bob);
+  const bobRing = new THREE.TorusGeometry(0.5, 0.08, 4, 10);
+  place(bobRing, { rot: [Math.PI / 2, 0, 0], pos: [0, -3.1, 0] });
+  tint(bobRing, G(0xb08c3c)); bobParts.push(bobRing);
+  pivot.add(new THREE.Mesh(mergeGeos(bobParts), mats.opaque));
 
+  const glow = new THREE.PointLight(0x8fe6d0, 1.5, 16, 1.6);
+  glow.position.set(0, slotY - 1.4, 0);
+  group.add(glow);
+
+  const phase = index * 1.3;
   group.userData.tick = (t) => {
-    gm.position.y = 3.35 + Math.sin(t * 1.9 + index) * 0.18;
-    gm.rotation.y = t * 1.1;
-    light.intensity = 1.2 + Math.sin(t * 3 + index) * 0.35;
+    pivot.rotation.x = Math.sin(t * 0.85 + phase) * 0.55;
+    glow.intensity = 1.1 + Math.sin(t * 1.7 + phase) * 0.5;
   };
+  group.userData.glyph = glyph;
+  group.userData.order = order;
   return group;
 }
 
-/** Ruined shrine at the lagoon. */
-export function buildShrine(rng, mats) {
+/* ===========================================================
+   CASTAWAY CAMP — the ones who didn't make it
+   =========================================================== */
+export function buildCastawayCamp(rng, mats) {
   const group = new THREE.Group();
   const opaque = [], cutout = [];
 
-  const floor = cyl(6.4, 6.8, 0.6, 10, 'stone', { pos: [0, 0.3, 0] });
-  tint(floor, G(0x9c9384));
-  opaque.push(floor);
-
-  const step = cyl(7.6, 8.0, 0.4, 10, 'stone', { pos: [0, 0.05, 0] });
-  tint(step, G(0x8b8375));
-  opaque.push(step);
-
+  // lean-to shelter of driftwood and sailcloth
+  for (const side of [-1, 1]) {
+    const leg = cyl(0.09, 0.11, 1.9, 5, 'driftwood', { pos: [side * 1.5, 0.95, -0.9], rot: [0, 0, side * 0.12] });
+    tint(leg, G(0xc4b494)); opaque.push(leg);
+  }
+  const ridge = cyl(0.09, 0.09, 3.3, 5, 'driftwood', { pos: [0, 1.85, -0.9], rot: [0, 0, Math.PI / 2] });
+  tint(ridge, G(0xc4b494)); opaque.push(ridge);
   for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    const broken = rng() < 0.45;
-    const h = broken ? 1.6 + rng() * 1.8 : 4.6;
-    const col = cyl(0.42, 0.52, h, 8, 'stone', {
-      pos: [Math.cos(a) * 5.2, 0.6 + h / 2, Math.sin(a) * 5.2],
-      rot: broken ? [(rng() - .5) * 0.2, 0, (rng() - .5) * 0.2] : [0, 0, 0],
+    const rafter = cyl(0.055, 0.07, 2.3, 4, 'driftwood', {
+      pos: [-1.3 + i * 0.52, 1.15, -0.05], rot: [0.85, 0, 0],
     });
-    tint(col, G(0xa79d8d).multiplyScalar(0.85 + rng() * 0.3));
-    opaque.push(col);
-    if (!broken) {
-      const cap = box(1.3, 0.36, 1.3, 'stone', { pos: [Math.cos(a) * 5.2, 0.6 + h + 0.18, Math.sin(a) * 5.2] });
-      tint(cap, G(0x968d7e));
-      opaque.push(cap);
-    }
-    // fallen chunks
-    if (broken) {
-      const chunk = cyl(0.42, 0.48, 1.4, 8, 'stone', {
-        pos: [Math.cos(a) * 6.8 + rng(), 0.9, Math.sin(a) * 6.8 + rng()],
-        rot: [Math.PI / 2, rng() * 3, 0],
-      });
-      tint(chunk, G(0x8f8676));
-      opaque.push(chunk);
-    }
+    tint(rafter, G(0xbcae8e)); opaque.push(rafter);
+  }
+  const canvasSheet = plane(3.2, 2.3, 'sail', { pos: [0, 1.2, 0.05], rot: [-0.72, 0, 0] });
+  tint(canvasSheet, G(0xcfc2a4)); cutout.push(canvasSheet);
+
+  // dead fire
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const s = ico(0.14 + rng() * 0.07, 0, 'rock', { pos: [1.9 + Math.cos(a) * 0.5, 0.06, 1.4 + Math.sin(a) * 0.5] });
+    tint(s, G(0x7a7266)); opaque.push(s);
+  }
+  for (let i = 0; i < 5; i++) {
+    const l = cyl(0.05, 0.07, 0.5, 4, 'torchWood', {
+      pos: [1.9 + (rng() - .5) * 0.5, 0.06, 1.4 + (rng() - .5) * 0.5], rot: [Math.PI / 2, rng() * 3, 0],
+    });
+    tint(l, G(0x2e2318)); opaque.push(l);
   }
 
-  // central altar
-  const altar = box(2.6, 1.3, 2.0, 'stone', { pos: [0, 1.25, 0] });
-  tint(altar, G(0xb0a693));
-  opaque.push(altar);
-  const dish = cyl(0.9, 1.0, 0.3, 10, 'goldDark', { pos: [0, 2.05, 0] });
-  tint(dish, G(0xd8b45c));
-  opaque.push(dish);
+  // tally marks and scattered bones
+  const tally = box(0.9, 1.1, 0.1, 'runes', { pos: [-1.9, 0.6, 0.4], rot: [0, 0.4, 0.06] });
+  tint(tally, G(0xbfae90)); opaque.push(tally);
 
-  // vines + moss creeping over it
-  for (let i = 0; i < 14; i++) {
-    const a = rng() * Math.PI * 2, r = 3 + rng() * 4.6;
-    const v = plane(0.5, 2.2 + rng() * 1.6, 'vine', {
-      pos: [Math.cos(a) * r, 1.4, Math.sin(a) * r], rot: [0, rng() * 3, (rng() - .5) * 0.5],
+  for (let i = 0; i < 9; i++) {
+    const a = rng() * Math.PI * 2, r = 1.5 + rng() * 3;
+    const bone = cyl(0.05, 0.06, 0.3 + rng() * 0.35, 4, 'bone', {
+      pos: [Math.cos(a) * r, 0.06, Math.sin(a) * r],
+      rot: [Math.PI / 2, rng() * 3, (rng() - .5) * 0.6],
     });
-    tint(v, G(0xffffff).multiplyScalar(0.7 + rng() * 0.4));
-    cutout.push(v);
+    tint(bone, G(0xd8cdb4)); opaque.push(bone);
   }
-  for (let i = 0; i < 10; i++) {
-    const a = rng() * Math.PI * 2, r = rng() * 6.4;
-    const b = plane(1.6, 1.4, 'leafBush', {
-      pos: [Math.cos(a) * r, 1.2, Math.sin(a) * r], rot: [0, rng() * 3, 0],
+  // a skull, quietly
+  const skull = ico(0.19, 0, 'bone', { pos: [-0.6, 0.16, 1.5], scale: [1, 0.9, 1.15] });
+  tint(skull, G(0xd8cdb4)); opaque.push(skull);
+
+  // a couple of stuck-upright oars marking the spot
+  for (let i = 0; i < 2; i++) {
+    const oar = cyl(0.06, 0.08, 2.2, 5, 'driftwood', {
+      pos: [-2.6 - i * 0.6, 1.1, -1.6 + i * 0.5], rot: [0.1, 0, 0.14 - i * 0.3],
     });
-    tint(b, G(0xffffff).multiplyScalar(0.6 + rng() * 0.4));
-    cutout.push(b);
+    tint(oar, G(0xc4b494)); opaque.push(oar);
+    const blade = box(0.32, 0.7, 0.06, 'driftwood', { pos: [-2.6 - i * 0.6 + 0.15, 2.3, -1.6 + i * 0.5], rot: [0.1, 0, 0.14 - i * 0.3] });
+    tint(blade, G(0xc4b494)); opaque.push(blade);
   }
 
   group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
@@ -690,155 +829,195 @@ export function buildShrine(rng, mats) {
   return group;
 }
 
-/** Stone cairn at the overlook. */
-export function buildCairn(rng, mats) {
-  const parts = [];
-  let y = 0;
-  for (let i = 0; i < 7; i++) {
-    const s = 1.15 - i * 0.12;
-    const g = ico(s, 0, 'rock', { pos: [(rng() - .5) * 0.3, y + s * 0.4, (rng() - .5) * 0.3], rot: [rng(), rng(), rng()] });
-    g.scale(1, 0.6, 1);
-    jitterVerts(g, s * 0.2, rng);
-    tint(g, G(0xffffff).multiplyScalar(0.72 + rng() * 0.4));
-    parts.push(g);
-    y += s * 0.75;
-  }
+/** A word dragged into the sand, lying flat as a ground decal. */
+export function buildSandWriting(text, mats, opts = {}) {
+  const w = opts.width ?? 16;
+  const h = opts.height ?? 5;
+  const geo = new THREE.PlaneGeometry(w, h, 8, 3);
+  geo.rotateX(-Math.PI / 2);
+  const mat = mats.decal.clone();
+  mat.map = buildSandWritingTexture(text, opts);
+  mat.alphaTest = 0.28;
+  mat.transparent = true;
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2;
+  // drape over the terrain so it doesn't float or sink on a slope
+  mesh.userData.drape = (groundAt, ox, oz) => {
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      p.setY(i, groundAt(ox + p.getX(i), oz + p.getZ(i)) + 0.06 - mesh.position.y);
+    }
+    p.needsUpdate = true;
+    geo.computeVertexNormals();
+  };
+  return mesh;
+}
+
+/* ===========================================================
+   WILDLIFE
+   =========================================================== */
+
+/** Parrots that wheel over the canopy. Purely decorative. */
+export function buildBirdFlock(rng, mats, count = 22) {
   const group = new THREE.Group();
-  group.add(new THREE.Mesh(mergeGeos(parts), mats.opaque));
+
+  const bodyG = [];
+  const body = ico(0.22, 0, 'bird', { scale: [1.6, 0.85, 0.85] });
+  tint(body, G(0xffffff)); bodyG.push(body);
+  const tail = box(0.1, 0.05, 0.5, 'bird', { pos: [-0.42, 0, 0], rot: [0, Math.PI / 2, 0] });
+  tint(tail, G(0xe8e0d0)); bodyG.push(tail);
+  const beak = cone(0.07, 0.16, 4, 'bun', { pos: [0.34, 0, 0], rot: [0, 0, -Math.PI / 2] });
+  tint(beak, G(0xe0c060)); bodyG.push(beak);
+  const bodyGeo = mergeGeos(bodyG);
+
+  const wingGeo = mergeGeos([tint(plane(0.62, 0.34, 'birdWing', { rot: [-Math.PI / 2, 0, 0] }), G(0xffffff))]);
+
+  const birds = [];
+  for (let i = 0; i < count; i++) {
+    const b = new THREE.Group();
+    b.add(new THREE.Mesh(bodyGeo, mats.opaque));
+    const wl = new THREE.Mesh(wingGeo, mats.cutoutStill);
+    const wr = new THREE.Mesh(wingGeo, mats.cutoutStill);
+    wl.position.set(0, 0.05, -0.16); wr.position.set(0, 0.05, 0.16);
+    b.add(wl); b.add(wr);
+    group.add(b);
+    birds.push({
+      mesh: b, wl, wr,
+      cx: (rng() - 0.5) * 220, cz: (rng() - 0.5) * 220,
+      rad: 14 + rng() * 42,
+      y: 26 + rng() * 30,
+      sp: 0.18 + rng() * 0.28,
+      ph: rng() * Math.PI * 2,
+      flap: 6 + rng() * 5,
+      bob: rng() * 6,
+    });
+  }
+
+  group.userData.tick = (t) => {
+    for (const b of birds) {
+      const a = b.ph + t * b.sp;
+      const x = b.cx + Math.cos(a) * b.rad;
+      const z = b.cz + Math.sin(a) * b.rad;
+      b.mesh.position.set(x, b.y + Math.sin(t * 0.6 + b.bob) * 2.2, z);
+      // face along the tangent of the circle
+      b.mesh.rotation.y = -a + Math.PI / 2;
+      b.mesh.rotation.z = 0.32;
+      const f = Math.sin(t * b.flap + b.ph);
+      b.wl.rotation.x = f * 0.9;
+      b.wr.rotation.x = -f * 0.9;
+    }
+  };
+  group.frustumCulled = false;
   return group;
 }
 
-/** The sealed cave mouth in the red cliff. */
-export function buildCaveDoor(rng, mats, signTex) {
+/**
+ * Beetles and butterflies that only exist near the player — a small pool
+ * recycled to wherever you are, so the whole island feels alive for the
+ * cost of a couple of dozen quads.
+ */
+export function buildCritters(rng, mats, groundAt, count = 26) {
   const group = new THREE.Group();
-  const opaque = [], cutout = [];
 
-  // rock frame
-  for (let i = 0; i < 16; i++) {
-    const a = Math.PI * (i / 15);
-    const r = 5.6;
-    const s = 1.5 + rng() * 1.4;
-    const g = ico(s, 0, 'caveRock', {
-      pos: [Math.cos(a) * r * 1.15, Math.sin(a) * r + 0.4, (rng() - .5) * 1.6],
-      rot: [rng() * 3, rng() * 3, rng() * 3],
+  const beetleGeo = mergeGeos([
+    tint(ico(0.07, 0, 'bug', { scale: [1.5, 0.7, 1] }), G(0xffffff)),
+  ]);
+  const flyGeo = mergeGeos([
+    tint(plane(0.22, 0.16, 'flower', { rot: [0, 0, 0] }), G(0xffffff)),
+  ]);
+
+  const items = [];
+  for (let i = 0; i < count; i++) {
+    const isFly = i % 3 === 0;
+    const mesh = new THREE.Mesh(isFly ? flyGeo : beetleGeo,
+      isFly ? mats.cutoutStill : mats.opaque);
+    group.add(mesh);
+    items.push({
+      mesh, isFly,
+      ang: rng() * Math.PI * 2,
+      rad: 3 + rng() * 12,
+      sp: (rng() - 0.5) * 1.6,
+      ph: rng() * 6,
+      h: isFly ? 0.5 + rng() * 1.1 : 0.05,
+      home: new THREE.Vector3(),
+      placed: false,
     });
-    jitterVerts(g, s * 0.3, rng);
-    tint(g, G(0x8a5a42).multiplyScalar(0.75 + rng() * 0.45));
-    opaque.push(g);
-  }
-  // side buttresses
-  for (const side of [-1, 1]) {
-    const g = box(2.6, 8, 3, 'caveRock', { pos: [side * 6.6, 4, 0], rot: [0, 0, side * 0.06] });
-    jitterVerts(g, 0.5, rng);
-    tint(g, G(0x7d5340));
-    opaque.push(g);
   }
 
-  // the dark throat behind the door
-  const mouth = plane(9.4, 10, 'caveRock', { pos: [0, 4.6, -1.4] });
-  tint(mouth, G(0x0a0806));
-  const mouthMesh = new THREE.Mesh(mergeGeos([mouth]), mats.opaque);
-  group.add(mouthMesh);
-
-  group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
-
-  /* ---- the door itself: two halves that grind apart ---- */
-  const doorGroup = new THREE.Group();
-  for (const side of [-1, 1]) {
-    const parts = [];
-    const d = box(4.4, 9.2, 1.1, 'stone', { pos: [side * 2.25, 4.6, -0.4] });
-    tint(d, G(0x9c8a70));
-    parts.push(d);
-    // carved rune panels
-    for (let i = 0; i < 4; i++) {
-      const p = box(2.6, 1.5, 0.28, 'runes', { pos: [side * 2.25, 1.7 + i * 2.0, -1.05] });
-      tint(p, G(0xd8c8a0));
-      parts.push(p);
+  const tmp = new THREE.Vector3();
+  group.userData.tick = (t, dt, playerPos) => {
+    if (!playerPos) return;
+    for (const it of items) {
+      // recycle anything the player has walked away from
+      const d2 = it.home.distanceToSquared(playerPos);
+      if (!it.placed || d2 > 26 * 26) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 6 + Math.random() * 14;
+        it.home.set(playerPos.x + Math.cos(a) * r, 0, playerPos.z + Math.sin(a) * r);
+        it.home.y = groundAt(it.home.x, it.home.z);
+        it.placed = true;
+        it.mesh.visible = it.home.y > 0.4;   // nothing crawls on the sea
+      }
+      it.ang += it.sp * dt;
+      const wob = it.isFly
+        ? Math.sin(t * 3 + it.ph) * 0.5
+        : Math.sin(t * 1.4 + it.ph) * 0.25;
+      tmp.set(
+        it.home.x + Math.cos(it.ang) * (it.isFly ? 1.4 : 0.5) + wob,
+        it.home.y + it.h + (it.isFly ? Math.sin(t * 4 + it.ph) * 0.28 : 0),
+        it.home.z + Math.sin(it.ang) * (it.isFly ? 1.4 : 0.5)
+      );
+      it.mesh.position.copy(tmp);
+      it.mesh.rotation.y = -it.ang;
+      if (it.isFly) it.mesh.rotation.z = Math.sin(t * 9 + it.ph) * 0.7;
     }
-    const edge = box(0.4, 9.2, 1.3, 'stone', { pos: [side * 0.2, 4.6, -0.4] });
-    tint(edge, G(0x776850));
-    parts.push(edge);
-    const half = new THREE.Mesh(mergeGeos(parts), mats.opaque);
-    half.userData.side = side;
-    doorGroup.add(half);
-  }
-
-  // four keyhole sockets that light up as you find Marks
-  const sockets = [];
-  for (let i = 0; i < 4; i++) {
-    const g = plane(0.8, 0.8, 'crystal', { pos: [(i - 1.5) * 1.5, 7.4, -1.1] });
-    tint(g, G(0x30404a));
-    const mesh = new THREE.Mesh(mergeGeos([g]), mats.emissive);
-    doorGroup.add(mesh);
-    sockets.push(mesh);
-  }
-  doorGroup.userData.sockets = sockets;
-  group.add(doorGroup);
-  group.userData.door = doorGroup;
-
-  // plaque
-  if (signTex) {
-    const signMat = new THREE.MeshBasicMaterial({ map: signTex, transparent: false });
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.1), signMat);
-    sign.position.set(0, 9.8, -0.9);
-    group.add(sign);
-  }
-
-  // torches either side
-  for (const side of [-1, 1]) {
-    const t = buildTorch(mats);
-    t.position.set(side * 5.4, 3.4, 0.6);
-    group.add(t);
-    group.userData.torches = group.userData.torches || [];
-    group.userData.torches.push(t);
-  }
-
-  group.userData.openAmount = 0;
-  group.userData.setOpen = (a) => {
-    group.userData.openAmount = a;
-    for (const half of doorGroup.children) {
-      if (half.userData.side === undefined) continue;
-      half.position.x = half.userData.side * a * 4.6;
-      half.position.y = -a * 0.4;
-    }
-    sockets.forEach((s) => { s.visible = a < 0.98; });
   };
-  group.userData.setSockets = (n) => {
-    sockets.forEach((s, i) => {
-      const on = i < n;
-      s.material = on ? mats.emissive : mats.emissive;
-      s.scale.setScalar(on ? 1.25 : 0.8);
-      // tint via geometry colour swap
-      const c = s.geometry.attributes.color;
-      const col = on ? [1.0, 0.82, 0.28] : [0.18, 0.24, 0.28];
-      for (let v = 0; v < c.count; v++) c.setXYZ(v, col[0], col[1], col[2]);
-      c.needsUpdate = true;
-    });
-  };
+  group.frustumCulled = false;
   return group;
 }
 
-/** A pile of coconuts you can harvest for ammo. */
+/* ===========================================================
+   Pickups
+   =========================================================== */
 export function buildCoconutPile(rng, mats) {
   const parts = [];
   const n = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < n; i++) {
-    const a = rng() * Math.PI * 2, r = rng() * 0.8;
-    const g = ico(0.36, 0, 'coconut', {
-      pos: [Math.cos(a) * r, 0.3 + rng() * 0.3, Math.sin(a) * r], rot: [rng() * 3, rng() * 3, rng() * 3],
+    const a = rng() * Math.PI * 2, r = rng() * 0.55;
+    const g = ico(0.27, 0, 'coconut', {
+      pos: [Math.cos(a) * r, 0.24 + rng() * 0.22, Math.sin(a) * r], rot: [rng() * 3, rng() * 3, rng() * 3],
     });
     tint(g, G(0x9c7c50).multiplyScalar(0.85 + rng() * 0.3));
     parts.push(g);
   }
   const group = new THREE.Group();
   group.add(new THREE.Mesh(mergeGeos(parts), mats.opaque));
-  group.userData.tick = (t) => { group.rotation.y = Math.sin(t * 0.5) * 0.1; };
   return group;
 }
 
-/** Single thrown coconut. */
 export function buildCoconutMesh(mats) {
-  const g = ico(0.34, 0, 'coconut');
+  const g = ico(0.26, 0, 'coconut');
   tint(g, G(0xa07f52));
   return new THREE.Mesh(mergeGeos([g]), mats.opaque);
+}
+
+/** The Rogue Agents' satchel — holds the chart. */
+export function buildSatchel(rng, mats) {
+  const group = new THREE.Group();
+  const P = [];
+  const bag = box(0.6, 0.44, 0.24, 'clothTat', { pos: [0, 0.22, 0], rot: [0, 0.3, 0.06] });
+  tint(bag, G(0x6a5f47)); P.push(bag);
+  const flap = box(0.62, 0.24, 0.06, 'clothTat', { pos: [0, 0.36, 0.14], rot: [0.35, 0.3, 0.06] });
+  tint(flap, G(0x574d3a)); P.push(flap);
+  const strap = box(0.1, 0.5, 0.06, 'rope', { pos: [0.2, 0.3, -0.1], rot: [0, 0.3, 0.5] });
+  tint(strap, G(0x8a7a58)); P.push(strap);
+  const roll = cyl(0.07, 0.07, 0.42, 6, 'paper', { pos: [-0.1, 0.5, 0.02], rot: [0, 0.3, Math.PI / 2] });
+  tint(roll, G(0xe4d6b0)); P.push(roll);
+  group.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+
+  const l = new THREE.PointLight(0xffe6a0, 1.1, 6, 2);
+  l.position.set(0, 0.7, 0);
+  group.add(l);
+  group.userData.tick = (t) => { l.intensity = 0.8 + Math.sin(t * 3) * 0.4; };
+  return group;
 }

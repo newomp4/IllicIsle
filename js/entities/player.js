@@ -179,10 +179,14 @@ export class Player {
     this.landSquash = 0;
     this.inWater = 0;
 
-    this.SPEED = 6.4;
-    this.SPRINT = 11.2;
+    this.SPEED = 5.6;
+    this.SPRINT = 9.6;
     this.RADIUS = 0.42;
-    this.EYE = 1.52;
+    this.EYE = 1.55;
+
+    this.sensitivity = 1.4;
+    this.invertY = false;
+    this.propColliders = null;   // for camera collision against trunks
 
     this.colliders = null;   // set by the scene
     this.bounds = 128;       // how far from the origin you may swim
@@ -225,9 +229,15 @@ export class Player {
     this.camDistCur = this.camDist;
   }
 
-  addPitchYaw(dx, dy) {
-    this.yaw -= dx;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - dy, -1.15, 0.95);
+  /** Raw mouse delta in pixels; sensitivity and invert are applied here. */
+  addPitchYaw(dxPx, dyPx) {
+    const s = this.sensitivity * 0.0016;
+    this.yaw -= dxPx * s;
+    const dy = dyPx * s * (this.invertY ? -1 : 1);
+    this.pitch = THREE.MathUtils.clamp(this.pitch - dy, -1.05, 0.92);
+    // keep yaw bounded so it never loses float precision in a long session
+    if (this.yaw > Math.PI * 4) this.yaw -= Math.PI * 4;
+    if (this.yaw < -Math.PI * 4) this.yaw += Math.PI * 4;
   }
 
   damage(n = 1) {
@@ -296,8 +306,12 @@ export class Player {
       const len = Math.hypot(mx, mz);
       mx /= len; mz /= len;
       const sinY = Math.sin(this.yaw), cosY = Math.cos(this.yaw);
-      const wx = mx * cosY + mz * sinY;
-      const wz = -mx * sinY + mz * cosY;
+      /* Camera-relative basis. Forward is (sin yaw, cos yaw); looking down
+         +Z with +Y up, screen-right is -X, so the right vector is
+         (-cos yaw, sin yaw). Getting this backwards is what made D strafe
+         left and the whole thing feel mirrored. */
+      const wx = mz * sinY - mx * cosY;
+      const wz = mz * cosY + mx * sinY;
 
       const target = new THREE.Vector3(wx * speed, 0, wz * speed);
       const accel = this.grounded ? 15 : 6;
@@ -351,14 +365,12 @@ export class Player {
       }
     }
 
-    // walls (cave) — axis-aligned circle bounds you must stay inside
-    if (opts.insideRadius) {
-      const cx = opts.insideCenter ? opts.insideCenter.x : 0;
-      const cz = opts.insideCenter ? opts.insideCenter.z : 0;
-      const dx = px - cx, dz = pz - cz;
-      const dr = Math.hypot(dx, dz);
-      const lim = opts.insideRadius - this.RADIUS;
-      if (dr > lim) { px = cx + dx / dr * lim; pz = cz + dz / dr * lim; }
+    // interior walls — an axis-aligned box you must stay inside
+    if (opts.insideBox) {
+      const b = opts.insideBox;
+      const r = this.RADIUS;
+      px = THREE.MathUtils.clamp(px, b.minX + r, b.maxX - r);
+      pz = THREE.MathUtils.clamp(pz, b.minZ + r, b.maxZ - r);
     }
 
     this.pos.x = px; this.pos.z = pz;
@@ -484,40 +496,71 @@ export class Player {
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
 
     if (this.thirdPerson) {
-      const targetY = this.pos.y + 1.45;
-      // orbit point behind the player
+      const targetY = this.pos.y + 1.42;
+      // orbit direction, pointing back from the player
       const dirX = -Math.sin(this.yaw) * cp;
       const dirZ = -Math.cos(this.yaw) * cp;
       const dirY = -sp;
 
-      // pull the camera in if terrain would clip it
+      // shoulder offset, perpendicular to view, so the body isn't dead centre
+      const rightX = -Math.cos(this.yaw), rightZ = Math.sin(this.yaw);
+      const SHOULDER = 0.5;
+
       let dist = this.camDist;
-      for (let s = 1; s <= 6; s++) {
-        const t = (s / 6) * this.camDist;
-        const sx = this.pos.x + dirX * t;
-        const sz = this.pos.z + dirZ * t;
+
+      // terrain
+      for (let s = 1; s <= 8; s++) {
+        const t = (s / 8) * this.camDist;
+        const sx = this.pos.x + dirX * t + rightX * SHOULDER;
+        const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
         const sy = targetY + dirY * t;
-        const gh = groundOf(sx, sz) + 0.7;
-        if (sy < gh) { dist = Math.max(1.4, t - 0.5); break; }
+        if (sy < groundOf(sx, sz) + 0.55) { dist = Math.max(1.2, t - 0.45); break; }
       }
-      this.camDistCur += (dist - this.camDistCur) * Math.min(1, 9 * dt);
+
+      // tree trunks and rocks — without this the camera spends the whole
+      // jungle buried inside a palm
+      if (this.grid) {
+        for (const c of this.nearbyColliders(this.pos.x, this.pos.z)) {
+          if (c.r < 0.7) continue;   // saplings shouldn't shove the camera
+          const r = c.r + 0.35;
+          for (let s = 1; s <= 6; s++) {
+            const t = (s / 6) * dist;
+            const sx = this.pos.x + dirX * t + rightX * SHOULDER;
+            const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
+            if ((sx - c.x) ** 2 + (sz - c.z) ** 2 < r * r) {
+              dist = Math.max(1.2, t - 0.4);
+              break;
+            }
+          }
+        }
+      }
+
+      // snap in fast, ease out slow — avoids nauseating pops
+      const k = dist < this.camDistCur ? 1 : Math.min(1, 5 * dt);
+      this.camDistCur += (dist - this.camDistCur) * k;
 
       cam.position.set(
-        this.pos.x + dirX * this.camDistCur,
+        this.pos.x + dirX * this.camDistCur + rightX * SHOULDER,
         targetY + dirY * this.camDistCur,
-        this.pos.z + dirZ * this.camDistCur
+        this.pos.z + dirZ * this.camDistCur + rightZ * SHOULDER
       );
-      cam.lookAt(this.pos.x, targetY + 0.25, this.pos.z);
+      cam.lookAt(
+        this.pos.x + rightX * SHOULDER * 0.45,
+        targetY + 0.22,
+        this.pos.z + rightZ * SHOULDER * 0.45
+      );
     } else {
-      cam.position.set(this.pos.x, this.pos.y + this.EYE - this.inWater * 0.4, this.pos.z);
+      const bob = Math.sin(this.walkPhase * 2) * 0.035 * (this.grounded ? 1 : 0);
+      cam.position.set(
+        this.pos.x,
+        this.pos.y + this.EYE - this.inWater * 0.4 + bob,
+        this.pos.z
+      );
       const lx = this.pos.x + Math.sin(this.yaw) * cp;
       const ly = cam.position.y + sp;
       const lz = this.pos.z + Math.cos(this.yaw) * cp;
       cam.lookAt(lx, ly, lz);
     }
-
-    // a little head-roll when sprinting sideways sells the movement
-    cam.rotation.z += 0;
   }
 
   toggleView() {
