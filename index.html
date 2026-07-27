@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>IllicIsle — The Idol of Isla Dorada</title>
+<meta name="description" content="A PS1-style castaway adventure. Search the island, follow the four marks, dethrone El Bass Presidente, and claim the Golden Idol of Chris Illich." />
+<meta property="og:title" content="IllicIsle" />
+<meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illich." />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23140d08'/%3E%3Crect x='5' y='2' width='6' height='4' fill='%23ffd24a'/%3E%3Crect x='4' y='6' width='8' height='6' fill='%23e0a92b'/%3E%3Crect x='3' y='12' width='10' height='2' fill='%23a8761c'/%3E%3C/svg%3E" />
+</head>
+<body>
+
+<div id="viewport">
+  <canvas id="game"></canvas>
+</div>
+
+<!-- ============ LOADING ============ -->
+<div id="loading" class="screen">
+  <div class="load-inner">
+    <div class="load-logo">ILLICISLE</div>
+    <div class="load-bar"><div id="load-fill"></div></div>
+    <div id="load-text" class="load-text">NOW LOADING…</div>
+    <div class="load-hint">DO NOT TURN OFF YOUR CONSOLE</div>
+  </div>
+</div>
+
+<!-- ============ TITLE ============ -->
+<div id="title" class="screen hidden">
+  <div class="title-vign"></div>
+  <div class="title-inner">
+    <div class="title-sup">THE LEGEND OF</div>
+    <h1 class="title-logo">ILLIC<span>ISLE</span></h1>
+    <div class="title-sub">— THE IDOL OF ISLA DORADA —</div>
+    <div class="title-menu">
+      <button class="mbtn" data-act="start">▶ BEGIN CASTAWAY</button>
+      <button class="mbtn" data-act="controls">CONTROLS</button>
+      <button class="mbtn" data-act="options">OPTIONS</button>
+    </div>
+    <div class="title-foot">© 1998 DORADA SOFTWORKS · <span id="title-hint">CLICK TO PLAY</span></div>
+  </div>
+</div>
+
+<!-- ============ CONTROLS ============ -->
+<div id="controls" class="screen hidden panel-screen">
+  <div class="panel">
+    <h2>CONTROLS</h2>
+    <table class="ctrl-table">
+      <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td>Move</td></tr>
+      <tr><td><kbd>MOUSE</kbd></td><td>Look around</td></tr>
+      <tr><td><kbd>SHIFT</kbd></td><td>Sprint (drains stamina)</td></tr>
+      <tr><td><kbd>SPACE</kbd></td><td>Jump</td></tr>
+      <tr><td><kbd>E</kbd></td><td>Interact / pick up / read</td></tr>
+      <tr><td><kbd>LEFT CLICK</kbd></td><td>Throw coconut</td></tr>
+      <tr><td><kbd>TAB</kbd></td><td>Journal &amp; marks</td></tr>
+      <tr><td><kbd>C</kbd></td><td>Toggle 1st / 3rd person</td></tr>
+      <tr><td><kbd>ESC</kbd></td><td>Pause</td></tr>
+    </table>
+    <p class="tip">Tip: coconuts grow under palm trees. You will need them.</p>
+    <button class="mbtn back-btn">◀ BACK</button>
+  </div>
+</div>
+
+<!-- ============ OPTIONS ============ -->
+<div id="options" class="screen hidden panel-screen">
+  <div class="panel">
+    <h2>OPTIONS</h2>
+    <div class="opt-row">
+      <label>RENDER RESOLUTION</label>
+      <div class="opt-choices" id="opt-res">
+        <button data-v="180">240×180 (PSX)</button>
+        <button data-v="224" class="on">320×224 (PSX)</button>
+        <button data-v="320">427×320</button>
+        <button data-v="0">NATIVE</button>
+      </div>
+    </div>
+    <div class="opt-row">
+      <label>VERTEX JITTER</label>
+      <div class="opt-choices" id="opt-jitter">
+        <button data-v="0">OFF</button>
+        <button data-v="1" class="on">ON</button>
+      </div>
+    </div>
+    <div class="opt-row">
+      <label>CRT / DITHER</label>
+      <div class="opt-choices" id="opt-crt">
+        <button data-v="0">OFF</button>
+        <button data-v="1" class="on">ON</button>
+      </div>
+    </div>
+    <div class="opt-row">
+      <label>FOLIAGE DENSITY</label>
+      <div class="opt-choices" id="opt-density">
+        <button data-v="0.5">LOW</button>
+        <button data-v="1" class="on">NORMAL</button>
+        <button data-v="1.5">LUSH</button>
+      </div>
+    </div>
+    <div class="opt-row">
+      <label>AUDIO</label>
+      <div class="opt-choices" id="opt-audio">
+        <button data-v="0">OFF</button>
+        <button data-v="1" class="on">ON</button>
+      </div>
+    </div>
+    <p class="tip">Foliage density applies on next island load.</p>
+    <button class="mbtn back-btn">◀ BACK</button>
+  </div>
+</div>
+
+<!-- ============ HUD ============ -->
+<div id="hud" class="hidden">
+  <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
+
+  <div id="hud-left">
+    <div id="hearts"></div>
+    <div id="stamina-wrap"><div id="stamina"></div></div>
+  </div>
+
+  <div id="hud-right">
+    <div id="ammo"><span class="ammo-ico">◕</span><span id="ammo-count">0</span></div>
+    <div id="marks">MARKS <span id="marks-count">0</span>/4</div>
+  </div>
+
+  <div id="objective"><span class="obj-label">OBJECTIVE</span><span id="objective-text">—</span></div>
+
+  <div id="prompt" class="hidden"><kbd>E</kbd> <span id="prompt-text"></span></div>
+
+  <div id="boss-bar" class="hidden">
+    <div class="boss-name">HECTOR &mdash; &ldquo;EL BASS PRESIDENTE&rdquo;</div>
+    <div class="boss-track"><div id="boss-fill"></div><div id="boss-chip"></div></div>
+    <div id="boss-phase">TERM ONE</div>
+  </div>
+
+  <div id="toast-wrap"></div>
+  <div id="dmg-flash"></div>
+  <div id="heal-flash"></div>
+</div>
+
+<!-- ============ DIALOG / READING ============ -->
+<div id="reader" class="screen hidden">
+  <div class="reader-box">
+    <div class="reader-head" id="reader-head">MARK I</div>
+    <div class="reader-body" id="reader-body"></div>
+    <div class="reader-foot">[ <kbd>E</kbd> / <kbd>SPACE</kbd> CONTINUE ]</div>
+  </div>
+</div>
+
+<!-- ============ JOURNAL ============ -->
+<div id="journal" class="screen hidden panel-screen">
+  <div class="panel journal-panel">
+    <h2>CASTAWAY'S JOURNAL</h2>
+    <div id="journal-entries"></div>
+    <button class="mbtn back-btn">◀ CLOSE <kbd>TAB</kbd></button>
+  </div>
+</div>
+
+<!-- ============ PAUSE ============ -->
+<div id="pause" class="screen hidden panel-screen">
+  <div class="panel">
+    <h2>PAUSED</h2>
+    <div class="title-menu">
+      <button class="mbtn" data-act="resume">▶ RESUME</button>
+      <button class="mbtn" data-act="controls">CONTROLS</button>
+      <button class="mbtn" data-act="options">OPTIONS</button>
+      <button class="mbtn danger" data-act="quit">QUIT TO TITLE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DEATH ============ -->
+<div id="death" class="screen hidden">
+  <div class="death-inner">
+    <div class="death-title">YOU DIED</div>
+    <div class="death-sub" id="death-sub">The isle keeps what it takes.</div>
+    <button class="mbtn" id="respawn-btn">↺ WASH ASHORE AGAIN</button>
+  </div>
+</div>
+
+<!-- ============ ENDING ============ -->
+<div id="ending" class="screen hidden">
+  <div class="ending-inner">
+    <div class="ending-kicker">YOU FOUND IT</div>
+    <h1 class="ending-title">THE IDOL OF<br /><span>CHRIS ILLICH</span></h1>
+    <div class="ending-stats" id="ending-stats"></div>
+    <p class="ending-text">
+      You carried it down to the water and the water went quiet.<br />
+      Behind you, Hector waved. The staff was already growing back.
+    </p>
+    <div class="title-menu">
+      <button class="mbtn" data-act="share">📋 COPY BRAG</button>
+      <button class="mbtn" data-act="again">↺ PLAY AGAIN</button>
+    </div>
+    <div class="ending-foot">THANK YOU FOR PLAYING · DORADA SOFTWORKS</div>
+  </div>
+</div>
+
+<!-- ============ ROTATE / MOBILE NOTICE ============ -->
+<div id="nomobile" class="screen hidden">
+  <div class="panel">
+    <h2>KEYBOARD + MOUSE REQUIRED</h2>
+    <p class="tip">IllicIsle needs a mouse and keyboard. Open this on a desktop or laptop, sailor.</p>
+    <button class="mbtn" id="nomobile-anyway">TRY ANYWAY</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module" src="js/main.js"></script>
+<noscript><div class="screen"><div class="panel"><h2>JAVASCRIPT REQUIRED</h2></div></div></noscript>
+</body>
+</html>

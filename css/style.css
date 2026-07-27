@@ -1,0 +1,350 @@
+/* ===========================================================
+   IllicIsle — retro UI
+   =========================================================== */
+
+:root{
+  --gold:#ffd24a;
+  --gold-dk:#a8761c;
+  --gold-lt:#fff3c4;
+  --ink:#0d0906;
+  --ink2:#1a120b;
+  --panel:#17100a;
+  --edge:#5c3f1c;
+  --green:#7ec850;
+  --red:#e0453a;
+  --paper:#e8d8b0;
+  --font: "Courier New", "DejaVu Sans Mono", ui-monospace, monospace;
+}
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+
+html,body{
+  height:100%;
+  background:#000;
+  color:var(--gold-lt);
+  font-family:var(--font);
+  overflow:hidden;
+  -webkit-font-smoothing:none;
+  font-smooth:never;
+  user-select:none;
+  -webkit-user-select:none;
+  cursor:default;
+}
+
+#viewport{ position:fixed; inset:0; background:#000; }
+
+canvas#game{
+  display:block;
+  width:100%;
+  height:100%;
+  image-rendering:pixelated;
+  image-rendering:crisp-edges;
+}
+
+.hidden{ display:none !important; }
+
+/* ---------- generic screens ---------- */
+.screen{
+  position:fixed; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  z-index:20;
+  text-align:center;
+}
+
+.panel-screen{ background:rgba(6,4,2,.82); backdrop-filter:blur(2px); }
+
+.panel{
+  background:linear-gradient(180deg,#1d140c,#120c07);
+  border:3px solid var(--edge);
+  box-shadow:0 0 0 3px #0a0603, 0 12px 40px rgba(0,0,0,.8), inset 0 0 40px rgba(0,0,0,.6);
+  padding:26px 34px 30px;
+  max-width:620px;
+  width:min(90vw,620px);
+  max-height:88vh;
+  overflow:auto;
+}
+
+.panel h2{
+  font-size:22px; letter-spacing:.32em; color:var(--gold);
+  margin-bottom:20px; text-shadow:2px 2px 0 #000, 0 0 12px rgba(255,210,74,.35);
+}
+
+.tip{ font-size:12px; opacity:.62; margin:16px 0 6px; line-height:1.7; letter-spacing:.04em; }
+
+/* ---------- buttons ---------- */
+.mbtn{
+  display:block; width:100%;
+  margin:9px 0;
+  padding:11px 16px;
+  font-family:var(--font);
+  font-size:15px; letter-spacing:.2em;
+  color:var(--gold-lt);
+  background:linear-gradient(180deg,#2b1d10,#181009);
+  border:2px solid var(--edge);
+  cursor:pointer;
+  transition:none;
+  text-align:center;
+}
+.mbtn:hover,.mbtn:focus-visible{
+  color:#1a1006;
+  background:linear-gradient(180deg,var(--gold),var(--gold-dk));
+  border-color:var(--gold-lt);
+  outline:none;
+}
+.mbtn:active{ transform:translateY(1px); }
+.mbtn.danger:hover{ background:linear-gradient(180deg,#e0453a,#7a1d16); color:#fff; border-color:#ff9a90; }
+.back-btn{ margin-top:22px; }
+
+kbd{
+  display:inline-block;
+  min-width:1.9em;
+  padding:2px 6px;
+  margin:0 2px;
+  font-family:var(--font); font-size:.86em;
+  color:#1a1006;
+  background:linear-gradient(180deg,#f6e3a4,#c9a24a);
+  border:1px solid #6b4a18;
+  border-bottom-width:3px;
+  text-align:center;
+}
+
+/* ---------- loading ---------- */
+#loading{ background:#000; z-index:60; }
+.load-inner{ width:min(80vw,460px); }
+.load-logo{
+  font-size:38px; letter-spacing:.34em; color:var(--gold);
+  text-shadow:3px 3px 0 #4a2f0c, 0 0 26px rgba(255,210,74,.4);
+  margin-bottom:26px;
+}
+.load-bar{ height:16px; border:2px solid var(--edge); background:#0c0805; padding:2px; }
+#load-fill{
+  height:100%; width:0%;
+  background:repeating-linear-gradient(90deg,var(--gold) 0 6px,var(--gold-dk) 6px 10px);
+  transition:width .18s linear;
+}
+.load-text{ margin-top:14px; font-size:12px; letter-spacing:.24em; opacity:.85; min-height:1.4em; }
+.load-hint{ margin-top:34px; font-size:10px; letter-spacing:.28em; opacity:.35; animation:blink 1.6s steps(1) infinite; }
+@keyframes blink{ 50%{ opacity:.08; } }
+
+/* ---------- title ---------- */
+/* The idol composes into the right third of frame, so the title block
+   sits left and gets its own scrim. */
+#title{ background:transparent; z-index:30; pointer-events:none; justify-content:flex-start; }
+#title .title-inner{ pointer-events:auto; margin-left:max(5vw,28px); text-align:left; }
+#title .title-menu{ margin:0; }
+#title .mbtn{ text-align:left; padding-left:22px; }
+.title-vign{
+  position:absolute; inset:0;
+  background:radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 20%, rgba(0,0,0,.55) 68%, rgba(0,0,0,.92) 100%);
+  pointer-events:none;
+}
+.title-inner{
+  position:relative; z-index:2; width:min(92vw,560px);
+  padding:26px 28px 22px;
+  /* Just enough scrim to hold the type — the idol still turns behind it. */
+  background:radial-gradient(ellipse at 34% 46%, rgba(8,5,3,.72) 0%, rgba(8,5,3,.45) 58%, rgba(8,5,3,0) 88%);
+}
+.title-sup, .title-sub, .title-foot{ text-shadow:1px 1px 0 #000, 0 0 8px rgba(0,0,0,.95); }
+.title-sup{ font-size:12px; letter-spacing:.5em; opacity:.7; margin-bottom:6px; }
+.title-logo{
+  font-size:clamp(40px,9vw,78px);
+  letter-spacing:.1em;
+  line-height:1;
+  color:var(--gold-lt);
+  background:linear-gradient(180deg,#fff8dd 0%,#ffd24a 42%,#a8761c 60%,#ffe89a 78%,#8a5f14 100%);
+  -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent;
+  filter:drop-shadow(3px 4px 0 #2b1a06) drop-shadow(0 0 22px rgba(255,190,60,.45));
+  margin-bottom:2px;
+}
+.title-logo span{ -webkit-text-fill-color:transparent; }
+.title-sub{ font-size:13px; letter-spacing:.28em; color:var(--gold); opacity:.9; margin-bottom:28px; text-shadow:1px 1px 0 #000; }
+.title-menu{ width:min(80vw,320px); margin:0 auto; }
+.title-foot{ margin-top:26px; font-size:10px; letter-spacing:.2em; opacity:.45; }
+#title-hint{ animation:blink 1.4s steps(1) infinite; color:var(--gold); }
+
+/* ---------- controls table ---------- */
+.ctrl-table{ width:100%; border-collapse:collapse; font-size:13px; }
+.ctrl-table td{ padding:7px 6px; border-bottom:1px dashed #3a2811; text-align:left; }
+.ctrl-table td:first-child{ width:46%; text-align:right; padding-right:16px; white-space:nowrap; }
+.ctrl-table td:last-child{ opacity:.8; letter-spacing:.06em; }
+
+/* ---------- options ---------- */
+.opt-row{ margin:16px 0; text-align:left; }
+.opt-row label{ display:block; font-size:11px; letter-spacing:.24em; color:var(--gold); opacity:.85; margin-bottom:7px; }
+.opt-choices{ display:flex; flex-wrap:wrap; gap:6px; }
+.opt-choices button{
+  flex:1 1 auto;
+  padding:7px 10px;
+  font-family:var(--font); font-size:11px; letter-spacing:.1em;
+  color:var(--gold-lt); background:#221709; border:2px solid #3d2a12; cursor:pointer;
+}
+.opt-choices button:hover{ border-color:var(--gold); }
+.opt-choices button.on{ background:linear-gradient(180deg,var(--gold),var(--gold-dk)); color:#1a1006; border-color:var(--gold-lt); }
+
+/* ===========================================================
+   HUD
+   =========================================================== */
+#hud{ position:fixed; inset:0; z-index:10; pointer-events:none; font-size:13px; }
+
+#hud-left{ position:absolute; left:18px; top:16px; }
+#hud-right{ position:absolute; right:18px; top:16px; text-align:right; }
+
+#hearts{ display:flex; gap:4px; margin-bottom:8px; }
+.heart{
+  width:20px; height:18px;
+  background:var(--red);
+  clip-path:polygon(50% 100%, 0% 42%, 0% 18%, 14% 0%, 36% 0%, 50% 18%, 64% 0%, 86% 0%, 100% 18%, 100% 42%);
+  filter:drop-shadow(2px 2px 0 rgba(0,0,0,.8));
+}
+.heart.empty{ background:#3a1512; opacity:.75; }
+.heart.hurt{ animation:heartpop .35s steps(3); }
+@keyframes heartpop{ 0%{ transform:scale(1.7); } 100%{ transform:scale(1); } }
+
+#stamina-wrap{ width:104px; height:6px; background:#1a1108; border:1px solid #4a3316; padding:1px; }
+#stamina{ height:100%; width:100%; background:linear-gradient(90deg,#7ec850,#c8e050); }
+#stamina-wrap.low #stamina{ background:linear-gradient(90deg,#e0453a,#e08a3a); }
+
+#ammo{ font-size:24px; letter-spacing:.06em; color:var(--gold-lt); text-shadow:2px 2px 0 #000; }
+.ammo-ico{ color:#a8763c; margin-right:5px; }
+#marks{ font-size:11px; letter-spacing:.2em; opacity:.8; margin-top:5px; text-shadow:1px 1px 0 #000; }
+#marks.full{ color:var(--gold); animation:blink 1s steps(1) infinite; }
+
+#objective{
+  position:absolute; left:18px; bottom:18px;
+  max-width:min(46vw,420px);
+  text-align:left;
+  text-shadow:2px 2px 0 #000;
+}
+.obj-label{ display:block; font-size:10px; letter-spacing:.3em; color:var(--gold); opacity:.75; margin-bottom:3px; }
+#objective-text{ font-size:13px; line-height:1.5; letter-spacing:.03em; }
+
+#prompt{
+  position:absolute; left:50%; bottom:16%;
+  transform:translateX(-50%);
+  padding:8px 18px;
+  background:rgba(10,6,3,.72);
+  border:2px solid var(--edge);
+  font-size:13px; letter-spacing:.12em;
+  text-shadow:1px 1px 0 #000;
+  white-space:nowrap;
+}
+
+/* compass */
+#compass{
+  position:absolute; left:50%; top:14px; transform:translateX(-50%);
+  width:min(46vw,340px); height:26px;
+  overflow:hidden;
+  border:2px solid rgba(92,63,28,.75);
+  background:rgba(10,6,3,.5);
+  mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
+}
+#compass-strip{ position:absolute; top:0; left:0; height:100%; white-space:nowrap; }
+.cmark{
+  position:absolute; top:0; height:100%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; letter-spacing:.1em; color:var(--gold-lt);
+  transform:translateX(-50%);
+  text-shadow:1px 1px 0 #000;
+}
+.cmark.card{ font-size:13px; color:var(--gold); font-weight:bold; }
+.cmark.poi{ color:#8fd8ff; }
+.cmark.goal{ color:#ffe07a; }
+#compass-needle{
+  position:absolute; left:50%; top:0; width:2px; height:100%;
+  background:var(--gold); transform:translateX(-50%);
+  box-shadow:0 0 6px rgba(255,210,74,.9);
+}
+
+/* boss bar */
+#boss-bar{ position:absolute; left:50%; top:52px; transform:translateX(-50%); width:min(62vw,520px); text-align:center; }
+.boss-name{ font-size:12px; letter-spacing:.3em; color:#ffb46a; text-shadow:2px 2px 0 #000; margin-bottom:5px; }
+.boss-track{ position:relative; height:15px; background:#1a0d06; border:2px solid #6b3a12; padding:2px; overflow:hidden; }
+#boss-fill{ height:100%; width:100%; background:linear-gradient(180deg,#ffd24a,#d4622a); transition:width .18s linear; }
+#boss-chip{ position:absolute; top:2px; bottom:2px; left:0; width:100%; background:rgba(255,255,255,.5); transition:width .7s ease-out .18s; pointer-events:none; mix-blend-mode:overlay; }
+#boss-phase{ font-size:10px; letter-spacing:.32em; margin-top:4px; color:#ffd24a; opacity:.85; }
+
+/* toasts */
+#toast-wrap{ position:absolute; left:50%; top:26%; transform:translateX(-50%); width:max-content; max-width:70vw; }
+.toast{
+  margin:6px auto;
+  padding:9px 20px;
+  background:rgba(10,6,3,.8);
+  border-left:3px solid var(--gold);
+  font-size:13px; letter-spacing:.08em;
+  text-shadow:1px 1px 0 #000;
+  animation:toastin .28s ease-out;
+}
+.toast.gold{ border-color:var(--gold); color:var(--gold-lt); }
+.toast.bad{ border-color:var(--red); color:#ffbdb7; }
+@keyframes toastin{ from{ opacity:0; transform:translateY(-10px); } }
+.toast.out{ opacity:0; transition:opacity .4s; }
+
+#dmg-flash{ position:absolute; inset:0; background:radial-gradient(ellipse at center, transparent 35%, rgba(190,30,20,.85) 110%); opacity:0; pointer-events:none; }
+#dmg-flash.on{ animation:dmg .45s ease-out; }
+@keyframes dmg{ 0%{ opacity:1; } 100%{ opacity:0; } }
+#heal-flash{ position:absolute; inset:0; background:radial-gradient(ellipse at center, transparent 40%, rgba(255,210,74,.6) 115%); opacity:0; pointer-events:none; }
+#heal-flash.on{ animation:dmg .5s ease-out; }
+
+/* ---------- reader ---------- */
+#reader{ background:rgba(4,3,1,.55); z-index:25; align-items:flex-end; }
+.reader-box{
+  width:min(90vw,720px);
+  margin-bottom:7vh;
+  background:linear-gradient(180deg,#efe0bb,#d6c194);
+  color:#2b1d0c;
+  border:3px solid #5c3f1c;
+  box-shadow:0 0 0 3px #120b05, 0 14px 40px rgba(0,0,0,.7);
+  padding:18px 24px 14px;
+  text-align:left;
+}
+.reader-head{ font-size:12px; letter-spacing:.34em; color:#6b4a18; border-bottom:2px solid #b39a68; padding-bottom:7px; margin-bottom:12px; }
+.reader-body{ font-size:15px; line-height:1.75; min-height:5.2em; letter-spacing:.02em; white-space:pre-wrap; }
+.reader-body .cursor{ animation:blink .7s steps(1) infinite; }
+.reader-foot{ margin-top:12px; text-align:right; font-size:11px; letter-spacing:.16em; color:#7a5a24; }
+
+/* ---------- journal ---------- */
+.journal-panel{ text-align:left; }
+#journal-entries{ display:flex; flex-direction:column; gap:12px; }
+.jentry{ border-left:3px solid var(--gold-dk); padding:8px 0 8px 14px; }
+.jentry h3{ font-size:12px; letter-spacing:.24em; color:var(--gold); margin-bottom:6px; font-weight:normal; }
+.jentry p{ font-size:13px; line-height:1.7; opacity:.86; white-space:pre-wrap; }
+.jentry.locked{ border-color:#3a2811; opacity:.45; }
+.jentry.locked p{ font-style:italic; }
+
+/* ---------- death ---------- */
+#death{ background:rgba(30,4,2,.86); z-index:40; }
+.death-title{
+  font-size:clamp(38px,9vw,74px); letter-spacing:.24em; color:#c8352a;
+  text-shadow:4px 4px 0 #2b0603, 0 0 34px rgba(200,50,40,.6);
+  animation:deathin 1.1s ease-out;
+}
+@keyframes deathin{ from{ opacity:0; letter-spacing:.9em; } }
+.death-sub{ margin:16px 0 30px; font-size:13px; letter-spacing:.16em; opacity:.75; }
+#death .mbtn{ width:min(80vw,300px); margin:0 auto; }
+
+/* ---------- ending ---------- */
+#ending{ background:radial-gradient(ellipse at 50% 40%, #3a2606 0%, #100a04 70%); z-index:40; overflow:auto; }
+.ending-inner{ padding:6vh 20px; width:min(92vw,620px); }
+.ending-kicker{ font-size:12px; letter-spacing:.5em; color:var(--gold); opacity:.8; margin-bottom:10px; }
+.ending-title{
+  font-size:clamp(28px,6vw,52px); line-height:1.14; letter-spacing:.08em;
+  background:linear-gradient(180deg,#fff8dd,#ffd24a 45%,#a8761c 70%,#ffe89a);
+  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  filter:drop-shadow(3px 3px 0 #2b1a06);
+  margin-bottom:22px;
+}
+.ending-stats{ font-size:12px; letter-spacing:.14em; line-height:2.1; opacity:.82; margin-bottom:20px; }
+.ending-stats b{ color:var(--gold); font-weight:normal; }
+.ending-text{ font-size:13px; line-height:2; opacity:.75; margin-bottom:26px; }
+#ending .title-menu{ width:min(80vw,300px); }
+.ending-foot{ margin-top:26px; font-size:10px; letter-spacing:.28em; opacity:.4; }
+
+/* ---------- misc ---------- */
+#nomobile{ background:#0a0603; z-index:70; }
+
+@media (max-width:760px){
+  #objective{ max-width:70vw; }
+  #compass{ width:70vw; }
+}
