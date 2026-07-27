@@ -137,19 +137,76 @@ kbd{
 .load-hint{ font-family:var(--f-title); margin-top:38px; font-size:8px; letter-spacing:.08em; opacity:.32; animation:blink 1.6s steps(1) infinite; }
 @keyframes blink{ 50%{ opacity:.08; } }
 
-/* ---------- title ---------- */
-#title{ background:transparent; z-index:30; pointer-events:none; justify-content:flex-start; }
-#title .title-inner{ pointer-events:auto; margin-left:max(5vw,28px); text-align:left; }
+/* ---------- title ----------
+   Three columns: type + menu on the left, the idol turning in the middle
+   (that's the 3D scene showing through), lore cards on the right. The old
+   layout left two thirds of the screen empty. */
+#title{ background:transparent; z-index:30; pointer-events:none; align-items:stretch; justify-content:stretch; }
 #title .title-menu{ margin:0; }
 #title .mbtn{ text-align:left; padding-left:20px; }
+
+.title-grid{
+  position:relative; z-index:2;
+  display:grid;
+  grid-template-columns: minmax(300px, 27vw) 1fr minmax(230px, 21vw);
+  align-items:center;
+  width:100%; height:100%;
+  padding:4vh max(3vw,20px);
+  gap:2vw;
+}
 
 .title-vign{
   position:absolute; inset:0; pointer-events:none;
   background:
-    linear-gradient(90deg, rgba(6,4,2,.92) 0%, rgba(6,4,2,.72) 32%, rgba(6,4,2,0) 62%),
-    radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 30%, rgba(0,0,0,.5) 75%, rgba(0,0,0,.92) 100%);
+    linear-gradient(90deg, rgba(6,4,2,.94) 0%, rgba(6,4,2,.70) 26%, rgba(6,4,2,0) 48%,
+                           rgba(6,4,2,0) 62%, rgba(6,4,2,.78) 86%, rgba(6,4,2,.94) 100%),
+    linear-gradient(180deg, rgba(6,4,2,.75) 0%, rgba(6,4,2,0) 22%, rgba(6,4,2,0) 74%, rgba(6,4,2,.85) 100%);
 }
-.title-inner{ position:relative; z-index:2; width:min(92vw,560px); padding:24px 26px 20px; }
+.title-inner{ pointer-events:auto; text-align:left; padding:0; width:100%; background:none; }
+
+/* thin gold rule under the logo */
+.title-rule{ display:flex; align-items:center; gap:8px; margin:2px 0 16px; opacity:.85; }
+.title-rule i{ flex:1; height:3px; background:linear-gradient(90deg,transparent,var(--gold-dk),var(--gold)); }
+.title-rule i:last-child{ background:linear-gradient(90deg,var(--gold),var(--gold-dk),transparent); }
+.title-rule b{ width:9px; height:9px; background:var(--gold); transform:rotate(45deg); }
+
+/* lore cards on the right */
+.title-lore{
+  /* Explicit column: it's the 2nd DOM child, so without this it lands in
+     the middle track and sprawls across the idol. */
+  grid-column:3;
+  pointer-events:auto; display:flex; flex-direction:column; gap:14px;
+  text-align:left;
+}
+.lore-card{
+  border-left:4px solid var(--gold-dk);
+  padding:10px 0 10px 14px;
+  background:linear-gradient(90deg, rgba(8,5,3,.72), rgba(8,5,3,0));
+}
+.lore-card h3{
+  font-family:var(--f-title); font-size:9px; letter-spacing:.1em;
+  color:var(--gold); font-weight:normal; margin-bottom:8px; line-height:1.6;
+}
+.lore-card p{ font-size:13px; line-height:1.75; opacity:.78; text-align:left; }
+.lore-card b{ color:var(--gold-lt); font-weight:normal; }
+
+.title-marquee{
+  margin-top:6px; overflow:hidden; white-space:nowrap;
+  border-top:2px solid #3a2811; border-bottom:2px solid #3a2811;
+  padding:8px 0; display:flex;
+}
+.title-marquee span{
+  font-family:var(--f-title); font-size:7px; letter-spacing:.12em;
+  color:var(--gold); opacity:.55;
+  padding-right:1em;
+  animation:march 16s linear infinite;
+}
+@keyframes march{ to{ transform:translateX(-100%); } }
+
+@media (max-width:1000px){
+  .title-grid{ grid-template-columns:1fr; align-content:center; }
+  .title-lore{ display:none; }
+}
 
 .title-sup{
   font-family:var(--f-title);
@@ -173,7 +230,7 @@ kbd{
   margin-bottom:30px; line-height:1.8;
   text-shadow:2px 2px 0 #000;
 }
-.title-menu{ width:min(80vw,340px); margin:0 auto; }
+.title-menu{ width:min(90%,360px); margin:0; }
 .title-foot{
   font-family:var(--f-title);
   margin-top:26px; font-size:8px; letter-spacing:.08em; opacity:.42; line-height:2;
@@ -212,23 +269,34 @@ kbd{
 
 #hearts{ display:flex; gap:5px; margin-bottom:9px; }
 .heart{
-  width:22px; height:20px; background:var(--red);
-  clip-path:polygon(50% 100%, 0% 42%, 0% 18%, 14% 0%, 36% 0%, 50% 18%, 64% 0%, 86% 0%, 100% 18%, 100% 42%);
-  filter:drop-shadow(2px 2px 0 rgba(0,0,0,.9));
+  width:27px; height:21px;
+  background-repeat:no-repeat; background-size:100% 100%;
+  image-rendering:pixelated;
+  filter:drop-shadow(2px 2px 0 rgba(0,0,0,.85));
 }
-.heart.empty{ background:#3a1512; opacity:.75; }
+.heart.empty{ opacity:.8; }
 .heart.hurt{ animation:heartpop .35s steps(3); }
 @keyframes heartpop{ 0%{ transform:scale(1.7); } 100%{ transform:scale(1); } }
 
-#stamina-wrap{ width:112px; height:8px; background:#1a1108; border:2px solid #4a3316; padding:1px; }
-#stamina{ height:100%; width:100%; background:linear-gradient(90deg,#7ec850,#c8e050); }
-#stamina-wrap.low #stamina{ background:linear-gradient(90deg,#e0453a,#e08a3a); }
+#stamina-wrap{ width:148px; height:12px; background:#1a1108; border:3px solid #4a3316; padding:2px; }
+#stamina{ height:100%; width:100%; background:repeating-linear-gradient(90deg,#7ec850 0 5px,#6ab845 5px 7px); }
+#stamina-wrap.low #stamina{ background:repeating-linear-gradient(90deg,#e0453a 0 5px,#c03a30 5px 7px); }
 
 #ammo{ font-family:var(--f-title); font-size:20px; color:var(--gold-lt); text-shadow:3px 3px 0 #000; }
 .ammo-ico{ color:#c08a4c; margin-right:6px; }
 #marks{ font-family:var(--f-title); font-size:9px; letter-spacing:.06em; opacity:.85; margin-top:9px; text-shadow:2px 2px 0 #000; }
 #marks.full{ color:var(--gold); animation:blink 1s steps(1) infinite; }
 
+#run-timer{
+  position:absolute; right:20px; bottom:20px;
+  font-family:var(--f-title); font-size:15px; letter-spacing:.06em;
+  color:var(--gold-lt); text-shadow:3px 3px 0 #000;
+  opacity:.9;
+}
+#run-timer::before{
+  content:'TIME'; display:block; font-size:8px; letter-spacing:.14em;
+  color:var(--gold); opacity:.7; margin-bottom:6px; text-align:right;
+}
 #objective{ position:absolute; left:20px; bottom:20px; max-width:min(48vw,440px); text-align:left; }
 .obj-label{
   display:block; font-family:var(--f-title);
@@ -356,6 +424,47 @@ kbd{
 .dial canvas{ image-rendering:pixelated; width:48px; height:48px; }
 .dial span{ font-family:var(--f-title); font-size:8px; opacity:.6; }
 .dial.ok{ border-color:var(--jade); }
+
+/* ---------- shop ---------- */
+.shop-panel{ text-align:left; }
+.shop-quote{ margin-top:-8px; font-style:italic; }
+.shop-purse{
+  font-family:var(--f-title); font-size:10px; letter-spacing:.1em;
+  color:var(--gold); margin:14px 0 16px; text-align:right;
+}
+.shop-purse b{ color:var(--gold-lt); font-weight:normal; }
+#shop-list{ display:flex; flex-direction:column; gap:10px; }
+.shop-row{
+  display:grid; grid-template-columns:1fr auto; gap:4px 14px;
+  padding:14px 16px; text-align:left; cursor:pointer;
+  background:linear-gradient(180deg,#2b1d10,#181009);
+  border:3px solid var(--edge); color:var(--gold-lt);
+  font-family:var(--f-body);
+}
+.shop-row:hover{ border-color:var(--gold); }
+.shop-name{ font-family:var(--f-title); font-size:10px; letter-spacing:.06em; line-height:1.6; }
+.shop-desc{ grid-column:1; font-size:14px; opacity:.7; }
+.shop-cost{
+  grid-row:1 / span 2; align-self:center;
+  font-family:var(--f-title); font-size:12px; color:var(--gold);
+}
+.shop-row.broke{ opacity:.45; cursor:not-allowed; }
+.shop-row.broke .shop-cost{ color:var(--red); }
+.shop-row.owned{ opacity:.5; cursor:default; border-color:#2f5a48; }
+.shop-row.owned .shop-cost{ color:var(--jade); }
+
+/* ---------- lightning ---------- */
+#lightning{ position:absolute; inset:0; background:#dfeaff; opacity:0; pointer-events:none; }
+#lightning.on{ animation:bolt .5s steps(6); }
+@keyframes bolt{
+  0%{ opacity:.75; } 12%{ opacity:.05; } 22%{ opacity:.55; }
+  36%{ opacity:.03; } 100%{ opacity:0; }
+}
+
+.big-time{
+  display:block; font-family:var(--f-title); font-size:26px;
+  color:var(--gold); text-shadow:3px 3px 0 #2b1a06; margin-bottom:14px;
+}
 
 /* ---------- death ---------- */
 #death{ background:rgba(30,4,2,.88); z-index:40; }

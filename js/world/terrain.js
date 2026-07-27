@@ -1,5 +1,5 @@
 /* ===========================================================
-   terrain.js — Isla Dorada itself.
+   terrain.js — Illic Isle itself.
    The island is one analytic height function, so collision is a
    direct evaluation instead of a raycast. Cheap and exact.
    =========================================================== */
@@ -43,9 +43,9 @@ export const ISLAND = {
      with a proportionally thin beach — you should be in trees almost
      immediately after leaving the wreck. */
   shore: 168,
-  beachWidth: 24,
-  jungleFrom: 22,
-  jungleTo: 86,
+  beachWidth: 42,
+  jungleFrom: 40,
+  jungleTo: 104,
   playRadius: 178,
   worldRadius: 260,
 
@@ -71,7 +71,7 @@ export function heightAt(x, z) {
   const n = fbm(x * 0.0102, z * 0.0102, 4);
   const ridgeN = 1 - Math.abs(fbm(x * 0.016 + 5, z * 0.016 + 9, 3) * 2 - 1);
 
-  let h = beach * 2.4 + inland * (2 + n * n * 1.35 * 22 + ridgeN * ridgeN * 9);
+  let h = beach * 2.8 + inland * (2 + n * n * 1.35 * 22 + ridgeN * ridgeN * 9);
 
   // rolling hills so the interior reads as varied jungle, not a plate
   h += inland * fbm(x * 0.028 + 71, z * 0.028 - 19, 3) * 7;
@@ -106,6 +106,22 @@ export function normalAt(x, z, e = 0.9) {
 }
 
 export function slopeAt(x, z) { return 1 - normalAt(x, z).y; }
+
+/**
+ * How thick the vegetation should be here, 0..1.
+ * Uniform scatter makes every part of the jungle look identical and
+ * impossible to navigate. This gives real clearings, thickets, and
+ * open glades you can recognise and steer by.
+ */
+export function vegetationDensity(x, z) {
+  const big = fbm(x * 0.0065 + 401, z * 0.0065 - 233, 3);     // regions
+  const fine = fbm(x * 0.021 - 77, z * 0.021 + 55, 2);        // local breakup
+  let d = THREE.MathUtils.smoothstep(big, 0.32, 0.72);
+  d = d * 0.78 + fine * 0.32;
+  // hard clearings where the big noise bottoms out
+  if (big < 0.30) d *= 0.18;
+  return THREE.MathUtils.clamp(d, 0, 1.25);
+}
 
 /** Rough biome id used for prop scattering and footstep sounds. */
 export function biomeAt(x, z) {

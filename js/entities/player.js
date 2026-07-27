@@ -179,8 +179,8 @@ export class Player {
     this.landSquash = 0;
     this.inWater = 0;
 
-    this.SPEED = 5.6;
-    this.SPRINT = 9.6;
+    this.SPEED = 7.0;
+    this.SPRINT = 15.5;
     this.RADIUS = 0.42;
     this.EYE = 1.55;
 
@@ -290,10 +290,10 @@ export class Player {
     // stamina / sprint
     const wantSprint = input.sprint && moving && !this.staminaLock;
     if (wantSprint) {
-      this.stamina = Math.max(0, this.stamina - dt * 0.34);
+      this.stamina = Math.max(0, this.stamina - dt * 0.155);
       if (this.stamina <= 0) this.staminaLock = true;
     } else {
-      this.stamina = Math.min(1, this.stamina + dt * (moving ? 0.20 : 0.42));
+      this.stamina = Math.min(1, this.stamina + dt * (moving ? 0.26 : 0.55));
       if (this.stamina > 0.28) this.staminaLock = false;
     }
     const sprinting = wantSprint && this.stamina > 0;

@@ -168,7 +168,42 @@ const BOSS = {
   },
 };
 
-const TRACKS = { island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS };
+/* ---- STORM: the opening. Churning low end, no tune, a bell tolling. ---- */
+const STORM = {
+  bpm: 48, len: 64, sections: 3,
+  voices: {
+    bass: {
+      layers: [1, 1, 1],
+      notes: [
+        26, _, _, _, _, _, _, _, 26, _, _, _, _, _, 25, _,
+        24, _, _, _, _, _, _, _, 24, _, _, _, 26, _, _, _,
+        22, _, _, _, _, _, _, _, 24, _, _, _, _, _, _, _,
+        26, _, _, _, 25, _, _, _, 24, _, _, _, 22, _, _, _,
+      ],
+    },
+    pad: {
+      layers: [1, 1, 1],
+      chords: [
+        [38, 45, 48], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        [36, 43, 46], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        [34, 41, 44], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        [38, 44, 49], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+      ],
+    },
+    bell: {
+      layers: [0, 1, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        62, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        60, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+      ],
+    },
+    drip: { layers: [1, 1, 1], hits: '..x.......x..x..' },
+  },
+};
+
+const TRACKS = { island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS, storm: STORM };
 
 export class GameAudio {
   constructor() {
@@ -588,6 +623,44 @@ export class GameAudio {
         this._tone(mtof(79), t, 0.07, { type: 'square', gain: 0.10, filter: 5000 });
         this._tone(mtof(86), t + 0.06, 0.13, { type: 'square', gain: 0.09, filter: 5000 });
         break;
+      /* ---- storm & cinematics ---- */
+      case 'thunder': {
+        // crack, then the roll
+        this._noiseHit(t, 0.16, { gain: 0.30, filter: 5200, type: 'highpass', sweep: 0.2, send: 0.5 });
+        this._noiseHit(t + 0.05, 3.4, { gain: 0.34, filter: 260, q: 1.2, sweep: 0.45, send: 0.85 });
+        this._tone(38, t + 0.04, 2.8, { type: 'sine', gain: 0.34, sweep: 0.55, release: 1.9 });
+        this._tone(52, t + 0.6, 1.8, { type: 'sawtooth', gain: 0.10, filter: 200, release: 1.2, send: 0.7 });
+        break;
+      }
+      case 'stormAmbience':
+        // long wind/rain bed
+        this._noiseHit(t, 9.0, { gain: 0.16, filter: 900, q: 0.7, sweep: 1.5, send: 0.4 });
+        this._noiseHit(t, 9.0, { gain: 0.10, filter: 240, type: 'highpass', sweep: 2.2 });
+        break;
+      case 'shipBreak':
+        this._noiseHit(t, 0.9, { gain: 0.26, filter: 1500, q: 2.5, sweep: 0.25, send: 0.5 });
+        this._tone(120, t, 0.8, { type: 'sawtooth', gain: 0.20, sweep: 0.35, filter: 800 });
+        this._tone(74, t + 0.2, 1.1, { type: 'square', gain: 0.13, sweep: 0.45, filter: 500, send: 0.5 });
+        break;
+      case 'dawn':
+        this.duckMusic(0.4, 3.2);
+        [55, 62, 67, 74].forEach((n, i) =>
+          this._tone(mtof(n), t + i * 0.34, 3.6 - i * 0.4, {
+            type: 'triangle', gain: 0.085, attack: 0.9, release: 2.2, send: 0.85, filter: 2000,
+          }));
+        break;
+      case 'surfWash':
+        this._noiseHit(t, 2.6, { gain: 0.17, filter: 700, q: 1.4, sweep: 2.6, send: 0.5 });
+        break;
+      case 'descend':
+        this._tone(40, t, 2.4, { type: 'sawtooth', gain: 0.22, sweep: 0.55, filter: 320, release: 1.5, send: 0.6 });
+        this._noiseHit(t, 2.0, { gain: 0.15, filter: 420, q: 2, sweep: 0.5, send: 0.7 });
+        break;
+      case 'coin':
+        this._pluck(mtof(88), t, 0.24, { gain: 0.14, send: 0.5, bright: 2.0 });
+        this._pluck(mtof(95), t + 0.055, 0.32, { gain: 0.11, send: 0.6, bright: 2.0 });
+        break;
+
       case 'page': this._noiseHit(t, 0.11, { gain: 0.075, filter: 3800, type: 'bandpass', q: 2, sweep: 0.5 }); break;
     }
   }

@@ -174,6 +174,7 @@ document.querySelectorAll('.back-btn').forEach((b) => {
     if (b.closest('#journal')) { game?.toggleJournal(); return; }
     if (b.closest('#map')) { game?.toggleMap(); return; }
     if (b.closest('#dials')) { game?.closeDials(); return; }
+    if (b.closest('#shop')) { game?.closeShop(); return; }
     closePanel();
   });
 });

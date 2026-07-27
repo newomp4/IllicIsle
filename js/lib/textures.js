@@ -1040,8 +1040,8 @@ export function buildBaseBandTexture() {
     x.fillStyle = hsl(46, 80, 62);
     x.fillText(text, cx, H / 2 + 6);
   };
-  label('ISLA DORADA', 70);
-  label('ISLA DORADA', 198);
+  label('ILLIC ISLE', 70);
+  label('ILLIC ISLE', 198);
 
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.RepeatWrapping;

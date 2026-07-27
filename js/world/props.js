@@ -1,5 +1,5 @@
 /* ===========================================================
-   props.js — everything you can bump into on Isla Dorada.
+   props.js — everything you can bump into on Illic Isle.
    Each prop type is merged into one geometry and drawn with an
    InstancedMesh, so ~2000 pieces of scenery cost ~20 draw calls.
 
@@ -14,8 +14,8 @@ import {
   mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint,
   limb, jitterVerts, lumpify, bendY, taper,
 } from '../lib/geo.js';
-import { buildSandWritingTexture, buildSignTexture } from '../lib/textures.js';
-import { heightAt, slopeAt, biomeAt, ISLAND } from './terrain.js';
+import { buildSandWritingTexture, buildSignTexture, applyCell } from '../lib/textures.js';
+import { heightAt, slopeAt, biomeAt, vegetationDensity, ISLAND } from './terrain.js';
 
 export const PLAYER_HEIGHT = 1.75;
 
@@ -65,61 +65,114 @@ const TIERS = {
   emergent: { h: [26, 34],   r: 0.66, crown: 1.75, colR: 1.10 },
 };
 
-/* ---------- palm ---------- */
+/* ---------- palm ----------
+   A real palm frond is a long arching rib with feathered blades folded
+   into a shallow V. One flat quad reads as a leaf on a stick, which is
+   what these looked like before. Each frond here is a 3-column strip:
+   the centre column is the rib and gets lifted, the outer columns fall
+   away, and the whole thing arcs up and then droops.
+*/
+function buildFrond(len, wid, droop, rng) {
+  const SEG = 9;
+  const g = new THREE.PlaneGeometry(wid, len, 2, SEG);   // 3 columns
+  applyCell(g, 'palmFrond');
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const col = i % 3;                    // 0 left, 1 rib, 2 right
+    const x0 = p.getX(i);
+    // Clamp: float error can leave this a hair below zero, and
+    // Math.pow(negative, fractional) is NaN, which poisons the whole
+    // merged buffer and kills the bounding sphere.
+    const t = THREE.MathUtils.clamp((p.getY(i) + len / 2) / len, 0, 1);
+
+    // taper: narrow at the base, widest around 45%, pointed tip
+    const w = Math.sin(Math.PI * Math.pow(t, 0.62)) * 0.95 + 0.05;
+    // arc up then droop over
+    const rise = Math.sin(t * Math.PI * 0.55) * len * 0.30;
+    const fall = Math.pow(t, 2.3) * len * droop;
+    // V fold: rib sits proud, blades hang below it
+    const fold = col === 1 ? wid * 0.20 : -wid * 0.10 * (0.3 + t);
+
+    p.setX(i, x0 * w);
+    p.setY(i, t * len * 0.94 + rise - fall);
+    p.setZ(i, fold + Math.sin(t * 3.1) * wid * 0.05);
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+  return g;
+}
+
 function buildPalm(rng, tierName) {
   const T = TIERS[tierName];
   const H = T.h[0] + rng() * (T.h[1] - T.h[0]);
-  const lean = (rng() - 0.5) * (H * 0.22);
-  const leanZ = (rng() - 0.5) * (H * 0.18);
+  const lean = (rng() - 0.5) * (H * 0.20);
+  const leanZ = (rng() - 0.5) * (H * 0.16);
   const rBase = T.r * 1.9, rTop = T.r * 0.95;
 
-  const trunk = cyl(rTop, rBase, H, 7, 'bark', { pos: [0, H / 2, 0] });
+  const trunk = cyl(rTop, rBase, H, 8, 'bark', { pos: [0, H / 2, 0] });
   bendY(trunk, lean, 'x', 2.1);
   bendY(trunk, leanZ, 'z', 2.1);
   tint(trunk, G(0xb59a72).multiplyScalar(0.82 + rng() * 0.3));
 
-  const root = cyl(rBase, rBase * 1.7, H * 0.09, 7, 'bark', { pos: [0, H * 0.04, 0] });
-  tint(root, G(0x9c8360));
+  // Buried footing: on a slope a flat trunk base lifts off the ground and
+  // you can see under the tree. Sink a wide plug well below zero.
+  const plug = cyl(rBase * 1.5, rBase * 2.4, 4.0, 8, 'bark', { pos: [0, -1.7, 0] });
+  tint(plug, G(0x8d7550));
 
   const cx = lean, cz = leanZ;
-  const opaqueParts = [trunk, root];
+  const opaqueParts = [trunk, plug];
   const cutoutParts = [];
 
-  const n = 7 + ((rng() * 4) | 0);
-  const frondLen = T.crown * 4.4;
+  /* crownshaft: the smooth green collar under the fronds */
+  const collar = cyl(rTop * 0.8, rTop * 1.25, T.crown * 1.1, 8, 'vine', {
+    pos: [cx, H - T.crown * 0.4, cz],
+  });
+  tint(collar, G(0x7f9456));
+  opaqueParts.push(collar);
+
+  /* fronds — a proper crown of them */
+  const n = tierName === 'sapling' ? 9 : 16 + ((rng() * 5) | 0);
+  const frondLen = T.crown * 7.6;
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + rng() * 0.4;
-    const len = frondLen * (0.8 + rng() * 0.45);
-    const wid = T.crown * (1.0 + rng() * 0.4);
-    const droop = 0.5 + rng() * 0.6;
+    // even radial spacing with only a touch of jitter, or the crown
+    // bunches to one side and looks like a broken umbrella
+    const a = (i / n) * Math.PI * 2 + (rng() - 0.5) * 0.16;
+    // three rings: near-vertical spears, mid arch, long outer sweep
+    const ring = i % 3;
+    const pitch = ring === 0 ? 0.22 + rng() * 0.18
+                : ring === 1 ? 0.78 + rng() * 0.22
+                :              1.24 + rng() * 0.26;
+    const len = frondLen * (ring === 2 ? 1.05 : ring === 1 ? 0.92 : 0.7) * (0.88 + rng() * 0.24);
+    const wid = T.crown * (1.05 + rng() * 0.35);
 
-    const f = plane(wid, len, 'palmFrond');
-    f.translate(0, len / 2, 0);
-    const p = f.attributes.position;
-    for (let v = 0; v < p.count; v++) {
-      const t = p.getY(v) / len;
-      p.setY(v, p.getY(v) - Math.pow(t, 2) * len * droop * 0.8);
-      p.setZ(v, p.getZ(v) + Math.sin(t * Math.PI) * len * 0.06);
-    }
-    p.needsUpdate = true;
-    f.computeVertexNormals();
-
-    place(f, { rot: [0.5 + rng() * 0.35, a, 0], pos: [cx, H, cz] });
-    tint(f, G(0xffffff).multiplyScalar(0.66 + rng() * 0.55));
+    const f = buildFrond(len, wid, 0.5 + rng() * 0.55, rng);
+    place(f, { rot: [pitch, a, 0], pos: [cx, H - T.crown * 0.15, cz] });
+    tint(f, G(0xffffff).multiplyScalar(0.62 + rng() * 0.55));
     cutoutParts.push(f);
   }
 
-  const knot = ico(T.crown * 0.55, 0, 'bark', { pos: [cx, H - T.crown * 0.12, cz] });
+  /* dead fronds hanging down under the crown — very palm */
+  if (tierName !== 'sapling') {
+    for (let i = 0; i < 3; i++) {
+      const a = rng() * Math.PI * 2;
+      const f = buildFrond(frondLen * 0.7, T.crown * 0.8, 1.5, rng);
+      place(f, { rot: [2.3 + rng() * 0.4, a, 0], pos: [cx, H - T.crown * 0.3, cz] });
+      tint(f, G(0xa79052).multiplyScalar(0.7 + rng() * 0.3));
+      cutoutParts.push(f);
+    }
+  }
+
+  const knot = ico(T.crown * 0.5, 0, 'bark', { pos: [cx, H - T.crown * 0.3, cz] });
   tint(knot, G(0x8d7550));
   opaqueParts.push(knot);
 
-  // coconuts only on trees you could plausibly knock them out of
   if (tierName === 'sub' || tierName === 'canopy') {
-    const cn = (rng() * 4) | 0;
+    const cn = 2 + ((rng() * 4) | 0);
     for (let i = 0; i < cn; i++) {
       const a = rng() * Math.PI * 2;
-      const c = ico(0.28, 0, 'coconut', {
-        pos: [cx + Math.cos(a) * T.crown * 0.5, H - T.crown * 0.4 - rng() * 0.4, cz + Math.sin(a) * T.crown * 0.5],
+      const c = ico(0.26, 0, 'coconut', {
+        pos: [cx + Math.cos(a) * T.crown * 0.45, H - T.crown * 0.5 - rng() * 0.4,
+              cz + Math.sin(a) * T.crown * 0.45],
       });
       tint(c, G(0x9c7c50));
       opaqueParts.push(c);
@@ -139,7 +192,11 @@ function buildJungleTree(rng, tierName) {
   bendY(trunk, (rng() - 0.5) * H * 0.10, 'x', 2);
   tint(trunk, G(0x7d6a4c).multiplyScalar(0.8 + rng() * 0.35));
 
-  const opaqueParts = [trunk];
+  // buried footing so the trunk never lifts off a slope
+  const plug = cyl(rBase * 1.4, rBase * 2.6, 4.0, 7, 'barkDark', { pos: [0, -1.7, 0] });
+  tint(plug, G(0x5f4f38));
+
+  const opaqueParts = [trunk, plug];
 
   // buttress roots — the signature of a big rainforest tree
   const buttresses = tierName === 'sapling' ? 0 : (tierName === 'sub' ? 3 : 5);
@@ -463,8 +520,12 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     }
     if (blocked) continue;
 
-    const roll = rng();
     const yaw = rng() * Math.PI * 2;
+    /* Patchy, not uniform: thickets you push through and glades you can
+       actually navigate by. `roll` is divided by local density, so a low
+       density pushes rolls past the tree thresholds into "nothing here". */
+    const dens = vegetationDensity(x, z);
+    const roll = rng() / Math.max(0.12, dens);
 
     if (biome === 'sand') {
       if (slope > 0.3) continue;

@@ -1,5 +1,5 @@
 /* ===========================================================
-   temple.js — THE SUNKEN TEMPLE OF ISLA DORADA
+   temple.js — THE SUNKEN TEMPLE OF ILLIC ISLE
    Cut limestone, not lava. You come down a stair into a pillared
    hall the jungle has been eating for four hundred years: roots
    through the ceiling, shafts of daylight, old mine timbers where
@@ -58,17 +58,17 @@ export function buildTemple(idolMats, propMats) {
   const HX = TEMPLE.halfX, HZ = TEMPLE.halfZ, WH = TEMPLE.wallH;
 
   /* ---------- lighting: cool daylight from above, warm torches below ---------- */
-  scene.add(new THREE.AmbientLight(0x8a917a, 1.55));
-  const shaft = new THREE.DirectionalLight(0xdcecd0, 1.35);
+  scene.add(new THREE.AmbientLight(0x6e7563, 1.12));
+  const shaft = new THREE.DirectionalLight(0xdcecd0, 0.95);
   shaft.position.set(0.2, 1, 0.15);
   scene.add(shaft);
-  scene.add(new THREE.HemisphereLight(0xa8b48c, 0x3a3520, 1.0));
+  scene.add(new THREE.HemisphereLight(0x8a9670, 0x2c2a18, 0.78));
 
   // two broad fills so the fight floor and the dais both read
-  const hallFill = new THREE.PointLight(0xffc08a, 2.1, 84, 1.05);
+  const hallFill = new THREE.PointLight(0xffb478, 1.55, 78, 1.1);
   hallFill.position.set(0, 13, 6);
   scene.add(hallFill);
-  const daisFill = new THREE.PointLight(0xffd8a0, 1.6, 60, 1.1);
+  const daisFill = new THREE.PointLight(0xffd8a0, 1.35, 58, 1.15);
   daisFill.position.set(0, 12, -22);
   scene.add(daisFill);
 
@@ -119,14 +119,16 @@ export function buildTemple(idolMats, propMats) {
   ];
   for (const W of wallSpec) {
     // stacked courses so the wall has real relief
+    /* Courses used to alternate DEPTH, which put two coplanar faces in the
+       same place and z-fought into black bands. Keep the depth constant and
+       vary tone instead. */
     const courses = 9;
     for (let c = 0; c < courses; c++) {
       const y = 0.9 + c * (WH / courses);
-      const inset = (c % 2) * 0.22;
-      const g = box(W.w, WH / courses - 0.08, 1.6 + inset, 'templeStone', {
+      const g = box(W.w, WH / courses - 0.10, 1.6, 'templeStone', {
         pos: [W.x, y, W.z], rot: [0, W.rotY, 0],
       });
-      tint(g, STONE.clone().multiplyScalar(0.66 + rng() * 0.4 - c * 0.02));
+      tint(g, STONE.clone().multiplyScalar(0.60 + rng() * 0.30 - c * 0.015));
       wallParts.push(g);
     }
     // pilasters

@@ -66,14 +66,48 @@ export function drawGlyph(ctx, name, x, y, size, color = '#ffd24a') {
   }
 }
 
+/* A 9x8 pixel heart, drawn once and used as a background image so the HUD
+   is genuinely pixel art rather than a CSS clip-path silhouette. */
+function makeHeartSprite(full) {
+  const M = [
+    '.XX.XX...',
+    'XOOXOOX..',
+    'XOOOOOOX.',
+    'XOOOOOOX.',
+    '.XOOOOX..',
+    '..XOOX...',
+    '...XX....',
+  ];
+  const S = 4, W = 9, H = 7;
+  const c = document.createElement('canvas');
+  c.width = W * S; c.height = H * S;
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = false;
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const ch = M[j][i];
+      if (ch === '.') continue;
+      if (ch === 'X') x.fillStyle = full ? '#7a1410' : '#2e1210';
+      else x.fillStyle = full ? (j < 2 ? '#ff6a5a' : '#e0453a') : '#4a1c18';
+      x.fillRect(i * S, j * S, S, S);
+    }
+  }
+  // highlight glint
+  if (full) { x.fillStyle = '#ffb0a4'; x.fillRect(S, S, S, S); x.fillRect(S * 2, S, S, S); }
+  return c.toDataURL();
+}
+
+let HEART_FULL = null, HEART_EMPTY = null;
+
 export class UI {
   constructor(audio) {
+    if (!HEART_FULL) { HEART_FULL = makeHeartSprite(true); HEART_EMPTY = makeHeartSprite(false); }
     this.audio = audio;
     this.el = {
       hud: $('hud'),
       hearts: $('hearts'), stamina: $('stamina'), staminaWrap: $('stamina-wrap'),
       ammo: $('ammo-count'), marks: $('marks'), marksCount: $('marks-count'),
-      objective: $('objective-text'),
+      objective: $('objective-text'), timer: $('run-timer'),
       prompt: $('prompt'), promptText: $('prompt-text'),
       compassStrip: $('compass-strip'), compass: $('compass'),
       bossBar: $('boss-bar'), bossFill: $('boss-fill'), bossChip: $('boss-chip'), bossPhase: $('boss-phase'),
@@ -82,6 +116,8 @@ export class UI {
       journal: $('journal'), journalEntries: $('journal-entries'),
       map: $('map'), mapCanvas: $('map-canvas'), mapLegend: $('map-legend'),
       dials: $('dials'), dialRow: $('dial-row'), dialHint: $('dial-hint'),
+      shop: $('shop'), shopList: $('shop-list'), shopCoins: $('shop-coins'),
+      lightning: $('lightning'),
     };
 
     this._hearts = -1; this._maxHearts = -1;
@@ -108,6 +144,7 @@ export class UI {
     for (let i = 0; i < max; i++) {
       const d = document.createElement('div');
       d.className = 'heart' + (i < hp ? '' : ' empty') + (lost && i === hp ? ' hurt' : '');
+      d.style.backgroundImage = `url(${i < hp ? HEART_FULL : HEART_EMPTY})`;
       this.el.hearts.appendChild(d);
     }
   }
@@ -123,6 +160,15 @@ export class UI {
     this.el.marksCount.textContent = String(n);
     this.el.marks.classList.toggle('full', n >= total);
   }
+  setTimer(seconds) {
+    if (!this.el.timer) return;
+    const s = Math.max(0, seconds);
+    const mm = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(Math.floor(s % 60)).padStart(2, '0');
+    const cs = String(Math.floor((s * 100) % 100)).padStart(2, '0');
+    this.el.timer.textContent = `${mm}:${ss}.${cs}`;
+  }
+
   setObjective(text) {
     if (text === this._objective) return;
     this._objective = text;
@@ -457,4 +503,43 @@ export class UI {
   }
 
   closeDials() { this.el.dials.classList.add('hidden'); }
+
+  /* ===========================================================
+     FERDY'S SHOP
+     =========================================================== */
+  get shopOpen() { return !this.el.shop.classList.contains('hidden'); }
+
+  openShop(stock, coins, onBuy) {
+    this.el.shopCoins.textContent = String(coins);
+    this.el.shopList.innerHTML = '';
+    for (const it of stock) {
+      const row = document.createElement('button');
+      row.className = 'shop-row' + (it.owned ? ' owned' : (it.afford ? '' : ' broke'));
+      row.innerHTML =
+        `<span class="shop-name">${it.name}</span>` +
+        `<span class="shop-desc">${it.desc}</span>` +
+        `<span class="shop-cost">${it.owned ? 'SOLD' : it.cost + ' \u25C9'}</span>`;
+      if (!it.owned) row.addEventListener('click', () => onBuy(it.id));
+      this.el.shopList.appendChild(row);
+    }
+    this.el.shop.classList.remove('hidden');
+  }
+
+  shakeShop() {
+    this.el.shopList.animate(
+      [{ transform: 'translateX(0)' }, { transform: 'translateX(-7px)' },
+       { transform: 'translateX(7px)' }, { transform: 'translateX(0)' }],
+      { duration: 200, iterations: 2 });
+  }
+
+  closeShop() { this.el.shop.classList.add('hidden'); }
+
+  /** Full-screen white pop for a lightning strike. */
+  flashLightning() {
+    const f = this.el.lightning;
+    if (!f) return;
+    f.classList.remove('on');
+    void f.offsetWidth;
+    f.classList.add('on');
+  }
 }

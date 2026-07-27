@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Illic Isle — The Idol of Isla Dorada</title>
+<title>Illic Isle — The Idol of Illic Isle</title>
 <meta name="description" content="A PS1-style castaway adventure. Wash ashore, follow the Rogue Agents' map, wake the four Rogue Pendulums, and take the Golden Idol of Chris Illich from El Bass Presidente." />
 <meta property="og:title" content="Illic Isle" />
 <meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illich." />
@@ -31,16 +31,35 @@
 <!-- ============ TITLE ============ -->
 <div id="title" class="screen hidden">
   <div class="title-vign"></div>
-  <div class="title-inner">
-    <div class="title-sup">THE LEGEND OF</div>
-    <h1 class="title-logo">ILLIC<span class="l2">ISLE</span></h1>
-    <div class="title-sub">THE IDOL OF ISLA DORADA</div>
-    <div class="title-menu">
-      <button class="mbtn" data-act="start">&#9654; BEGIN CASTAWAY</button>
-      <button class="mbtn" data-act="controls">CONTROLS</button>
-      <button class="mbtn" data-act="options">OPTIONS</button>
+  <div class="title-grid">
+    <div class="title-inner">
+      <div class="title-sup">THE LEGEND OF</div>
+      <h1 class="title-logo">ILLIC<span class="l2">ISLE</span></h1>
+      <div class="title-rule"><i></i><b></b><i></i></div>
+      <div class="title-sub">THE IDOL OF ILLIC ISLE</div>
+      <div class="title-menu">
+        <button class="mbtn" data-act="start">&#9654; BEGIN CASTAWAY</button>
+        <button class="mbtn" data-act="controls">CONTROLS</button>
+        <button class="mbtn" data-act="options">OPTIONS</button>
+      </div>
+      <div class="title-foot">&copy; 1998 SCHWAB TECHNOLOGY<br /><span id="title-hint">CLICK TO PLAY</span></div>
     </div>
-    <div class="title-foot">&copy; 1998 DORADA SOFTWORKS<br /><span id="title-hint">CLICK TO PLAY</span></div>
+
+    <aside class="title-lore">
+      <div class="lore-card">
+        <h3>THE ISLAND</h3>
+        <p>Once the seat of <b>KING ILLIC</b>, who ruled it badly and at length.</p>
+      </div>
+      <div class="lore-card">
+        <h3>THE ROGUE AGENTS</h3>
+        <p>They came for the king, sealed his spirit in gold, and never left.</p>
+      </div>
+      <div class="lore-card">
+        <h3>HECTOR</h3>
+        <p>The king's brother. Killed every agent on the rock. Has not been hungry since.</p>
+      </div>
+      <div class="title-marquee"><span>FOUR PENDULUMS &middot; ONE IDOL &middot; NO REFUNDS &middot; </span><span>FOUR PENDULUMS &middot; ONE IDOL &middot; NO REFUNDS &middot; </span></div>
+    </aside>
   </div>
 </div>
 
@@ -144,6 +163,7 @@
   </div>
 
   <div id="objective"><span class="obj-label">OBJECTIVE</span><span id="objective-text">&mdash;</span></div>
+  <div id="run-timer">00:00.00</div>
 
   <div id="prompt" class="hidden"><kbd>E</kbd><span id="prompt-text"></span></div>
 
@@ -154,6 +174,7 @@
   </div>
 
   <div id="toast-wrap"></div>
+  <div id="lightning"></div>
   <div id="dmg-flash"></div>
   <div id="heal-flash"></div>
 </div>
@@ -204,6 +225,17 @@
   </div>
 </div>
 
+<!-- ============ FERDY'S SUPPLIES ============ -->
+<div id="shop" class="screen hidden panel-screen">
+  <div class="panel shop-panel">
+    <h2>FERDY STEINMAN'S SUPPLIES</h2>
+    <p class="tip shop-quote">"Everything here fell off a boat. Some of it twice."</p>
+    <div class="shop-purse">SYNCOINS <b id="shop-coins">0</b></div>
+    <div id="shop-list"></div>
+    <button class="mbtn back-btn">&#9664; LEAVE</button>
+  </div>
+</div>
+
 <!-- ============ PAUSE ============ -->
 <div id="pause" class="screen hidden panel-screen">
   <div class="panel">
@@ -240,7 +272,7 @@
       <button class="mbtn" data-act="share">COPY BRAG</button>
       <button class="mbtn" data-act="again">&#8634; PLAY AGAIN</button>
     </div>
-    <div class="ending-foot">THANK YOU FOR PLAYING &middot; DORADA SOFTWORKS</div>
+    <div class="ending-foot">THANK YOU FOR PLAYING &middot; SCHWAB TECHNOLOGY</div>
   </div>
 </div>
 

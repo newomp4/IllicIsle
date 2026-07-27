@@ -97,17 +97,28 @@ export class Cutscene {
     return this.done;
   }
 
-  /** Fire anything left, then close out. Used by skip and by natural end. */
-  finish() {
+  /**
+   * Fire anything left, then close out.
+   * Events marked `visualOnly` are cosmetic (fades, stingers) — firing them
+   * from a skip would stomp the state the onDone handler is about to set,
+   * so they're dropped. State-changing events always run, otherwise
+   * skipping a cutscene would leave the world half-updated.
+   */
+  finish(skipped = false) {
     if (this.done) return;
     this.done = true;
-    for (const e of this.events) if (!e.fired) { e.fired = true; e.fn?.(); }
+    for (const e of this.events) {
+      if (e.fired) continue;
+      e.fired = true;
+      if (skipped && e.visualOnly) continue;
+      e.fn?.();
+    }
     const el = document.getElementById('intro-text');
     if (el) el.classList.remove('on');
     this.onDone?.();
   }
 
-  skip() { if (this.skippable) this.finish(); }
+  skip() { if (this.skippable) this.finish(true); }
 }
 
 /** Show/hide the letterbox bars + card layer. */
