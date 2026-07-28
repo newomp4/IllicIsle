@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { RetroPipeline, setJitterEnabled, setTime } from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
-import { mergeGeos, tint, plane, box, cyl } from './lib/geo.js';
+import { mergeGeos, tint, plane, box, cyl, ico, lumpify } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
 import { Cutscene, setCinemaBars } from './lib/cutscene.js';
 import { UI } from './ui.js';
@@ -21,7 +21,7 @@ import {
   buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS,
 } from './world/props.js';
 import {
-  buildSyncoin, buildRelic, buildFerdyHut, buildBeacon, buildStorm,
+  buildSyncoin, buildRelic, buildFerdiHut, buildBeacon, buildStorm, buildTikiTorch,
 } from './world/extras.js';
 import { buildIdolMaterials, buildIdol, buildIdolShrine } from './world/idol.js';
 import { buildTemple, templeHeight, TEMPLE } from './world/temple.js';
@@ -170,7 +170,7 @@ that out and written LAYER again, larger.`,
   },
 };
 
-/* ---------- Ferdy's stock ---------- */
+/* ---------- Ferdi's stock ---------- */
 export const SHOP = [
   { id: 'heart',  name: 'A SPARE HEART',      cost: 4, desc: 'One more heart. No questions.' },
   { id: 'satchel', name: 'BIGGER SATCHEL',    cost: 3, desc: 'Carry 14 coconuts instead of 8.' },
@@ -186,7 +186,7 @@ The storm took the ship, the crew, and most of my
 good sense. It did not take the reason I came.
 
 Somewhere on this island is the Idol of Chris
-Illich, cast in gold by people who thought better
+Illic, cast in gold by people who thought better
 of what they'd made.
 
 There are others here. There were, anyway.`,
@@ -203,7 +203,7 @@ Pendulums to mark the way in, and then we sealed
 the way in, and then we could not get back out.
 
 There are only two things on this island that will
-get you off it: the Idol of Chris Illich, and the
+get you off it: the Idol of Chris Illic, and the
 man who is sitting on it.
 
 The chart is enclosed. Four Pendulums, four glyphs,
@@ -251,6 +251,11 @@ export class Game {
     /* Speedrun clock. Only advances while you actually have control, so
        cutscenes, menus, the chart and the reader are all excluded. */
     this.runTime = 0;
+    /* Day/night: 2 minutes light, 2 minutes dark, with a short dawn and
+       dusk either side so it doesn't snap. */
+    this.clock24 = 0;
+    this.DAY_LEN = 240;
+    this.night = 0;
     this.stats = { deaths: 0, thrown: 0, hits: 0 };
 
     this._initRenderer();
@@ -280,6 +285,7 @@ export class Game {
 
     this.pipeline = new RetroPipeline(this.renderer, this.settings.res);
     this.pipeline.setCRT(this.settings.crt);
+    this.pipeline.setHudCanvas(this.ui.hud.c);
     setJitterEnabled(this.settings.jitter);
 
     this.camera = new THREE.PerspectiveCamera(66, 1, 0.35, 460);
@@ -334,7 +340,7 @@ export class Game {
         x: LANDMARKS[k].x, z: LANDMARKS[k].z, r: 15,
       }));
       clearZones.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, r: 26 });
-      clearZones.push({ x: -30, z: 46, r: 20 });   // Ferdy's clearing
+      clearZones.push({ x: -30, z: 46, r: 20 });   // Ferdi's clearing
       scatterIsland(this.islandScene, this.propMats, makeRng(2468),
         this.settings.density, this.colliders, clearZones);
     });
@@ -372,12 +378,14 @@ export class Game {
     // Tight enough that the jungle feels enclosed, open enough to see surf.
     scene.fog = new THREE.Fog(0xb4d0d4, 46, 235);
 
-    scene.add(new THREE.AmbientLight(0x9cb8c4, 1.05));
+    this.ambient = new THREE.AmbientLight(0x9cb8c4, 1.05);
+    scene.add(this.ambient);
     const sun = new THREE.DirectionalLight(0xfff0cf, 1.45);
     sun.position.set(-60, 90, 40);
     scene.add(sun);
     this.sun = sun;
-    scene.add(new THREE.HemisphereLight(0xcfe8f5, 0x4a5a28, 0.75));
+    this.hemi = new THREE.HemisphereLight(0xcfe8f5, 0x4a5a28, 0.75);
+    scene.add(this.hemi);
 
     this.terrain = buildTerrain(this.atlas);
     scene.add(this.terrain);
@@ -510,9 +518,9 @@ export class Game {
       this.coconutPiles.push({ mesh: pile, x: g.x, z: g.z, y: g.y, cooldown: 0 });
     }
 
-    /* ---- Ferdy Steinman's hut: the one landmark you can steer by ---- */
+    /* ---- Ferdi Steinman's hut: the one landmark you can steer by ---- */
     const fh = findGround(-30, 46, { rng, radius: 22, minH: 5, maxH: 22, maxSlope: 0.16 });
-    const hut = buildFerdyHut(rng, this.propMats);
+    const hut = buildFerdiHut(rng, this.propMats);
     hut.position.set(fh.x, fh.y - 0.4, fh.z);
     hut.rotation.y = Math.atan2(-fh.x, -fh.z);
     scene.add(hut);
@@ -521,7 +529,7 @@ export class Game {
     this.colliders.push({ x: fh.x, z: fh.z, r: 3.4 });
     this.interactables.push({
       kind: 'ferdy', x: fh.x + Math.sin(hut.rotation.y) * 3.2, z: fh.z + Math.cos(hut.rotation.y) * 3.2,
-      y: fh.y, r: 4.5, prompt: "Talk to Ferdy Steinman",
+      y: fh.y, r: 4.5, prompt: "Talk to Ferdi Steinman",
     });
 
     /* ---- syncoins scattered as currency ---- */
@@ -730,8 +738,51 @@ export class Game {
     group.add(light);
     group.userData.light = light;
 
+    /* The facade is a flat slab dropped onto a sloped hillside, so its
+       downhill corners used to hang in mid-air. Skirt it with rock that
+       reaches from each corner down to whatever the terrain is actually
+       doing there, and pack the sides into the cliff. */
+    const yaw = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+    const skirt = [];
+    const cs = Math.cos(yaw), sn = Math.sin(yaw);
+    const toWorld = (lx, lz) => ({
+      x: dg.x + lx * cs + lz * sn,
+      z: dg.z - lx * sn + lz * cs,
+    });
+    for (let lx = -17; lx <= 17; lx += 2.2) {
+      for (let lz = -8; lz <= 7; lz += 2.2) {
+        const w = toWorld(lx, lz);
+        const gh = heightAt(w.x, w.z);
+        const localTop = dg.y - 0.6 + 1.0;
+        const drop = localTop - gh;
+        if (drop < 0.2) continue;                  // ground is already high
+        const h = drop + 3.0;                      // always bury the bottom
+        const b = box(2.5, h, 2.5, 'templeStone', {
+          pos: [lx, (localTop - h / 2) - (dg.y - 0.6), lz],
+        });
+        tint(b, new THREE.Color(0x7b7360).multiplyScalar(0.7 + rng() * 0.35));
+        skirt.push(b);
+      }
+    }
+    // rough boulders masking the join between cut stone and hillside
+    for (let i = 0; i < 26; i++) {
+      const lx = -19 + rng() * 38;
+      const lz = -9 + rng() * 17;
+      if (Math.abs(lx) < 6 && lz > 0) continue;    // keep the doorway clear
+      const w = toWorld(lx, lz);
+      const gh = heightAt(w.x, w.z) - (dg.y - 0.6);
+      const sSize = 1.1 + rng() * 2.2;
+      const r = ico(sSize, 0, 'caveRock', {
+        pos: [lx, gh + sSize * 0.2, lz], rot: [rng() * 3, rng() * 3, rng() * 3],
+      });
+      lumpify(r, 0.3, rng);
+      tint(r, new THREE.Color(0x6f6656).multiplyScalar(0.7 + rng() * 0.4));
+      skirt.push(r);
+    }
+    group.add(new THREE.Mesh(mergeGeos(skirt), M.opaque));
+
     group.position.set(dg.x, dg.y - 0.6, dg.z);
-    group.rotation.y = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+    group.rotation.y = yaw;
     group.userData.open = 0;
     group.userData.setOpen = (a) => {
       group.userData.open = a;
@@ -930,6 +981,8 @@ export class Game {
     this.relics.clear();
     this.bought.clear();
     this.runTime = 0;
+    this.clock24 = 0;
+    this.night = 0;
     this.player.maxHp = 5;
     this.player.SPRINT = 15.5;
     if (this.syncoins) this.syncoins.forEach((c) => { c.taken = false; c.mesh.visible = true; });
@@ -1091,6 +1144,60 @@ export class Game {
     }
   }
 
+  /** You come round on the sand: blur, first light, getting up. */
+  playWakeCutscene() {
+    const P = () => this.player.pos;
+    const eye = (h) => new THREE.Vector3(P().x, P().y + h, P().z);
+
+    this.playCutscene({
+      shots: [
+        { // face down in the sand, half-lidded
+          dur: 3.6, ease: 'linear',
+          from: () => eye(0.22).add(new THREE.Vector3(0.4, 0, 0.5)),
+          to: () => eye(0.30).add(new THREE.Vector3(0.1, 0, 0.3)),
+          lookFrom: () => eye(0.16).add(new THREE.Vector3(2.2, 0, 1.4)),
+          lookTo: () => eye(0.26).add(new THREE.Vector3(2.6, 0.3, 1.0)),
+        },
+        { // pushing up onto the knees
+          dur: 3.2, ease: 'easeOut',
+          from: () => eye(0.34).add(new THREE.Vector3(1.6, 0, 2.0)),
+          to: () => eye(1.0).add(new THREE.Vector3(2.0, 0, 2.6)),
+          lookFrom: () => eye(0.5), lookTo: () => eye(1.0),
+        },
+        { // upright, and the island is looking back
+          dur: 4.0, ease: 'smooth',
+          from: () => eye(1.4).add(new THREE.Vector3(2.4, 0.4, 3.2)),
+          to: () => eye(1.5).add(new THREE.Vector3(-2.2, 0.6, 4.4)),
+          lookFrom: () => eye(1.2), lookTo: () => eye(1.3),
+        },
+      ],
+      text: [
+        { at: 0.5, until: 3.4, text: 'You are alive.\nThat was not the plan either way.' },
+        { at: 4.4, until: 7.6, text: 'Salt, sand, and somebody else\'s campfire\nsomewhere behind you.' },
+        { at: 8.4, until: 10.6, text: 'ILLIC ISLE' },
+      ],
+      events: [
+        { at: 0.0, visualOnly: true, fn: () => this.fade(1, 1800) },
+        { at: 0.3, fn: () => this.audio.sfx('surfWash') },
+        { at: 3.4, fn: () => this.audio.sfx('step_sand') },
+        { at: 3.9, fn: () => this.audio.sfx('land') },
+        { at: 8.2, fn: () => this.audio.sfx('stinger') },
+        { at: 5.6, fn: () => this.audio.sfx('surfWash') },
+      ],
+      onDone: () => this.finishOpening(),
+    }, this.islandScene);
+  }
+
+  finishOpening() {
+    setCinemaBars(false);
+    this.state = 'island';
+    this.fade(1, 600);
+    this.ui.show();
+    this.ui.setObjective('Look around the camp. Somebody was here before you.');
+    this._requestLock();
+    setTimeout(() => this.ui.toast('WASHED ASHORE - ILLIC ISLE', 'gold', 3600), 400);
+  }
+
   endIntro() {
     setCinemaBars(false);
     this.introClearing = true;
@@ -1105,12 +1212,8 @@ export class Game {
     this.sky.material.opacity = 1;
     this.sky.material.transparent = false;
 
-    this.state = 'island';
-    this.fade(1, 700);
-    this.ui.show();
-    this.ui.setObjective('Look around the camp. Somebody was here before you.');
-    this._requestLock();
-    setTimeout(() => this.ui.toast('WASHED ASHORE — ILLIC ISLE', 'gold', 3600), 400);
+    // the storm hands straight over to coming round on the sand
+    this.playWakeCutscene();
   }
 
   /* ---------- descending into the temple ---------- */
@@ -1145,7 +1248,139 @@ export class Game {
     }, this.islandScene);
   }
 
+  /** Each Pendulum wakes up when you read its plate. */
+  playPendulumCutscene(index, p) {
+    const tower = this.pendulumMeshes[index];
+    const base = tower.position.clone();
+    const top = base.clone().add(new THREE.Vector3(0, 12, 0));
+    const glyphY = base.clone().add(new THREE.Vector3(0, 4.6, 0));
+
+    // the bob speeds up and the housing lights
+    let boost = 0;
+    this._pendBoost = (dt) => {
+      boost = Math.min(1, boost + dt / 2.2);
+      if (tower.userData.setNight) tower.userData.setNight(Math.max(this.night, boost));
+    };
+
+    this.playCutscene({
+      shots: [
+        { // up the shaft to the glyph plate
+          dur: 3.0, ease: 'easeOut',
+          from: base.clone().add(new THREE.Vector3(7, 2.0, 9)),
+          to: base.clone().add(new THREE.Vector3(2.6, 4.4, 4.4)),
+          look: glyphY,
+        },
+        { // climb to the slot; the bob is swinging hard now
+          dur: 3.4, ease: 'smooth', shake: 0.06,
+          from: base.clone().add(new THREE.Vector3(3.0, 6, 6)),
+          to: base.clone().add(new THREE.Vector3(-1.4, 13, 7.5)),
+          lookFrom: glyphY,
+          lookTo: base.clone().add(new THREE.Vector3(0, 12.5, 0)),
+        },
+        { // wide, as the beam goes up
+          dur: 3.0, ease: 'smooth',
+          from: base.clone().add(new THREE.Vector3(-6, 14, 14)),
+          to: base.clone().add(new THREE.Vector3(-12, 22, 22)),
+          look: top,
+        },
+      ],
+      text: [
+        { at: 0.5, until: 3.0, text: `ROGUE PENDULUM ${['I', 'II', 'III', 'IV'][p.order - 1]}` },
+        { at: 4.0, until: 6.6, text: `GLYPH RECORDED - THE ${p.glyph}` },
+        { at: 7.2, until: 9.4, text: `${this.found.size} OF 4` },
+      ],
+      events: [
+        { at: 0.2, fn: () => this.audio.sfx('cast') },
+        { at: 2.9, fn: () => this.audio.sfx('rumble') },
+        { at: 6.2, fn: () => this.audio.sfx('pickup') },
+        { at: 6.4, fn: () => this.audio.sfx('door') },
+      ],
+      onDone: () => {
+        this._pendBoost = null;
+        if (tower.userData.setNight) tower.userData.setNight(this.night);
+        setCinemaBars(false);
+        this.state = 'island';
+        this.ui.show();
+        this.ui.setMarks(this.found.size, 4);
+        this._refreshCompass();
+        if (this.found.size >= 4) {
+          this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
+          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
+        } else {
+          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
+        }
+        this.showReader(p.title, p.text);
+      },
+    }, this.islandScene);
+  }
+
   /* ---------- Hector goes down ---------- */
+  /** Each Pendulum wakes up when you read its plate. */
+  playPendulumCutscene(index, p) {
+    const tower = this.pendulumMeshes[index];
+    const base = tower.position.clone();
+    const top = base.clone().add(new THREE.Vector3(0, 12, 0));
+    const glyphY = base.clone().add(new THREE.Vector3(0, 4.6, 0));
+
+    // the bob speeds up and the housing lights
+    let boost = 0;
+    this._pendBoost = (dt) => {
+      boost = Math.min(1, boost + dt / 2.2);
+      if (tower.userData.setNight) tower.userData.setNight(Math.max(this.night, boost));
+    };
+
+    this.playCutscene({
+      shots: [
+        { // up the shaft to the glyph plate
+          dur: 3.0, ease: 'easeOut',
+          from: base.clone().add(new THREE.Vector3(7, 2.0, 9)),
+          to: base.clone().add(new THREE.Vector3(2.6, 4.4, 4.4)),
+          look: glyphY,
+        },
+        { // climb to the slot; the bob is swinging hard now
+          dur: 3.4, ease: 'smooth', shake: 0.06,
+          from: base.clone().add(new THREE.Vector3(3.0, 6, 6)),
+          to: base.clone().add(new THREE.Vector3(-1.4, 13, 7.5)),
+          lookFrom: glyphY,
+          lookTo: base.clone().add(new THREE.Vector3(0, 12.5, 0)),
+        },
+        { // wide, as the beam goes up
+          dur: 3.0, ease: 'smooth',
+          from: base.clone().add(new THREE.Vector3(-6, 14, 14)),
+          to: base.clone().add(new THREE.Vector3(-12, 22, 22)),
+          look: top,
+        },
+      ],
+      text: [
+        { at: 0.5, until: 3.0, text: `ROGUE PENDULUM ${['I', 'II', 'III', 'IV'][p.order - 1]}` },
+        { at: 4.0, until: 6.6, text: `GLYPH RECORDED - THE ${p.glyph}` },
+        { at: 7.2, until: 9.4, text: `${this.found.size} OF 4` },
+      ],
+      events: [
+        { at: 0.2, fn: () => this.audio.sfx('cast') },
+        { at: 2.9, fn: () => this.audio.sfx('rumble') },
+        { at: 6.2, fn: () => this.audio.sfx('pickup') },
+        { at: 6.4, fn: () => this.audio.sfx('door') },
+      ],
+      onDone: () => {
+        this._pendBoost = null;
+        if (tower.userData.setNight) tower.userData.setNight(this.night);
+        setCinemaBars(false);
+        this.state = 'island';
+        this.ui.show();
+        this.ui.setMarks(this.found.size, 4);
+        this._refreshCompass();
+        if (this.found.size >= 4) {
+          this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
+          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
+        } else {
+          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
+        }
+        this.showReader(p.title, p.text);
+      },
+    }, this.islandScene);
+  }
+
   /* ---------- Hector goes down ---------- */
   playDefeatCutscene() {
     const H = this.hector;
@@ -1266,7 +1501,7 @@ I have snacks."`);
         },
       ],
       text: [
-        { at: 1.0, until: 5.4, text: 'THE IDOL OF CHRIS ILLICH' },
+        { at: 1.0, until: 5.4, text: 'THE IDOL OF CHRIS ILLIC' },
         { at: 6.4, until: 10.4, text: 'Cast by people who loved him\nmore than was strictly advisable.' },
       ],
       events: [
@@ -1368,7 +1603,7 @@ I have snacks."`);
         const D = TEMPLE.daisCenter;
         const d = Math.hypot(p.x - D.x, p.z - D.z);
         // generous: the dais is wide and this is the last action in the game
-        if (d < 8.0 && d < bestD) { bestD = d; best = { kind: 'takeIdol', prompt: 'TAKE THE IDOL OF CHRIS ILLICH' }; }
+        if (d < 8.0 && d < bestD) { bestD = d; best = { kind: 'takeIdol', prompt: 'TAKE THE IDOL OF CHRIS ILLIC' }; }
       }
       return best;
     }
@@ -1421,7 +1656,12 @@ I have snacks."`);
         if (this.found.has(p.id)) return;
         it.taken = true;
         this.found.add(p.id);
-        this.audio.sfx('pickup');
+        this.playPendulumCutscene(it.index, p);
+        return;
+      }
+
+      case '__unused_pendulum': {
+        const p = PENDULUMS[it.index];
         this.showReader(p.title, p.text);
         this.ui.setMarks(this.found.size, 4);
         this._refreshCompass();
@@ -1474,8 +1714,8 @@ I have snacks."`);
         if (it.relic === 'syncoin') this.coins += 3;
         this.audio.sfx('pickup');
         const R = RELICS[it.relic];
+        this.ui.showPopup(R.title, `RELIC ${this.relics.size} OF 4`, it.relic);
         this.showReader(R.title, R.text);
-        this.ui.toast(`RELIC ${this.relics.size}/4 — ${R.title}`, 'jade', 3600);
         break;
       }
 
@@ -1484,7 +1724,7 @@ I have snacks."`);
         it.coin.mesh.visible = false;
         this.coins++;
         this.audio.sfx('coin');
-        this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1300);
+        this.ui.showPopup('SYNCOIN', `x${this.coins}`, 'coin');
         break;
       }
 
@@ -1514,7 +1754,7 @@ I have snacks."`);
     if (id === 'satchel') { this.coconutMax = 14; }
     if (id === 'boots') { this.player.SPRINT = 19.5; this.player.staminaDrain = 0.10; }
 
-    this.ui.toast(`FERDY: "${item.name}. No refunds."`, 'jade', 3000);
+    this.ui.toast(`FERDI: "${item.name}. No refunds."`, 'jade', 3000);
     this.openShop();
   }
 
@@ -1642,6 +1882,9 @@ I have snacks."`);
     }
 
     this.audio.playMusic('temple');
+    // The descent cutscene hid the HUD; nothing was bringing it back, which
+    // is why the temple looked like it had no UI at all.
+    this.ui.show();
     this.ui.setObjective('Something has been living down here for eleven years.');
     this.ui.setCompassPois([
       { label: 'OUT', x: TEMPLE.entrance.x, z: TEMPLE.entrance.z, kind: 'poi' },
@@ -1877,6 +2120,7 @@ I have snacks."`);
     if (this.state === 'title' || this.state === 'ending') { this.updateTitle(dt); return; }
     if (this.state === 'cutscene') {
       if (this._idolRise) this._idolRise(dt);
+      if (this._pendBoost) this._pendBoost(dt);
       if (this._bloom != null) {
         this._bloom = Math.min(1, this._bloom + dt * 1.6);
         this.pipeline.tintAmt = this._bloom;
@@ -1914,6 +2158,8 @@ I have snacks."`);
     this.ui.setStamina(this.player.stamina);
     this.ui.setAmmo(this.coconutCount);
     this.ui.setMarks(this.found.size, 4);
+    this.ui.setRelics(this.relics.size);
+    this.ui.setCoins(this.coins);
     this.ui.updateCompass(this.player.yaw, this.player.pos.x, this.player.pos.z);
 
     const it = frozen ? null : this.nearestInteractable();
@@ -1925,7 +2171,7 @@ I have snacks."`);
     const t = this.time;
     this.ocean.userData.tick(t);
     this.surf.userData.tick(t);
-    this.clouds.userData.tick(t, dt);
+    this.clouds.userData.tick(t, dt, this.night || 0);
     this.birds.userData.tick(t, dt);
     this.critters.userData.tick(t, dt, this.player?.pos);
     this.sky.position.copy(this.camera.position);
@@ -1935,11 +2181,70 @@ I have snacks."`);
     }
   }
 
+  /**
+   * Day/night. Two minutes of light, two of dark, with dawn and dusk
+   * ramps either side. `night` is 0..1 and everything that emits light
+   * reads off it.
+   */
+  updateDayNight(dt) {
+    this.clock24 = (this.clock24 + dt) % this.DAY_LEN;
+    const p = this.clock24 / this.DAY_LEN;          // 0..1 through the cycle
+    // 0.00-0.42 day, 0.42-0.50 dusk, 0.50-0.92 night, 0.92-1.00 dawn
+    let n;
+    if (p < 0.42) n = 0;
+    else if (p < 0.50) n = (p - 0.42) / 0.08;
+    else if (p < 0.92) n = 1;
+    else n = 1 - (p - 0.92) / 0.08;
+    this.night = n * n * (3 - 2 * n);                 // smooth the ramp
+
+    const k = this.night;
+    const storm = this.storm && this.storm.active ? 1 : 0;
+    const dark = Math.max(k, storm * 0.55);
+
+    // sky and fog
+    const f = this.islandScene.fog;
+    f.color.setRGB(
+      THREE.MathUtils.lerp(0.706, 0.055, dark),
+      THREE.MathUtils.lerp(0.816, 0.070, dark),
+      THREE.MathUtils.lerp(0.831, 0.115, dark));
+    f.far = THREE.MathUtils.lerp(235, 110, dark);
+    this.islandScene.background.setRGB(
+      THREE.MathUtils.lerp(0.561, 0.030, dark),
+      THREE.MathUtils.lerp(0.769, 0.042, dark),
+      THREE.MathUtils.lerp(0.867, 0.082, dark));
+
+    // sun becomes a cold moon
+    if (this.sun) {
+      this.sun.intensity = THREE.MathUtils.lerp(1.45, 0.18, dark);
+      this.sun.color.setRGB(
+        THREE.MathUtils.lerp(1.0, 0.55, k),
+        THREE.MathUtils.lerp(0.94, 0.66, k),
+        THREE.MathUtils.lerp(0.81, 1.0, k));
+    }
+    if (this.ambient) this.ambient.intensity = THREE.MathUtils.lerp(1.05, 0.28, dark);
+    if (this.hemi) this.hemi.intensity = THREE.MathUtils.lerp(0.75, 0.20, dark);
+    this.sky.material.opacity = 1 - dark * 0.92;
+    this.sky.material.transparent = dark > 0.02;
+
+    // everything that burns
+    for (const t of (this.tikis || [])) t.userData.tick(this.time, dt, dark);
+    if (this.campfire) {
+      this.campfire.userData.light.intensity =
+        (1.4 + dark * 1.6) + Math.sin(this.time * 11) * 0.4;
+    }
+  }
+
   updateIslandLogic(dt, frozen) {
+    this.updateDayNight(dt);
+
     /* beacons: on once you have the chart, off as each is read */
     if (this.hasChart) {
       for (const b of this.beacons) b.node.visible = !this.found.has(b.id);
       this.templeBeacon.visible = this.found.size >= 4;
+    }
+    // the Pendulums themselves burn brighter after dark
+    for (const m of (this.pendulumMeshes || [])) {
+      if (m.userData.setNight) m.userData.setNight(this.night);
     }
 
     /* the storm rolls in when the last Pendulum is read */
@@ -1949,23 +2254,9 @@ I have snacks."`);
       this.ui.toast('THE SKY TURNS OVER', 'bad', 4200);
       this.audio.sfx('thunder');
     }
-    const strength = this.storm.tick(this.time, dt, this.camera.position);
-    if (strength > 0.01) {
-      // drag the whole island toward a storm palette
-      const f = this.islandScene.fog;
-      f.color.setRGB(
-        THREE.MathUtils.lerp(0.706, 0.20, strength),
-        THREE.MathUtils.lerp(0.816, 0.23, strength),
-        THREE.MathUtils.lerp(0.831, 0.28, strength));
-      f.far = THREE.MathUtils.lerp(235, 120, strength);
-      this.islandScene.background.setRGB(
-        THREE.MathUtils.lerp(0.561, 0.13, strength),
-        THREE.MathUtils.lerp(0.769, 0.15, strength),
-        THREE.MathUtils.lerp(0.867, 0.19, strength));
-      this.sun.intensity = THREE.MathUtils.lerp(1.45, 0.35, strength);
-      this.sky.material.opacity = 1 - strength * 0.9;
-      this.sky.material.transparent = strength > 0.02;
-    }
+    // updateDayNight already folds storm darkness into the palette; this
+    // just advances the rain and the lightning.
+    this.storm.tick(this.time, dt, this.camera.position);
 
     for (const p of this.coconutPiles) {
       if (p.cooldown > 0) { p.cooldown -= dt; if (p.cooldown <= 0) p.mesh.visible = true; }
@@ -2029,6 +2320,13 @@ I have snacks."`);
   }
 
   render(dt) {
+    // keep the HUD canvas matched to the framebuffer and re-upload it
+    const int = this.pipeline.internal;
+    if (int) this.ui.hud.setSize(int.w, int.h);
+    this.ui.hud.update(dt);
+    this.ui.hud.render(this.time);
+    this.pipeline.markHudDirty();
+
     if (this.state === 'title' || this.state === 'ending') {
       this.titleCam.aspect = this.camera.aspect;
       this.titleCam.updateProjectionMatrix();

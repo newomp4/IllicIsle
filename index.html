@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Illic Isle — The Idol of Illic Isle</title>
-<meta name="description" content="A PS1-style castaway adventure. Wash ashore, follow the Rogue Agents' map, wake the four Rogue Pendulums, and take the Golden Idol of Chris Illich from El Bass Presidente." />
+<meta name="description" content="A PS1-style castaway adventure. Wash ashore, follow the Rogue Agents' map, wake the four Rogue Pendulums, and take the Golden Idol of Chris Illic from El Bass Presidente." />
 <meta property="og:title" content="Illic Isle" />
-<meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illich." />
+<meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illic." />
 <link rel="stylesheet" href="css/style.css" />
 <link rel="preload" href="fonts/pressstart2p.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="fonts/silkscreen.woff2" as="font" type="font/woff2" crossorigin />
@@ -148,36 +148,8 @@
   </div>
 </div>
 
-<!-- ============ HUD ============ -->
-<div id="hud" class="hidden">
-  <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
-
-  <div id="hud-left">
-    <div id="hearts"></div>
-    <div id="stamina-wrap"><div id="stamina"></div></div>
-  </div>
-
-  <div id="hud-right">
-    <div id="ammo"><span class="ammo-ico">&#9679;</span><span id="ammo-count">0</span></div>
-    <div id="marks">PENDULUMS <span id="marks-count">0</span>/4</div>
-  </div>
-
-  <div id="objective"><span class="obj-label">OBJECTIVE</span><span id="objective-text">&mdash;</span></div>
-  <div id="run-timer">00:00.00</div>
-
-  <div id="prompt" class="hidden"><kbd>E</kbd><span id="prompt-text"></span></div>
-
-  <div id="boss-bar" class="hidden">
-    <div class="boss-name">HECTOR &mdash; EL BASS PRESIDENTE</div>
-    <div class="boss-track"><div id="boss-fill"></div><div id="boss-chip"></div></div>
-    <div id="boss-phase">TERM ONE</div>
-  </div>
-
-  <div id="toast-wrap"></div>
-  <div id="lightning"></div>
-  <div id="dmg-flash"></div>
-  <div id="heal-flash"></div>
-</div>
+<!-- The in-game HUD is drawn on canvas inside the PS1 pass (js/lib/hud.js). -->
+<div id="lightning"></div>
 
 <!-- ============ INTRO CINEMATIC ============ -->
 <div id="intro" class="screen hidden">
@@ -225,10 +197,10 @@
   </div>
 </div>
 
-<!-- ============ FERDY'S SUPPLIES ============ -->
+<!-- ============ FERDI'S SUPPLIES ============ -->
 <div id="shop" class="screen hidden panel-screen">
   <div class="panel shop-panel">
-    <h2>FERDY STEINMAN'S SUPPLIES</h2>
+    <h2>FERDI STEINMAN'S SUPPLIES</h2>
     <p class="tip shop-quote">"Everything here fell off a boat. Some of it twice."</p>
     <div class="shop-purse">SYNCOINS <b id="shop-coins">0</b></div>
     <div id="shop-list"></div>
@@ -262,7 +234,7 @@
 <div id="ending" class="screen hidden">
   <div class="ending-inner">
     <div class="ending-kicker">YOU FOUND IT</div>
-    <h1 class="ending-title">THE IDOL OF<br /><span>CHRIS ILLICH</span></h1>
+    <h1 class="ending-title">THE IDOL OF<br /><span>CHRIS ILLIC</span></h1>
     <div class="ending-stats" id="ending-stats"></div>
     <p class="ending-text">
       You carried it down to the water and the water went quiet.<br />

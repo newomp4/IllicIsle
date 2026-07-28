@@ -170,6 +170,8 @@ void main(){
 const COMPOSITE_FRAG = /* glsl */`
 precision mediump float;
 uniform sampler2D tDiffuse;
+uniform sampler2D tHud;    // interface, drawn at the same internal size
+uniform float uHudOn;
 uniform vec2  uRes;        // internal framebuffer resolution
 uniform float uCrt;        // 0..1 CRT / dither strength
 uniform float uTime;
@@ -210,6 +212,17 @@ void main(){
 
   // Damage / environment tint, while we're still linear
   col = mix(col, uTint, uTintAmt);
+
+  /* The HUD is composited HERE, before the encode and the dither, so the
+     interface picks up the same 15-bit banding, scanlines and barrel curve
+     as the world. Drawn on top afterwards it looks like a crisp modern
+     overlay pasted onto a PSX game, which is exactly the wrong feel.
+     Its canvas is authored in sRGB, so bring it into linear to mix. */
+  if (uHudOn > 0.5) {
+    vec4 hud = texture2D(tHud, uv);
+    vec3 hudLin = pow(max(hud.rgb, vec3(0.0)), vec3(2.2));
+    col = mix(col, hudLin, hud.a);
+  }
 
   // Linear -> sRGB. three does not do this for render targets, and a raw
   // ShaderMaterial gets no automatic encode, so it has to happen here.
@@ -275,6 +288,8 @@ export class RetroPipeline {
     this.quadMat = new THREE.ShaderMaterial({
       uniforms: {
         tDiffuse: { value: this.target.texture },
+        tHud: { value: null },
+        uHudOn: { value: 0 },
         uRes: { value: new THREE.Vector2(320, 224) },
         uCrt: { value: 1 },
         uTime: { value: 0 },
@@ -292,7 +307,23 @@ export class RetroPipeline {
     this.quadScene.add(quad);
 
     this.size = new THREE.Vector2(1, 1);
+    this.hudTexture = null;
   }
+
+  /** Hand the pipeline a canvas to composite as the interface layer. */
+  setHudCanvas(canvas) {
+    if (this.hudTexture) this.hudTexture.dispose();
+    const t = new THREE.CanvasTexture(canvas);
+    t.magFilter = THREE.NearestFilter;
+    t.minFilter = THREE.NearestFilter;
+    t.generateMipmaps = false;
+    t.colorSpace = THREE.NoColorSpace;   // sampled raw; decoded in the shader
+    this.hudTexture = t;
+    this.quadMat.uniforms.tHud.value = t;
+    this.quadMat.uniforms.uHudOn.value = 1;
+  }
+
+  markHudDirty() { if (this.hudTexture) this.hudTexture.needsUpdate = true; }
 
   setBaseHeight(h) {
     this.baseHeight = h;

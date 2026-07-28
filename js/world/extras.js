@@ -128,10 +128,10 @@ export function buildRelic(kind, rng, mats) {
 }
 
 /* ===========================================================
-   FERDY STEINMAN'S HUT
+   FERDI STEINMAN'S HUT
    A landmark you can navigate by, and the only shop on the island.
    =========================================================== */
-export function buildFerdyHut(rng, mats) {
+export function buildFerdiHut(rng, mats) {
   const group = new THREE.Group();
   const P = [], C = [];
   const WOOD = G(0x7a6242), WOOD_D = G(0x5a4730);
@@ -209,14 +209,14 @@ export function buildFerdyHut(rng, mats) {
   group.add(new THREE.Mesh(mergeGeos(C), mats.cutoutStill));
 
   /* painted sign face */
-  const signTex = buildSignTexture(['FERDY STEINMAN', "SUPPLIES  •  NO REFUNDS"], '#3a2c16', '#e8cf7a');
+  const signTex = buildSignTexture(['FERDI STEINMAN', "SUPPLIES  •  NO REFUNDS"], '#3a2c16', '#e8cf7a');
   const signFace = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.0),
     new THREE.MeshBasicMaterial({ map: signTex }));
   signFace.position.set(-0.4, 5.35, 2.58);
   signFace.rotation.z = -0.22;
   group.add(signFace);
 
-  /* ---------- Ferdy ---------- */
+  /* ---------- Ferdi ---------- */
   const ferdy = new THREE.Group();
   ferdy.position.set(-0.3, 1.78, 1.1);
   const F = [];
@@ -270,6 +270,56 @@ export function buildFerdyHut(rng, mats) {
     lampLight.intensity = 1.7 + Math.sin(t * 8.3) * 0.35 + Math.sin(t * 3.1) * 0.2;
   };
   return group;
+}
+
+/* ===========================================================
+   TIKI TORCH — the island's night lighting
+   =========================================================== */
+export function buildTikiTorch(rng, mats, flameFactory) {
+  const g = new THREE.Group();
+  const P = [];
+
+  const pole = cyl(0.10, 0.14, 2.6, 6, 'driftwood', { pos: [0, 1.3, 0] });
+  tint(pole, G(0x8a7048)); P.push(pole);
+  // carved bands
+  for (let i = 0; i < 3; i++) {
+    const b = cyl(0.15, 0.15, 0.14, 6, 'templeGlyph', { pos: [0, 0.5 + i * 0.6, 0] });
+    tint(b, G(0xb09060)); P.push(b);
+  }
+  // a little carved face near the top, because tiki
+  const faceBlock = box(0.30, 0.42, 0.30, 'templeGlyph', { pos: [0, 2.35, 0] });
+  tint(faceBlock, G(0xa8875a)); P.push(faceBlock);
+  for (const sx of [-1, 1]) {
+    const eye = box(0.07, 0.07, 0.05, 'monolith', { pos: [sx * 0.08, 2.45, 0.16] });
+    tint(eye, G(0x2a2018)); P.push(eye);
+  }
+  const mouth = box(0.18, 0.05, 0.05, 'monolith', { pos: [0, 2.26, 0.16] });
+  tint(mouth, G(0x2a2018)); P.push(mouth);
+  // bowl
+  const bowl = cyl(0.26, 0.15, 0.22, 8, 'metal', { pos: [0, 2.68, 0] });
+  tint(bowl, G(0x6a5a48)); P.push(bowl);
+
+  g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+
+  const flame = flameFactory(mats, 3, 0.30);
+  flame.position.y = 2.74;
+  g.add(flame);
+
+  const light = new THREE.PointLight(0xffa040, 0, 15, 1.7);
+  light.position.set(0, 3.1, 0);
+  g.add(light);
+
+  g.userData.flame = flame;
+  g.userData.light = light;
+  g.userData.baseIntensity = 2.0;
+  g.userData.tick = (t, dt, night = 1) => {
+    flame.userData.tick(t);
+    const flick = 0.82 + Math.sin(t * 9.1 + g.position.x) * 0.12 + Math.sin(t * 15.7) * 0.06;
+    light.intensity = g.userData.baseIntensity * flick * (0.28 + night * 0.72);
+    flame.visible = true;
+    flame.scale.setScalar(0.85 + night * 0.25);
+  };
+  return g;
 }
 
 /* ===========================================================

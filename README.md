@@ -2,7 +2,7 @@
 
 A PS1-style castaway adventure that runs in a browser tab. Wash up on a
 tropical island, find four carved Marks, open the sealed cave in the red
-cliff, and take the Golden Idol of Chris Illich off the man who's been
+cliff, and take the Golden Idol of Chris Illic off the man who's been
 guarding it for eleven years.
 
 **Controls:** `WASD` move · mouse look · `Shift` sprint · `Space` jump ·

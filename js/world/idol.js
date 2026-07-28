@@ -1,5 +1,5 @@
 /* ===========================================================
-   idol.js — THE GOLDEN IDOL OF CHRIS ILLICH
+   idol.js — THE GOLDEN IDOL OF CHRIS ILLIC
    Built to match the reference bust: curly crown, hood up behind
    the neck, CATHOLIC UNIVERSITY across the chest, hands in the
    pouch, hibiscus-and-frond wreath, ISLA DORADA plinth.

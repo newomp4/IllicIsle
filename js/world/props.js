@@ -814,9 +814,13 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   group.add(glow);
 
   const phase = index * 1.3;
+  let nightK = 0;
+  group.userData.setNight = (n) => { nightK = n; };
   group.userData.tick = (t) => {
     pivot.rotation.x = Math.sin(t * 0.85 + phase) * 0.55;
-    glow.intensity = 1.1 + Math.sin(t * 1.7 + phase) * 0.5;
+    // a lantern in daylight, a lighthouse after dark
+    glow.intensity = (1.1 + nightK * 3.2) + Math.sin(t * 1.7 + phase) * (0.5 + nightK);
+    glow.distance = 16 + nightK * 22;
   };
   group.userData.glyph = glyph;
   group.userData.order = order;

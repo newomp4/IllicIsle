@@ -3,6 +3,8 @@
    All plain DOM on top of the canvas.
    =========================================================== */
 
+import { Hud } from './lib/hud.js';
+
 const $ = (id) => document.getElementById(id);
 
 /* ===========================================================
@@ -104,25 +106,25 @@ export class UI {
     if (!HEART_FULL) { HEART_FULL = makeHeartSprite(true); HEART_EMPTY = makeHeartSprite(false); }
     this.audio = audio;
     this.el = {
-      hud: $('hud'),
-      hearts: $('hearts'), stamina: $('stamina'), staminaWrap: $('stamina-wrap'),
-      ammo: $('ammo-count'), marks: $('marks'), marksCount: $('marks-count'),
-      objective: $('objective-text'), timer: $('run-timer'),
-      prompt: $('prompt'), promptText: $('prompt-text'),
-      compassStrip: $('compass-strip'), compass: $('compass'),
-      bossBar: $('boss-bar'), bossFill: $('boss-fill'), bossChip: $('boss-chip'), bossPhase: $('boss-phase'),
-      toastWrap: $('toast-wrap'), dmgFlash: $('dmg-flash'), healFlash: $('heal-flash'),
       reader: $('reader'), readerHead: $('reader-head'), readerBody: $('reader-body'),
       journal: $('journal'), journalEntries: $('journal-entries'),
       map: $('map'), mapCanvas: $('map-canvas'), mapLegend: $('map-legend'),
       dials: $('dials'), dialRow: $('dial-row'), dialHint: $('dial-hint'),
       shop: $('shop'), shopList: $('shop-list'), shopCoins: $('shop-coins'),
       lightning: $('lightning'),
+
     };
 
     this._hearts = -1; this._maxHearts = -1;
     this._ammo = -1; this._marks = -1;
     this._objective = ''; this._promptText = null;
+
+    /* The in-game HUD is a canvas rendered at the framebuffer's own
+       resolution and composited inside the PS1 pass, so it pixelates,
+       dithers and curves along with the world. The DOM nodes for it are
+       gone; only full-screen panels stay in the document. */
+    this.hud = new Hud();
+    $('hud')?.remove();
 
     this.readerActive = false;
     this._typeTimer = null;
@@ -132,126 +134,70 @@ export class UI {
     this._dialCanvases = [];
   }
 
-  show() { this.el.hud.classList.remove('hidden'); }
-  hide() { this.el.hud.classList.add('hidden'); }
+  show() { this.hud.data.visible = true; }
+  hide() { this.hud.data.visible = false; }
 
-  /* ---------- hearts ---------- */
+  /* ---------- HUD state (all drawn on canvas) ---------- */
   setHearts(hp, max) {
-    if (hp === this._hearts && max === this._maxHearts) return;
-    const lost = hp < this._hearts;
-    this._hearts = hp; this._maxHearts = max;
-    this.el.hearts.innerHTML = '';
-    for (let i = 0; i < max; i++) {
-      const d = document.createElement('div');
-      d.className = 'heart' + (i < hp ? '' : ' empty') + (lost && i === hp ? ' hurt' : '');
-      d.style.backgroundImage = `url(${i < hp ? HEART_FULL : HEART_EMPTY})`;
-      this.el.hearts.appendChild(d);
-    }
+    if (hp < this.hud.data.hp) this.hud.data.hurtT = 0.4;
+    this.hud.data.hp = hp;
+    this.hud.data.maxHp = max;
   }
-
-  setStamina(v) {
-    this.el.stamina.style.width = `${Math.max(0, Math.min(1, v)) * 100}%`;
-    this.el.staminaWrap.classList.toggle('low', v < 0.3);
-  }
-  setAmmo(n) { if (n !== this._ammo) { this._ammo = n; this.el.ammo.textContent = String(n); } }
-  setMarks(n, total) {
-    if (n === this._marks) return;
-    this._marks = n;
-    this.el.marksCount.textContent = String(n);
-    this.el.marks.classList.toggle('full', n >= total);
-  }
-  setTimer(seconds) {
-    if (!this.el.timer) return;
-    const s = Math.max(0, seconds);
-    const mm = String(Math.floor(s / 60)).padStart(2, '0');
-    const ss = String(Math.floor(s % 60)).padStart(2, '0');
-    const cs = String(Math.floor((s * 100) % 100)).padStart(2, '0');
-    this.el.timer.textContent = `${mm}:${ss}.${cs}`;
-  }
-
-  setObjective(text) {
-    if (text === this._objective) return;
-    this._objective = text;
-    this.el.objective.textContent = text;
-  }
-
-  setPrompt(text) {
-    if (text === this._promptText) return;
-    this._promptText = text;
-    if (text) { this.el.promptText.textContent = text; this.el.prompt.classList.remove('hidden'); }
-    else this.el.prompt.classList.add('hidden');
-  }
-
-  /* ---------- toasts ---------- */
-  toast(text, kind = 'gold', ms = 2600) {
-    const d = document.createElement('div');
-    d.className = `toast ${kind}`;
-    d.textContent = text;
-    this.el.toastWrap.appendChild(d);
-    setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 450); }, ms);
-    while (this.el.toastWrap.children.length > 4) this.el.toastWrap.firstChild.remove();
-  }
-
-  flashDamage() { const f = this.el.dmgFlash; f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
-  flashHeal() { const f = this.el.healFlash; f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
+  setStamina(v) { this.hud.data.stamina = v; }
+  setAmmo(n) { this.hud.data.ammo = n; }
+  setMarks(n) { this.hud.data.pendulums = n; }
+  setRelics(n) { this.hud.data.relics = n; }
+  setCoins(n) { this.hud.data.coins = n; }
+  setTimer(seconds) { this.hud.data.timer = seconds; }
+  setObjective(text) { this.hud.data.objective = text || ''; }
+  setPrompt(text) { this.hud.data.prompt = text || null; }
+  showPopup(title, sub, icon) { this.hud.showPopup(title, sub, icon); }
+  flashDamage() { this.hud.data.hurtT = 0.4; }
+  flashHeal() {}
 
   /* ---------- boss bar ---------- */
-  showBoss(on) {
-    this.el.bossBar.classList.toggle('hidden', !on);
-    if (on) { this.el.bossFill.style.width = '100%'; this.el.bossChip.style.width = '100%'; }
+  showBoss(on, name) {
+    this.hud.data.boss = on
+      ? { frac: 1, chip: 1, name: name || 'HECTOR - EL BASS PRESIDENTE', phase: 'TERM ONE' }
+      : null;
   }
   setBoss(frac, phaseLabel) {
-    const pct = `${Math.max(0, Math.min(1, frac)) * 100}%`;
-    this.el.bossFill.style.width = pct;
-    this.el.bossChip.style.width = pct;
-    if (phaseLabel) this.el.bossPhase.textContent = phaseLabel;
+    const b = this.hud.data.boss;
+    if (!b) return;
+    b.frac = frac;
+    b.chip = Math.max(b.frac, (b.chip ?? frac) - 0.004);
+    if (phaseLabel) b.phase = phaseLabel;
   }
 
   /* ---------- compass ---------- */
   setCompassPois(list) {
-    this.el.compassStrip.innerHTML = '';
-    this.compassMarks = [];
-    const cardinals = [
-      { label: 'N', a: Math.PI, card: true }, { label: 'E', a: -Math.PI / 2, card: true },
-      { label: 'S', a: 0, card: true }, { label: 'W', a: Math.PI / 2, card: true },
-      { label: '+', a: Math.PI * 0.75 }, { label: '+', a: -Math.PI * 0.75 },
-      { label: '+', a: -Math.PI * 0.25 }, { label: '+', a: Math.PI * 0.25 },
-    ];
-    for (const c of cardinals) {
-      const d = document.createElement('div');
-      d.className = 'cmark' + (c.card ? ' card' : '');
-      d.textContent = c.label;
-      this.el.compassStrip.appendChild(d);
-      this.compassMarks.push({ el: d, fixedAngle: c.a, faint: !c.card });
-    }
-    for (const p of list) {
-      const d = document.createElement('div');
-      d.className = `cmark ${p.kind || 'poi'}`;
-      d.textContent = p.label;
-      this.el.compassStrip.appendChild(d);
-      this.compassMarks.push({ el: d, poi: p });
-    }
     this.compassPois = list;
+    const marks = [
+      { label: 'N', angle: Math.PI, kind: 'card' },
+      { label: 'E', angle: -Math.PI / 2, kind: 'card' },
+      { label: 'S', angle: 0, kind: 'card' },
+      { label: 'W', angle: Math.PI / 2, kind: 'card' },
+    ];
+    this._poiMarks = list.map((p) => ({ poi: p, label: p.label, kind: p.kind || 'poi' }));
+    this._cardinals = marks;
+    this.hud.data.compass = { yaw: 0, marks };
   }
 
   updateCompass(yaw, px, pz) {
-    const W = this.el.compass.clientWidth;
-    const HALF_FOV = 1.15;
-    for (const m of this.compassMarks) {
-      let target;
-      if (m.poi) {
-        if (m.poi.hidden) { m.el.style.display = 'none'; continue; }
-        m.el.style.display = '';
-        target = Math.atan2(m.poi.x - px, m.poi.z - pz);
-      } else target = m.fixedAngle;
-      let d = target - yaw;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      if (Math.abs(d) > HALF_FOV) { m.el.style.opacity = '0'; continue; }
-      m.el.style.left = `${W / 2 + (d / HALF_FOV) * (W / 2)}px`;
-      m.el.style.opacity = m.poi ? '0.95' : (m.faint ? '0.35' : '1');
+    const marks = this._cardinals ? this._cardinals.slice() : [];
+    for (const m of (this._poiMarks || [])) {
+      if (m.poi.hidden) continue;
+      marks.push({
+        label: m.label, kind: m.kind,
+        angle: Math.atan2(m.poi.x - px, m.poi.z - pz),
+      });
     }
+    this.hud.data.compass = { yaw, marks };
   }
+
+  /* ---------- toasts ---------- */
+  toast(text, kind = 'gold', ms = 2600) { this.hud.toast(text, kind, ms); }
+
 
   /* ---------- reader ---------- */
   showReader(head, body, onDone) {
@@ -288,6 +234,13 @@ export class UI {
   closeReader() {
     clearInterval(this._typeTimer);
     this._typing = false;
+    /* The in-game HUD is a canvas rendered at the framebuffer's own
+       resolution and composited inside the PS1 pass, so it pixelates,
+       dithers and curves along with the world. The DOM nodes for it are
+       gone; only full-screen panels stay in the document. */
+    this.hud = new Hud();
+    $('hud')?.remove();
+
     this.readerActive = false;
     this.el.reader.classList.add('hidden');
     const cb = this._onReaderDone;
@@ -505,7 +458,7 @@ export class UI {
   closeDials() { this.el.dials.classList.add('hidden'); }
 
   /* ===========================================================
-     FERDY'S SHOP
+     FERDI'S SHOP
      =========================================================== */
   get shopOpen() { return !this.el.shop.classList.contains('hidden'); }
 

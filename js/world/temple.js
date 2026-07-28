@@ -384,8 +384,16 @@ export function buildTemple(idolMats, propMats) {
   }
 
   // carved back wall behind the idol
-  const backWall = box(15, 12, 1.2, 'templeGlyph', { pos: [D.x, dy + 6, D.z - 7.2] });
-  tint(backWall, new THREE.Color(0x9c907a)); daisParts.push(backWall);
+  // carved back wall, panel by panel so the glyph texture keeps its scale
+  for (let i = 0; i < 5; i++) {
+    for (let j = 0; j < 4; j++) {
+      const g = box(2.9, 2.9, 1.2, 'templeGlyph', {
+        pos: [D.x - 6 + i * 3.0, dy + 1.6 + j * 3.0, D.z - 7.2],
+      });
+      tint(g, new THREE.Color(0x9c907a).multiplyScalar(0.82 + rng() * 0.3));
+      daisParts.push(g);
+    }
+  }
   scene.add(new THREE.Mesh(mergeGeos(daisParts), propMats.opaque));
 
   const braziers = [];

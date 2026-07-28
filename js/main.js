@@ -205,7 +205,7 @@ screens.ending.querySelectorAll('.mbtn').forEach((b) => {
       game.pipeline.fade = 1;
       beginGame();
     } else if (act === 'share') {
-      const txt = game.endingSummary || 'I found the Idol of Chris Illich on Illic Isle.';
+      const txt = game.endingSummary || 'I found the Idol of Chris Illic on Illic Isle.';
       try {
         await navigator.clipboard.writeText(`${txt}\n${location.href}`);
         b.textContent = '✓ COPIED';

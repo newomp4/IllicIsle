@@ -389,11 +389,15 @@ export function buildClouds(rng) {
     cloud.userData.speed = 0.5 + rng() * 0.8;
     group.add(cloud);
   }
-  group.userData.tick = (t, dt) => {
+  group.userData.tick = (t, dt, night = 0) => {
     for (const c of group.children) {
       c.position.x += c.userData.speed * dt;
       if (c.position.x > 380) c.position.x = -380;
     }
+    // white cumulus at midnight looks like a bug; take them down with the sky
+    const k = 1 - night * 0.86;
+    mat.color.setRGB(0.957 * k, 0.941 * k, 0.894 * k + night * 0.06);
+    mat.opacity = 0.85 - night * 0.35;
   };
   group.frustumCulled = false;
   return group;
