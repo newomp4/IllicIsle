@@ -72,6 +72,11 @@ export class HostSession {
     }
     // the record is created on HELLO so we have their chosen name
     this.net.sendTo(id, { t: S.WELCOME, youAre: id, settings: this.settings });
+    /* HELLO can beat this event: the client's channel opens as soon as the
+       far end acknowledges, while ours opens a moment later, so their name
+       can arrive before we have a connection to answer on. If the record is
+       already here, the roster we broadcast then went nowhere — send it. */
+    if (this.players.has(id)) this._roster();
   }
 
   _leave(id) {
@@ -97,6 +102,7 @@ export class HostSession {
     const p = this.players.get(from);
     switch (msg.t) {
       case C.HELLO: {
+        if (this.phase !== PHASE.LOBBY) break;
         if (!p) { this._add(from, msg.name); this._roster(); }
         break;
       }
@@ -161,10 +167,23 @@ export class HostSession {
       if (id === 'host') this.hooks.onLocalRole?.(card);
       else this.net.sendTo(id, card);
     }
+    for (const p of this.players.values()) this._sendCooldown(p);
     this._roster();
     this._setPhase(PHASE.REVEAL, 5);
     this._tasks();
     return true;
+  }
+
+  /**
+   * An agent's cooldown is private: everybody else learning when a knife
+   * comes back would give the whole thing away. It travels as a duration
+   * because performance.now() is a different zero on every machine.
+   */
+  _sendCooldown(p) {
+    if (!p || p.role !== ROLE.AGENT) return;
+    const secs = Math.max(0, p.killReady - now());
+    if (p.id === 'host') this.hooks.onCooldown?.(secs);
+    else this.net.sendTo(p.id, { t: S.COOLDOWN, secs });
   }
 
   _setPhase(phase, seconds, meta) {
@@ -203,6 +222,7 @@ export class HostSession {
 
     v.alive = false;
     k.killReady = now() + this.settings.killCooldown;
+    this._sendCooldown(k);
     this.bodies.push({ id: v.id, x: v.x, y: v.y, z: v.z });
     this.net.broadcast({ t: S.KILLED, victimId: v.id, x: v.x, y: v.y, z: v.z });
     this.hooks.onKilled?.(v.id, v.x, v.y, v.z);
@@ -284,16 +304,19 @@ export class HostSession {
     }
     this._roster();
     this._setPhase(PHASE.RESULT, 5.5);
-    if (!this._checkWin()) {
-      setTimeout(() => {
-        if (this.phase === PHASE.RESULT) {
-          for (const p of this.players.values()) {
-            if (p.role === ROLE.AGENT) p.killReady = now() + this.settings.killCooldown * 0.6;
-          }
-          this._setPhase(PHASE.ROAM, 0);
-        }
-      }, 5500);
-    }
+    /* The win check waits out the reveal. Resolving it immediately would
+       replace the "X WAS A ROGUE AGENT" card with the results screen in
+       the same frame, and the exile is the payoff people came for. */
+    setTimeout(() => {
+      if (this.phase !== PHASE.RESULT) return;
+      if (this._checkWin()) return;
+      for (const p of this.players.values()) {
+        if (p.role !== ROLE.AGENT) continue;
+        p.killReady = now() + this.settings.killCooldown * 0.6;
+        this._sendCooldown(p);
+      }
+      this._setPhase(PHASE.ROAM, 0);
+    }, 5500);
   }
 
   _chat(id, text) {
@@ -395,13 +418,19 @@ export class HostSession {
     }
   }
 
-  /** Position broadcast, called on its own slower ticker. */
+  /**
+   * Position broadcast, called on its own slower ticker. The rows are
+   * returned as well as sent: the host never receives its own broadcast,
+   * and it should be drawing everyone else from the exact same data the
+   * clients get rather than from a private shortcut.
+   */
   snapshot() {
     const arr = [];
     for (const p of this.players.values()) {
       arr.push([p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.yaw), p.anim | 0, p.alive ? 1 : 0]);
     }
     this.net.broadcast({ t: S.SNAPSHOT, p: arr });
+    return arr;
   }
 }
 
@@ -425,6 +454,7 @@ export class MirrorSession {
     this.sabotage = null;
     this.over = null;
     this.selfId = null;
+    this.killReadyAt = 0;
     this.settings = { ...DEFAULT_SETTINGS };
   }
 
@@ -462,6 +492,10 @@ export class MirrorSession {
           if (p.x === undefined) { p.x = x; p.y = y; p.z = z; p.yaw = yaw; }
           this.players.set(id, p);
         }
+        break;
+      case S.COOLDOWN:
+        this.killReadyAt = performance.now() / 1000 + (msg.secs || 0);
+        this.hooks.onCooldown?.(msg.secs || 0);
         break;
       case S.TASKS: this.tasksDone = msg.done; this.tasksTotal = msg.total; break;
       case S.TASK_OK: this.doneTasks.add(msg.taskId); this.hooks.onTaskOk?.(msg.taskId); break;

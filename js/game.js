@@ -1002,7 +1002,11 @@ export class Game {
     if (!this.screens.open && this.playing && !this.paused) this._requestLock();
   }
 
-  _requestLock() { this.canvas.requestPointerLock?.(); }
+  _requestLock() {
+    // Chrome returns a promise here and rejects it when there is no user
+    // gesture, or when the canvas is not in the active document.
+    try { this.canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not available */ }
+  }
 
   _key(e, down) {
     const k = e.code;

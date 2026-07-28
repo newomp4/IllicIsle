@@ -32,6 +32,7 @@ export const S = {
   SNAPSHOT:   's.snap',       // { t, players: [[id,x,y,z,yaw,anim,flags]] }
   TASKS:      's.tasks',      // { done, total }
   TASK_OK:    's.taskok',     // { taskId }               PRIVATE
+  COOLDOWN:   's.cool',       // { secs }                 PRIVATE, to one agent
   KILLED:     's.killed',     // { victimId, x, y, z }
   BODY_GONE:  's.bodygone',   // { victimId }
   COUNCIL:    's.council',    // { calledBy, bodyOf, endsAt }

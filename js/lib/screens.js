@@ -11,6 +11,14 @@
 
 import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
 import { drawRelicIcon } from './hud.js';
+import { COLOURS } from '../net/protocol.js';
+import { SABOTAGE_DEFS } from '../mp/tasks.js';
+
+/** Hex string for a player colour id, for the lobby and council lists. */
+function colourOf(id) {
+  const c = COLOURS.find((k) => k.id === id) || COLOURS[0];
+  return '#' + c.hex.toString(16).padStart(6, '0');
+}
 
 const GOLD = '#ffd24a';
 const GOLD_LT = '#fff3c4';
@@ -38,6 +46,18 @@ function frame(x, W, H, title, sub) {
   }
   if (sub) drawText(x, sub, { x: W / 2, y: m + 22, scale: 1, align: 'center', color: DIM });
   return { m, top: m + (sub ? 32 : 24), bottom: H - m - 12 };
+}
+
+/** A sunken input box. Darker inside than out, so it reads as a hole. */
+function field(x, ox, oy, w, h, active) {
+  x.fillStyle = active ? '#3a2a10' : '#241708';
+  x.fillRect(ox - 1, oy - 1, w + 2, h + 2);
+  ditherRect(x, ox, oy, w, h, '#120c06', '#1c1208', active ? 0.6 : 0.3);
+  x.fillStyle = active ? GOLD : GOLD_DK;
+  x.fillRect(ox - 1, oy - 1, w + 2, 1);
+  x.fillRect(ox - 1, oy + h, w + 2, 1);
+  x.fillRect(ox - 1, oy, 1, h);
+  x.fillRect(ox + w, oy, 1, h);
 }
 
 function footer(x, W, H, text) {
@@ -147,6 +167,449 @@ const nav = (code, s, len, onOk, onBack) => {
 
 export const SCREENS = {
 
+  /* ---------------- MODE SELECT ---------------- */
+  mode: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'ILLIC ISLE');
+      drawText(x, 'CHOOSE A WAY TO PLAY', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
+      const rows = menuList(x, ['SINGLE PLAYER', 'CASTAWAYS  (3-10 PLAYERS)'],
+        s.sel, W / 2, b.top + 18, t, { width: 180, gap: 16 });
+      const blurb = s.sel === 0
+        ? 'Wash ashore alone. Wake four Pendulums,\nopen the temple, take the Idol.'
+        : 'Wash ashore together. Some of you are\nRogue Agents, and nobody knows who.\nDo the work. Watch the paths people take.';
+      x.fillStyle = GOLD_DK;
+      x.fillRect(W / 2 - 60, b.top + 48, 120, 1);
+      let y = b.top + 56;
+      for (const ln of blurb.split('\n')) {
+        drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: GOLD_LT }); y += 10;
+      }
+      footer(x, W, H, 'ESC BACK');
+      return rows;
+    },
+    key(code, s, g, st) {
+      return nav(code, s, 2, (i) => {
+        if (i === 0) { st.clear(); g.beginGame(); }
+        else st.replace('mpMenu');
+      }, () => st.replace('title'));
+    },
+  },
+
+  /* ---------------- HOST OR JOIN ---------------- */
+  mpMenu: {
+    init(s, g) {
+      s.who = (localStorage.getItem('illicisle.name') || '').toUpperCase();
+      s.code = '';
+      s.field = 0;           // 0 name, 1 code
+      s.busy = false;
+      s.err = '';
+      s.status = '';
+    },
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'CASTAWAYS');
+      const caret = (on) => (on && Math.floor(t * 3) % 2 ? '_' : '');
+
+      // name
+      let y = b.top + 4;
+      const nw = 120, nx = Math.round((W - nw) / 2);
+      drawText(x, 'YOUR NAME', { x: W / 2, y, scale: 1, align: 'center', color: s.field === 0 ? GOLD : DIM });
+      field(x, nx, y + 10, nw, 15, s.field === 0);
+      drawText(x, s.who + caret(s.field === 0), {
+        x: W / 2, y: y + 14, scale: 1, align: 'center', color: GOLD_LT,
+      });
+
+      // room
+      y += 36;
+      drawText(x, 'ROOM CODE', { x: W / 2, y, scale: 1, align: 'center', color: s.field === 1 ? GOLD : DIM });
+      const rw = 78, rx = Math.round((W - rw) / 2);
+      field(x, rx, y + 10, rw, 20, s.field === 1);
+      drawText(x, s.code + caret(s.field === 1), {
+        x: W / 2, y: y + 16, scale: 2, align: 'center', color: GOLD_LT,
+      });
+      drawText(x, 'LEAVE IT BLANK TO OPEN A ROOM OF YOUR OWN', {
+        x: W / 2, y: y + 34, scale: 1, align: 'center', color: DIM,
+      });
+
+      y += 58;
+      const rows = menuList(x, [s.code ? 'JOIN THAT ROOM' : 'OPEN A NEW ROOM'],
+        s.sel, W / 2, y, t, { width: 150 });
+      if (!s.busy && !s.err) {
+        x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, y + 22, 140, 1);
+        const rules = [
+          'THREE TO TEN CASTAWAYS. SOME ARE ROGUE AGENTS.',
+          'CASTAWAYS FINISH THE WORK. AGENTS CUT THEM DOWN.',
+          'FIND A BODY, CALL A COUNCIL, THROW SOMEBODY TO THE SEA.',
+        ];
+        let ry = y + 28;
+        for (const r of rules) {
+          drawText(x, r, { x: W / 2, y: ry, scale: 1, align: 'center', color: DIM });
+          ry += 10;
+        }
+      }
+      if (s.busy) drawText(x, s.status || 'CONNECTING', { x: W / 2, y: y + 20, scale: 1, align: 'center', color: JADE });
+      if (s.err) {
+        let ey = y + 20;
+        for (const ln of wrapText(s.err, W - 50, 1, 1)) {
+          drawText(x, ln, { x: W / 2, y: ey, scale: 1, align: 'center', color: RED }); ey += 9;
+        }
+      }
+      footer(x, W, H, 'TAB SWITCH FIELD   ENTER GO   ESC BACK');
+      return rows;
+    },
+    key(code, s, g, st) {
+      if (s.busy) return true;
+      if (code === 'Tab') { s.field = 1 - s.field; return true; }
+      if (code === 'Escape') { st.replace('mode'); return true; }
+      if (code === 'Backspace') {
+        if (s.field === 0) s.who = s.who.slice(0, -1); else s.code = s.code.slice(0, -1);
+        return true;
+      }
+      if (code === 'Enter' || code === 'NumpadEnter') {
+        s.busy = true; s.err = '';
+        const name = s.who.trim() || 'CASTAWAY';
+        localStorage.setItem('illicisle.name', name);
+        const go = s.code
+          ? g.joinGame(name, s.code.trim().toUpperCase())
+          : g.hostGame(name, null);
+        go.then(() => st.replace('mpLobby'))
+          .catch((e) => { s.busy = false; s.err = e.message || String(e); });
+        return true;
+      }
+      // typed characters
+      const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
+      if (m) {
+        const ch = m[1];
+        if (s.field === 0) { if (s.who.length < 12) s.who += ch; }
+        else if (s.code.length < 6) s.code += ch;
+        return true;
+      }
+      if (code === 'Space' && s.field === 0 && s.who.length < 12) { s.who += ' '; return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- LOBBY ---------------- */
+  mpLobby: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'THE BEACH');
+      const players = [...g.mp.view.players.values()];
+
+      // the code, big, because saying it out loud is the whole handshake
+      const code = g.mp.room || '----';
+      const cw = textWidth(code, 3) + 22;
+      const cx = Math.round((W - cw) / 2);
+      field(x, cx, b.top - 1, cw, 29, true);
+      drawText(x, code, { x: W / 2, y: b.top + 3, scale: 3, align: 'center', color: GOLD });
+      drawText(x, 'ROOM CODE - SEND IT TO YOUR FRIENDS',
+        { x: W / 2, y: b.top + 33, scale: 1, align: 'center', color: DIM });
+
+      let y = b.top + 48;
+      drawText(x, `${players.length} ASHORE`, { x: 30, y, scale: 1, color: DIM });
+      y += 12;
+      for (const p of players) {
+        const hex = colourOf(p.colour);
+        x.fillStyle = hex; x.fillRect(30, y, 7, 7);
+        x.fillStyle = '#000'; x.fillRect(30, y + 7, 7, 1);
+        drawText(x, p.name || '?', { x: 42, y, scale: 1, color: p.id === g.mp.view.selfId ? GOLD : GOLD_LT });
+        if (p.id === 'host') drawText(x, 'HOST', { x: W - 30, y, scale: 1, align: 'right', color: JADE });
+        y += 11;
+      }
+      let rows = [];
+      if (g.isHost) {
+        const can = players.length >= 3;
+        rows = menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS'], s.sel, W / 2, b.bottom - 26, t, { width: 150 });
+        if (!can) drawText(x, 'THREE ASHORE AT LEAST, TEN AT MOST',
+          { x: W / 2, y: b.bottom - 40, scale: 1, align: 'center', color: DIM });
+      } else {
+        drawText(x, 'WAITING FOR THE HOST', { x: W / 2, y: b.bottom - 22, scale: 1, align: 'center', color: JADE });
+      }
+      footer(x, W, H, g.isHost ? 'ENTER START   ESC LEAVE' : 'ESC LEAVE');
+      return rows;
+    },
+    key(code, s, g, st) {
+      if (code === 'Escape') { location.reload(); return true; }
+      if ((code === 'Enter' || code === 'KeyE') && g.isHost) g.startMatch();
+      return true;
+    },
+  },
+
+  /* ---------------- ROLE CARD ---------------- */
+  mpRole: {
+    draw(x, W, H, s, g, t) {
+      const agent = g.amAgent;
+      x.fillStyle = agent ? '#180404' : '#04090e';
+      x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, agent ? '#180404' : '#04090e',
+        agent ? '#240707' : '#071018', 0.5, 2);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(0, y, W, 1); }
+
+      // the card slides up and settles
+      const pop = Math.min(1, s.t * 2.2);
+      const lift = Math.round((1 - pop * pop) * 26);
+      const cw = 220, ch = 96;
+      const cx = Math.round((W - cw) / 2), cy = Math.round((H - ch) / 2) + lift - 6;
+      x.fillStyle = agent ? '#2c0a08' : '#07131a';
+      x.fillRect(cx, cy, cw, ch);
+      ditherRect(x, cx, cy, cw, ch, agent ? '#2c0a08' : '#07131a',
+        agent ? '#3a0f0c' : '#0b1c26', 0.4, 2);
+      x.fillStyle = agent ? '#8a2018' : '#2f6a5c';
+      x.fillRect(cx, cy, cw, 1); x.fillRect(cx, cy + ch - 1, cw, 1);
+      x.fillRect(cx, cy, 1, ch); x.fillRect(cx + cw - 1, cy, 1, ch);
+
+      drawText(x, 'YOU ARE', { x: W / 2, y: cy + 12, scale: 1, align: 'center', color: DIM });
+      drawText(x, agent ? 'A ROGUE AGENT' : 'A CASTAWAY', {
+        x: W / 2, y: cy + 24, scale: 2, align: 'center', color: agent ? '#ff6a5a' : '#8fe8c8',
+      });
+      x.fillStyle = agent ? '#8a2018' : '#2f6a5c';
+      x.fillRect(cx + 30, cy + 44, cw - 60, 1);
+
+      const blurb = agent
+        ? ['CUT THEM DOWN. DO NOT BE SEEN.', 'JAM THE ISLAND WHEN IT SUITS YOU.']
+        : ['DO YOUR WORK. WATCH THE OTHERS.', 'SOMEBODY HERE IS NOT WHAT THEY SAY.'];
+      let y = cy + 52;
+      for (const ln of blurb) {
+        drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: GOLD_LT }); y += 11;
+      }
+      if (agent && g.mp.view.mates && g.mp.view.mates.length > 1) {
+        drawText(x, 'WITH YOU: ' + g.mp.view.mates.join(' '), {
+          x: W / 2, y: y + 4, scale: 1, align: 'center', color: '#ff9a8a',
+        });
+      } else if (agent) {
+        drawText(x, 'YOU WORK ALONE', { x: W / 2, y: y + 4, scale: 1, align: 'center', color: '#a8564c' });
+      }
+      return [];
+    },
+    key() { return true; },
+  },
+
+  /* ---------------- COUNCIL + VOTE ---------------- */
+  mpCouncil: {
+    init(s, g) { s.sel = 0; s.typing = ''; },
+    draw(x, W, H, s, g, t) {
+      const voting = g.mp.view.phase === 'vote';
+      const left = Math.max(0, (g.mp.view.phaseEndsAt || 0) - performance.now() / 1000);
+      const b = frame(x, W, H, voting ? 'THE VOTE' : 'COUNCIL', `${Math.ceil(left)}s`);
+      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: b.top, scale: 1, align: 'center', color: GOLD });
+
+      /* Roster on the left. Only the living are on the ballot, so the
+         selection index counts them and them alone — highlighting a name
+         you cannot vote for reads as a bug the first time it happens. */
+      const players = [...g.mp.view.players.values()];
+      s.targets = players.filter((p) => p.alive !== false).map((p) => p.id);
+      if (voting) s.targets.push('skip');
+      if (s.sel >= s.targets.length) s.sel = 0;
+
+      let y = b.top + 14;
+      const rows = [];
+      const line = (id, label, swatch, dead) => {
+        const idx = s.targets.indexOf(id);
+        const on = voting && idx >= 0 && idx === s.sel;
+        if (on) { x.fillStyle = '#3a2a10'; x.fillRect(14, y - 2, 118, 11); }
+        if (swatch) {
+          x.fillStyle = dead ? '#4a4a4a' : swatch;
+          x.fillRect(18, y, 7, 7);
+        }
+        drawText(x, label, {
+          x: 30, y, scale: 1, color: dead ? '#6a6a6a' : (on ? GOLD_LT : DIM),
+        });
+        const n = g.mp.view.votes?.counts?.[id] || 0;
+        if (n) drawText(x, '*'.repeat(Math.min(n, 6)), { x: 128, y, scale: 1, align: 'right', color: GOLD });
+        if (voting && idx >= 0) rows[idx] = { x: 14, y: y - 2, w: 118, h: 11 };
+        y += 11;
+      };
+      for (const p of players) {
+        const dead = p.alive === false;
+        line(p.id, (dead ? 'X ' : '') + (p.name || '?'), colourOf(p.colour), dead);
+      }
+      if (voting) line('skip', 'SKIP', null, false);
+
+      // chat on the right
+      const cx = 140;
+      x.fillStyle = 'rgba(0,0,0,.35)';
+      x.fillRect(cx, b.top + 12, W - cx - 14, b.bottom - b.top - 26);
+      const lines = [];
+      for (const m of g.mp.chat.slice(-10)) {
+        const wrapped = wrapText(`${m.from}: ${m.text}`, W - cx - 22, 1, 1);
+        wrapped.forEach((ln, i) => lines.push({
+          ln, kind: m.kind, from: i === 0 ? m.from : null, colour: m.colour,
+        }));
+      }
+      let cy = b.top + 15;
+      for (const l of lines.slice(-11)) {
+        const body = l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT;
+        drawText(x, l.ln, { x: cx + 4, y: cy, scale: 1, color: body });
+        // repaint just the speaker's name in their own colour
+        if (l.from) {
+          drawText(x, l.from + ':', { x: cx + 4, y: cy, scale: 1, color: colourOf(l.colour) });
+        }
+        cy += 9;
+      }
+      // input
+      if (g.amAlive || true) {
+        panel(x, cx, b.bottom - 12, W - cx - 14, 12, { border: 1, dither: 0.4 });
+        drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
+          x: cx + 3, y: b.bottom - 9, scale: 1, color: JADE,
+        });
+      }
+      footer(x, W, H, voting
+        ? 'UP DOWN CHOOSE   ENTER CAST   TYPE TO TALK'
+        : 'TYPE TO TALK   ENTER SEND');
+      return voting ? rows.filter(Boolean) : [];
+    },
+    key(code, s, g, st) {
+      const voting = g.mp.view.phase === 'vote';
+      /* Enter does double duty: it sends what you have typed, and casts
+         your vote when the line is empty. Binding the vote to a letter
+         key would make that letter untypable in the one screen that is
+         mostly typing. */
+      if (code === 'Enter' || code === 'NumpadEnter') {
+        if (s.typing.trim()) { g.sendChat(s.typing.trim()); s.typing = ''; }
+        else if (voting && s.targets?.length) g.sendVote(s.targets[s.sel] || 'skip');
+        return true;
+      }
+      if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
+      if (voting && (code === 'ArrowUp' || code === 'ArrowDown')) {
+        const n = s.targets?.length || 1;
+        s.sel = (s.sel + (code === 'ArrowUp' ? n - 1 : 1)) % n;
+        return true;
+      }
+      const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
+      if (m && s.typing.length < 60) { s.typing += m[1]; return true; }
+      if (code === 'Space' && s.typing.length < 60) { s.typing += ' '; return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- SABOTAGE WHEEL ---------------- */
+  mpSabotage: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'SABOTAGE');
+      const defs = Object.values(SABOTAGE_DEFS);
+      const rows = menuList(x, defs.map((d) => d.name), s.sel, W / 2, b.top + 8, t, { width: 170, gap: 30 });
+      // the blurb sits under whichever line is lit
+      defs.forEach((d, i) => {
+        let by = b.top + 8 + i * 30 + 12;
+        for (const ln of wrapText(d.blurb.toUpperCase(), W - 60, 1, 1)) {
+          drawText(x, ln, {
+            x: W / 2, y: by, scale: 1, align: 'center',
+            color: i === s.sel ? GOLD_LT : DIM,
+          });
+          by += 9;
+        }
+        drawText(x, `${d.secs}s`, {
+          x: W / 2 + 90, y: b.top + 8 + i * 30 + 2, scale: 1, align: 'right',
+          color: d.fatal ? RED : DIM,
+        });
+      });
+      drawText(x, 'ONE AT A TIME. THEY WILL COME RUNNING.', {
+        x: W / 2, y: b.bottom - 10, scale: 1, align: 'center', color: '#8a5a52',
+      });
+      footer(x, W, H, 'E CALL IT   ESC BACK');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const defs = Object.values(SABOTAGE_DEFS);
+      return nav(code, s, defs.length, (i) => {
+        g.sendSabotage(defs[i].id);
+        st.pop();
+        g.afterOverlayClose();
+      }, () => { st.pop(); g.afterOverlayClose(); });
+    },
+  },
+
+  /* ---------------- EXILE CARD ---------------- */
+  mpExile: {
+    draw(x, W, H, s, g, t) {
+      // night sky above, banded down to the waterline
+      const sea = Math.round(H * 0.70);
+      for (let yy = 0; yy < sea; yy++) {
+        const k = yy / sea;
+        const v = Math.round(6 + k * k * 54);
+        x.fillStyle = `rgb(${Math.round(v * 0.5)},${Math.round(v * 0.7)},${v})`;
+        x.fillRect(0, yy, W, 1);
+      }
+      ditherRect(x, 0, 0, W, sea, 'rgba(0,0,0,0)', 'rgba(0,0,0,.30)', 0.5, 2);
+      for (let yy = sea; yy < H; yy++) {
+        const k = (yy - sea) / (H - sea);
+        const r = Math.round(20 - k * 14), gr = Math.round(46 - k * 34), bl = Math.round(84 - k * 62);
+        x.fillStyle = `rgb(${r},${gr},${bl})`;
+        x.fillRect(0, yy, W, 1);
+      }
+      x.fillStyle = '#7fa8c4'; x.fillRect(0, sea, W, 1);
+      x.fillStyle = 'rgba(140,180,210,.35)'; x.fillRect(0, sea - 1, W, 1);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
+      for (let i = 0; i < 9; i++) {
+        const yy = sea + 4 + i * 7;
+        if (yy > H - 3) break;
+        const off = Math.round(Math.sin(t * 1.1 + i * 1.7) * (10 + i * 3));
+        const w = 26 - i * 2;
+        x.fillStyle = `rgba(150,190,215,${(0.34 - i * 0.03).toFixed(2)})`;
+        x.fillRect((((i * 71 + off) % W) + W) % W, yy, w, 1);
+        x.fillRect((((i * 71 + off + 150) % W) + W) % W, yy, w, 1);
+      }
+
+      drawText(x, s.targetId ? 'THROWN TO THE SEA' : 'THE COUNCIL COULD NOT AGREE', {
+        x: W / 2, y: 34, scale: 1, align: 'center', color: DIM,
+      });
+      x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, 48, 140, 1);
+
+      let y = 60;
+      const col = s.targetId ? (s.wasAgent ? JADE : RED) : GOLD_LT;
+      for (const ln of wrapText(s.line || '', W - 60, 2, 1)) {
+        drawText(x, ln, { x: W / 2, y, scale: 2, align: 'center', color: col });
+        y += 18;
+      }
+
+      const left = [...g.mp.view.players.values()].filter((p) => p.alive !== false).length;
+      drawText(x, `${left} STILL ASHORE`, { x: W / 2, y: sea - 18, scale: 1, align: 'center', color: DIM });
+      return [];
+    },
+    key() { return true; },
+  },
+
+  /* ---------------- GAME OVER ---------------- */
+  mpEnd: {
+    draw(x, W, H, s, g, t) {
+      const win = s.winner === 'castaways';
+      x.fillStyle = win ? '#04120c' : '#160404';
+      x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, win ? '#04120c' : '#160404', win ? '#071c12' : '#200707', 0.5, 2);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(0, y, W, 1); }
+
+      drawText(x, s.winner ? (win ? 'THE CASTAWAYS' : 'THE ROGUE AGENTS') : 'GAME OVER', {
+        x: W / 2, y: 22, scale: 2, align: 'center', color: win ? '#8fe8c8' : '#ff6a5a',
+      });
+      if (s.winner) drawText(x, 'WIN', { x: W / 2, y: 42, scale: 2, align: 'center', color: GOLD });
+      x.fillStyle = win ? '#2f6a5c' : '#8a2018';
+      x.fillRect(W / 2 - 80, 62, 160, 1);
+      drawText(x, s.reason || '', { x: W / 2, y: 68, scale: 1, align: 'center', color: GOLD_LT });
+
+      /* Everybody's role, revealed. Half the fun of losing is finding out
+         how close you were. */
+      const agents = new Set(s.agents || []);
+      const players = [...g.mp.view.players.values()];
+      let y = 86;
+      for (const p of players) {
+        const wasAgent = agents.has(p.name);
+        x.fillStyle = colourOf(p.colour); x.fillRect(W / 2 - 92, y, 7, 7);
+        drawText(x, p.name || '?', { x: W / 2 - 80, y, scale: 1, color: GOLD_LT });
+        drawText(x, wasAgent ? 'ROGUE AGENT' : 'CASTAWAY', {
+          x: W / 2 - 4, y, scale: 1, color: wasAgent ? '#ff6a5a' : '#8fb0c8',
+        });
+        drawText(x, p.alive === false ? 'LOST' : 'ALIVE', {
+          x: W / 2 + 92, y, scale: 1, align: 'right', color: p.alive === false ? '#6a5c40' : JADE,
+        });
+        y += 10;
+      }
+
+      const rows = menuList(x, ['BACK TO THE BEACH'], s.sel, W / 2, H - 34, t, { width: 150 });
+      return rows;
+    },
+    key(code, s, g, st) {
+      return nav(code, s, 1, () => location.reload());
+    },
+  },
+
+
   /* ---------------- TITLE ---------------- */
   title: {
     draw(x, W, H, s, g, t) {
@@ -169,7 +632,7 @@ export const SCREENS = {
       x.fillStyle = GOLD; x.fillRect(L + 108, 105, 4, 4);
       drawText(x, 'THE IDOL OF ILLIC ISLE', { x: L, y: 114, scale: 1, color: GOLD });
 
-      const rows = menuList(x, ['BEGIN CASTAWAY', 'CONTROLS', 'OPTIONS', 'THE LEGEND'],
+      const rows = menuList(x, ['PLAY', 'CONTROLS', 'OPTIONS', 'THE LEGEND'],
         s.sel, L + 66, 136, t, { width: 132 });
       drawText(x, '(C) 1998 SCHWAB TECHNOLOGY', { x: L, y: H - 22, scale: 1, color: '#6a5c40' });
       if (Math.floor(t * 1.5) % 2 === 0) {
@@ -179,7 +642,7 @@ export const SCREENS = {
     },
     key(code, s, g) {
       return nav(code, s, 4, (i) => {
-        if (i === 0) g.beginGame();
+        if (i === 0) g.screens.replace('mode');
         else if (i === 1) g.screens.push('controls');
         else if (i === 2) g.screens.push('options');
         else g.screens.push('lore');

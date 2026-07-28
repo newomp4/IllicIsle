@@ -5,7 +5,7 @@
    because it has to show before the renderer exists.
    =========================================================== */
 
-import { Game } from './game.js';
+import { MPGame } from './mp/mpgame.js';
 
 const $ = (id) => document.getElementById(id);
 let game = null;
@@ -24,7 +24,7 @@ async function boot() {
     && !matchMedia('(pointer: fine)').matches;
 
   try {
-    game = new Game(canvas);
+    game = new MPGame(canvas);
   } catch (err) {
     console.error(err);
     $('load-text').textContent = 'FAILED TO START: ' + err.message;

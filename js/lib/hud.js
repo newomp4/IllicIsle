@@ -10,6 +10,12 @@
    =========================================================== */
 
 import { drawText, textWidth, wrapText, panel, ditherRect, normalize, GLYPH_H } from './bitfont.js';
+import { COLOURS } from '../net/protocol.js';
+
+/** id -> 6-digit hex, for the Castaways roster pips. */
+const COLOUR_HEX = Object.fromEntries(
+  COLOURS.map((c) => [c.id, c.hex.toString(16).padStart(6, '0')])
+);
 
 const GOLD = '#ffd24a';
 const GOLD_LT = '#fff3c4';
@@ -97,6 +103,21 @@ export class Hud {
     // one-pixel drift, so the HUD breathes with the framebuffer
     const wob = Math.round(Math.sin(time * 1.7) * 0.5 + Math.sin(time * 0.9) * 0.5);
 
+    if (d.mp) {
+      // Castaways draws its own left and right columns; hearts and a
+      // coconut count mean nothing when you are alive or you are not.
+      this._mpTags(d.mp);
+      this._mpLeft(4, 4 + wob, d.mp);
+      this._mpRight(W - 4, 4 + wob, d.mp, W, H);
+      this._compass(W / 2, 3, d.compass);
+      this._mpBanner(W, H, d.mp);
+      this._timer(W - 4, H - 4);
+      if (d.prompt) this._prompt(W / 2, H - 44, d.prompt);
+      this._toasts(W / 2, Math.round(H * 0.30));
+      if (d.popup) this._popup(W, H, d.popup);
+      return this.c;
+    }
+
     this._hearts(4, 4 + wob);
     this._stamina(4, 4 + HEART.length * 2 + 5 + wob);
     this._right(W - 4, 4 + wob);
@@ -140,6 +161,143 @@ export class Hud {
     }
     if (d.cinemaSkip && Math.floor(time * 1.4) % 2 === 0) {
       drawText(x, 'ANY KEY TO SKIP', { x: W - 6, y: H - bar + 3, scale: 1, align: 'right', color: '#6a5c40' });
+    }
+  }
+
+  /* ===========================================================
+     CASTAWAYS
+     =========================================================== */
+
+  /** Name tags, already projected into HUD pixels by the game. */
+  _mpTags(mp) {
+    const x = this.x;
+    for (const t of (mp.tags || [])) {
+      const hex = '#' + (t.colour >>> 0).toString(16).padStart(6, '0');
+      const w = textWidth(t.name, 1) + 4;
+      const bx = Math.round(t.x - w / 2), by = t.y - 9;
+      if (t.fade < 0.35) continue;
+      // a dark plate so a pale name never vanishes into the sky
+      x.fillStyle = 'rgba(8,6,4,.62)';
+      x.fillRect(bx, by, w, 9);
+      x.fillStyle = t.dead ? '#7a2018' : hex;
+      x.fillRect(bx, by + 8, w, 1);
+      drawText(x, t.name, {
+        x: Math.round(t.x), y: by + 2, scale: 1, align: 'center',
+        color: t.dead ? '#e0453a' : (t.fade > 0.7 ? '#fff3c4' : '#c9b98a'),
+      });
+    }
+  }
+
+  /** Left column: your own chore list, ticked off as you go. */
+  _mpLeft(ox, oy, mp) {
+    const x = this.x;
+    const agent = mp.role === 'agent';
+    const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY', ...(mp.myTasks || []).map((t) => t.name)];
+    if (agent) lines.push('THESE ARE FOR SHOW', 'KNIFE COLD  00', 'Q  SABOTAGE');
+    const pw = Math.max(74, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
+    const ph = 18 + ((mp.myTasks?.length || 0) + (agent ? 3 : 0)) * 10;
+    plate(x, ox - 3, oy - 3, pw, ph);
+    drawText(x, agent ? 'ROGUE AGENT' : 'CASTAWAY', {
+      x: ox, y: oy, scale: 1, color: agent ? '#ff6a5a' : '#8fe8c8',
+    });
+    let y = oy + 11;
+    for (const t of (mp.myTasks || [])) {
+      const done = t.done;
+      // a hard pixel checkbox rather than a glyph
+      x.fillStyle = INK; x.fillRect(ox, y, 7, 7);
+      x.fillStyle = done ? '#3a5a2c' : '#2a1c0c';
+      x.fillRect(ox + 1, y + 1, 5, 5);
+      if (done) {
+        x.fillStyle = '#7ec850';
+        x.fillRect(ox + 2, y + 4, 1, 1);
+        x.fillRect(ox + 3, y + 5, 1, 1);
+        x.fillRect(ox + 4, y + 3, 1, 1);
+        x.fillRect(ox + 5, y + 2, 1, 1);
+      }
+      drawText(x, t.name, {
+        x: ox + 11, y: y + 1, scale: 1,
+        color: done ? '#5f7a4a' : (agent ? '#d8a898' : '#e2d2a4'),
+      });
+      y += 10;
+    }
+    if (agent) {
+      drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 2, scale: 1, color: '#b06a5c' });
+      y += 12;
+      const cd = mp.killIn || 0;
+      drawText(x, cd > 0 ? `KNIFE COLD  ${Math.ceil(cd)}` : 'KNIFE READY', {
+        x: ox, y: y + 2, scale: 1, color: cd > 0 ? '#a87a70' : '#ff6a5a',
+      });
+      // the sabotage wheel has nothing to do with the knife's cooldown, so
+      // the hint stays put rather than blinking in and out
+      drawText(x, 'Q  SABOTAGE', { x: ox, y: y + 12, scale: 1, color: '#a89872' });
+    }
+  }
+
+  /** Right column: the shared work bar and who is still ashore. */
+  _mpRight(ox, oy, mp, W, H) {
+    const x = this.x;
+    plate(x, ox - 62, oy - 3, 65, 22 + (mp.players?.length || 0) * 10);
+    const total = mp.tasksTotal || 0;
+    const frac = total ? Math.min(1, (mp.tasksDone || 0) / total) : 0;
+    drawText(x, 'WORK', { x: ox, y: oy, scale: 1, align: 'right', color: '#c9b98a' });
+    const bw = 56, bh = 5, bx = ox - bw;
+    x.fillStyle = INK; x.fillRect(bx - 1, oy + 9, bw + 2, bh + 2);
+    x.fillStyle = '#231708'; x.fillRect(bx, oy + 10, bw, bh);
+    const n = Math.round(frac * bw);
+    for (let i = 0; i < n; i += 3) {
+      x.fillStyle = i % 6 ? '#c39a2c' : GOLD;
+      x.fillRect(bx + i, oy + 10, 2, bh);
+    }
+
+    // roster pips: one square per player, dark when they are gone
+    let py = oy + 20;
+    for (const p of (mp.players || [])) {
+      const hex = '#' + (COLOUR_HEX[p.colour] || '888888');
+      const dead = p.alive === false;
+      const px = ox - 7;
+      x.fillStyle = INK; x.fillRect(px - 1, py - 1, 9, 9);
+      x.fillStyle = dead ? '#241a16' : hex;
+      x.fillRect(px, py, 7, 7);
+      if (dead) {
+        x.fillStyle = '#6a2a22';
+        for (let i = 0; i < 7; i++) { x.fillRect(px + i, py + i, 1, 1); x.fillRect(px + 6 - i, py + i, 1, 1); }
+      }
+      if (p.id === mp.selfId) { x.fillStyle = GOLD; x.fillRect(px - 2, py + 3, 1, 1); }
+      py += 10;
+    }
+  }
+
+  /** Centre-bottom: whatever is currently urgent. */
+  _mpBanner(W, H, mp) {
+    const x = this.x;
+
+    // task hold
+    if (mp.task) {
+      const bw = 96, bx = Math.round((W - bw) / 2), by = H - 62;
+      panelBar(x, bx, by, bw, mp.task.k, mp.task.verb);
+    }
+
+    // sabotage countdown
+    if (mp.sabotage) {
+      const s = mp.sabotage;
+      const flash = s.fatal && Math.floor(performance.now() / 220) % 2 === 0;
+      const label = `${s.name}  ${Math.ceil(s.left)}`;
+      const w = textWidth(label, 1) + 12;
+      const bx = Math.round((W - w) / 2), by = H - 26;
+      x.fillStyle = s.fatal ? 'rgba(60,8,6,.82)' : 'rgba(30,20,6,.8)';
+      x.fillRect(bx, by, w, 12);
+      x.fillStyle = s.fatal ? (flash ? '#e0453a' : '#8a2018') : '#a8761c';
+      x.fillRect(bx, by, w, 1); x.fillRect(bx, by + 11, w, 1);
+      drawText(x, label, {
+        x: W / 2, y: by + 3, scale: 1, align: 'center',
+        color: s.fatal ? (flash ? '#fff3c4' : '#ffb0a4') : GOLD_LT,
+      });
+    }
+
+    if (!mp.alive) {
+      drawText(x, 'YOU ARE A GHOST - WATCH, AND WAIT', {
+        x: W / 2, y: mp.sabotage ? H - 38 : H - 26, scale: 1, align: 'center', color: '#8fb0c8',
+      });
     }
   }
 
@@ -224,7 +382,6 @@ export class Hud {
       if (Math.abs(dA) > HALF) continue;
       const tx = toX(dA);
       const major = deg % 45 === 0;
-      x.fillStyle = major ? '#7a6margin' : '#4a3a1c';
       x.fillStyle = major ? '#7a6a3c' : '#4a3a1c';
       x.fillRect(tx, oy + H - (major ? 5 : 3), 1, major ? 5 : 3);
     }
@@ -236,8 +393,19 @@ export class Hud {
       const near = 1 - Math.abs(dA) / HALF;
       const col = m.kind === 'card' ? GOLD
         : m.kind === 'inter' ? '#8a7a52'
-          : m.kind === 'goal' ? '#ffe07a' : '#8fd8ff';
+          : m.kind === 'goal' ? '#ffe07a'
+            : m.kind === 'job' ? '#7ec850' : '#8fd8ff';
       if (near < 0.10) continue;
+      if (m.kind === 'job') {
+        // a small diamond, low in the strip, clear of the lettering
+        x.fillStyle = col;
+        x.fillRect(px, oy + 7, 1, 1);
+        x.fillRect(px - 1, oy + 8, 3, 1);
+        x.fillRect(px - 2, oy + 9, 5, 1);
+        x.fillRect(px - 1, oy + 10, 3, 1);
+        x.fillRect(px, oy + 11, 1, 1);
+        continue;
+      }
       drawText(x, m.label, { x: px, y: oy + 2, scale: 1, align: 'center', color: col, shadow: false });
       if (m.kind !== 'card' && m.kind !== 'inter') {
         x.fillStyle = col;
@@ -371,6 +539,33 @@ export class Hud {
 /* ===========================================================
    RELIC ICONS — small pixel drawings, one per collectible
    =========================================================== */
+/**
+ * A backing plate for HUD text. Solid enough that a bright sky cannot eat
+ * the lettering, with a dither over the top so it still belongs to the
+ * same picture as everything else.
+ */
+function plate(x, ox, oy, w, h) {
+  x.fillStyle = 'rgba(8,6,3,.90)';
+  x.fillRect(ox, oy, w, h);
+  // a single dithered row along each edge, so it fades out rather than
+  // stopping dead against the world
+  ditherRect(x, ox, oy, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+  ditherRect(x, ox, oy + h - 2, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+  ditherRect(x, ox + w - 2, oy, 2, h, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+}
+
+/** A labelled progress bar, hard-edged and segmented. */
+function panelBar(x, bx, by, bw, k, label) {
+  x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 9);
+  x.fillStyle = '#231708'; x.fillRect(bx, by, bw, 7);
+  const n = Math.round(Math.max(0, Math.min(1, k)) * bw);
+  for (let i = 0; i < n; i += 3) {
+    x.fillStyle = i % 6 ? '#3f8f6a' : JADE;
+    x.fillRect(bx + i, by, 2, 7);
+  }
+  drawText(x, label, { x: bx + bw / 2, y: by - 11, scale: 1, align: 'center', color: JADE });
+}
+
 export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
   const u = size / 16;
   const px = (gx, gy, w, h, col) => {
