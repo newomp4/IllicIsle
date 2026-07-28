@@ -159,6 +159,7 @@ export class Player {
 
     this.pos = new THREE.Vector3(0, 5, 0);
     this.vel = new THREE.Vector3();
+    this.shake = 0;
     this.yaw = 0;         // camera yaw
     this.pitch = -0.12;   // camera pitch
     this.facing = 0;      // body yaw
@@ -494,6 +495,9 @@ export class Player {
   updateCamera(dt, groundOf) {
     const cam = this.camera;
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    // a short, decaying jolt — enough to register as an impact, not enough
+    // to make anybody seasick
+    if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 3.2);
 
     if (this.thirdPerson) {
       const targetY = this.pos.y + 1.42;
@@ -514,7 +518,7 @@ export class Player {
         const sx = this.pos.x + dirX * t + rightX * SHOULDER;
         const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
         const sy = targetY + dirY * t;
-        if (sy < groundOf(sx, sz) + 0.55) { dist = Math.max(1.2, t - 0.45); break; }
+        if (sy < groundOf(sx, sz) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
       }
 
       // tree trunks and rocks — without this the camera spends the whole
@@ -528,7 +532,8 @@ export class Player {
             const sx = this.pos.x + dirX * t + rightX * SHOULDER;
             const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
             if ((sx - c.x) ** 2 + (sz - c.z) ** 2 < r * r) {
-              dist = Math.max(1.2, t - 0.4);
+              // never inside the body: at 1.2 the camera sat in the head
+              dist = Math.max(2.1, t - 0.4);
               break;
             }
           }
@@ -551,9 +556,10 @@ export class Player {
       );
     } else {
       const bob = Math.sin(this.walkPhase * 2) * 0.035 * (this.grounded ? 1 : 0);
+      const j = this.shake > 0 ? this.shake * 0.09 : 0;
       cam.position.set(
-        this.pos.x,
-        this.pos.y + this.EYE - this.inWater * 0.4 + bob,
+        this.pos.x + (j ? Math.sin(this.shake * 47) * j : 0),
+        this.pos.y + this.EYE - this.inWater * 0.4 + bob + (j ? Math.sin(this.shake * 31) * j : 0),
         this.pos.z
       );
       const lx = this.pos.x + Math.sin(this.yaw) * cp;
@@ -570,4 +576,7 @@ export class Player {
   }
 
   playThrow() { this.throwAnim = 1; }
+
+  /** Knock the camera about for a moment. 0..1. */
+  punch(amount = 0.5) { this.shake = Math.max(this.shake || 0, amount); }
 }

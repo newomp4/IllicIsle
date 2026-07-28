@@ -383,91 +383,161 @@ export const SCREENS = {
 
   /* ---------------- COUNCIL + VOTE ---------------- */
   mpCouncil: {
-    init(s, g) { s.sel = 0; s.typing = ''; },
+    init(s, g) { s.sel = 0; s.typing = ''; s.ready = false; },
     draw(x, W, H, s, g, t) {
       const voting = g.mp.view.phase === 'vote';
-      const left = Math.max(0, (g.mp.view.phaseEndsAt || 0) - performance.now() / 1000);
-      const b = frame(x, W, H, voting ? 'THE VOTE' : 'COUNCIL', `${Math.ceil(left)}s`);
-      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: b.top, scale: 1, align: 'center', color: GOLD });
-
-      /* Roster on the left. Only the living are on the ballot, so the
-         selection index counts them and them alone — highlighting a name
-         you cannot vote for reads as a bug the first time it happens. */
       const players = [...g.mp.view.players.values()];
-      s.targets = players.filter((p) => p.alive !== false).map((p) => p.id);
+      const alive = players.filter((p) => p.alive !== false);
+      const total = Math.max(0.001, g.mp.view.phaseTotal || 45);
+      const left = Math.max(0, (g.mp.view.phaseEndsAt || 0) - performance.now() / 1000);
+
+      /* ---- the fire everyone is sitting around ---- */
+      x.fillStyle = '#080604'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#080604', '#120c06', 0.5, 2);
+      const flick = 0.82 + Math.sin(t * 11) * 0.09 + Math.sin(t * 6.3) * 0.09;
+      for (let i = 7; i >= 0; i--) {
+        const r = 40 + i * 15;
+        x.fillStyle = `rgba(${90 - i * 6},${44 - i * 3},${10},${(0.05 * flick).toFixed(3)})`;
+        x.beginPath(); x.arc(W / 2, H - 6, r, 0, Math.PI * 2); x.fill();
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+
+      /* ---- header: which half of the meeting you are in ---- */
+      const title = voting ? 'THE VOTE' : 'THE COUNCIL';
+      drawText(x, title, { x: W / 2, y: 8, scale: 2, align: 'center', color: voting ? RED : GOLD });
+      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: 26, scale: 1, align: 'center', color: GOLD_LT });
+
+      // a draining bar reads faster than a number, so it gets both
+      const bw = W - 60, bx = 30, by = 38;
+      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 6);
+      x.fillStyle = '#1c1208'; x.fillRect(bx, by, bw, 4);
+      const n = Math.round((left / total) * bw);
+      const urgent = left < 8;
+      for (let i = 0; i < n; i += 3) {
+        x.fillStyle = urgent
+          ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018')
+          : (i % 6 ? '#c39a2c' : GOLD);
+        x.fillRect(bx + i, by, 2, 4);
+      }
+      drawText(x, `${Math.ceil(left)}`, {
+        x: W - 30, y: by - 10, scale: 1, align: 'right', color: urgent ? RED : DIM,
+      });
+      drawText(x, voting ? 'CAST YOUR VOTE' : 'TALK IT OUT', {
+        x: 30, y: by - 10, scale: 1, color: DIM,
+      });
+
+      /* ---- left: the roster, which doubles as the ballot ---- */
+      s.targets = alive.map((p) => p.id);
       if (voting) s.targets.push('skip');
       if (s.sel >= s.targets.length) s.sel = 0;
 
-      let y = b.top + 14;
+      const LX = 12, LW = 122;
+      let y = 52;
       const rows = [];
-      const line = (id, label, swatch, dead) => {
+      const voted = new Set(g.mp.view.votes?.voted || []);
+      const line = (id, label, swatch, dead, tag, tagCol) => {
         const idx = s.targets.indexOf(id);
-        const on = voting && idx >= 0 && idx === s.sel;
-        if (on) { x.fillStyle = '#3a2a10'; x.fillRect(14, y - 2, 118, 11); }
-        if (swatch) {
-          x.fillStyle = dead ? '#4a4a4a' : swatch;
-          x.fillRect(18, y, 7, 7);
+        const on = idx >= 0 && idx === s.sel;
+        if (on) {
+          x.fillStyle = voting ? '#4a1410' : '#3a2a10';
+          x.fillRect(LX, y - 2, LW, 11);
+          x.fillStyle = voting ? RED : GOLD;
+          x.fillRect(LX, y - 2, 1, 11);
         }
+        if (swatch) { x.fillStyle = dead ? '#4a4a4a' : swatch; x.fillRect(LX + 4, y, 7, 7); }
         drawText(x, label, {
-          x: 30, y, scale: 1, color: dead ? '#6a6a6a' : (on ? GOLD_LT : DIM),
+          x: LX + 16, y, scale: 1,
+          color: dead ? '#6a6a6a' : (on ? GOLD_LT : '#c9b98a'),
         });
-        const n = g.mp.view.votes?.counts?.[id] || 0;
-        if (n) drawText(x, '*'.repeat(Math.min(n, 6)), { x: 128, y, scale: 1, align: 'right', color: GOLD });
-        if (voting && idx >= 0) rows[idx] = { x: 14, y: y - 2, w: 118, h: 11 };
+        if (tag) drawText(x, tag, { x: LX + LW - 4, y, scale: 1, align: 'right', color: tagCol });
+        if (idx >= 0) rows[idx] = { x: LX, y: y - 2, w: LW, h: 11 };
         y += 11;
       };
+
       for (const p of players) {
         const dead = p.alive === false;
-        line(p.id, (dead ? 'X ' : '') + (p.name || '?'), colourOf(p.colour), dead);
+        let tag = '', col = DIM;
+        if (dead) { tag = 'LOST'; col = '#5a4a3a'; }
+        else if (voting) {
+          const c = g.mp.view.votes?.counts?.[p.id] || 0;
+          if (c) { tag = '*'.repeat(Math.min(c, 5)); col = GOLD; }
+          else if (voted.has(p.id)) { tag = 'VOTED'; col = '#5f7a4a'; }
+        } else if (p.ready) { tag = 'DONE'; col = JADE; }
+        line(p.id, (dead ? 'X ' : '') + (p.name || '?'), colourOf(p.colour), dead, tag, col);
       }
-      if (voting) line('skip', 'SKIP', null, false);
+      if (voting) {
+        const c = g.mp.view.votes?.counts?.skip || 0;
+        line('skip', 'SKIP THE VOTE', null, false, c ? '*'.repeat(Math.min(c, 5)) : '', GOLD);
+      }
 
-      // chat on the right
-      const cx = 140;
-      x.fillStyle = 'rgba(0,0,0,.35)';
-      x.fillRect(cx, b.top + 12, W - cx - 14, b.bottom - b.top - 26);
+      // a running count, so nobody wonders who they are waiting on
+      if (voting) {
+        drawText(x, `${voted.size} OF ${alive.length} VOTED`,
+          { x: LX + 4, y: y + 4, scale: 1, color: DIM });
+      } else {
+        const done = alive.filter((p) => p.ready).length;
+        drawText(x, `${done} OF ${alive.length} DONE TALKING`,
+          { x: LX + 4, y: y + 4, scale: 1, color: done === alive.length ? JADE : DIM });
+      }
+
+      /* ---- right: the chat ---- */
+      const cx = LX + LW + 8;
+      const cw = W - cx - 12;
+      const ctop = 52, cbot = H - 36;
+      x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx, ctop, cw, cbot - ctop);
+      x.fillStyle = '#3a2a10';
+      x.fillRect(cx, ctop, cw, 1); x.fillRect(cx, cbot - 1, cw, 1);
+      x.fillRect(cx, ctop, 1, cbot - ctop); x.fillRect(cx + cw - 1, ctop, 1, cbot - ctop);
+
       const lines = [];
-      for (const m of g.mp.chat.slice(-10)) {
-        const wrapped = wrapText(`${m.from}: ${m.text}`, W - cx - 22, 1, 1);
+      for (const m of g.mp.chat.slice(-14)) {
+        const wrapped = wrapText(`${m.from}: ${m.text}`, cw - 8, 1, 1);
         wrapped.forEach((ln, i) => lines.push({
           ln, kind: m.kind, from: i === 0 ? m.from : null, colour: m.colour,
         }));
       }
-      let cy = b.top + 15;
-      for (const l of lines.slice(-11)) {
-        const body = l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT;
-        drawText(x, l.ln, { x: cx + 4, y: cy, scale: 1, color: body });
-        // repaint just the speaker's name in their own colour
-        if (l.from) {
-          drawText(x, l.from + ':', { x: cx + 4, y: cy, scale: 1, color: colourOf(l.colour) });
-        }
+      const fit = Math.floor((cbot - ctop - 6) / 9);
+      let cy = ctop + 4;
+      for (const l of lines.slice(-fit)) {
+        drawText(x, l.ln, { x: cx + 4, y: cy, scale: 1, color: l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT });
+        if (l.from) drawText(x, l.from + ':', { x: cx + 4, y: cy, scale: 1, color: colourOf(l.colour) });
         cy += 9;
       }
-      // input
-      if (g.amAlive || true) {
-        panel(x, cx, b.bottom - 12, W - cx - 14, 12, { border: 1, dither: 0.4 });
-        drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
-          x: cx + 3, y: b.bottom - 9, scale: 1, color: JADE,
+      if (!lines.length) {
+        drawText(x, g.amAlive ? 'NOBODY HAS SPOKEN YET' : 'THE DEAD TALK AMONG THEMSELVES', {
+          x: cx + cw / 2, y: ctop + 8, scale: 1, align: 'center', color: '#4a3f2a',
         });
       }
-      footer(x, W, H, voting
-        ? 'UP DOWN CHOOSE   ENTER CAST   TYPE TO TALK'
-        : 'TYPE TO TALK   ENTER SEND');
+
+      // input line
+      field(x, cx, H - 33, cw, 12, true);
+      drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
+        x: cx + 3, y: H - 30, scale: 1, color: g.amAlive ? JADE : '#8fb0c8',
+      });
+
+      /* ---- footer ---- */
+      const hint = voting
+        ? (s.typing ? 'ENTER SENDS' : 'UP DOWN CHOOSE   ENTER CASTS YOUR VOTE')
+        : (s.typing ? 'ENTER SENDS'
+          : (s.ready ? 'ENTER AGAIN TO SPEAK UP' : 'ENTER WHEN YOU ARE DONE TALKING'));
+      footer(x, W, H, hint);
       return voting ? rows.filter(Boolean) : [];
     },
     key(code, s, g, st) {
       const voting = g.mp.view.phase === 'vote';
-      /* Enter does double duty: it sends what you have typed, and casts
-         your vote when the line is empty. Binding the vote to a letter
-         key would make that letter untypable in the one screen that is
-         mostly typing. */
+      /* Enter carries the whole screen: it sends what you have typed, and
+         when the line is empty it means "I am done" — which during the
+         discussion ends it early once everyone agrees, and during the vote
+         casts your ballot. Binding these to letters would make those
+         letters untypable in a screen that is mostly typing. */
       if (code === 'Enter' || code === 'NumpadEnter') {
-        if (s.typing.trim()) { g.sendChat(s.typing.trim()); s.typing = ''; }
-        else if (voting && s.targets?.length) g.sendVote(s.targets[s.sel] || 'skip');
+        if (s.typing.trim()) { g.sendChat(s.typing.trim()); s.typing = ''; return true; }
+        if (voting) { if (s.targets?.length) g.sendVote(s.targets[s.sel] || 'skip'); }
+        else { s.ready = !s.ready; g.sendReady(s.ready); }
         return true;
       }
       if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
-      if (voting && (code === 'ArrowUp' || code === 'ArrowDown')) {
+      if (code === 'ArrowUp' || code === 'ArrowDown') {
         const n = s.targets?.length || 1;
         s.sel = (s.sel + (code === 'ArrowUp' ? n - 1 : 1)) % n;
         return true;
@@ -475,44 +545,121 @@ export const SCREENS = {
       const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
       if (m && s.typing.length < 60) { s.typing += m[1]; return true; }
       if (code === 'Space' && s.typing.length < 60) { s.typing += ' '; return true; }
+      if (code === 'Period' && s.typing.length < 60) { s.typing += '.'; return true; }
+      if (code === 'Comma' && s.typing.length < 60) { s.typing += ','; return true; }
+      if (code === 'Slash' && s.typing.length < 60) { s.typing += '?'; return true; }
+      if (code === 'Minus' && s.typing.length < 60) { s.typing += '-'; return true; }
+      if (code === 'Quote' && s.typing.length < 60) { s.typing += "'"; return true; }
       return true;
     },
   },
 
   /* ---------------- SABOTAGE WHEEL ---------------- */
   mpSabotage: {
+    init(s) { s.sel = 0; },
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, 'SABOTAGE');
       const defs = Object.values(SABOTAGE_DEFS);
-      const rows = menuList(x, defs.map((d) => d.name), s.sel, W / 2, b.top + 8, t, { width: 170, gap: 30 });
-      // the blurb sits under whichever line is lit
-      defs.forEach((d, i) => {
-        let by = b.top + 8 + i * 30 + 12;
-        for (const ln of wrapText(d.blurb.toUpperCase(), W - 60, 1, 1)) {
-          drawText(x, ln, {
-            x: W / 2, y: by, scale: 1, align: 'center',
-            color: i === s.sel ? GOLD_LT : DIM,
-          });
-          by += 9;
+      const d = defs[s.sel] || defs[0];
+
+      /* A dark console rather than a menu: this is the one screen that is
+         entirely the villain's, so it gets its own colour and its own
+         furniture instead of the game's gold panel. */
+      x.fillStyle = '#0e0403'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#0e0403', '#1a0605', 0.5, 2);
+      // a slow sweep, like something is scanning
+      const sweep = ((t * 40) % (H + 60)) - 30;
+      for (let i = 0; i < 20; i++) {
+        const yy = Math.round(sweep + i);
+        if (yy < 0 || yy >= H) continue;
+        x.fillStyle = `rgba(180,40,30,${(0.05 * (1 - i / 20)).toFixed(3)})`;
+        x.fillRect(0, yy, W, 1);
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.40)'; x.fillRect(0, y, W, 1); }
+
+      // frame
+      x.fillStyle = '#8a2018';
+      x.fillRect(8, 8, W - 16, 1); x.fillRect(8, H - 9, W - 16, 1);
+      x.fillRect(8, 8, 1, H - 17); x.fillRect(W - 9, 8, 1, H - 17);
+      for (const [cx2, cy2] of [[8, 8], [W - 12, 8], [8, H - 12], [W - 12, H - 12]]) {
+        x.fillStyle = RED; x.fillRect(cx2, cy2, 4, 4);
+      }
+
+      drawText(x, 'SABOTAGE', { x: W / 2, y: 15, scale: 2, align: 'center', color: RED });
+      drawText(x, 'THEY WILL COME RUNNING. BE SOMEWHERE ELSE.', {
+        x: W / 2, y: 33, scale: 1, align: 'center', color: '#8a5a52',
+      });
+
+      /* three plates across, the lit one raised */
+      const CW = 92, CH = 74, GAP = 8;
+      const total = defs.length * CW + (defs.length - 1) * GAP;
+      const ox = Math.round((W - total) / 2);
+      const rows = [];
+      defs.forEach((def, i) => {
+        const on = i === s.sel;
+        const cx2 = ox + i * (CW + GAP);
+        const cy2 = 46 - (on ? 2 : 0);
+        x.fillStyle = on ? '#2a0a08' : '#160605';
+        x.fillRect(cx2, cy2, CW, CH);
+        ditherRect(x, cx2, cy2, CW, CH, on ? '#2a0a08' : '#160605', on ? '#3a0e0b' : '#1c0807', 0.4, 2);
+        x.fillStyle = on ? RED : '#5a1a14';
+        x.fillRect(cx2, cy2, CW, 1); x.fillRect(cx2, cy2 + CH - 1, CW, 1);
+        x.fillRect(cx2, cy2, 1, CH); x.fillRect(cx2 + CW - 1, cy2, 1, CH);
+        if (on) { x.fillStyle = RED; x.fillRect(cx2, cy2, CW, 3); }
+
+        drawSabotageIcon(x, def.id, cx2 + CW / 2 - 12, cy2 + 10, 24, on, t);
+
+        let ty = cy2 + 40;
+        for (const ln of wrapText(def.name, CW - 8, 1, 1)) {
+          drawText(x, ln, { x: cx2 + CW / 2, y: ty, scale: 1, align: 'center', color: on ? '#ffd8ce' : '#8a5a52' });
+          ty += 9;
         }
-        drawText(x, `${d.secs}s`, {
-          x: W / 2 + 90, y: b.top + 8 + i * 30 + 2, scale: 1, align: 'right',
-          color: d.fatal ? RED : DIM,
+        drawText(x, def.fatal ? 'FATAL' : `${def.secs} SEC`, {
+          x: cx2 + CW / 2, y: cy2 + CH - 10, scale: 1, align: 'center',
+          color: def.fatal ? (Math.floor(t * 5) % 2 ? '#ff6a5a' : '#8a2018') : '#7a4a44',
         });
+        rows.push({ x: cx2, y: cy2, w: CW, h: CH });
       });
-      drawText(x, 'ONE AT A TIME. THEY WILL COME RUNNING.', {
-        x: W / 2, y: b.bottom - 10, scale: 1, align: 'center', color: '#8a5a52',
-      });
-      footer(x, W, H, 'E CALL IT   ESC BACK');
+
+      // what the lit one actually does
+      let by = 132;
+      for (const ln of wrapText(d.blurb.toUpperCase(), W - 60, 1, 1)) {
+        drawText(x, ln, { x: W / 2, y: by, scale: 1, align: 'center', color: '#e2b0a4' });
+        by += 10;
+      }
+      const fixers = d.fixers > 1 ? `${d.fixers} OF THEM MUST FIX IT` : 'ONE OF THEM CAN FIX IT';
+      drawText(x, fixers, { x: W / 2, y: by + 4, scale: 1, align: 'center', color: '#7a4a44' });
+
+      // where they will be while they fix it — which is the useful part
+      const WHERE = {
+        camp: 'THE CAMPFIRE', hut: "FERDI'S HUT", wreck: 'THE WRECK',
+        pend1: 'THE WEST PENDULUM', pend2: 'THE RIDGE PENDULUM',
+        pend3: 'THE EAST PENDULUM', pend4: 'THE NORTH PENDULUM',
+      };
+      const spots = (d.fixAt || []).map((k) => WHERE[k] || k.toUpperCase());
+      x.fillStyle = '#5a1a14';
+      x.fillRect(W / 2 - 70, by + 18, 140, 1);
+      drawText(x, 'THEY WILL RUN TO', { x: W / 2, y: by + 24, scale: 1, align: 'center', color: '#7a4a44' });
+      let sy = by + 34;
+      for (const ln of wrapText(spots.join(' - '), W - 60, 1, 1)) {
+        drawText(x, ln, { x: W / 2, y: sy, scale: 1, align: 'center', color: '#c08078' });
+        sy += 9;
+      }
+
+      footer(x, W, H, 'LEFT RIGHT CHOOSE   E PULL IT   Q OR ESC AWAY');
       return rows;
     },
     key(code, s, g, st) {
       const defs = Object.values(SABOTAGE_DEFS);
-      return nav(code, s, defs.length, (i) => {
-        g.sendSabotage(defs[i].id);
+      if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + defs.length - 1) % defs.length; return true; }
+      if (code === 'ArrowRight' || code === 'KeyD') { s.sel = (s.sel + 1) % defs.length; return true; }
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        g.sendSabotage(defs[s.sel].id);
         st.pop();
         g.afterOverlayClose();
-      }, () => { st.pop(); g.afterOverlayClose(); });
+        return true;
+      }
+      return true;
     },
   },
 
@@ -813,18 +960,52 @@ export const SCREENS = {
   /* ---------------- CHART ---------------- */
   chart: {
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, "ROGUE AGENTS' CHART");
+      /* It unfolds. A map that simply appears reads as a menu; a map that
+         opens in two beats — creased in half, then flat — reads as paper
+         you are pulling out of a pocket. */
+      const k = Math.min(1, s.t / 0.26);
+      const ease = 1 - Math.pow(1 - k, 3);
+
+      x.fillStyle = `rgba(6,4,2,${(0.86 * ease).toFixed(3)})`;
+      x.fillRect(0, 0, W, H);
+      x.fillStyle = 'rgba(0,0,0,.35)';
+      for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
+
+      const m = 10;
+      const fullH = H - m * 2;
+      const openH = Math.max(4, Math.round(fullH * ease));
+      const top = Math.round(m + (fullH - openH) / 2);
+      panel(x, m, top, W - m * 2, openH, { border: 2, dither: 0.45, hi: GOLD_DK, lo: '#241708' });
+
+      if (k < 0.7) {
+        // the crease, still visible while it is coming open
+        x.fillStyle = GOLD_DK;
+        x.fillRect(m + 6, top + Math.round(openH / 2), W - m * 2 - 12, 1);
+        return [];
+      }
+
+      drawText(x, "ROGUE AGENTS' CHART", { x: W / 2, y: m + 7, scale: 1, align: 'center', color: GOLD });
+      x.fillStyle = GOLD_DK;
+      x.fillRect(m + 8, m + 18, W - m * 2 - 16, 1);
+      const b = { top: m + 24, bottom: H - m - 12 };
+
       const size = Math.min(W - 30, b.bottom - b.top - 14);
       const ox = Math.round((W - size) / 2), oy = b.top + 2;
       drawChart(x, ox, oy, size, s.data, t);
-      const left = s.data.marks.filter((m) => !m.found).length;
-      drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
-        { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: left ? GOLD : JADE });
-      footer(x, W, H, 'M CLOSE');
+      if (s.data.marks.length) {
+        const left = s.data.marks.filter((mk) => !mk.found).length;
+        drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
+          { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: left ? GOLD : JADE });
+      } else if (s.subtitle) {
+        drawText(x, s.subtitle, { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: JADE });
+      }
+      footer(x, W, H, 'M OR TAB CLOSE');
       return [];
     },
     key(code, s, g, st) {
-      if (code === 'KeyM' || code === 'Escape' || code === 'Tab') { st.pop(); g.afterOverlayClose(); return true; }
+      if (code === 'KeyM' || code === 'Escape' || code === 'Tab' || code === 'KeyF') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
       return true;
     },
   },
@@ -1093,6 +1274,56 @@ const OPTION_DEFS = [
 /* ===========================================================
    PIXEL GLYPHS (shared by dials and the chart)
    =========================================================== */
+/** Hand-drawn 24px marks for the three sabotages. */
+function drawSabotageIcon(x, kind, ox, oy, size, lit, t) {
+  const u = size / 12;
+  const p = (gx, gy, w, h, col) => {
+    x.fillStyle = col;
+    x.fillRect(Math.round(ox + gx * u), Math.round(oy + gy * u), Math.ceil(w * u), Math.ceil(h * u));
+  };
+  const hot = lit ? 1 : 0.45;
+  const C = (a, b) => (lit ? a : b);
+
+  if (kind === 'douse') {
+    // a torch head with the flame guttering out
+    p(5, 6, 2, 6, C('#8a6a3c', '#4a3a22'));
+    p(4, 11, 4, 1, C('#6a4a28', '#3a2a18'));
+    if (lit && Math.floor(t * 6) % 2 === 0) {
+      p(5, 3, 2, 3, '#e0703a');
+      p(5, 1, 2, 2, '#f0b050');
+    } else {
+      p(5, 4, 2, 2, C('#5a3a2a', '#3a2418'));
+    }
+    // smoke curling off
+    const w = Math.sin(t * 3) * 1;
+    p(5 + w, 0, 1, 1, C('#6a6a6a', '#3a3a3a'));
+    p(6 - w, 2, 1, 1, C('#5a5a5a', '#333'));
+  } else if (kind === 'storm') {
+    // cloud with a bolt through it
+    p(2, 3, 8, 3, C('#4a5a6a', '#2a323c'));
+    p(3, 2, 6, 1, C('#5a6a7a', '#333c46'));
+    p(1, 5, 10, 1, C('#3a4a5a', '#242c34'));
+    for (let i = 0; i < 4; i++) {
+      const rx = 2 + i * 2.4;
+      p(rx, 7 + (i % 2), 1, 2, C('#7fa8c4', '#3a4a58'));
+    }
+    if (!lit || Math.floor(t * 4) % 2 === 0) {
+      p(6, 6, 1, 3, C('#ffe07a', '#5a4a20'));
+      p(5, 9, 2, 1, C('#ffe07a', '#5a4a20'));
+      p(5, 10, 1, 2, C('#ffd24a', '#4a3c18'));
+    }
+  } else {
+    // a pendulum arrested mid-swing, with a bar jammed through it
+    p(5, 0, 2, 1, C('#8a7a52', '#453d29'));
+    p(6, 1, 1, 6, C('#8a7a52', '#453d29'));
+    p(4, 7, 5, 4, C('#c39a2c', '#5f4c16'));
+    p(5, 8, 3, 2, C('#ffd24a', '#7a6522'));
+    const jitter = lit ? (Math.floor(t * 12) % 2 ? 1 : 0) : 0;
+    p(1 + jitter, 5, 10, 1, C('#e0453a', '#6a2018'));
+    p(1 + jitter, 6, 10, 1, C('#8a2018', '#3a100c'));
+  }
+}
+
 export function drawGlyphPixels(x, name, ox, oy, size, color) {
   const u = size / 16;
   const px = (gx, gy, w = 1, h = 1) => x.fillRect(
@@ -1212,6 +1443,33 @@ export function drawChart(x, ox, oy, S, data, t) {
     x.fillRect(sx - 6, sy - 1, 13, 6); x.fillRect(sx - 4, sy - 4, 9, 3); x.fillRect(sx - 2, sy - 6, 5, 2);
     x.fillStyle = '#1a1206'; x.fillRect(sx - 1, sy + 1, 3, 4);
     label('TEMPLE', sx, sy + 8);
+  }
+  /* Castaways: your own chores, ticked as you go. Nobody else's list is
+     drawn — knowing where everyone is supposed to be would hand the game
+     away. */
+  for (const j of (data.jobs || [])) {
+    const [sx, sy] = toPx(j.x, j.z);
+    if (j.done) {
+      x.fillStyle = '#2f6a4a';
+      x.fillRect(sx - 3, sy, 2, 2); x.fillRect(sx - 1, sy + 2, 2, 2);
+      x.fillRect(sx + 1, sy - 1, 2, 2); x.fillRect(sx + 3, sy - 3, 2, 2);
+    } else {
+      const pulse = Math.floor(t * 2) % 2 === 0;
+      x.fillStyle = '#8a2418';
+      x.fillRect(sx - 4, sy - 1, 9, 3); x.fillRect(sx - 1, sy - 4, 3, 9);
+      if (pulse) {
+        x.fillStyle = '#c02a1a';
+        x.fillRect(sx - 6, sy - 6, 13, 1); x.fillRect(sx - 6, sy + 5, 13, 1);
+        x.fillRect(sx - 6, sy - 6, 1, 12); x.fillRect(sx + 6, sy - 6, 1, 12);
+      }
+    }
+  }
+  // ghosts get to watch the living move about
+  for (const o of (data.others || [])) {
+    const [sx, sy] = toPx(o.x, o.z);
+    x.fillStyle = '#000'; x.fillRect(sx - 3, sy - 3, 6, 6);
+    x.fillStyle = '#' + (o.colour >>> 0).toString(16).padStart(6, '0');
+    x.fillRect(sx - 2, sy - 2, 4, 4);
   }
   if (data.player) {
     const [sx, sy] = toPx(data.player.x, data.player.z);

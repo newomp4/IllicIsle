@@ -194,18 +194,22 @@ export class Hud {
     const agent = mp.role === 'agent';
     const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY', ...(mp.myTasks || []).map((t) => t.name)];
     if (agent) lines.push('THESE ARE FOR SHOW', 'KNIFE COLD  00', 'Q  SABOTAGE');
+    else lines.push('TAB  CHART');
     const pw = Math.max(74, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
-    const ph = 18 + ((mp.myTasks?.length || 0) + (agent ? 3 : 0)) * 10;
+    const ph = 18 + ((mp.myTasks?.length || 0) + (agent ? 4 : 1)) * 10;
     plate(x, ox - 3, oy - 3, pw, ph);
     drawText(x, agent ? 'ROGUE AGENT' : 'CASTAWAY', {
       x: ox, y: oy, scale: 1, color: agent ? '#ff6a5a' : '#8fe8c8',
     });
     let y = oy + 11;
+    const beat = Math.floor(performance.now() / 110) % 2 === 0;
     for (const t of (mp.myTasks || [])) {
       const done = t.done;
+      const hot = mp.flash === t.id;
+      if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 2, 118, 10); }
       // a hard pixel checkbox rather than a glyph
       x.fillStyle = INK; x.fillRect(ox, y, 7, 7);
-      x.fillStyle = done ? '#3a5a2c' : '#2a1c0c';
+      x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : '#2a1c0c';
       x.fillRect(ox + 1, y + 1, 5, 5);
       if (done) {
         x.fillStyle = '#7ec850';
@@ -216,7 +220,7 @@ export class Hud {
       }
       drawText(x, t.name, {
         x: ox + 11, y: y + 1, scale: 1,
-        color: done ? '#5f7a4a' : (agent ? '#d8a898' : '#e2d2a4'),
+        color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (agent ? '#d8a898' : '#e2d2a4')),
       });
       y += 10;
     }
@@ -230,6 +234,9 @@ export class Hud {
       // the sabotage wheel has nothing to do with the knife's cooldown, so
       // the hint stays put rather than blinking in and out
       drawText(x, 'Q  SABOTAGE', { x: ox, y: y + 12, scale: 1, color: '#a89872' });
+      drawText(x, 'TAB  CHART', { x: ox, y: y + 22, scale: 1, color: '#8a7a52' });
+    } else {
+      drawText(x, 'TAB  CHART', { x: ox, y: y + 2, scale: 1, color: '#8a7a52' });
     }
   }
 
@@ -271,10 +278,31 @@ export class Hud {
   _mpBanner(W, H, mp) {
     const x = this.x;
 
-    // task hold
+    // task hold — a single framed panel, not a bar with captions above and
+    // an interaction prompt fighting it below
     if (mp.task) {
-      const bw = 96, bx = Math.round((W - bw) / 2), by = H - 62;
-      panelBar(x, bx, by, bw, mp.task.k, mp.task.verb);
+      const t2 = mp.task;
+      const pw = Math.max(120, textWidth(t2.name || '', 1) + 20);
+      const px = Math.round((W - pw) / 2), py = H - 68;
+      plate(x, px, py, pw, 34);
+      x.fillStyle = JADE;
+      x.fillRect(px, py, pw, 1); x.fillRect(px, py + 33, pw, 1);
+      drawText(x, t2.name || '', { x: W / 2, y: py + 4, scale: 1, align: 'center', color: GOLD_LT });
+
+      const bw = pw - 16, bx = px + 8, by = py + 15;
+      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 9);
+      x.fillStyle = '#231708'; x.fillRect(bx, by, bw, 7);
+      const n = Math.round(Math.max(0, Math.min(1, t2.k)) * bw);
+      for (let i = 0; i < n; i += 3) {
+        x.fillStyle = i % 6 ? '#3f8f6a' : JADE;
+        x.fillRect(bx + i, by, 2, 7);
+      }
+      // a chaser so it never looks frozen when progress is slow
+      const cx2 = bx + ((performance.now() / 9) % bw | 0);
+      x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 7);
+      drawText(x, `${t2.verb}   HOLD STILL`, {
+        x: W / 2, y: py + 25, scale: 1, align: 'center', color: '#9fd8c4',
+      });
     }
 
     // sabotage countdown
@@ -363,7 +391,7 @@ export class Hud {
   _compass(cx, oy, c) {
     if (!c) return;
     const x = this.x;
-    const W = 150, H = 15;
+    const W = 150, H = 17;
     const left = Math.round(cx - W / 2);
     x.fillStyle = INK; x.fillRect(left - 1, oy - 1, W + 2, H + 2);
     ditherRect(x, left, oy, W, H, '#140d06', '#241708', 0.5, 1);
@@ -399,18 +427,20 @@ export class Hud {
       if (m.kind === 'job') {
         // a small diamond, low in the strip, clear of the lettering
         x.fillStyle = col;
-        x.fillRect(px, oy + 7, 1, 1);
-        x.fillRect(px - 1, oy + 8, 3, 1);
-        x.fillRect(px - 2, oy + 9, 5, 1);
-        x.fillRect(px - 1, oy + 10, 3, 1);
-        x.fillRect(px, oy + 11, 1, 1);
+        x.fillRect(px, oy + 8, 1, 1);
+        x.fillRect(px - 1, oy + 9, 3, 1);
+        x.fillRect(px - 2, oy + 10, 5, 1);
+        x.fillRect(px - 1, oy + 11, 3, 1);
+        x.fillRect(px, oy + 12, 1, 1);
         continue;
       }
-      drawText(x, m.label, { x: px, y: oy + 2, scale: 1, align: 'center', color: col, shadow: false });
-      if (m.kind !== 'card' && m.kind !== 'inter') {
-        x.fillStyle = col;
-        x.fillRect(px, oy + H - 7, 1, 2);
-      }
+      /* Cardinals on the top line, places on the bottom. They used to share
+         a row and spell nonsense wherever a landmark lined up with a letter. */
+      const card = m.kind === 'card' || m.kind === 'inter';
+      drawText(x, m.label, {
+        x: px, y: oy + (card ? 1 : 9), scale: 1, align: 'center', color: col, shadow: false,
+      });
+      if (!card) { x.fillStyle = col; x.fillRect(px, oy + 7, 1, 2); }
     }
 
     // needle and frame
@@ -620,6 +650,15 @@ export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
     px(7, 2, 1, 2, '#6a8a3a');        // stem
     px(4, 6, 1, 2, '#7fc060');        // shine
 
+  } else if (kind === 'task') {
+    // a ticked box, which is what the popup is celebrating
+    px(2, 3, 12, 1, '#2a1c0c'); px(2, 12, 12, 1, '#2a1c0c');
+    px(2, 3, 1, 10, '#2a1c0c'); px(13, 3, 1, 10, '#2a1c0c');
+    px(3, 4, 10, 8, '#1a2a12');
+    px(5, 8, 2, 2, '#7ec850');
+    px(7, 10, 2, 2, '#9fe870');
+    px(9, 7, 2, 3, '#9fe870');
+    px(11, 5, 2, 2, '#cfffa4');
   } else if (kind === 'coin') {
     px(5, 4, 6, 8, '#d8c070');
     px(6, 5, 4, 6, '#f0dc9a');

@@ -111,7 +111,22 @@ export class HostSession {
         p.x = msg.x; p.y = msg.y; p.z = msg.z; p.yaw = msg.yaw; p.anim = msg.anim;
         break;
       }
-      case C.READY: { if (p) { p.ready = !!msg.ready; this._roster(); } break; }
+      case C.READY: {
+        if (!p || !p.alive) break;
+        p.ready = !!msg.ready;
+        this._roster();
+        /* Nobody should have to sit out a timer everyone has finished with.
+           Once every living player says they are done talking, open the
+           ballot immediately. */
+        if (this.phase === PHASE.COUNCIL) {
+          const alive = [...this.players.values()].filter((x) => x.alive);
+          if (alive.length && alive.every((x) => x.ready)) {
+            this.votes.clear();
+            this._setPhase(PHASE.VOTE, this.settings.voteSeconds);
+          }
+        }
+        break;
+      }
       case C.DO_TASK: { this._tryTask(from, msg.taskId); break; }
       case C.KILL: { this._tryKill(from, msg.targetId); break; }
       case C.REPORT: { this._tryReport(from, msg.bodyId); break; }
@@ -169,7 +184,7 @@ export class HostSession {
     }
     for (const p of this.players.values()) this._sendCooldown(p);
     this._roster();
-    this._setPhase(PHASE.REVEAL, 5);
+    this._setPhase(PHASE.REVEAL, 26);
     this._tasks();
     return true;
   }
@@ -249,7 +264,16 @@ export class HostSession {
   _openCouncil(byId, bodyOf) {
     this.bodies = [];
     this.votes.clear();
-    this.sabotage = null;
+    /* Clearing this silently left every client holding a sabotage that had
+       already ended: a countdown stuck on their HUD and, for the agents, a
+       sabotage wheel that would never open again. */
+    if (this.sabotage) {
+      const kind = this.sabotage.kind;
+      this.sabotage = null;
+      this.net.broadcast({ t: S.FIXED, kind });
+      this.hooks.onFixed?.(kind);
+    }
+    for (const p of this.players.values()) p.ready = false;
     this.council = { calledBy: byId, bodyOf };
     this.net.broadcast({ t: S.COUNCIL, calledBy: byId, bodyOf });
     this._setPhase(PHASE.COUNCIL, this.settings.councilSeconds, { calledBy: byId, bodyOf });
@@ -322,7 +346,7 @@ export class HostSession {
   _chat(id, text) {
     const p = this.players.get(id);
     if (!p) return;
-    const clean = String(text || '').slice(0, 120).replace(/[ -]/g, '');
+    const clean = String(text || '').slice(0, 120).replace(/[\u0000-\u001f]/g, '');
     if (!clean.trim()) return;
     // The dead get their own channel; letting them talk to the living
     // would hand the answer to everybody.
@@ -396,6 +420,7 @@ export class HostSession {
       if (this.phase === PHASE.REVEAL) this._setPhase(PHASE.ROAM, 0);
       else if (this.phase === PHASE.COUNCIL) {
         this.votes.clear();
+        for (const p of this.players.values()) p.ready = false;
         this._setPhase(PHASE.VOTE, this.settings.voteSeconds);
       } else if (this.phase === PHASE.VOTE) this._resolveVote();
     }

@@ -15,8 +15,10 @@ import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
 import { Avatar, Body, colourHex } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, taskById } from './tasks.js';
-import { heightAt } from '../world/terrain.js';
+import { TaskFx } from './taskfx.js';
+import { heightAt, ISLAND } from '../world/terrain.js';
 import { setTime } from '../lib/ps1.js';
+import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
 
 const now = () => performance.now() / 1000;
@@ -62,7 +64,7 @@ export class MPGame extends Game {
       onPhase: (p, secs, meta) => this._phase(p, secs, meta),
       onLocalRole: (card) => M.view.handle(card),
       onTasks: (d, t) => { M.view.tasksDone = d; M.view.tasksTotal = t; },
-      onTaskOk: (id) => { M.view.doneTasks.add(id); this._notice('TASK DONE'); this._compassForTasks(); },
+      onTaskOk: (id) => { M.view.doneTasks.add(id); this._taskDone(id); },
       onCooldown: (secs) => { M.myKillReady = now() + secs; },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onCouncil: (by, body) => this._onCouncil(by, body),
@@ -70,7 +72,7 @@ export class MPGame extends Game {
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
       onChat: (m) => this._onChat(m),
       onSabotage: (k, s2, f) => this._onSabotage(k, s2, f),
-      onFixed: (k) => { M.view.sabotage = null; this._notice('REPAIRED'); },
+      onFixed: (k) => { M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false); },
       onOver: (w, a, r) => this._onOver(w, a, r),
       onEvent: (e) => { if (e.kind === 'left') this._notice(`${e.name} LEFT`); },
     });
@@ -125,8 +127,8 @@ export class MPGame extends Game {
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
       case S.SABOTAGE: this._onSabotage(msg.kind, msg.secs, msg.fatal); break;
-      case S.FIXED: this._notice('REPAIRED'); break;
-      case S.TASK_OK: this._notice('TASK DONE'); this._compassForTasks(); break;
+      case S.FIXED: this._notice('REPAIRED'); this._applySabotage(msg.kind, false); break;
+      case S.TASK_OK: this._taskDone(msg.taskId); break;
       case S.COOLDOWN: M.myKillReady = now() + (msg.secs || 0); break;
       case S.OVER: this._onOver(msg.winner, msg.agents, msg.reason); break;
       case S.KICK:
@@ -186,12 +188,20 @@ export class MPGame extends Game {
     const M = this.mp;
     M.view.phase = phase;
     M.view.phaseEndsAt = secs ? now() + secs : 0;
+    M.view.phaseTotal = secs || 0;
 
     if (phase === PHASE.REVEAL) {
       if (!M.started) { M.started = true; this.startCastaways(); }
-      this.screens.replace('mpRole', {});
       this._teleportToCamp();
+      this._briefing();
     } else if (phase === PHASE.ROAM) {
+      // if the briefing is still running on a slow machine, cut it here —
+      // everyone else is already ashore
+      if (this.state === 'cutscene') this.skipCutscene();
+      this.paused = false;
+      this.state = 'island';
+      this.scene = this.islandScene;
+      setCinemaBars(false);
       this.screens.clear();
       this.ui.show();
       this._requestLock();
@@ -202,6 +212,96 @@ export class MPGame extends Game {
     } else if (phase === PHASE.RESULT) {
       // the exile card is pushed by _onExile
     }
+  }
+
+  /**
+   * The opening. Everyone gets the same flight over the island and the
+   * same rules, then their own card — and crucially it runs for the same
+   * number of seconds whichever card you are holding. A briefing that ran
+   * long for the Agents would name them before anybody said a word.
+   */
+  _briefing() {
+    const camp = this.spawn;
+    const wreck = this.wreckPos || camp;
+    const pend = this.interactables.find((i) => i.kind === 'pendulum');
+    const temple = this.templeDoorPos;
+    const hut = this.hutPos || camp;
+    const V = (x, y, z) => new THREE.Vector3(x, y, z);
+    const over = (p, h, r, a) => V(p.x + Math.cos(a) * r, heightAt(p.x, p.z) + h, p.z + Math.sin(a) * r);
+    const at = (p, h = 1.5) => V(p.x, heightAt(p.x, p.z) + h, p.z);
+
+    // the title menu is still on the stack at this point and would be
+    // drawn straight over the top of the flight
+    this.screens.clear();
+    this.playCutscene({
+      shots: [
+        { // the island, from out at sea
+          dur: 3.0, ease: 'smooth',
+          from: over(wreck, 44, 120, 1.1), to: over(wreck, 26, 74, 1.5),
+          look: at(camp, 6),
+        },
+        { // down onto the camp, where you all wake up
+          dur: 3.0, ease: 'smooth',
+          from: over(camp, 16, 30, 2.4), to: over(camp, 4.5, 11, 2.9),
+          look: at(camp, 1.4),
+        },
+        { // the work: a pendulum, turning over
+          dur: 3.2, ease: 'smooth',
+          from: pend ? over(pend, 5, 22, 0.6) : over(hut, 6, 20, 0.6),
+          to: pend ? over(pend, 13, 11, 1.3) : over(hut, 8, 10, 1.3),
+          look: pend ? at(pend, 8) : at(hut, 4),
+        },
+        { // somewhere to be alone with somebody
+          dur: 3.0, ease: 'smooth', shake: 0.05,
+          from: over(hut, 3.2, 17, 3.6), to: over(hut, 2.4, 7.5, 4.2),
+          look: at(hut, 2.6),
+        },
+        { // and the temple watching all of it
+          dur: 3.0, ease: 'smooth',
+          from: over(temple, 20, 46, 2.2), to: over(temple, 34, 26, 1.6),
+          look: at(temple, 8),
+        },
+        { // back to the fire, where the arguing happens
+          dur: 3.0, ease: 'smooth',
+          from: over(camp, 12, 22, 5.4), to: over(camp, 4.6, 10, 5.9),
+          look: at(camp, 1.2),
+        },
+        { // held, so the card that lands on top has a still frame under it
+          dur: 5.0, ease: 'linear',
+          from: over(camp, 4.6, 10, 5.9), to: over(camp, 4.4, 9.4, 6.05),
+          look: at(camp, 1.2),
+        },
+      ],
+      text: [
+        { at: 0.4, until: 3.2, text: 'ILLIC ISLE - CASTAWAYS' },
+        { at: 3.6, until: 6.4, text: 'You all washed up together.\nSome of you did not come here to be rescued.' },
+        { at: 7.0, until: 9.8, text: 'CASTAWAYS: walk your list and finish the work.\nFill the bar and you all get off this island.' },
+        { at: 10.2, until: 13.0, text: 'ROGUE AGENTS: cut them down one at a time.\nJam the island when it suits you.' },
+        { at: 12.8, until: 15.4, text: 'Find a body, or ring the bell at the camp.' },
+        { at: 15.8, until: 17.4, text: 'Then everyone talks, and somebody goes in the sea.' },
+      ],
+      events: [
+        { at: 0.2, fn: () => this.audio.playMusic('island') },
+        { at: 3.5, fn: () => this.audio.sfx('surfWash') },
+        { at: 7.0, fn: () => this.audio.sfx('page') },
+        { at: 10.2, fn: () => this.audio.sfx('stinger') },
+        { at: 12.8, fn: () => this.audio.sfx('door') },
+        { at: 15.8, fn: () => this.audio.sfx('rumble') },
+        /* The card comes up over the last shot rather than after it. Hanging
+           it off the phase timer meant a slow machine could spend the whole
+           reveal on the flight and never show anybody what they were. */
+        { at: 17.6, fn: () => { if (this.mp.view.phase === PHASE.REVEAL) this.screens.replace('mpRole', {}); } },
+      ],
+      onDone: () => {
+        setCinemaBars(false);
+        this.state = 'island';
+        this.scene = this.islandScene;
+        // whatever is left of the reveal is theirs to sit with the card
+        if (this.mp.view.phase === PHASE.REVEAL) {
+          if (this.screens.name !== 'mpRole') this.screens.replace('mpRole', {});
+        } else { this.screens.clear(); this.ui.show(); this._requestLock(); }
+      },
+    }, this.islandScene);
   }
 
   _teleportToCamp() {
@@ -287,7 +387,32 @@ export class MPGame extends Game {
     this.mp.view.sabotage = { kind, endsAt: now() + secs, fatal };
     this._notice(def ? def.name : 'SABOTAGE');
     this.audio.sfx(fatal ? 'bossIntro' : 'charge');
-    if (kind === 'storm' && this.storm) this.storm.start();
+    this.player.punch?.(0.7);
+    this.pipeline.tint.setHex(fatal ? 0xff4030 : 0x4060a0);
+    this.pipeline.tintAmt = 0.6;
+    this._applySabotage(kind, true);
+  }
+
+  /** Sabotages have to be visible from across the island or they are just a timer. */
+  _applySabotage(kind, on) {
+    if (kind === 'storm' && this.storm) { on ? this.storm.start() : this.storm.stop(); }
+    if (kind === 'douse') {
+      this.doused = on;
+      // every flame on the island, not just a number on the HUD
+      for (const t of (this.tikis || [])) {
+        if (t.userData.flame) t.userData.flame.visible = !on;
+        if (t.userData.light) t.userData.light.intensity = on ? 0 : t.userData.baseIntensity;
+      }
+      if (this.campfire) {
+        if (this.campfire.userData.flames) this.campfire.userData.flames.visible = !on;
+        if (this.campfire.userData.light) this.campfire.userData.light.intensity = on ? 0 : 1.8;
+      }
+      this.audio.sfx(on ? 'deny' : 'confirm');
+    }
+    if (kind === 'jam') {
+      this.jammed = on;
+      this.audio.playMusic(on ? 'boss' : 'island');
+    }
   }
 
   _onOver(winner, agents, reason) {
@@ -295,6 +420,28 @@ export class MPGame extends Game {
     this.audio.sfx(winner === 'castaways' ? 'victory' : 'bossDie');
     document.exitPointerLock?.();
     this.screens.replace('mpEnd', { winner, agents, reason });
+  }
+
+  /**
+   * The payoff for a chore. A line of text on its own reads like filling
+   * in a form, so the world answers back: a ring thrown out across the
+   * ground, the frame flashing, and the row on the HUD lighting up.
+   */
+  _taskDone(id) {
+    const M = this.mp;
+    const def = taskById(id);
+    const site = M.sites[id];
+    if (site && this.taskFx) {
+      this.taskFx.burst(site.x, Math.max(site.y, heightAt(site.x, site.z)), site.z, 0x7ec850);
+    }
+    this.pipeline.tint.setHex(0x8fe8c8);
+    this.pipeline.tintAmt = 0.42;
+    this.player.punch?.(0.5);
+    M.doneFlash = { id, t: 1.4 };
+    this.audio.sfx('gemHit');
+    this.audio.sfx('confirm');
+    this.ui.showPopup(def ? def.name : 'TASK DONE', 'THAT ONE IS FINISHED', 'task');
+    this._compassForTasks();
   }
 
   _notice(text) {
@@ -325,6 +472,7 @@ export class MPGame extends Game {
     this.doorSolved = false;
     this.coconutCount = 0;
 
+    this.taskFx = new TaskFx(this.islandScene);
     this._resolveTaskSites();
     this.ui.show();
     this.ui.setObjective('');
@@ -335,7 +483,7 @@ export class MPGame extends Game {
   _resolveTaskSites() {
     const M = this.mp;
     const named = {
-      camp: this.spawn,
+      camp: this.campfirePos || this.spawn,
       wreck: this.wreckPos,
       hut: this.hutPos,
       temple: this.templeDoorPos,
@@ -365,7 +513,8 @@ export class MPGame extends Game {
   /** Your own chores get compass ticks. Nobody else's do. */
   _compassForTasks() {
     const M = this.mp;
-    const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi' }];
+    const bell = this.campPos || this.spawn;
+    const pois = [{ label: 'BELL', x: bell.x, z: bell.z, kind: 'poi' }];
     for (const id of M.view.tasks) {
       const site = M.sites[id];
       if (!site) continue;
@@ -397,28 +546,32 @@ export class MPGame extends Game {
           best = { kind: 'mpReport', bodyId: b.id, prompt: `REPORT ${b.name}` };
         }
       }
-      /* The bell is scored as if it were further away than it is. One of
-         the chores sits at the camp, and without this the bell always wins
-         the tie and that chore can never be done. */
-      const dc = Math.hypot(p.x - this.spawn.x, p.z - this.spawn.z);
-      if (dc < 4.5 && dc + 3 < bestD && (this.me?.emergencies ?? 1) > 0) {
-        bestD = dc + 3;
+      /* The bell hangs at the camp, not at the spawn point — the spawn is
+         four metres from the wreck, so a bell there sat on top of the two
+         chores that live in the hull and neither could ever be reached. */
+      const bell = this.campPos || this.spawn;
+      const dc = Math.hypot(p.x - bell.x, p.z - bell.z);
+      if (dc < 3.4 && dc < bestD && (this.me?.emergencies ?? 1) > 0) {
+        bestD = dc;
         best = { kind: 'mpBell', prompt: 'CALL A COUNCIL' };
       }
     }
 
-    // your own tasks
+    /* Your own chores outrank everything. Whatever else is underfoot, the
+       thing you came here to do is the thing E should be offering. */
+    let taskD = Infinity, taskBest = null;
     for (const id of M.view.tasks) {
       if (M.view.doneTasks.has(id)) continue;
       const site = M.sites[id];
       if (!site) continue;
       const d = Math.hypot(p.x - site.x, p.z - site.z);
-      if (d < 4.2 && d < bestD) {
+      if (d < 4.6 && d < taskD) {
         const def = taskById(id);
-        bestD = d;
-        best = { kind: 'mpTask', taskId: id, prompt: def ? def.name : 'DO THE TASK' };
+        taskD = d;
+        taskBest = { kind: 'mpTask', taskId: id, prompt: def ? def.name : 'DO THE TASK' };
       }
     }
+    if (taskBest) { bestD = taskD; best = taskBest; }
 
     // sabotage repair
     const sab = M.view.sabotage;
@@ -451,8 +604,11 @@ export class MPGame extends Game {
         const def = taskById(it.taskId);
         M.taskProgress = {
           taskId: it.taskId, t: 0, secs: def ? def.secs : 3, verb: def?.verb || 'WORKING',
+          name: def ? def.name : 'THE TASK',
           x: this.player.pos.x, z: this.player.pos.z,
         };
+        this.player.playThrow();
+        this.audio.sfx('charge');
         break;
       }
       case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
@@ -500,19 +656,73 @@ export class MPGame extends Game {
     this.tryKill();
   }
 
-  /** No quest journal here — Tab is dead, Q opens the sabotage wheel. */
-  toggleJournal() { if (!this.mp.active) super.toggleJournal(); }
+  /**
+   * There is no quest journal in Castaways — there is no quest. Tab is
+   * worth more as a second binding for the chart, which is the one thing
+   * you actually want to check mid-round.
+   */
+  toggleJournal() {
+    if (!this.mp.active) return super.toggleJournal();
+    this.openChart();
+  }
+
+  /** The chart, with your own chores on it instead of the pendulum hunt. */
+  openChart() {
+    if (!this.mp.active) return super.openChart();
+    if (this.screens.name === 'chart') { this.screens.pop(); this.afterOverlayClose(); return; }
+    if (!this.mp.started) { this.audio.sfx('deny'); return; }
+    const M = this.mp;
+    const jobs = M.view.tasks
+      .map((id) => ({ id, site: M.sites[id], done: M.view.doneTasks.has(id) }))
+      .filter((j) => j.site);
+    const left = jobs.filter((j) => !j.done).length;
+    this.audio.sfx('page');
+    this.screens.push('chart', {
+      subtitle: this.amAgent
+        ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
+        : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE'),
+      data: {
+        heightAt, radius: ISLAND.shore + 14,
+        marks: [],
+        jobs: jobs.map((j) => ({ x: j.site.x, z: j.site.z, done: j.done })),
+        temple: this.templeDoorPos,
+        player: this.player.pos,
+        wreck: this.wreckPos,
+        rogue: this.rogueSandPos,
+        hut: this.hutPos,
+        relics: [],
+        others: [...M.avatars.values()]
+          .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !this.amAlive)
+          .map((a) => ({ x: a.pos.x, z: a.pos.z, colour: colourHex(a.colour) })),
+      },
+    });
+    document.exitPointerLock?.();
+  }
 
   _key(e, down) {
     const M = this.mp;
+    // Q toggles: pressing it again on the wheel should put it away
+    if (M.active && down && e.code === 'KeyQ' && this.screens.name === 'mpSabotage') {
+      this.screens.pop();
+      this.afterOverlayClose();
+      return;
+    }
     if (M.active && down && !this.screens.open && this.playing) {
       if (e.code === 'KeyQ') {
-        if (this.amAgent && this.amAlive && M.view.phase === PHASE.ROAM && !M.view.sabotage) {
-          document.exitPointerLock?.();
+        /* Push first, release the pointer second. pointerlockchange fires on
+           its own task and the auto-pause it triggers checks whether an
+           overlay is open — if the screen is not on the stack yet, the game
+           pauses instead and the wheel appears not to open at all. */
+        if (!this.amAgent) this.ui.toast('ONLY ROGUE AGENTS SABOTAGE', 'bad', 1400);
+        else if (!this.amAlive) this.ui.toast('THE DEAD DO NOTHING', 'bad', 1400);
+        else if (M.view.phase !== PHASE.ROAM) this.audio.sfx('deny');
+        else if (M.view.sabotage) this.ui.toast('ONE AT A TIME', 'bad', 1400);
+        else {
           this.screens.push('mpSabotage');
-        } else {
-          this.audio.sfx('deny');
+          document.exitPointerLock?.();
+          return;
         }
+        this.audio.sfx('deny');
         return;
       }
     }
@@ -520,7 +730,8 @@ export class MPGame extends Game {
   }
 
   sendChat(text) { this._send({ t: C.CHAT, text }); }
-  sendVote(targetId) { this._send({ t: C.VOTE, targetId }); }
+  sendVote(targetId) { this._send({ t: C.VOTE, targetId }); this.audio.sfx('confirm'); }
+  sendReady(on) { this._send({ t: C.READY, ready: !!on }); this.audio.sfx(on ? 'confirm' : 'select'); }
   sendSabotage(kind) { this._send({ t: C.SABOTAGE, kind }); this.audio.sfx('charge'); }
   startMatch() { if (this.isHost) this.mp.host.start(); }
 
@@ -560,6 +771,12 @@ export class MPGame extends Game {
       }
     }
 
+    if (this.state === 'cutscene') {
+      this.updateCutscene(dt);
+      this.ui.hud.data.mp = null;
+      return;
+    }
+
     const inPlay = M.view.phase === PHASE.ROAM;
     const frozen = this.paused || this.screens.open || !inPlay;
 
@@ -581,7 +798,11 @@ export class MPGame extends Game {
     if (M.taskProgress) {
       const tp = M.taskProgress;
       const moved = Math.hypot(this.player.pos.x - tp.x, this.player.pos.z - tp.z) > 1.6;
-      if (moved || !inPlay || !this.amAlive) { M.taskProgress = null; this.audio.sfx('deny'); }
+      if (moved || !inPlay || !this.amAlive) {
+        M.taskProgress = null;
+        this.audio.sfx('deny');
+        this.ui.toast('YOU MOVED - START AGAIN', 'bad', 1400);
+      }
       else {
         tp.t += dt;
         if (tp.t >= tp.secs) {
@@ -591,6 +812,9 @@ export class MPGame extends Game {
         }
       }
     }
+
+    if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
+    this.taskFx?.update(dt);
 
     // world + avatars
     this.tickIslandWorld(dt);
@@ -606,8 +830,12 @@ export class MPGame extends Game {
 
     // HUD
     this._mpHud();
-    const it = frozen ? null : this.nearestInteractable();
-    this.ui.setPrompt(it ? it.prompt : (this._killPrompt() || null));
+    if (M.taskProgress) {
+      this.ui.setPrompt(null);
+    } else {
+      const it = frozen ? null : this.nearestInteractable();
+      this.ui.setPrompt(it ? it.prompt : (this._killPrompt() || null));
+    }
   }
 
   _killPrompt() {
@@ -682,7 +910,10 @@ export class MPGame extends Game {
       sabotage: M.view.sabotage
         ? { name: SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '', left: Math.max(0, M.view.sabotage.endsAt - now()), fatal: M.view.sabotage.fatal }
         : null,
-      task: M.taskProgress ? { verb: M.taskProgress.verb, k: M.taskProgress.t / M.taskProgress.secs } : null,
+      task: M.taskProgress
+        ? { verb: M.taskProgress.verb, name: M.taskProgress.name, k: M.taskProgress.t / M.taskProgress.secs }
+        : null,
+      flash: M.doneFlash ? M.doneFlash.id : null,
       players: [...M.view.players.values()],
       selfId: M.view.selfId,
       tags: this._tags(),

@@ -221,6 +221,28 @@ Do not eat anything he offers you.
 /* ===========================================================
    GAME
    =========================================================== */
+/** The footprint Ferdi's hut actually occupies, in its own space. */
+const HUT_FOOT = [
+  [-3.2, -2.8], [3.2, -2.8], [-3.2, 2.6], [3.2, 2.6],
+  [-2.9, 5.0], [2.9, 5.0], [-2.9, 7.6], [2.9, 7.6], [0, 0],
+];
+
+/**
+ * Lowest terrain height under a rotated footprint. Anything standing on
+ * legs wants this rather than the height at its centre: the centre buries
+ * whichever corner the hill rises towards.
+ */
+function lowestUnder(ox, oz, yaw, pts) {
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  let lo = Infinity;
+  for (const [lx, lz] of pts) {
+    const wx = ox + lx * c + lz * s;
+    const wz = oz - lx * s + lz * c;
+    lo = Math.min(lo, heightAt(wx, wz));
+  }
+  return lo;
+}
+
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
@@ -296,18 +318,51 @@ export class Game {
 
     this.camera = new THREE.PerspectiveCamera(66, 1, 0.35, 460);
     this._resize();
-    window.addEventListener('resize', () => this._resize());
+
+    /* Resize arrives as a storm of events during a window drag, and each
+       one used to reallocate the framebuffer. Coalesce them into the next
+       animation frame so at most one resize happens per drawn frame, and
+       watch the canvas itself as well as the window so a layout change
+       (devtools opening, a panel appearing) is caught too. */
+    const schedule = () => {
+      if (this._resizePending) return;
+      this._resizePending = true;
+      requestAnimationFrame(() => { this._resizePending = false; this._resize(); });
+    };
+    window.addEventListener('resize', schedule);
+    window.addEventListener('orientationchange', schedule);
+    if (window.ResizeObserver) {
+      this._ro = new ResizeObserver(schedule);
+      this._ro.observe(this.canvas);
+    }
   }
 
   _resize() {
-    const w = window.innerWidth, h = window.innerHeight;
+    const r = this.canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width || window.innerWidth));
+    const h = Math.max(1, Math.round(r.height || window.innerHeight));
+    if (this._lastW === w && this._lastH === h) return;
+    this._lastW = w; this._lastH = h;
     this.renderer.setSize(w, h, false);
     this.pipeline.setSize(w, h);
+    /* Match the interface canvas here rather than waiting for render(). On a
+       slow frame that left the HUD at the old size for as long as the frame
+       took, which is what made the interface look stretched for a moment
+       after every resize. */
+    const int = this.pipeline.internal;
+    if (int) this.ui?.hud?.setSize(int.w, int.h);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
+    /* The title diorama has its own camera; without this it keeps the old
+       aspect until you happen to open a menu. */
+    if (this.titleCam) {
+      this.titleCam.aspect = this.camera.aspect;
+      this.titleCam.updateProjectionMatrix();
+    }
   }
 
   applySettings() {
+    this._lastW = this._lastH = -1;          // force the next _resize through
     this.pipeline.setBaseHeight(this.settings.res);
     this.pipeline.setCRT(this.settings.crt);
     setJitterEnabled(this.settings.jitter);
@@ -461,6 +516,7 @@ export class Game {
     camp.rotation.y = Math.atan2(cg.x, cg.z) + 2.1;
     scene.add(camp);
     this.colliders.push({ x: cg.x, z: cg.z, r: 1.5 });
+    this.campPos = cg;
 
     const fire = buildCampfire(rng, this.propMats);
     const fg = findGround(wg.x + inX * 7, wg.z + inZ * 7, { rng, radius: 4, minH: 0.9, maxH: 4, maxSlope: 0.18 });
@@ -468,6 +524,9 @@ export class Game {
     scene.add(fire);
     this.tickers.push(fire.userData.flames);
     this.campfire = fire;
+    this.campfirePos = fg;
+    this.flameGroups = this.flameGroups || [];
+    this.flameGroups.push(fire.userData.flames);
 
     // HELP dragged into the sand beside the camp
     const helpPos = findGround(wg.x + inX * 2 - 12, wg.z + inZ * 2 - 6,
@@ -541,10 +600,14 @@ export class Game {
     /* ---- Ferdi Steinman's hut: the one landmark you can steer by ---- */
     const fh = findGround(-30, 46, { rng, radius: 22, minH: 5, maxH: 22, maxSlope: 0.16 });
     const hut = buildFerdiHut(rng, this.propMats, buildFlameCluster);
-    hut.position.set(fh.x, fh.y - 0.4, fh.z);
     // The counter is on the hut's +Z face; aim it at the wreck camp so you
     // come out of the trees looking straight at Ferdi.
     hut.rotation.y = Math.atan2(this.spawn.x - fh.x, this.spawn.z - fh.z);
+    /* Sit it on the LOWEST ground under its footprint. Averaging or using
+       the centre buries the uphill corner, which is what made the shack
+       look like it was sliding into the hillside. The legs are long enough
+       to swallow the difference at the other corners. */
+    hut.position.set(fh.x, lowestUnder(fh.x, fh.z, hut.rotation.y, HUT_FOOT) - 0.05, fh.z);
     scene.add(hut);
     this.tickers.push(hut);
     this.hutPos = fh;
@@ -640,6 +703,9 @@ export class Game {
       scene.add(m);
       if (m.userData.tick) this.tickers.push(m);
       this.relicNodes.push({ kind, mesh: m });
+      // These are set pieces the size of a car; walking through one reads
+      // as the world being made of cardboard.
+      this.colliders.push({ x: g.x, z: g.z, r: kind === 'aerlingus' ? 2.8 : 1.5 });
       this.interactables.push({
         kind: 'relic', relic: kind, x: g.x, y: g.y, z: g.z, r: 3.6,
         prompt: 'Examine', once: true, taken: false,
@@ -961,8 +1027,13 @@ export class Game {
     window.addEventListener('keyup', (e) => this._key(e, false));
 
     document.addEventListener('pointerlockchange', () => {
+      const was = this.mouse.locked;
       this.mouse.locked = document.pointerLockElement === this.canvas;
-      if (!this.mouse.locked && this.playing && !this.anyOverlayOpen() && !this.paused) {
+      /* Only pause on a lock we actually had. A request that is refused —
+         no user gesture yet, or the browser simply says no — used to read
+         as "the player pressed Escape" and dropped them into the pause
+         menu they never asked for, over and over. */
+      if (was && !this.mouse.locked && this.playing && !this.anyOverlayOpen() && !this.paused) {
         this.pause(true);
       }
     });
@@ -1041,6 +1112,7 @@ export class Game {
       return;
     }
     if (k === 'Tab') { e.preventDefault(); if (this.playing) this.toggleJournal(); return; }
+    if (k === 'KeyF') { if (this.playing) this.openChart(); return; }
     if (k === 'KeyM') { if (this.playing) this.openChart(); return; }
     if (k === 'Escape') { if (this.playing) this.pause(!this.paused); return; }
   }
@@ -1152,6 +1224,7 @@ export class Game {
   }
 
   updateCutscene(dt) {
+    dt = this.rawDt ?? dt;
     // world keeps breathing under the camera
     if (this.cutScene === this.islandScene) {
       this.tickIslandWorld(dt);
@@ -1760,7 +1833,7 @@ I have snacks."`);
       this.ui.toast('YOU HAVE NO CHART', 'bad', 1500);
       return;
     }
-    document.exitPointerLock?.();
+    this.audio.sfx('page');
     this.screens.push('chart', {
       data: {
         heightAt, radius: ISLAND.shore + 14,
@@ -1782,6 +1855,7 @@ I have snacks."`);
           .map((i) => ({ x: i.x, z: i.z, found: this.relics.has(i.relic), kind: i.relic })),
       },
     });
+    document.exitPointerLock?.();
   }
 
   /* ===========================================================
@@ -2473,9 +2547,26 @@ I have snacks."`);
     this.sky.material.opacity = 1 - dark * 0.92;
     this.sky.material.transparent = dark > 0.02;
 
-    // everything that burns
-    for (const t of (this.tikis || [])) t.userData.tick(this.time, dt, dark);
+    /* Everything that burns. `doused` is the Castaways sabotage: without
+       this guard the day/night pass would relight every torch on the next
+       frame and the sabotage would be a number on the HUD and nothing else. */
+    if (this.doused) {
+      for (const t of (this.tikis || [])) {
+        if (t.userData.flame) t.userData.flame.visible = false;
+        if (t.userData.light) t.userData.light.intensity = 0;
+      }
+      if (this.campfire) {
+        if (this.campfire.userData.flames) this.campfire.userData.flames.visible = false;
+        if (this.campfire.userData.light) this.campfire.userData.light.intensity = 0;
+      }
+      return;
+    }
+    for (const t of (this.tikis || [])) {
+      if (t.userData.flame) t.userData.flame.visible = true;
+      t.userData.tick(this.time, dt, dark);
+    }
     if (this.campfire) {
+      if (this.campfire.userData.flames) this.campfire.userData.flames.visible = true;
       this.campfire.userData.light.intensity =
         (1.4 + dark * 1.6) + Math.sin(this.time * 11) * 0.4;
     }
@@ -2589,7 +2680,13 @@ I have snacks."`);
   }
 
   loop() {
-    const dt = Math.min(0.05, this.clock.getDelta());
+    const raw = this.clock.getDelta();
+    /* Physics wants a capped step so a stall cannot tunnel the player
+       through the island. A scripted camera wants real time, or the whole
+       shot list stretches out on a slow machine and drifts away from the
+       music and the phase timer it is supposed to fit inside. */
+    this.rawDt = Math.min(0.25, raw);
+    const dt = Math.min(0.05, raw);
     this.update(dt);
     this.render(dt);
     this._fpsAccum = (this._fpsAccum || 0) + dt;

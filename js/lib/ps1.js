@@ -349,6 +349,13 @@ export class RetroPipeline {
     }
     iw = Math.max(64, iw | 0);
     ih = Math.max(64, ih | 0);
+    /* Reallocating the render target throws away GL textures and makes a
+       new pair. During a live window drag that runs on every mouse move,
+       which is what makes a resize feel like it lags a second behind. */
+    if (this.internal && this.internal.w === iw && this.internal.h === ih) {
+      this.internal.dirty = false;
+      return;
+    }
     this.target.setSize(iw, ih);
     this.quadMat.uniforms.uRes.value.set(iw, ih);
     setJitterResolution(iw, ih);

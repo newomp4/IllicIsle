@@ -137,9 +137,11 @@ export function buildFerdiHut(rng, mats, flameFactory) {
   const P = [], C = [];
   const WOOD = G(0x7a6242), WOOD_D = G(0x5a4730);
 
-  /* stilts, because everything here rots */
+  /* Stilts, because everything here rots. They run well below the origin:
+     the clearing is not a table, and a leg that stops at ground level leaves
+     the uphill side of the hut buried and the downhill side in mid-air. */
   for (const [sx, sz] of [[-2.6, -2.2], [2.6, -2.2], [-2.6, 2.2], [2.6, 2.2]]) {
-    const leg = cyl(0.18, 0.22, 1.5, 6, 'driftwood', { pos: [sx, 0.75, sz] });
+    const leg = cyl(0.18, 0.24, 3.6, 6, 'driftwood', { pos: [sx, -0.3, sz] });
     tint(leg, WOOD_D); P.push(leg);
   }
   const deck = box(6.2, 0.28, 5.2, 'planks', { pos: [0, 1.5, 0] });
@@ -190,6 +192,11 @@ export function buildFerdiHut(rng, mats, flameFactory) {
   tint(nail, G(0x6a6a66)); P.push(nail);
 
   /* --- a proper shopfront: boardwalk, steps, awning, hanging wares --- */
+  // posts under the boardwalk, for the same reason as the stilts
+  for (const [sx, sz] of [[-2.7, 3.6], [2.7, 3.6], [-2.7, 6.4], [2.7, 6.4]]) {
+    const post = cyl(0.13, 0.16, 3.4, 5, 'driftwood', { pos: [sx, -0.3, sz] });
+    tint(post, WOOD_D); P.push(post);
+  }
   // boardwalk out front so you approach along something
   for (let i = 0; i < 5; i++) {
     const pl = box(6.4, 0.16, 1.0, 'planks', { pos: [0, 1.42, 3.2 + i * 1.0], rot: [0, 0, 0] });

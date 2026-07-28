@@ -78,8 +78,8 @@ export const COLOURS = [
 export const DEFAULT_SETTINGS = {
   agents: 1,
   killCooldown: 28,
-  councilSeconds: 75,
-  voteSeconds: 35,
+  councilSeconds: 45,
+  voteSeconds: 30,
   revealOnExile: true,
   tasksPerPlayer: 5,
   emergencyPerPlayer: 1,

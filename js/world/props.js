@@ -632,7 +632,11 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
       } else if (roll < 0.12) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
       else if (roll < 0.145) put(pick('drift', POOL.drift), x, h, z, yaw, 0.9 + rng() * 0.5);
       else if (roll < 0.175) put('shell0', x, h, z, yaw, 1);
-      else if (roll < 0.20) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.6);
+      else if (roll < 0.20) {
+        const s2 = 0.7 + rng() * 0.6;
+        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2);
+        if (s2 > 1.05) addCollider(x, z, 0.5 * s2);
+      }
 
     } else if (biome === 'jungle') {
       /* Dense, layered forest. Trees dominate; ground clutter is kept
@@ -654,21 +658,36 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
         put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true);
       } else if (roll < 0.425) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
       else if (roll < 0.462) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
-      else if (roll < 0.492) put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, 0.85 + rng() * 0.4, true);
+      else if (roll < 0.492) {
+        const s2 = 0.85 + rng() * 0.4;
+        put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, s2, true);
+        addCollider(x, z, 0.42 * s2);
+      }
       else if (roll < 0.520) put(pick('broad', POOL.broad), x, h - 0.05, z, yaw, 0.85 + rng() * 0.45);
       else if (roll < 0.542) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
       else if (roll < 0.562) put(pick('reeds', POOL.reeds), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
       else if (roll < 0.578) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
       else if (roll < 0.592) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
       else if (roll < 0.606) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
-      else if (roll < 0.620) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.7);
+      else if (roll < 0.620) {
+        const s2 = 0.7 + rng() * 0.7;
+        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2);
+        if (s2 > 1.05) addCollider(x, z, 0.5 * s2);
+      }
 
     } else if (biome === 'rock') {
       if (roll < 0.045) {
         const s = 0.7 + rng() * 0.7;
         put(pick('bigrock', POOL.bigrock), x, h - 0.3, z, yaw, s, true);
         addCollider(x, z, 1.6 * s);
-      } else if (roll < 0.115) put(pick('rock', POOL.rock), x, h - 0.15, z, yaw, 0.8 + rng() * 1.0, true);
+      } else if (roll < 0.115) {
+        /* These reach 1.8x and stand chest high. Without a collider you walk
+           straight through them, which was the single most obvious way the
+           island gave itself away. Small ones stay steppable. */
+        const s2 = 0.8 + rng() * 1.0;
+        put(pick('rock', POOL.rock), x, h - 0.15, z, yaw, s2, true);
+        if (s2 > 1.0) addCollider(x, z, 0.52 * s2);
+      }
       else if (roll < 0.165) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.6 + rng() * 0.4);
       else if (roll < 0.205) {
         const k = pick('treeSap', POOL.treeSap);
@@ -1039,7 +1058,8 @@ export function buildCastawayCamp(rng, mats) {
 export function buildSandWriting(text, mats, opts = {}) {
   const w = opts.width ?? 16;
   const h = opts.height ?? 5;
-  const geo = new THREE.PlaneGeometry(w, h, 8, 3);
+  // fine enough to actually follow a beach that is not flat
+  const geo = new THREE.PlaneGeometry(w, h, 20, 8);
   geo.rotateX(-Math.PI / 2);
   const mat = mats.decal.clone();
   mat.map = buildSandWritingTexture(text, opts);
@@ -1047,14 +1067,22 @@ export function buildSandWriting(text, mats, opts = {}) {
   mat.transparent = true;
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 2;
-  // drape over the terrain so it doesn't float or sink on a slope
+  /* Drape over the terrain so it doesn't float or sink on a slope.
+     The vertices are in the mesh's own space, so the yaw has to be applied
+     before sampling — sampling the unrotated axis was why the letters
+     ploughed into the ground at one end and floated at the other. */
   mesh.userData.drape = (groundAt, ox, oz) => {
     const p = geo.attributes.position;
+    const c = Math.cos(mesh.rotation.y), sn = Math.sin(mesh.rotation.y);
     for (let i = 0; i < p.count; i++) {
-      p.setY(i, groundAt(ox + p.getX(i), oz + p.getZ(i)) + 0.06 - mesh.position.y);
+      const lx = p.getX(i), lz = p.getZ(i);
+      const wx = ox + lx * c + lz * sn;
+      const wz = oz - lx * sn + lz * c;
+      p.setY(i, groundAt(wx, wz) + 0.09 - mesh.position.y);
     }
     p.needsUpdate = true;
     geo.computeVertexNormals();
+    geo.computeBoundingSphere();
   };
   return mesh;
 }
