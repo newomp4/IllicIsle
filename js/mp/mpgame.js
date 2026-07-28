@@ -496,7 +496,11 @@ export class MPGame extends Game {
       this.taskFx.burst(site.x, Math.max(site.y, heightAt(site.x, site.z)), site.z, fx.colour, 'done', fx.ring);
     }
     this.pipeline.tint.setHex(fx.colour);
-    this.pipeline.tintAmt = 0.30 + fx.shake * 0.3;
+    // desaturated profiles look like a fault rather than a flourish, so the
+    // duller the colour the lighter the wash
+    const c = new THREE.Color(fx.colour);
+    const sat = Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
+    this.pipeline.tintAmt = 0.16 + Math.min(0.30, sat * 0.55);
     this.player.punch?.(fx.shake);
     M.doneFlash = { id, t: 1.4 };
     this.audio.sfx(fx.sfx);
@@ -504,10 +508,9 @@ export class MPGame extends Game {
 
     const def = taskById(id);
     if (!finished && def?.then) {
-      this.ui.showPopup(def.then.name, 'NOW TAKE IT THERE', 'task');
-      this.ui.toast('HALF DONE', 'gold', 1800);
+      this.ui.showPopup(def.then.name, 'NOW TAKE IT THERE', 'task', 'HALF DONE');
     } else {
-      this.ui.showPopup(stage.name, 'THAT ONE IS FINISHED', 'task');
+      this.ui.showPopup(stage.name, 'THAT IS ONE OFF THE LIST', 'task', 'TASK DONE');
     }
     this._compassForTasks();
   }

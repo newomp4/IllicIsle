@@ -70,8 +70,8 @@ export class Hud {
   }
 
   /** A collectible card that slides in with its own drawn icon. */
-  showPopup(title, sub, icon) {
-    this.data.popup = { title, sub, icon, t: 0, dur: 4.6 };
+  showPopup(title, sub, icon, head) {
+    this.data.popup = { title, sub, icon, head, t: 0, dur: 4.6 };
   }
 
   update(dt) {
@@ -534,13 +534,13 @@ export class Hud {
      =========================================================== */
   _popup(W, H, p) {
     const x = this.x;
-    const CW = 138, CH = 56;
+    const CW = 158, CH = 66;
     // slide in, hold, slide out
-    const inT = Math.min(1, p.t / 0.45);
+    const inT = Math.min(1, p.t / 0.28);
     const outT = p.t > p.dur - 0.5 ? (p.dur - p.t) / 0.5 : 1;
     const k = Math.min(inT, Math.max(0, outT));
     const ease = 1 - Math.pow(1 - k, 3);
-    const left = Math.round(W - 4 - CW * ease);
+    const left = Math.round(W - 9 - CW * ease);
     const top = Math.round(H / 2 - CH / 2);
 
     panel(x, left, top, CW, CH, { border: 2, dither: 0.45, hi: GOLD, lo: '#3a2610' });
@@ -559,12 +559,23 @@ export class Hud {
     }
 
     const tx = left + 46;
-    drawText(x, 'RELIC FOUND', { x: tx, y: top + 6, scale: 1, color: GOLD });
+    // the header is whatever the caller says it is; it used to always claim
+    // a relic had been found, including when you had just stoked a fire
+    drawText(x, p.head || 'RELIC FOUND', { x: tx, y: top + 6, scale: 1, color: GOLD });
     x.fillStyle = '#5c3f1c'; x.fillRect(tx, top + 15, CW - 52, 1);
-    const lines = wrapText(p.title, CW - 52, 1, 1).slice(0, 3);
+    const lines = wrapText(p.title, CW - 52, 1, 1).slice(0, 2);
     let ty = top + 20;
     for (const ln of lines) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 9; }
-    if (p.sub) drawText(x, p.sub, { x: tx, y: top + CH - 11, scale: 1, color: '#9fd8c4' });
+    if (p.sub) {
+      ty += 2;
+      // laid out in sequence; clamping each line to the bottom edge stacked
+      // them all on the same row
+      for (const ln of wrapText(p.sub, CW - 52, 1, 1).slice(0, 2)) {
+        if (ty > top + CH - 9) break;
+        drawText(x, ln, { x: tx, y: ty, scale: 1, color: '#9fd8c4' });
+        ty += 9;
+      }
+    }
   }
 }
 

@@ -144,7 +144,7 @@ export class UI {
   setTimer(seconds) { this.hud.data.timer = num(seconds); }
   setObjective(text) { this.hud.data.objective = text || ''; }
   setPrompt(text) { this.hud.data.prompt = text || null; }
-  showPopup(title, sub, icon) { this.hud.showPopup(title, sub, icon); }
+  showPopup(title, sub, icon, head) { this.hud.showPopup(title, sub, icon, head); }
   flashDamage() { this.hud.data.hurtT = 0.4; }
   flashHeal() {}
 
