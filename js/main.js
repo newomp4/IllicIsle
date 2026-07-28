@@ -6,6 +6,7 @@
    =========================================================== */
 
 import { MPGame } from './mp/mpgame.js';
+import { heightAt } from './world/terrain.js';
 
 const $ = (id) => document.getElementById(id);
 let game = null;
@@ -32,6 +33,7 @@ async function boot() {
     return;
   }
   window.__game = game;
+  window.__heightAt = heightAt;   // used by the placement audit harness
 
   const fill = $('load-fill');
   const text = $('load-text');

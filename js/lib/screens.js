@@ -313,6 +313,14 @@ export const SCREENS = {
         if (p.id === 'host') drawText(x, 'HOST', { x: W - 30, y, scale: 1, align: 'right', color: JADE });
         y += 11;
       }
+      // people want to know what they are walking into
+      const n = players.length;
+      const agents = n >= 9 ? 3 : n >= 6 ? 2 : 1;
+      if (n >= 3) {
+        drawText(x, `${agents} ROGUE AGENT${agents === 1 ? '' : 'S'} AMONG YOU`,
+          { x: W - 30, y: b.top + 48, scale: 1, align: 'right', color: RED });
+      }
+
       let rows = [];
       if (g.isHost) {
         const can = players.length >= 3;

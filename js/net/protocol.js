@@ -76,7 +76,7 @@ export const COLOURS = [
 ];
 
 export const DEFAULT_SETTINGS = {
-  agents: 1,
+  agents: 0,          // 0 = scale with the size of the lobby
   killCooldown: 28,
   councilSeconds: 45,
   voteSeconds: 30,

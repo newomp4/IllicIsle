@@ -536,6 +536,7 @@ export class Game {
     help.rotation.y = Math.atan2(helpPos.x, helpPos.z) + Math.PI;
     help.userData.drape(heightAt, helpPos.x, helpPos.z);
     scene.add(help);
+    this.helpPos = helpPos;
 
     // the Rogue Agents' own mark, on a far beach
     const RS = LANDMARKS.rogueSand;
@@ -627,7 +628,10 @@ export class Game {
       // one flat texel, or a 26-unit plane samples the whole atlas
       blankUV(g, 'dirt');
       const pos = g.attributes.position;
-      const colors = new Float32Array(pos.count * 3);
+      /* Four components, not three. Fading the RGB towards zero at the rim
+         painted a 26-unit disc of black around the hut instead of letting
+         the ground show through; the fade belongs in alpha. */
+      const colors = new Float32Array(pos.count * 4);
       const col = new THREE.Color();
       const dirt = new THREE.Color(0x6b563a), dirt2 = new THREE.Color(0x8a7050);
       for (let i = 0; i < pos.count; i++) {
@@ -635,17 +639,19 @@ export class Game {
         pos.setY(i, heightAt(fh.x + lx, fh.z + lz) - fh.y + 0.07);
         col.copy(dirt).lerp(dirt2, rng());
         const d = Math.hypot(lx, lz) / R;
-        const fade = d > 0.7 ? Math.max(0, 1 - (d - 0.7) / 0.3) : 1;
-        colors[i * 3] = col.r * fade;
-        colors[i * 3 + 1] = col.g * fade;
-        colors[i * 3 + 2] = col.b * fade;
+        const fade = d > 0.55 ? Math.max(0, 1 - (d - 0.55) / 0.45) : 1;
+        colors[i * 4] = col.r;
+        colors[i * 4 + 1] = col.g;
+        colors[i * 4 + 2] = col.b;
+        colors[i * 4 + 3] = fade;
       }
-      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(colors, 4));
       g.computeVertexNormals();
       const dirtMat = this.propMats.decal.clone();
       dirtMat.vertexColors = true;
       dirtMat.map = this.atlas;
-      dirtMat.opacity = 0.9;
+      dirtMat.transparent = true;
+      dirtMat.opacity = 0.92;
       const patch = new THREE.Mesh(g, dirtMat);
       patch.position.set(fh.x, fh.y, fh.z);
       patch.renderOrder = 1;
@@ -1942,20 +1948,6 @@ I have snacks."`);
         this.found.add(p.id);
         this.playPendulumCutscene(it.index, p);
         return;
-      }
-
-      case '__unused_pendulum': {
-        const p = PENDULUMS[it.index];
-        this.showReader(p.title, p.text);
-        this.ui.setMarks(this.found.size, 4);
-        this._refreshCompass();
-        if (this.found.size >= 4) {
-          this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
-          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 700);
-        } else {
-          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
-        }
-        break;
       }
 
       case 'templeDoor':

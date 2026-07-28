@@ -103,6 +103,14 @@ export class HostSession {
     switch (msg.t) {
       case C.HELLO: {
         if (this.phase !== PHASE.LOBBY) break;
+        /* The capacity check lived only in _join, which fires on the channel
+           opening. HELLO arrives on its own and used to add the player
+           regardless, so an eleventh castaway was kicked and seated at the
+           same time — and there are only ten colours to go round. */
+        if (!p && this.players.size >= COLOURS.length) {
+          this.net.sendTo(from, { t: S.KICK, reason: 'That island is full.' });
+          break;
+        }
         if (!p) { this._add(from, msg.name); this._roster(); }
         break;
       }
@@ -151,7 +159,11 @@ export class HostSession {
       const j = (this.rng() * (i + 1)) | 0;
       [ids[i], ids[j]] = [ids[j], ids[i]];
     }
-    const agentCount = Math.max(1, Math.min(this.settings.agents, Math.floor((ids.length - 1) / 2)));
+    /* Scale with the lobby unless the host has pinned a number. One agent
+       among nine is a needle in a haystack; three among four is a massacre. */
+    const auto = ids.length >= 9 ? 3 : ids.length >= 6 ? 2 : 1;
+    const want = this.settings.agents > 0 ? this.settings.agents : auto;
+    const agentCount = Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
     const agents = new Set(ids.slice(0, agentCount));
 
     this.tasksDone = 0;

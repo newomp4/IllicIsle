@@ -102,6 +102,8 @@ function makeHeartSprite(full) {
 
 let HEART_FULL = null, HEART_EMPTY = null;
 
+const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
+
 export class UI {
   constructor(audio) {
     if (!HEART_FULL) { HEART_FULL = makeHeartSprite(true); HEART_EMPTY = makeHeartSprite(false); }
@@ -127,16 +129,19 @@ export class UI {
 
   /* ---------- HUD state (all drawn on canvas) ---------- */
   setHearts(hp, max) {
+    hp = num(hp); max = num(max, 5);
     if (hp < this.hud.data.hp) this.hud.data.hurtT = 0.4;
     this.hud.data.hp = hp;
     this.hud.data.maxHp = max;
   }
-  setStamina(v) { this.hud.data.stamina = v; }
-  setAmmo(n) { this.hud.data.ammo = n; }
-  setMarks(n) { this.hud.data.pendulums = n; }
-  setRelics(n) { this.hud.data.relics = n; }
-  setCoins(n) { this.hud.data.coins = n; }
-  setTimer(seconds) { this.hud.data.timer = seconds; }
+  /* Numbers only. A stray undefined used to reach the framebuffer as the
+     word "undefined" splashed across the top-right corner. */
+  setStamina(v) { this.hud.data.stamina = num(v, 1); }
+  setAmmo(n) { this.hud.data.ammo = num(n); }
+  setMarks(n) { this.hud.data.pendulums = num(n); }
+  setRelics(n) { this.hud.data.relics = num(n); }
+  setCoins(n) { this.hud.data.coins = num(n); }
+  setTimer(seconds) { this.hud.data.timer = num(seconds); }
   setObjective(text) { this.hud.data.objective = text || ''; }
   setPrompt(text) { this.hud.data.prompt = text || null; }
   showPopup(title, sub, icon) { this.hud.showPopup(title, sub, icon); }
