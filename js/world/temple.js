@@ -26,27 +26,73 @@ export const TEMPLE = {
   daisCenter: new THREE.Vector3(0, 0, -27),
   daisHeight: 2.6,
   wallH: 17,
+
+  /* ---------------------------------------------------------------
+     STAIR SPECS — the single source of truth.
+     Both the visible geometry and templeHeight() are generated from
+     these. When they were written out separately the boxes ended up
+     as much as three units above the collision surface, which is how
+     you walked straight through the entrance steps and the dais.
+     --------------------------------------------------------------- */
+  entranceStair: {
+    halfW: 4.6,          // how wide the flight is in x
+    zBottom: 32,         // where it meets the hall floor
+    zTop: 43,            // top of the flight
+    yBottom: 2.2,        // tread height at the bottom
+    steps: 7,
+    rise: 0.62,
+  },
+  daisStair: {
+    halfW: 7.5,
+    zBottom: 12.0,       // offset from daisCenter.z, hall side
+    zTop: 0.0,           // offset from daisCenter.z, platform side
+    steps: 4,
+    tread: 2.0,
+  },
 };
 
-/** Ground height inside the temple. */
+/** Tread height of a flight at parameter t (0 at bottom, 1 at top). */
+function stepAt(t, steps, rise, base) {
+  const k = Math.max(0, Math.min(0.9999, t));
+  return base + Math.floor(k * steps) * rise;
+}
+
+/** Ground height inside the temple. Must agree with the built geometry. */
 export function templeHeight(x, z) {
-  let h = 0;
+  const E = TEMPLE.entranceStair;
+  const D = TEMPLE.daisStair;
+  const dz = z - TEMPLE.daisCenter.z;
 
-  // stepped dais at the north end
-  const dx = Math.abs(x - TEMPLE.daisCenter.x);
-  const dz = Math.abs(z - TEMPLE.daisCenter.z);
-  const d = Math.max(dx * 0.85, dz);
-  h += TEMPLE.daisHeight * (1 - THREE.MathUtils.smoothstep(d, 6.0, 10.5));
+  // ---- the dais platform and its steps ----
+  const platHalfZ = 7.5;
+  let dais = 0;
+  if (Math.abs(x) <= D.halfW + 1.5 && dz <= platHalfZ) {
+    dais = TEMPLE.daisHeight;                                   // top platform
+  } else if (Math.abs(x) <= D.halfW + 1.5 && dz > platHalfZ && dz <= D.zBottom) {
+    // descending flight, hall side
+    const t = 1 - (dz - platHalfZ) / (D.zBottom - platHalfZ);
+    dais = stepAt(t, D.steps, TEMPLE.daisHeight / D.steps, 0);
+  }
 
-  // entrance landing you arrive on
-  const de = Math.hypot(x - TEMPLE.entrance.x, z - TEMPLE.entrance.z);
-  h += 2.2 * (1 - THREE.MathUtils.smoothstep(de, 4.0, 9.5));
+  // ---- the entrance flight ----
+  let ent = 0;
+  if (Math.abs(x - TEMPLE.entrance.x) <= E.halfW) {
+    if (z >= E.zBottom && z <= E.zTop) {
+      const t = (z - E.zBottom) / (E.zTop - E.zBottom);
+      ent = stepAt(t, E.steps, E.rise, E.yBottom);
+    } else if (z > E.zTop) {
+      ent = E.yBottom + E.steps * E.rise;
+    } else {
+      // the landing tapers into the hall floor
+      ent = E.yBottom * Math.max(0, 1 - (E.zBottom - z) / 5.5);
+    }
+  }
 
-  // the floor has settled — a shallow dish toward the middle
+  // ---- the settled hall floor ----
   const r = Math.hypot(x, z);
-  h -= 0.45 * (1 - THREE.MathUtils.clamp(r / 34, 0, 1));
+  const dish = -0.45 * (1 - THREE.MathUtils.clamp(r / 34, 0, 1));
 
-  return h;
+  return Math.max(dais, ent, 0) + (dais > 0.05 || ent > 0.05 ? 0 : dish);
 }
 
 export function buildTemple(idolMats, propMats) {
@@ -339,14 +385,37 @@ export function buildTemple(idolMats, propMats) {
   /* ---------- entrance: stair down from the jungle ---------- */
   const entParts = [];
   {
-    const ex = TEMPLE.entrance.x, ez = TEMPLE.entrance.z;
-    for (let i = 0; i < 6; i++) {
-      const g = box(9 - i * 0.3, 0.6, 1.7, 'templeStone', { pos: [ex, 2.2 + i * 0.55, ez + 3.2 + i * 1.6] });
-      tint(g, STONE.clone().multiplyScalar(0.8 - i * 0.03));
+    const E = TEMPLE.entranceStair;
+    const ex = TEMPLE.entrance.x;
+    const flightLen = E.zTop - E.zBottom;
+    const treadZ = flightLen / E.steps;
+    // Each tread is a solid block from its top face all the way down, so
+    // there is never a gap between what you see and what you stand on.
+    for (let i = 0; i < E.steps; i++) {
+      const top = E.yBottom + i * E.rise;
+      const zc = E.zBottom + treadZ * (i + 0.5);
+      const g = box(E.halfW * 2, top + 3.0, treadZ + 0.02, 'templeStone', {
+        pos: [ex, top - (top + 3.0) / 2, zc],
+      });
+      tint(g, STONE.clone().multiplyScalar(0.84 - i * 0.02));
       entParts.push(g);
+      // nosing so the treads read individually
+      const n = box(E.halfW * 2 + 0.2, 0.12, 0.3, 'templeStone', {
+        pos: [ex, top + 0.06, zc - treadZ / 2 + 0.15],
+      });
+      tint(n, STONE_DK); entParts.push(n);
     }
-    for (const s of [-1, 1]) {
-      const rail = box(0.8, 2.4, 11, 'templeStone', { pos: [ex + s * 4.8, 3.6, ez + 7] });
+    // landing where the flight meets the hall
+    const land = box(E.halfW * 2 + 1.0, E.yBottom + 3.0, 5.0, 'templeStone', {
+      pos: [ex, E.yBottom - (E.yBottom + 3.0) / 2, E.zBottom - 2.5],
+    });
+    tint(land, STONE.clone().multiplyScalar(0.8)); entParts.push(land);
+    // balustrades
+    for (const sgn of [-1, 1]) {
+      const rail = box(1.0, 2.6, flightLen + 4, 'templeStone', {
+        pos: [ex + sgn * (E.halfW + 0.5), E.yBottom + 2.2, E.zBottom + flightLen / 2 - 1],
+        rot: [-0.16, 0, 0],
+      });
       tint(rail, STONE_DK); entParts.push(rail);
     }
   }
@@ -357,13 +426,31 @@ export function buildTemple(idolMats, propMats) {
   const D = TEMPLE.daisCenter;
   const dy = TEMPLE.daisHeight;
 
-  for (let i = 0; i < 4; i++) {
-    const s = box(15 - i * 1.8, 0.66, 2.4, 'templeStone', { pos: [D.x, dy - 0.33 - i * 0.66, D.z + 8.5 + i * 1.9] });
-    tint(s, STONE.clone().multiplyScalar(0.9 - i * 0.05));
-    daisParts.push(s);
+  {
+    const DS = TEMPLE.daisStair;
+    const platHalfZ = 7.5;
+    const rise = dy / DS.steps;
+    const span = DS.zBottom - platHalfZ;
+    const treadZ = span / DS.steps;
+    for (let i = 0; i < DS.steps; i++) {
+      const top = dy - i * rise;                       // top step nearest platform
+      const zc = D.z + platHalfZ + treadZ * (i + 0.5);
+      const s2 = box((DS.halfW + 1.5) * 2, top + 3.0, treadZ + 0.02, 'templeStone', {
+        pos: [D.x, top - (top + 3.0) / 2, zc],
+      });
+      tint(s2, STONE.clone().multiplyScalar(0.9 - i * 0.04));
+      daisParts.push(s2);
+      const n = box((DS.halfW + 1.5) * 2 + 0.2, 0.12, 0.3, 'templeStone', {
+        pos: [D.x, top + 0.06, zc - treadZ / 2 + 0.15],
+      });
+      tint(n, STONE_DK); daisParts.push(n);
+    }
+    // the platform itself, solid down to the floor
+    const platform = box((DS.halfW + 1.5) * 2, dy + 3.0, platHalfZ * 2, 'templeStone', {
+      pos: [D.x, dy - (dy + 3.0) / 2, D.z],
+    });
+    tint(platform, STONE.clone().multiplyScalar(0.86)); daisParts.push(platform);
   }
-  const platform = box(17, 0.8, 15, 'templeStone', { pos: [D.x, dy - 0.4, D.z - 1] });
-  tint(platform, STONE.clone().multiplyScalar(0.86)); daisParts.push(platform);
 
   const ped1 = cyl(1.9, 2.4, 0.6, 10, 'templeStone', { pos: [D.x, dy + 0.3, D.z] });
   tint(ped1, STONE); daisParts.push(ped1);

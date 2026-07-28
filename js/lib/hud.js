@@ -46,6 +46,7 @@ export class Hud {
       toasts: [],
       compass: null,        // { yaw, marks:[{label,angle,kind}] }
       popup: null,          // { title, sub, icon, t }
+      cinema: false, cinemaText: '', cinemaFade: 0, cinemaSkip: false,
       hurtT: 0, night: 0,
     };
     this._wobble = 0;
@@ -88,6 +89,8 @@ export class Hud {
     const x = this.x;
     const W = this.c.width, H = this.c.height;
     x.clearRect(0, 0, W, H);
+    // Screens draw onto this same canvas afterwards, so we clear
+    // unconditionally but only paint the HUD when it's meant to show.
     if (!this.data.visible) return this.c;
 
     const d = this.data;
@@ -105,6 +108,39 @@ export class Hud {
     this._toasts(W / 2, Math.round(H * 0.30));
     if (d.popup) this._popup(W, H, d.popup);
     return this.c;
+  }
+
+  /* Letterbox + cutscene caption, drawn after everything else so it
+     always sits on top. Called separately from render() because the
+     HUD proper is hidden during cutscenes. */
+  renderCinema(time) {
+    const d = this.data;
+    if (!d.cinema) return;
+    const x = this.x, W = this.c.width, H = this.c.height;
+    const bar = Math.round(H * 0.11);
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, W, bar);
+    x.fillRect(0, H - bar, W, bar);
+    // a hairline of dust on the mattes
+    x.fillStyle = 'rgba(255,240,200,.10)';
+    x.fillRect(0, bar - 1, W, 1);
+    x.fillRect(0, H - bar, W, 1);
+
+    if (d.cinemaText && d.cinemaFade > 0.01) {
+      const lines = String(d.cinemaText).split('\n');
+      const a = Math.min(1, d.cinemaFade);
+      const dim = (c) => (a > 0.66 ? c : (a > 0.33 ? '#c9b98a' : '#7a6a48'));
+      let y = H - bar - 12 - lines.length * 10;
+      for (const raw of lines) {
+        for (const ln of wrapText(raw, W - 40, 1, 1)) {
+          drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: dim(GOLD_LT) });
+          y += 10;
+        }
+      }
+    }
+    if (d.cinemaSkip && Math.floor(time * 1.4) % 2 === 0) {
+      drawText(x, 'ANY KEY TO SKIP', { x: W - 6, y: H - bar + 3, scale: 1, align: 'right', color: '#6a5c40' });
+    }
   }
 
   /* ---------- hearts ---------- */
@@ -162,33 +198,57 @@ export class Hud {
     drawText(x, `SYN ${d.coins}`, { x: ox, y, scale: 1, align: 'right', color: '#d8c070' });
   }
 
-  /* ---------- compass ---------- */
+  /* ---------- compass ----------
+     Wider arc and a tick strip, so it visibly sweeps as you turn. With
+     only four cardinals and a narrow window it showed one letter at a
+     time and read as stuck. */
   _compass(cx, oy, c) {
     if (!c) return;
     const x = this.x;
-    const W = 116, H = 13;
+    const W = 150, H = 15;
     const left = Math.round(cx - W / 2);
     x.fillStyle = INK; x.fillRect(left - 1, oy - 1, W + 2, H + 2);
     ditherRect(x, left, oy, W, H, '#140d06', '#241708', 0.5, 1);
 
-    const HALF = 1.15;
-    for (const m of c.marks) {
-      let dA = m.angle - c.yaw;
-      while (dA > Math.PI) dA -= Math.PI * 2;
-      while (dA < -Math.PI) dA += Math.PI * 2;
+    const HALF = 1.9;                       // radians visible either side
+    const toX = (dA) => Math.round(left + W / 2 + (dA / HALF) * (W / 2));
+    const wrap = (a) => {
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    };
+
+    // degree ticks every 15 degrees, taller every 45
+    for (let deg = 0; deg < 360; deg += 15) {
+      const dA = wrap(deg * Math.PI / 180 - c.yaw);
       if (Math.abs(dA) > HALF) continue;
-      const px = Math.round(left + W / 2 + (dA / HALF) * (W / 2));
-      const fade = 1 - Math.abs(dA) / HALF;
-      if (fade < 0.12) continue;
-      const col = m.kind === 'card' ? GOLD : m.kind === 'goal' ? '#ffe07a' : '#8fd8ff';
-      drawText(x, m.label, {
-        x: px, y: oy + 3, scale: 1, align: 'center', color: col, shadow: false,
-      });
+      const tx = toX(dA);
+      const major = deg % 45 === 0;
+      x.fillStyle = major ? '#7a6margin' : '#4a3a1c';
+      x.fillStyle = major ? '#7a6a3c' : '#4a3a1c';
+      x.fillRect(tx, oy + H - (major ? 5 : 3), 1, major ? 5 : 3);
     }
-    // needle
-    x.fillStyle = GOLD;
-    x.fillRect(Math.round(cx), oy - 2, 1, H + 4);
-    // frame edges
+
+    for (const m of c.marks) {
+      const dA = wrap(m.angle - c.yaw);
+      if (Math.abs(dA) > HALF) continue;
+      const px = toX(dA);
+      const near = 1 - Math.abs(dA) / HALF;
+      const col = m.kind === 'card' ? GOLD
+        : m.kind === 'inter' ? '#8a7a52'
+          : m.kind === 'goal' ? '#ffe07a' : '#8fd8ff';
+      if (near < 0.10) continue;
+      drawText(x, m.label, { x: px, y: oy + 2, scale: 1, align: 'center', color: col, shadow: false });
+      if (m.kind !== 'card' && m.kind !== 'inter') {
+        x.fillStyle = col;
+        x.fillRect(px, oy + H - 7, 1, 2);
+      }
+    }
+
+    // needle and frame
+    x.fillStyle = GOLD_LT;
+    x.fillRect(Math.round(cx), oy - 3, 1, H + 5);
+    x.fillRect(Math.round(cx) - 1, oy - 3, 3, 1);
     x.fillStyle = GOLD_DK;
     x.fillRect(left, oy, 1, H); x.fillRect(left + W - 1, oy, 1, H);
   }

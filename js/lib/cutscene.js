@@ -82,15 +82,20 @@ export class Cutscene {
     }
 
     /* ---- text cards ---- */
-    const el = document.getElementById('intro-text');
-    if (el) {
+    if (HUD) {
       let active = -1;
       this.text.forEach((c, i) => { if (this.t >= c.at && this.t < c.until) active = i; });
       if (active !== this._shownCard) {
         this._shownCard = active;
-        if (active >= 0) { el.textContent = this.text[active].text; el.classList.add('on'); }
-        else el.classList.remove('on');
+        HUD.data.cinemaText = active >= 0 ? this.text[active].text : '';
       }
+      // fade the caption in and out at its own edges
+      let f = 0;
+      if (active >= 0) {
+        const c = this.text[active];
+        f = Math.min(1, (this.t - c.at) / 0.4, (c.until - this.t) / 0.4);
+      }
+      HUD.data.cinemaFade = Math.max(0, f);
     }
 
     if (this.t >= this.duration) this.finish();
@@ -113,17 +118,22 @@ export class Cutscene {
       if (skipped && e.visualOnly) continue;
       e.fn?.();
     }
-    const el = document.getElementById('intro-text');
-    if (el) el.classList.remove('on');
+    if (HUD) { HUD.data.cinemaText = ''; HUD.data.cinemaFade = 0; }
     this.onDone?.();
   }
 
   skip() { if (this.skippable) this.finish(true); }
 }
 
-/** Show/hide the letterbox bars + card layer. */
-export function setCinemaBars(on) {
-  document.getElementById('intro').classList.toggle('hidden', !on);
-  const skip = document.getElementById('intro-skip');
-  if (skip) skip.style.display = on ? '' : 'none';
+/* The cutscene layer lives on the HUD canvas so captions and mattes
+   pixelate with everything else. Game hands us the Hud on boot. */
+let HUD = null;
+export function attachHud(hud) { HUD = hud; }
+
+/** Show/hide the letterbox bars + caption layer. */
+export function setCinemaBars(on, skippable = true) {
+  if (!HUD) return;
+  HUD.data.cinema = on;
+  HUD.data.cinemaSkip = on && skippable;
+  if (!on) { HUD.data.cinemaText = ''; HUD.data.cinemaFade = 0; }
 }

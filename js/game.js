@@ -7,8 +7,9 @@ import { RetroPipeline, setJitterEnabled, setTime } from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
 import { mergeGeos, tint, plane, box, cyl, ico, lumpify } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
-import { Cutscene, setCinemaBars } from './lib/cutscene.js';
+import { Cutscene, setCinemaBars, attachHud } from './lib/cutscene.js';
 import { UI } from './ui.js';
+import { ScreenStack, GLYPH_NAMES } from './lib/screens.js';
 
 import {
   buildTerrain, buildOcean, buildSurf, buildSky, buildClouds,
@@ -22,6 +23,7 @@ import {
 } from './world/props.js';
 import {
   buildSyncoin, buildRelic, buildFerdiHut, buildBeacon, buildStorm, buildTikiTorch,
+  buildIntroStage,
 } from './world/extras.js';
 import { buildIdolMaterials, buildIdol, buildIdolShrine } from './world/idol.js';
 import { buildTemple, templeHeight, TEMPLE } from './world/temple.js';
@@ -185,9 +187,10 @@ const JOURNAL_INTRO = {
 The storm took the ship, the crew, and most of my
 good sense. It did not take the reason I came.
 
-Somewhere on this island is the Idol of Chris
-Illic, cast in gold by people who thought better
-of what they'd made.
+Somewhere on this island is the Idol of King
+Illic, and the Idol is the King: the Rogue Agents
+poured what was left of him into gold and buried
+it under his own temple.
 
 There are others here. There were, anyway.`,
 };
@@ -203,7 +206,7 @@ Pendulums to mark the way in, and then we sealed
 the way in, and then we could not get back out.
 
 There are only two things on this island that will
-get you off it: the Idol of Chris Illic, and the
+get you off it: the Idol of King Illic, and the
 man who is sitting on it.
 
 The chart is enclosed. Four Pendulums, four glyphs,
@@ -234,6 +237,9 @@ export class Game {
 
     this.audio = new GameAudio();
     this.ui = new UI(this.audio);
+    this.screens = new ScreenStack(this);
+    this.ui.screens = this.screens;
+    attachHud(this.ui.hud);
 
     this.input = { fwd: false, back: false, left: false, right: false, sprint: false, jump: false };
     this.mouse = { locked: false };
@@ -352,7 +358,16 @@ export class Game {
       this._buildSanctum();
     });
 
-    await step('CASTING THE IDOL', 0.90, () => this._buildTitleScene());
+    await step('CASTING THE IDOL', 0.90, () => {
+      this._buildTitleScene();
+      // the fogged idol for the opening
+      const st = this.introStage;
+      const shrine = buildIdol(this.idolMats, { curls: 60, seed: 12 });
+      shrine.position.copy(st.userData.fogAnchor).add(new THREE.Vector3(0, 0, 0));
+      shrine.scale.setScalar(1.6);
+      st.add(shrine);
+      st.userData.idol = shrine;
+    });
 
     await step('READY', 1.0, () => {
       this.player = new Player(this.islandScene, this.propMats, this.camera);
@@ -407,6 +422,11 @@ export class Game {
 
     this.critters = buildCritters(makeRng(88), this.propMats, heightAt, 26);
     scene.add(this.critters);
+
+    // a pocket set for the opening, parked far below the island
+    this.introStage = buildIntroStage(makeRng(303), this.propMats, buildFlameCluster);
+    this.introStage.visible = false;
+    scene.add(this.introStage);
 
     this.islandScene = scene;
   }
@@ -522,15 +542,76 @@ export class Game {
     const fh = findGround(-30, 46, { rng, radius: 22, minH: 5, maxH: 22, maxSlope: 0.16 });
     const hut = buildFerdiHut(rng, this.propMats);
     hut.position.set(fh.x, fh.y - 0.4, fh.z);
-    hut.rotation.y = Math.atan2(-fh.x, -fh.z);
+    // The counter is on the hut's +Z face; aim it at the wreck camp so you
+    // come out of the trees looking straight at Ferdi.
+    hut.rotation.y = Math.atan2(this.spawn.x - fh.x, this.spawn.z - fh.z);
     scene.add(hut);
     this.tickers.push(hut);
     this.hutPos = fh;
     this.colliders.push({ x: fh.x, z: fh.z, r: 3.4 });
+
+    const fwdX = Math.sin(hut.rotation.y), fwdZ = Math.cos(hut.rotation.y);
     this.interactables.push({
-      kind: 'ferdy', x: fh.x + Math.sin(hut.rotation.y) * 3.2, z: fh.z + Math.cos(hut.rotation.y) * 3.2,
-      y: fh.y, r: 4.5, prompt: "Talk to Ferdi Steinman",
+      kind: 'ferdi', x: fh.x + fwdX * 3.6, z: fh.z + fwdZ * 3.6,
+      y: fh.y, r: 5.2, prompt: 'Talk to Ferdi Steinman',
     });
+
+    /* trodden dirt, so the clearing reads as somewhere people come */
+    {
+      const R = 13;
+      const g = new THREE.PlaneGeometry(R * 2, R * 2, 24, 24);
+      g.rotateX(-Math.PI / 2);
+      const pos = g.attributes.position;
+      const colors = new Float32Array(pos.count * 3);
+      const col = new THREE.Color();
+      const dirt = new THREE.Color(0x6b563a), dirt2 = new THREE.Color(0x8a7050);
+      for (let i = 0; i < pos.count; i++) {
+        const lx = pos.getX(i), lz = pos.getZ(i);
+        pos.setY(i, heightAt(fh.x + lx, fh.z + lz) - fh.y + 0.07);
+        col.copy(dirt).lerp(dirt2, rng());
+        const d = Math.hypot(lx, lz) / R;
+        const fade = d > 0.7 ? Math.max(0, 1 - (d - 0.7) / 0.3) : 1;
+        colors[i * 3] = col.r * fade;
+        colors[i * 3 + 1] = col.g * fade;
+        colors[i * 3 + 2] = col.b * fade;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      g.computeVertexNormals();
+      const dirtMat = this.propMats.decal.clone();
+      dirtMat.vertexColors = true;
+      dirtMat.map = this.atlas;
+      dirtMat.opacity = 0.9;
+      const patch = new THREE.Mesh(g, dirtMat);
+      patch.position.set(fh.x, fh.y, fh.z);
+      patch.renderOrder = 1;
+      scene.add(patch);
+    }
+
+    /* tiki torches: the island's night lighting, and a breadcrumb trail */
+    this.tikis = [];
+    const addTiki = (tx, tz) => {
+      const ty = heightAt(tx, tz);
+      if (ty < 1.0) return;
+      const tk = buildTikiTorch(rng, this.propMats, buildFlameCluster);
+      tk.position.set(tx, ty - 0.25, tz);
+      scene.add(tk);
+      this.tikis.push(tk);
+      this.colliders.push({ x: tx, z: tz, r: 0.34 });
+    };
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + 0.4;
+      addTiki(fh.x + Math.cos(a) * 9.5, fh.z + Math.sin(a) * 9.5);
+    }
+    // and a lit path between camp, hut and temple
+    const trail = [this.spawn, fh, this.templeDoorPos];
+    for (let seg = 0; seg < trail.length - 1; seg++) {
+      const A = trail[seg], B = trail[seg + 1];
+      for (let k = 1; k <= 7; k++) {
+        const f = k / 8;
+        addTiki(A.x + (B.x - A.x) * f + (rng() - 0.5) * 7,
+                A.z + (B.z - A.z) * f + (rng() - 0.5) * 7);
+      }
+    }
 
     /* ---- syncoins scattered as currency ---- */
     this.syncoins = [];
@@ -893,6 +974,14 @@ export class Game {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
+      if (this.screens.open) {
+        // map the click into the low-res canvas the screens are drawn in
+        const r = this.canvas.getBoundingClientRect();
+        const hx = ((e.clientX - r.left) / r.width) * this.ui.hud.c.width;
+        const hy = ((e.clientY - r.top) / r.height) * this.ui.hud.c.height;
+        this.screens.click(hx, hy);
+        return;
+      }
       if (this.state === 'cutscene') { this.skipCutscene(); return; }
       if (!this.playing) return;
       if (!this.mouse.locked) { this._requestLock(); return; }
@@ -904,9 +993,11 @@ export class Game {
   }
 
   get playing() { return this.state === 'island' || this.state === 'temple'; }
-  anyOverlayOpen() {
-    return this.ui.readerActive || this.ui.journalOpen || this.ui.mapOpen
-      || this.ui.dialsOpen || this.ui.shopOpen;
+  anyOverlayOpen() { return this.screens.open; }
+
+  /** Re-grab the pointer once the last overlay closes. */
+  afterOverlayClose() {
+    if (!this.screens.open && this.playing && !this.paused) this._requestLock();
   }
 
   _requestLock() { this.canvas.requestPointerLock?.(); }
@@ -914,6 +1005,14 @@ export class Game {
   _key(e, down) {
     const k = e.code;
     const I = this.input;
+
+    /* Canvas screens take priority over everything, including movement,
+       so arrow keys drive menus instead of walking you into the sea. */
+    if (down && this.screens.open) {
+      e.preventDefault();
+      this.screens.key(k);
+      return;
+    }
     switch (k) {
       case 'KeyW': case 'ArrowUp': if (!this.ui.dialsOpen) I.fwd = down; break;
       case 'KeyS': case 'ArrowDown': if (!this.ui.dialsOpen) I.back = down; break;
@@ -927,19 +1026,6 @@ export class Game {
 
     if (this.state === 'cutscene') { this.skipCutscene(); return; }
 
-    // dial puzzle grabs the arrows
-    if (this.ui.dialsOpen) {
-      if (k === 'ArrowLeft') { this.dialSel = (this.dialSel + 3) % 4; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
-      else if (k === 'ArrowRight') { this.dialSel = (this.dialSel + 1) % 4; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
-      else if (k === 'ArrowUp' || k === 'KeyW') { this.cycleDial(1); }
-      else if (k === 'ArrowDown' || k === 'KeyS') { this.cycleDial(-1); }
-      else if (k === 'KeyE' || k === 'Enter') { this.submitDials(); }
-      else if (k === 'Escape') { this.closeDials(); }
-      e.preventDefault();
-      return;
-    }
-
-    if ((k === 'KeyE' || k === 'Enter') && this.ui.readerActive) { this.ui.advanceReader(); return; }
     if (k === 'KeyE') { this.interact(); return; }
 
     if (k === 'KeyC' && this.playing) {
@@ -949,14 +1035,8 @@ export class Game {
       return;
     }
     if (k === 'Tab') { e.preventDefault(); if (this.playing) this.toggleJournal(); return; }
-    if (k === 'KeyM') { if (this.playing) this.toggleMap(); return; }
-    if (k === 'Escape') {
-      if (this.ui.journalOpen) { this.toggleJournal(); return; }
-      if (this.ui.mapOpen) { this.toggleMap(); return; }
-      if (this.ui.shopOpen) { this.closeShop(); return; }
-      if (this.playing) this.pause(!this.paused);
-      return;
-    }
+    if (k === 'KeyM') { if (this.playing) this.openChart(); return; }
+    if (k === 'Escape') { if (this.playing) this.pause(!this.paused); return; }
   }
 
   /* ===========================================================
@@ -965,7 +1045,35 @@ export class Game {
   startTitle() {
     this.state = 'title';
     this.ui.hide();
+    this.screens.replace('title');
     this.audio.playMusic('title');
+  }
+
+  beginGame() {
+    this.screens.clear();
+    this.audio.resume();
+    this.audio.sfx('confirm');
+    this.startGame();
+  }
+
+  quitToTitle() {
+    this.paused = false;
+    document.exitPointerLock?.();
+    this.ui.hide();
+    this.ui.showBoss(false);
+    this.pipeline.fade = 1;
+    this.pipeline.tintAmt = 0;
+    if (this.hector) { this.hector.dispose(); this.hector = null; }
+    this.bossTriggered = false;
+    this.startTitle();
+  }
+
+  copyBrag() {
+    const txt = this.endingSummary || 'I found the Idol of King Illic on Illic Isle.';
+    navigator.clipboard?.writeText(`${txt}\n${location.href}`)
+      .then(() => this.ui.toast('COPIED TO CLIPBOARD', 'jade', 2000))
+      .catch(() => this.ui.toast('CLIPBOARD BLOCKED', 'bad', 2000));
+    this.audio.sfx('confirm');
   }
 
   startGame() {
@@ -1041,6 +1149,9 @@ export class Game {
     // world keeps breathing under the camera
     if (this.cutScene === this.islandScene) {
       this.tickIslandWorld(dt);
+      if (this.introStage?.visible) {
+        this.introStage.userData.tick(this.time, dt, this.camera);
+      }
       if (this.introStorm != null && this.state === 'cutscene') this.updateIntroWeather(dt);
     }
     else {
@@ -1051,41 +1162,61 @@ export class Game {
     this.cutsceneObj?.update(dt);
   }
 
-  /* ---------- opening: the wreck, then the island as it is now ---------- */
+  /* ---------- opening ----------
+     Five movements: the legend told in shadow, then the storm, then the
+     wreck, then dawn over the island. The legend beats play on a pocket
+     set parked below the world (see buildIntroStage). */
   playIntro() {
     const s = this.spawn;
     const out = Math.hypot(s.x, s.z) || 1;
     const nx = s.x / out, nz = s.z / out;
     const wreck = this.wreckPos;
-
-    // far out to sea, where the storm is
     const sea = (d, y) => new THREE.Vector3(nx * (out + d), y, nz * (out + d));
 
-    this.pipeline.fade = 0;
-    this.audio.playMusic('storm');
+    const ST = this.introStage;
+    ST.visible = true;
+    const stagePos = ST.position;
+    const at = (lx, ly, lz) => new THREE.Vector3(stagePos.x + lx, stagePos.y + ly, stagePos.z + lz);
 
-    // night + squall for the first half, clearing into morning
+    this.pipeline.fade = 0;
     this.introStorm = 1;
+    this.introClearing = false;
+    this.audio.playMusic('storm');
 
     this.playCutscene({
       shots: [
-        { // black water, heaving
-          dur: 7.0, ease: 'linear',
+        { // I. the Rogue Agents, coming out of the dark
+          dur: 6.5, ease: 'linear',
+          from: at(-7, 1.6, 13), to: at(3, 1.3, 7.2),
+          lookFrom: at(0, 1.2, 0), lookTo: at(0, 1.3, 0),
+        },
+        { // II. the idol in the fog
+          dur: 6.0, ease: 'smooth',
+          from: at(-60, 2.6, 15), to: at(-59, 2.2, 7.5),
+          lookFrom: at(-60, 2.4, 0), lookTo: at(-60, 2.0, 0),
+        },
+        { // III. Hector arriving
+          dur: 5.5, ease: 'linear',
+          from: at(52, 3.4, 12), to: at(63, 2.0, 7),
+          lookFrom: at(60, 1.2, 0), lookTo: at(60, 1.0, 0),
+        },
+        { // IV. black water, heaving
+          dur: 6.0, ease: 'linear',
           from: sea(120, 5.5), to: sea(96, 3.2),
           look: sea(70, 1.0),
         },
-        { // the ship going over
-          dur: 6.0, ease: 'linear', shake: 0.35,
+        { // V. the ship going over
+          dur: 5.0, ease: 'linear', shake: 0.35,
           from: sea(74, 7.0), to: sea(50, 3.0),
           look: sea(34, 2.0),
         },
-        { // time passes — dawn over the island
-          dur: 7.0, ease: 'smooth',
+        { // VI. time passes — dawn over the island
+          dur: 6.0, ease: 'smooth',
           from: sea(46, 26), to: sea(6, 15),
           look: new THREE.Vector3(0, 12, 0),
         },
-        { // down to the body on the sand
-          dur: 6.0, ease: 'easeOut',
+        { // VII. down to the body on the sand
+          dur: 5.5, ease: 'easeOut',
           from: new THREE.Vector3(wreck.x + 16, wreck.y + 12, wreck.z + 18),
           to: new THREE.Vector3(s.x - 4.5, s.y + 2.4, s.z + 5.5),
           lookFrom: new THREE.Vector3(wreck.x, wreck.y + 3, wreck.z),
@@ -1093,28 +1224,43 @@ export class Game {
         },
       ],
       text: [
-        { at: 0.8, until: 6.4,
-          text: 'ILLIC ISLE.\nOnce the seat of KING ILLIC,\nand he ruled it badly.' },
-        { at: 7.6, until: 12.6,
-          text: 'The ROGUE AGENTS came for him.\nThey took the island, they took the king,\nand they sealed his spirit in gold.' },
-        { at: 14.2, until: 19.4,
-          text: 'Then his brother HECTOR came.\nHe killed every Rogue Agent on this rock\nand sat down on top of the idol.' },
-        { at: 20.6, until: 25.2,
-          text: 'Eleven years later, the sea spits you out\non the same beach.' },
+        { at: 0.8, until: 6.0,
+          text: 'ILLIC ISLE was the seat of KING ILLIC,\nand he ruled it badly, and at length.' },
+        { at: 6.8, until: 12.0,
+          text: 'The ROGUE AGENTS came at night.\nThey ended the king, and poured what was\nleft of him into gold.' },
+        { at: 13.0, until: 17.6,
+          text: 'They buried the Idol under his own temple\nand set four Pendulums to mark the way.' },
+        { at: 18.4, until: 23.0,
+          text: 'Then his brother HECTOR sailed in,\nkilled every Agent on the rock,\nand sat down on top of him.' },
+        { at: 24.4, until: 29.0,
+          text: 'Eleven years later, a storm takes a ship\nthat had no business out here.' },
+        { at: 31.0, until: 35.4,
+          text: 'The sea spits you out on the same beach.' },
       ],
       events: [
-        { at: 0.0, visualOnly: true, fn: () => { this.fade(1, 2600); this.audio.sfx('stormAmbience'); } },
-        { at: 1.6, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 5.2, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 7.2, fn: () => this.audio.sfx('shipBreak') },
-        { at: 9.4, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 11.8, fn: () => this.audio.sfx('shipBreak') },
-        { at: 13.0, fn: () => { this.introClearing = true; this.audio.playMusic('island'); } },
-        { at: 13.4, fn: () => this.audio.sfx('dawn') },
-        { at: 20.2, fn: () => this.audio.sfx('surfWash') },
-        { at: 25.4, visualOnly: true, fn: () => this.fade(0, 1200) },
+        { at: 0.0, visualOnly: true, fn: () => this.fade(1, 2200) },
+        { at: 0.4, fn: () => this.audio.sfx('bossIntro') },
+        { at: 3.2, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 6.6, fn: () => this.audio.sfx('idolRise') },
+        { at: 12.6, fn: () => this.audio.sfx('stinger') },
+        { at: 18.2, fn: () => this.audio.sfx('surfWash') },
+        { at: 21.0, fn: () => this.audio.sfx('slam') },
+        {
+          at: 23.6, fn: () => {
+            ST.visible = false;                      // done with the pocket set
+            this.audio.sfx('stormAmbience');
+          },
+        },
+        { at: 24.6, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 28.0, fn: () => this.audio.sfx('shipBreak') },
+        { at: 30.2, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 31.6, fn: () => this.audio.sfx('shipBreak') },
+        { at: 32.6, fn: () => { this.introClearing = true; this.audio.playMusic('island'); } },
+        { at: 33.0, fn: () => this.audio.sfx('dawn') },
+        { at: 38.0, fn: () => this.audio.sfx('surfWash') },
+        { at: 40.0, visualOnly: true, fn: () => this.fade(0, 1200) },
       ],
-      onDone: () => this.endIntro(),
+      onDone: () => { ST.visible = false; this.endIntro(); },
     }, this.islandScene);
   }
 
@@ -1529,49 +1675,69 @@ I have snacks."`);
   pause(on) {
     if (!this.playing) return;
     this.paused = on;
-    document.getElementById('pause').classList.toggle('hidden', !on);
-    if (on) document.exitPointerLock?.();
-    else this._requestLock();
+    if (on) {
+      document.exitPointerLock?.();
+      if (this.screens.name !== 'pause') this.screens.push('pause');
+    } else {
+      this.screens.clear();
+      this._requestLock();
+    }
   }
 
-  toggleJournal() {
-    const entries = [{ found: true, title: JOURNAL_INTRO.title, text: JOURNAL_INTRO.text }];
-    if (this.hasChart) entries.push({ found: true, title: LETTER.title, text: LETTER.text });
+  journalEntries() {
+    const out = [{ found: true, title: JOURNAL_INTRO.title, text: JOURNAL_INTRO.text }];
+    if (this.hasChart) out.push({ found: true, title: LETTER.title, text: LETTER.text });
     for (const p of PENDULUMS) {
-      entries.push({
+      out.push({
         found: this.found.has(p.id), title: p.title, text: p.text,
         hint: this.hasChart ? p.hint : 'You have nothing to go on yet.',
       });
     }
-    const open = this.ui.toggleJournal(entries);
-    this.audio.sfx('page');
-    if (open) document.exitPointerLock?.();
-    else if (!this.paused) this._requestLock();
+    for (const k of Object.keys(RELICS)) {
+      const R = RELICS[k];
+      out.push({
+        found: this.relics.has(k), title: R.title, text: R.text,
+        hint: 'Something on this island you have not picked up yet.',
+      });
+    }
+    return out;
   }
 
-  toggleMap() {
+  toggleJournal() {
+    if (this.screens.name === 'journal') { this.screens.pop(); this.afterOverlayClose(); return; }
+    document.exitPointerLock?.();
+    this.screens.push('journal');
+  }
+
+  openChart() {
+    if (this.screens.name === 'chart') { this.screens.pop(); this.afterOverlayClose(); return; }
     if (!this.hasChart) {
       this.audio.sfx('deny');
-      this.ui.toast('You have no chart.', 'bad', 1500);
+      this.ui.toast('YOU HAVE NO CHART', 'bad', 1500);
       return;
     }
-    const marks = PENDULUMS.map((p) => ({
-      x: p.world.x, z: p.world.z,
-      label: ['I', 'II', 'III', 'IV'][p.order - 1],
-      found: this.found.has(p.id),
-      glyph: this.found.has(p.id) ? p.glyph : null,
-    }));
-    const open = this.ui.toggleMap({
-      heightAt, radius: ISLAND.shore + 12,
-      marks,
-      temple: this.templeDoorPos,
-      player: this.player.pos,
-      wreck: this.wreckPos,
-      rogue: this.rogueSandPos,
+    document.exitPointerLock?.();
+    this.screens.push('chart', {
+      data: {
+        heightAt, radius: ISLAND.shore + 14,
+        marks: PENDULUMS.map((p) => ({
+          x: p.world.x, z: p.world.z,
+          label: ['I', 'II', 'III', 'IV'][p.order - 1],
+          found: this.found.has(p.id),
+          glyph: this.found.has(p.id) ? p.glyph : null,
+        })),
+        temple: this.templeDoorPos,
+        player: this.player.pos,
+        wreck: this.wreckPos,
+        rogue: this.rogueSandPos,
+        hut: this.hutPos,
+        // relics get a "?" on the chart until you pick them up — without
+        // this they are three specks on a 340-unit island
+        relics: this.interactables
+          .filter((i) => i.kind === 'relic')
+          .map((i) => ({ x: i.x, z: i.z, found: this.relics.has(i.relic), kind: i.relic })),
+      },
     });
-    this.audio.sfx('page');
-    if (open) document.exitPointerLock?.();
-    else if (!this.paused) this._requestLock();
   }
 
   /* ===========================================================
@@ -1721,10 +1887,10 @@ I have snacks."`);
 
       case 'coin': {
         it.coin.taken = true;
-        it.coin.mesh.visible = false;
         this.coins++;
         this.audio.sfx('coin');
-        this.ui.showPopup('SYNCOIN', `x${this.coins}`, 'coin');
+        this.startCoinFlourish(it.coin);
+        this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1400);
         break;
       }
 
@@ -1733,19 +1899,21 @@ I have snacks."`);
     }
   }
 
-  openShop() {
-    const stock = SHOP.map((it) => ({
+  shopStock() {
+    return SHOP.map((it) => ({
       ...it, owned: this.bought.has(it.id), afford: this.coins >= it.cost,
     }));
-    this.ui.openShop(stock, this.coins, (id) => this.buy(id));
+  }
+
+  openShop() {
     document.exitPointerLock?.();
-    this.audio.sfx('page');
+    this.screens.push('shop');
   }
 
   buy(id) {
     const item = SHOP.find((i) => i.id === id);
-    if (!item || this.bought.has(id)) return;
-    if (this.coins < item.cost) { this.audio.sfx('deny'); this.ui.shakeShop(); return; }
+    if (!item || this.bought.has(id)) return false;
+    if (this.coins < item.cost) { this.audio.sfx('deny'); return false; }
     this.coins -= item.cost;
     this.bought.add(id);
     this.audio.sfx('confirm');
@@ -1754,30 +1922,25 @@ I have snacks."`);
     if (id === 'satchel') { this.coconutMax = 14; }
     if (id === 'boots') { this.player.SPRINT = 19.5; this.player.staminaDrain = 0.10; }
 
-    this.ui.toast(`FERDI: "${item.name}. No refunds."`, 'jade', 3000);
-    this.openShop();
+    this.ui.toast(`FERDI: ${item.name}. NO REFUNDS.`, 'jade', 3000);
+    return true;
   }
 
   closeShop() {
-    this.ui.closeShop();
-    if (!this.paused) this._requestLock();
+    if (this.screens.name === 'shop') this.screens.pop();
+    this.afterOverlayClose();
   }
 
-  showReader(head, body) {
+  showReader(head, body, onDone) {
     document.exitPointerLock?.();
-    this.ui.showReader(head, body, () => { if (!this.paused) this._requestLock(); });
+    this.ui.showReader(head, body, onDone);
   }
 
   /* ---------- dial puzzle ---------- */
   openDials() {
     document.exitPointerLock?.();
     this.dialSel = 0;
-    this.ui._onDialClick = (i) => {
-      if (i === this.dialSel) this.cycleDial(1);
-      else { this.dialSel = i; this.ui.renderDials(this.dialState, this.dialSel); this.audio.sfx('select'); }
-    };
-    this.ui.openDials(this.dialState, this.dialSel, this.knownGlyphHint());
-    this.audio.sfx('page');
+    this.screens.push('dials', { shake: 0 });
   }
   knownGlyphHint() {
     return PENDULUMS
@@ -1787,17 +1950,16 @@ I have snacks."`);
       .join('   ');
   }
   cycleDial(dir) {
-    this.dialState[this.dialSel] = (this.dialState[this.dialSel] + dir + GLYPHS.length) % GLYPHS.length;
-    this.ui.renderDials(this.dialState, this.dialSel);
+    this.dialState[this.dialSel] =
+      (this.dialState[this.dialSel] + dir + GLYPH_NAMES.length) % GLYPH_NAMES.length;
     this.audio.sfx('select');
   }
   submitDials() {
-    const ok = this.dialState.every((v, i) => GLYPHS[v] === DOOR_CODE[i]);
+    const ok = this.dialState.every((v, i) => GLYPH_NAMES[v] === DOOR_CODE[i]);
     if (!ok) {
       this.audio.sfx('deny');
-      this.ui.shakeDials();
-      this.ui.toast('The sockets grind, and settle back.', 'bad', 2000);
-      return;
+      this.ui.toast('THE SOCKETS GRIND, AND SETTLE BACK.', 'bad', 2000);
+      return false;
     }
     this.doorSolved = true;
     this.closeDials();
@@ -1805,10 +1967,11 @@ I have snacks."`);
     this.ui.toast('THE DOOR REMEMBERS THE ORDER', 'jade', 4000);
     this.ui.setObjective('The temple is open. Go down.');
     this.updateSockets();
+    return true;
   }
   closeDials() {
-    this.ui.closeDials();
-    if (!this.paused) this._requestLock();
+    if (this.screens.name === 'dials') this.screens.pop();
+    this.afterOverlayClose();
   }
   updateSockets() {
     const socks = this.templeDoor.userData.sockets;
@@ -1954,6 +2117,41 @@ I have snacks."`);
     });
   }
 
+  /** The coin leaps, spins up and shrinks away — you should see it go. */
+  startCoinFlourish(coin) {
+    this.coinFx = this.coinFx || [];
+    const m = coin.mesh;
+    m.userData.flourish = true;
+    this.coinFx.push({
+      mesh: m, t: 0, dur: 0.85,
+      from: m.position.clone(),
+      spin: 14 + Math.random() * 6,
+    });
+  }
+
+  updateCoinFx(dt) {
+    if (!this.coinFx || !this.coinFx.length) return;
+    for (let i = this.coinFx.length - 1; i >= 0; i--) {
+      const f = this.coinFx[i];
+      f.t += dt;
+      const k = Math.min(1, f.t / f.dur);
+      const ease = 1 - Math.pow(1 - k, 2);
+      f.mesh.position.set(
+        f.from.x,
+        f.from.y + 0.4 + Math.sin(k * Math.PI) * 2.4,
+        f.from.z
+      );
+      f.mesh.rotation.y += f.spin * dt;
+      f.mesh.scale.setScalar(Math.max(0.001, 1 - ease * 0.95));
+      if (k >= 1) {
+        f.mesh.visible = false;
+        f.mesh.scale.setScalar(1);
+        f.mesh.userData.flourish = false;
+        this.coinFx.splice(i, 1);
+      }
+    }
+  }
+
   clearCoconuts() {
     for (const c of this.coconuts) c.mesh.removeFromParent();
     this.coconuts.length = 0;
@@ -2030,15 +2228,15 @@ I have snacks."`);
       'Democracy is a delicious idea.',
       'He did not even use the good staff.',
     ];
-    document.getElementById('death-sub').textContent = subs[Math.floor(Math.random() * subs.length)];
+    const sub = subs[Math.floor(Math.random() * subs.length)];
     setTimeout(() => {
-      document.getElementById('death').classList.remove('hidden');
       this.ui.hide();
+      this.screens.replace('death', { sub });
     }, 900);
   }
 
   respawn() {
-    document.getElementById('death').classList.add('hidden');
+    this.screens.clear();
     this.ui.show();
     this.player.hp = this.player.maxHp;
     this.player.invuln = 2;
@@ -2088,14 +2286,18 @@ I have snacks."`);
     this.endingSummary =
       `Illic Isle cleared in ${mm}:${ss}.${cs} — ${this.stats.deaths} death${this.stats.deaths === 1 ? '' : 's'}, ` +
       `${this.relics.size}/4 relics, ${acc}% coconut accuracy. El Bass Presidente has been term-limited.`;
-    document.getElementById('ending-stats').innerHTML =
-      `<span class="big-time">${mm}:${ss}.${cs}</span>` +
-      `<br>DEATHS <b>${this.stats.deaths}</b>` +
-      `<br>RELICS <b>${this.relics.size}/4</b>` +
-      `<br>SYNCOINS <b>${this.coins}</b>` +
-      `<br>COCONUTS THROWN <b>${this.stats.thrown}</b>` +
-      `<br>ACCURACY <b>${acc}%</b>`;
-    document.getElementById('ending').classList.remove('hidden');
+    this.screens.replace('ending', {
+      stats: {
+        time: `${mm}:${ss}.${cs}`,
+        rows: [
+          ['DEATHS', String(this.stats.deaths)],
+          ['RELICS', `${this.relics.size}/4`],
+          ['SYNCOINS', String(this.coins)],
+          ['THROWN', String(this.stats.thrown)],
+          ['ACCURACY', `${acc}%`],
+        ],
+      },
+    });
     this.pipeline.fade = 1;
     this.audio.sfx('victory');
   }
@@ -2147,6 +2349,7 @@ I have snacks."`);
           : null,
       });
       this.updateCoconuts(dt);
+      this.updateCoinFx(dt);
     } else {
       this.player.updateCamera(dt, inTemple ? templeHeight : heightAt);
     }
@@ -2312,11 +2515,11 @@ I have snacks."`);
     // The idol lives in the middle grid track, between the menu and the
     // lore column, so it frames dead centre.
     this.titleCam.position.set(
-      Math.sin(t * 0.11) * 0.55,
+      Math.sin(t * 0.11) * 0.5,
       1.05 + Math.sin(t * 0.37) * 0.15,
-      6.9
+      7.4
     );
-    this.titleCam.lookAt(0, 0.42, 0);
+    this.titleCam.lookAt(-1.15, 0.42, 0);
   }
 
   render(dt) {
@@ -2325,6 +2528,9 @@ I have snacks."`);
     if (int) this.ui.hud.setSize(int.w, int.h);
     this.ui.hud.update(dt);
     this.ui.hud.render(this.time);
+    this.screens.update(dt);
+    this.screens.draw(this.ui.hud.x, this.ui.hud.c.width, this.ui.hud.c.height);
+    this.ui.hud.renderCinema(this.time);
     this.pipeline.markHudDirty();
 
     if (this.state === 'title' || this.state === 'ending') {

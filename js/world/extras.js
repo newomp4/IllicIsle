@@ -33,6 +33,7 @@ export function buildSyncoin(mats, big = false) {
   const light = new THREE.PointLight(0xffd88a, 0.7, 5, 2);
   g.add(light);
   g.userData.tick = (t) => {
+    if (g.userData.flourish) return;      // the pickup animation owns it
     g.rotation.y = t * 1.9;
     g.position.y = (g.userData.baseY ?? 0) + 0.42 + Math.sin(t * 2.4) * 0.13;
     light.intensity = 0.5 + Math.sin(t * 4) * 0.25;
@@ -270,6 +271,128 @@ export function buildFerdiHut(rng, mats) {
     lampLight.intensity = 1.7 + Math.sin(t * 8.3) * 0.35 + Math.sin(t * 3.1) * 0.2;
   };
   return group;
+}
+
+/* ===========================================================
+   CUTSCENE STAGE — figures that only exist for the opening.
+   A little pocket set built off in the dark at y = -400, so the
+   camera can cut to it without disturbing the island.
+   =========================================================== */
+export function buildIntroStage(rng, mats, flameFactory) {
+  const stage = new THREE.Group();
+  stage.position.set(0, -400, 0);
+
+  /* ---- the Rogue Agents: silhouettes, never lit ---- */
+  const agents = new THREE.Group();
+  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x05060a, fog: false });
+  const AGENT = [];
+  for (let i = 0; i < 6; i++) {
+    const a = new THREE.Group();
+    const P = [];
+    const coat = new THREE.LatheGeometry([
+      [0.00, 0.00], [0.34, 0.02], [0.40, 0.55], [0.36, 1.05],
+      [0.28, 1.35], [0.14, 1.50], [0.00, 1.53],
+    ].map(([r, y]) => new THREE.Vector2(r, y)), 7);
+    P.push(coat);
+    // hood
+    const hood = new THREE.SphereGeometry(0.26, 7, 5, 0, Math.PI * 2, 0, Math.PI * 0.72);
+    hood.translate(0, 1.46, 0.02);
+    P.push(hood);
+    // long arms, one holding something bladed
+    for (const sgn of [-1, 1]) {
+      P.push(limb([sgn * 0.30, 1.20, 0], [sgn * 0.34, 0.55, 0.10], 0.08, 0.06));
+    }
+    P.push(limb([0.34, 0.55, 0.10], [0.52, 0.20, 0.45], 0.035, 0.02));   // blade
+    const mesh = new THREE.Mesh(mergeGeos(P), shadowMat);
+    a.add(mesh);
+    a.position.set((i - 2.5) * 1.9 + (rng() - 0.5), 0, (rng() - 0.5) * 2.4);
+    a.userData.phase = rng() * 6;
+    agents.add(a);
+    AGENT.push(a);
+  }
+  stage.add(agents);
+  stage.userData.agents = agents;
+
+  // two eye-lights per agent, the only thing you can see of them
+  const eyes = [];
+  for (const a of AGENT) {
+    const l = new THREE.PointLight(0xff4a3a, 0.9, 4, 2);
+    l.position.set(0, 1.46, 0.22);
+    a.add(l);
+    eyes.push(l);
+  }
+
+  /* ---- Hector's boat, arriving ---- */
+  const boat = new THREE.Group();
+  const B = [];
+  for (let i = 0; i < 7; i++) {
+    const t = i / 6;
+    const w = 1.5 * Math.sin(Math.PI * (0.2 + t * 0.7));
+    for (const sgn of [-1, 1]) {
+      B.push(tint(box(0.16, 0.7, 1.0, 'planks', {
+        pos: [sgn * w, 0.35, (t - 0.5) * 6.5], rot: [0, 0, sgn * 0.35],
+      }), G(0x7d6440)));
+    }
+  }
+  B.push(tint(box(1.2, 0.2, 6.4, 'planks', { pos: [0, 0.1, 0] }), G(0x6f5a3a)));
+  B.push(tint(cyl(0.09, 0.12, 4.2, 5, 'planks', { pos: [0, 2.2, -0.6] }), G(0x7a6340)));
+  boat.add(new THREE.Mesh(mergeGeos(B), mats.opaque));
+  const sail = plane(2.6, 3.0, 'sail', { pos: [0, 2.4, -0.5], rot: [0, 0, 0] });
+  tint(sail, G(0xcabfa0));
+  boat.add(new THREE.Mesh(mergeGeos([sail]), mats.cutoutStill));
+  // a bulky silhouette at the tiller
+  const HB = [];
+  HB.push(new THREE.LatheGeometry([
+    [0.00, 0.00], [0.55, 0.05], [0.62, 0.6], [0.5, 1.0], [0.26, 1.25], [0.00, 1.3],
+  ].map(([r, y]) => new THREE.Vector2(r, y)), 8));
+  const hh = new THREE.SphereGeometry(0.3, 7, 5); hh.translate(0, 1.45, 0);
+  HB.push(hh);
+  const hect = new THREE.Mesh(mergeGeos(HB), shadowMat);
+  hect.position.set(0, 0.3, 2.2);
+  boat.add(hect);
+  boat.position.set(60, 0, 0);
+  stage.add(boat);
+  stage.userData.boat = boat;
+
+  /* ---- the idol, half-lost in fog ---- */
+  const fog = new THREE.Group();
+  const fogMat = new THREE.MeshBasicMaterial({
+    color: 0x9aa8a0, transparent: true, opacity: 0.20,
+    depthWrite: false, fog: false, side: THREE.DoubleSide,
+  });
+  for (let i = 0; i < 16; i++) {
+    const q = new THREE.Mesh(new THREE.PlaneGeometry(9 + rng() * 8, 4 + rng() * 3), fogMat);
+    q.position.set((rng() - 0.5) * 12, 0.6 + rng() * 3.4, 2 + rng() * 5);
+    q.userData.sp = 0.12 + rng() * 0.3;
+    fog.add(q);
+  }
+  fog.position.set(-60, 0, 0);
+  stage.add(fog);
+  stage.userData.fog = fog;
+  stage.userData.fogAnchor = new THREE.Vector3(-60, 0, 0);
+
+  const idolLight = new THREE.PointLight(0xffd88a, 3.0, 26, 1.6);
+  idolLight.position.set(-60, 3, 0);
+  stage.add(idolLight);
+  stage.userData.idolLight = idolLight;
+
+  stage.userData.tick = (t, dt, cam) => {
+    for (const a of AGENT) {
+      a.position.y = Math.abs(Math.sin(t * 2.2 + a.userData.phase)) * 0.08;
+      a.rotation.y = Math.sin(t * 0.6 + a.userData.phase) * 0.25;
+    }
+    for (const l of eyes) l.intensity = 0.6 + Math.sin(t * 7 + l.id) * 0.35;
+    boat.position.y = Math.sin(t * 1.1) * 0.22;
+    boat.rotation.z = Math.sin(t * 0.9) * 0.06;
+    boat.rotation.x = Math.sin(t * 1.3 + 1) * 0.04;
+    for (const q of fog.children) {
+      q.position.x += q.userData.sp * dt * 2;
+      if (q.position.x > 8) q.position.x = -8;
+      if (cam) q.lookAt(cam.position);
+    }
+    idolLight.intensity = 2.4 + Math.sin(t * 2) * 0.7;
+  };
+  return stage;
 }
 
 /* ===========================================================

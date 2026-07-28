@@ -1,0 +1,790 @@
+/* ===========================================================
+   screens.js — every full-screen interface, drawn as pixels.
+
+   The journal, pause menu, title, shop, chart and reader all used
+   to be DOM. However you style DOM it renders at native resolution
+   with antialiased type, so it sat on top of the game looking
+   modern and artificial. These are drawn into the same low-res
+   canvas as the HUD and composited inside the PS1 pass, so they
+   pixelate, dither, band and curve exactly like the world does.
+   =========================================================== */
+
+import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
+import { drawRelicIcon } from './hud.js';
+
+const GOLD = '#ffd24a';
+const GOLD_LT = '#fff3c4';
+const GOLD_DK = '#a8761c';
+const DIM = '#8a7a52';
+const RED = '#e0453a';
+const JADE = '#63c6a8';
+const PAPER = '#e2cfa2';
+const INK = '#2b1d0c';
+
+/* ---------- shared chrome ---------- */
+function frame(x, W, H, title, sub) {
+  // full-screen scrim with scanline weave
+  x.fillStyle = 'rgba(6,4,2,.86)';
+  x.fillRect(0, 0, W, H);
+  x.fillStyle = 'rgba(0,0,0,.35)';
+  for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
+
+  const m = 10;
+  panel(x, m, m, W - m * 2, H - m * 2, { border: 2, dither: 0.45, hi: GOLD_DK, lo: '#241708' });
+  if (title) {
+    drawText(x, title, { x: W / 2, y: m + 7, scale: 1, align: 'center', color: GOLD });
+    x.fillStyle = GOLD_DK;
+    x.fillRect(m + 8, m + 18, W - m * 2 - 16, 1);
+  }
+  if (sub) drawText(x, sub, { x: W / 2, y: m + 22, scale: 1, align: 'center', color: DIM });
+  return { m, top: m + (sub ? 32 : 24), bottom: H - m - 12 };
+}
+
+function footer(x, W, H, text) {
+  drawText(x, text, { x: W / 2, y: H - 17, scale: 1, align: 'center', color: DIM });
+}
+
+/** A vertical list of choices with a blinking selector. */
+function menuList(x, items, sel, cx, top, t, opts = {}) {
+  const gap = opts.gap ?? 14;
+  const w = opts.width ?? 130;
+  const rows = [];
+  items.forEach((it, i) => {
+    const y = top + i * gap;
+    const on = i === sel;
+    const label = typeof it === 'string' ? it : it.label;
+    const dis = typeof it === 'object' && it.disabled;
+    if (on) {
+      x.fillStyle = '#3a2a10';
+      x.fillRect(cx - w / 2, y - 3, w, 11);
+      x.fillStyle = GOLD;
+      x.fillRect(cx - w / 2, y - 3, 1, 11);
+      x.fillRect(cx + w / 2 - 1, y - 3, 1, 11);
+      if (Math.floor(t * 3) % 2 === 0) {
+        drawText(x, '>', { x: cx - w / 2 + 4, y, scale: 1, color: GOLD });
+      }
+    }
+    drawText(x, label, {
+      x: cx, y, scale: 1, align: 'center',
+      color: dis ? '#6a5c40' : (on ? GOLD_LT : DIM),
+    });
+    rows.push({ y: y - 3, h: 11, x: cx - w / 2, w });
+  });
+  return rows;
+}
+
+/* ===========================================================
+   SCREEN STACK
+   =========================================================== */
+export class ScreenStack {
+  constructor(game) {
+    this.game = game;
+    this.stack = [];
+    this.t = 0;
+    this._rows = [];
+  }
+
+  get open() { return this.stack.length > 0; }
+  get top() { return this.stack[this.stack.length - 1] || null; }
+  get name() { return this.top ? this.top.name : null; }
+
+  push(name, data = {}) {
+    const s = { name, sel: 0, scroll: 0, t: 0, ...data };
+    if (SCREENS[name]?.init) SCREENS[name].init(s, this.game);
+    this.stack.push(s);
+    this.game.audio?.sfx('page');
+    return s;
+  }
+  pop() { const s = this.stack.pop(); this.game.audio?.sfx('select'); return s; }
+  clear() { this.stack.length = 0; }
+  replace(name, data) { this.stack.length = 0; return this.push(name, data); }
+  has(name) { return this.stack.some((s) => s.name === name); }
+
+  key(code) {
+    const s = this.top;
+    if (!s) return false;
+    const def = SCREENS[s.name];
+    if (!def) return false;
+    return def.key ? def.key(code, s, this.game, this) !== false : false;
+  }
+
+  /** Screen-space click, already converted to canvas pixels. */
+  click(cx, cy) {
+    const s = this.top;
+    if (!s) return false;
+    for (let i = 0; i < this._rows.length; i++) {
+      const r = this._rows[i];
+      if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
+        s.sel = i;
+        this.key('Enter');
+        return true;
+      }
+    }
+    return false;
+  }
+
+  update(dt) { this.t += dt; if (this.top) this.top.t += dt; }
+
+  draw(x, W, H) {
+    this._rows = [];
+    const s = this.top;
+    if (!s) return;
+    const def = SCREENS[s.name];
+    if (def?.draw) this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
+  }
+}
+
+/* ===========================================================
+   SCREENS
+   =========================================================== */
+const nav = (code, s, len, onOk, onBack) => {
+  if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + len - 1) % len; return true; }
+  if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % len; return true; }
+  if (code === 'Enter' || code === 'KeyE' || code === 'Space') { onOk?.(s.sel); return true; }
+  if (code === 'Escape' || code === 'Backspace') { onBack?.(); return true; }
+  return false;
+};
+
+export const SCREENS = {
+
+  /* ---------------- TITLE ---------------- */
+  title: {
+    draw(x, W, H, s, g, t) {
+      // the idol renders behind; scrim only the left third
+      const grad = Math.round(W * 0.52);
+      for (let i = 0; i < grad; i++) {
+        const a = 0.86 * (1 - i / grad);
+        x.fillStyle = `rgba(6,4,2,${a.toFixed(3)})`;
+        x.fillRect(i, 0, 1, H);
+      }
+      x.fillStyle = 'rgba(0,0,0,.30)';
+      for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
+
+      const L = 14;
+      drawText(x, 'THE LEGEND OF', { x: L, y: 30, scale: 1, color: DIM });
+      drawText(x, 'ILLIC', { x: L, y: 42, scale: 4, color: GOLD_LT });
+      drawText(x, 'ISLE', { x: L, y: 74, scale: 4, color: GOLD });
+      // rule
+      x.fillStyle = GOLD_DK; x.fillRect(L, 106, 108, 2);
+      x.fillStyle = GOLD; x.fillRect(L + 108, 105, 4, 4);
+      drawText(x, 'THE IDOL OF ILLIC ISLE', { x: L, y: 114, scale: 1, color: GOLD });
+
+      const rows = menuList(x, ['BEGIN CASTAWAY', 'CONTROLS', 'OPTIONS', 'THE LEGEND'],
+        s.sel, L + 66, 136, t, { width: 132 });
+      drawText(x, '(C) 1998 SCHWAB TECHNOLOGY', { x: L, y: H - 22, scale: 1, color: '#6a5c40' });
+      if (Math.floor(t * 1.5) % 2 === 0) {
+        drawText(x, 'PRESS ENTER', { x: L, y: H - 13, scale: 1, color: GOLD });
+      }
+      return rows;
+    },
+    key(code, s, g) {
+      return nav(code, s, 4, (i) => {
+        if (i === 0) g.beginGame();
+        else if (i === 1) g.screens.push('controls');
+        else if (i === 2) g.screens.push('options');
+        else g.screens.push('lore');
+      });
+    },
+  },
+
+  /* ---------------- THE LEGEND (lore codex) ---------------- */
+  lore: {
+    init(s, g) { s.page = 0; },
+    draw(x, W, H, s, g, t) {
+      const L = LORE_PAGES[s.page];
+      const b = frame(x, W, H, 'THE LEGEND', `${s.page + 1} / ${LORE_PAGES.length}`);
+      drawText(x, L.title, { x: W / 2, y: b.top + 2, scale: 1, align: 'center', color: GOLD });
+      let y = b.top + 16;
+      for (const ln of wrapText(L.text, W - 44, 1, 1)) {
+        drawText(x, ln, { x: 22, y, scale: 1, color: GOLD_LT });
+        y += 9;
+      }
+      if (L.icon) drawRelicIcon(x, L.icon, W - 52, b.bottom - 44, 32, Math.sin(t * 2) * 0.4);
+      footer(x, W, H, '< > TURN PAGE   ESC BACK');
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'ArrowLeft' || code === 'KeyA') { s.page = (s.page + LORE_PAGES.length - 1) % LORE_PAGES.length; return true; }
+      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Enter' || code === 'KeyE') {
+        s.page = (s.page + 1) % LORE_PAGES.length; return true;
+      }
+      if (code === 'Escape' || code === 'Tab') { st.pop(); return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- CONTROLS ---------------- */
+  controls: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'CONTROLS');
+      const rows = [
+        ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
+        ['SPACE', 'JUMP'], ['E', 'INTERACT'], ['CLICK', 'THROW COCONUT'],
+        ['M', 'CHART'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
+      ];
+      let y = b.top + 2;
+      for (const [k, v] of rows) {
+        drawText(x, k, { x: W / 2 - 8, y, scale: 1, align: 'right', color: GOLD });
+        drawText(x, v, { x: W / 2 + 8, y, scale: 1, color: GOLD_LT });
+        y += 11;
+      }
+      drawText(x, 'COCONUTS GROW UNDER THE PALMS.', {
+        x: W / 2, y: y + 4, scale: 1, align: 'center', color: DIM,
+      });
+      footer(x, W, H, 'ESC BACK');
+      return [];
+    },
+    key(code, s, g, st) { if (code === 'Escape' || code === 'Enter' || code === 'KeyE') st.pop(); return true; },
+  },
+
+  /* ---------------- OPTIONS ---------------- */
+  options: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'OPTIONS');
+      const O = OPTION_DEFS;
+      let y = b.top + 2;
+      const rows = [];
+      O.forEach((o, i) => {
+        const on = i === s.sel;
+        if (on) { x.fillStyle = '#3a2a10'; x.fillRect(16, y - 3, W - 32, 12); }
+        drawText(x, o.label, { x: 22, y, scale: 1, color: on ? GOLD_LT : DIM });
+        const cur = o.get(g);
+        const vi = o.values.findIndex((v) => String(v.v) === String(cur));
+        const name = vi >= 0 ? o.values[vi].n : '?';
+        drawText(x, `< ${name} >`, { x: W - 22, y, scale: 1, align: 'right', color: on ? GOLD : DIM });
+        rows.push({ x: 16, y: y - 3, w: W - 32, h: 12 });
+        y += 13;
+      });
+      footer(x, W, H, 'UP DOWN SELECT   < > CHANGE   ESC BACK');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const O = OPTION_DEFS;
+      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + O.length - 1) % O.length; return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % O.length; return true; }
+      if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Enter' || code === 'KeyE') {
+        const o = O[s.sel];
+        const cur = String(o.get(g));
+        let vi = o.values.findIndex((v) => String(v.v) === cur);
+        if (vi < 0) vi = 0;
+        vi = (vi + (code === 'ArrowLeft' ? o.values.length - 1 : 1)) % o.values.length;
+        o.set(g, o.values[vi].v);
+        g.applySettings();
+        g.audio?.sfx('select');
+        return true;
+      }
+      if (code === 'Escape') { st.pop(); return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- PAUSE ---------------- */
+  pause: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'PAUSED');
+      const rows = menuList(x, ['RESUME', 'JOURNAL', 'CHART', 'CONTROLS', 'OPTIONS', 'QUIT TO TITLE'],
+        s.sel, W / 2, b.top + 10, t, { width: 140 });
+      const mm = String(Math.floor(g.runTime / 60)).padStart(2, '0');
+      const ss = String(Math.floor(g.runTime % 60)).padStart(2, '0');
+      drawText(x, `TIME ${mm}:${ss}`, { x: W / 2, y: H - 28, scale: 1, align: 'center', color: DIM });
+      footer(x, W, H, 'ESC RESUME');
+      return rows;
+    },
+    key(code, s, g, st) {
+      return nav(code, s, 6, (i) => {
+        if (i === 0) g.pause(false);
+        else if (i === 1) st.push('journal');
+        else if (i === 2) g.openChart();
+        else if (i === 3) st.push('controls');
+        else if (i === 4) st.push('options');
+        else g.quitToTitle();
+      }, () => g.pause(false));
+    },
+  },
+
+  /* ---------------- JOURNAL ---------------- */
+  journal: {
+    init(s, g) { s.entries = g.journalEntries(); s.sel = 0; s.scroll = 0; },
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, "CASTAWAY'S JOURNAL", `${s.sel + 1} / ${s.entries.length}`);
+      const e = s.entries[s.sel];
+      drawText(x, e.found ? e.title : 'NOT YET FOUND', {
+        x: W / 2, y: b.top, scale: 1, align: 'center', color: e.found ? GOLD : '#6a5c40',
+      });
+      x.fillStyle = '#4a3a1c';
+      x.fillRect(20, b.top + 11, W - 40, 1);
+
+      const body = e.found ? e.text : e.hint;
+      const lines = [];
+      for (const para of String(body).split('\n')) {
+        if (!para.trim()) { lines.push(''); continue; }
+        lines.push(...wrapText(para, W - 46, 1, 1));
+      }
+      const visible = Math.floor((b.bottom - b.top - 24) / 9);
+      s.scroll = Math.max(0, Math.min(s.scroll, Math.max(0, lines.length - visible)));
+      let y = b.top + 17;
+      for (let i = s.scroll; i < Math.min(lines.length, s.scroll + visible); i++) {
+        drawText(x, lines[i], { x: 23, y, scale: 1, color: e.found ? GOLD_LT : '#7a6a48' });
+        y += 9;
+      }
+      if (lines.length > visible) {
+        const barH = Math.max(6, (visible / lines.length) * (b.bottom - b.top - 20));
+        const barY = b.top + 17 + (s.scroll / lines.length) * (b.bottom - b.top - 20);
+        x.fillStyle = '#3a2a10'; x.fillRect(W - 17, b.top + 16, 3, b.bottom - b.top - 18);
+        x.fillStyle = GOLD_DK; x.fillRect(W - 17, barY, 3, barH);
+      }
+      footer(x, W, H, '< > ENTRY   UP DOWN SCROLL   TAB CLOSE');
+      return [];
+    },
+    key(code, s, g, st) {
+      const n = s.entries.length;
+      if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + n - 1) % n; s.scroll = 0; return true; }
+      if (code === 'ArrowRight' || code === 'KeyD') { s.sel = (s.sel + 1) % n; s.scroll = 0; return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') { s.scroll = Math.max(0, s.scroll - 1); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.scroll += 1; return true; }
+      if (code === 'Tab' || code === 'Escape') { st.pop(); g.afterOverlayClose(); return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- CHART ---------------- */
+  chart: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, "ROGUE AGENTS' CHART");
+      const size = Math.min(W - 30, b.bottom - b.top - 14);
+      const ox = Math.round((W - size) / 2), oy = b.top + 2;
+      drawChart(x, ox, oy, size, s.data, t);
+      const left = s.data.marks.filter((m) => !m.found).length;
+      drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
+        { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: left ? GOLD : JADE });
+      footer(x, W, H, 'M CLOSE');
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'KeyM' || code === 'Escape' || code === 'Tab') { st.pop(); g.afterOverlayClose(); return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- FERDI'S SHOP ---------------- */
+  shop: {
+    init(s, g) { s.sel = 0; s.shake = 0; },
+    draw(x, W, H, s, g, t) {
+      if (s.shake > 0) s.shake -= 0.016;
+      const jitter = s.shake > 0 ? Math.round(Math.sin(s.shake * 60) * 2) : 0;
+      const b = frame(x, W, H, "FERDI STEINMAN'S SUPPLIES");
+
+      // Ferdi himself, drawn in the corner
+      drawFerdiPortrait(x, 16, b.top + 2, t);
+      const bubbleX = 58;
+      panel(x, bubbleX, b.top + 2, W - bubbleX - 16, 26, { border: 1, dither: 0.35 });
+      const quip = FERDI_LINES[Math.floor(t / 4) % FERDI_LINES.length];
+      let qy = b.top + 7;
+      for (const ln of wrapText(quip, W - bubbleX - 26, 1, 1).slice(0, 2)) {
+        drawText(x, ln, { x: bubbleX + 5, y: qy, scale: 1, color: GOLD_LT }); qy += 9;
+      }
+
+      // purse
+      drawRelicIcon(x, 'coin', W - 44, b.top + 32, 14);
+      drawText(x, `${g.coins}`, { x: W - 18, y: b.top + 35, scale: 1, align: 'right', color: GOLD });
+
+      const rows = [];
+      let y = b.top + 50;
+      g.shopStock().forEach((it, i) => {
+        const on = i === s.sel;
+        const bx = 16 + (on ? jitter : 0);
+        panel(x, bx, y, W - 32, 22, {
+          border: 2, dither: on ? 0.6 : 0.35,
+          hi: it.owned ? '#2f5a48' : (on ? GOLD : GOLD_DK),
+          lo: '#241708',
+        });
+        drawText(x, it.name, { x: bx + 6, y: y + 4, scale: 1, color: it.owned ? '#7a9a8c' : (on ? GOLD_LT : DIM) });
+        drawText(x, it.desc, { x: bx + 6, y: y + 13, scale: 1, color: '#8a7a52' });
+        drawText(x, it.owned ? 'SOLD' : `${it.cost}`, {
+          x: bx + W - 38, y: y + 8, scale: 1, align: 'right',
+          color: it.owned ? JADE : (g.coins >= it.cost ? GOLD : RED),
+        });
+        if (!it.owned) drawRelicIcon(x, 'coin', bx + W - 34, y + 4, 12);
+        rows.push({ x: bx, y, w: W - 32, h: 22 });
+        y += 25;
+      });
+      footer(x, W, H, 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const stock = g.shopStock();
+      return nav(code, s, stock.length,
+        () => { if (!g.buy(stock[s.sel].id)) s.shake = 0.28; },
+        () => { st.pop(); g.afterOverlayClose(); });
+    },
+  },
+
+  /* ---------------- READER ---------------- */
+  reader: {
+    init(s) { s.shown = 0; s.done = false; s.scroll = 0; },
+    draw(x, W, H, s, g, t) {
+      const full = String(s.body);
+      s.shown = Math.min(full.length, s.shown + 2);
+      s.done = s.shown >= full.length;
+
+      const boxH = Math.min(H - 24, 116);
+      const top = H - boxH - 8;
+      panel(x, 8, top, W - 16, boxH, { border: 2, dither: 0.30, hi: '#f4e8c4', lo: '#7a5a24', fill: '#d8c79a', fill2: '#e6d6ac' });
+
+      drawText(x, s.head, { x: 15, y: top + 6, scale: 1, color: '#6b4a18', shadowColor: '#e6d6ac' });
+      x.fillStyle = '#a8946a'; x.fillRect(14, top + 16, W - 28, 1);
+
+      const shownText = full.slice(0, s.shown);
+      const lines = [];
+      for (const para of shownText.split('\n')) {
+        if (!para.trim()) { lines.push(''); continue; }
+        lines.push(...wrapText(para, W - 34, 1, 1));
+      }
+      const visible = Math.floor((boxH - 34) / 9);
+      const start = Math.max(0, lines.length - visible);
+      let y = top + 22;
+      for (let i = start; i < lines.length; i++) {
+        drawText(x, lines[i], { x: 16, y, scale: 1, color: INK, shadow: false });
+        y += 9;
+      }
+      if (s.done && Math.floor(t * 2) % 2 === 0) {
+        drawText(x, 'E', { x: W - 18, y: top + boxH - 11, scale: 1, color: '#6b4a18', shadow: false });
+      }
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+        if (!s.done) { s.shown = String(s.body).length; s.done = true; return true; }
+        st.pop();
+        s.onDone?.();
+        g.afterOverlayClose();
+        return true;
+      }
+      return true;
+    },
+  },
+
+  /* ---------------- DIAL PUZZLE ---------------- */
+  dials: {
+    draw(x, W, H, s, g, t) {
+      const b = frame(x, W, H, 'THE SEALED DOOR');
+      if (s.shake > 0) s.shake -= 0.016;
+      const jit = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 3) : 0;
+
+      drawText(x, 'RECORDED FROM THE PENDULUMS', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
+      drawText(x, g.knownGlyphHint(), { x: W / 2, y: b.top + 11, scale: 1, align: 'center', color: JADE });
+
+      const GW = 36, GAP = 8;
+      const total = 4 * GW + 3 * GAP;
+      const left = Math.round((W - total) / 2) + jit;
+      const y = b.top + 30;
+      const rows = [];
+      for (let i = 0; i < 4; i++) {
+        const bx = left + i * (GW + GAP);
+        const on = i === g.dialSel;
+        panel(x, bx, y, GW, GW + 10, { border: 2, dither: on ? 0.6 : 0.3, hi: on ? GOLD : GOLD_DK });
+        drawGlyphPixels(x, GLYPH_NAMES[g.dialState[i]], bx + 3, y + 3, GW - 6, on ? GOLD_LT : '#c8a94a');
+        drawText(x, ['I', 'II', 'III', 'IV'][i], {
+          x: bx + GW / 2, y: y + GW + 1, scale: 1, align: 'center', color: on ? GOLD : DIM,
+        });
+        if (on) {
+          drawText(x, '^', { x: bx + GW / 2, y: y - 8, scale: 1, align: 'center', color: GOLD });
+          drawText(x, 'v', { x: bx + GW / 2, y: y + GW + 11, scale: 1, align: 'center', color: GOLD });
+        }
+        rows.push({ x: bx, y, w: GW, h: GW + 10 });
+      }
+      footer(x, W, H, '< > SOCKET   UP DOWN GLYPH   E CONFIRM   ESC BACK');
+      return rows;
+    },
+    key(code, s, g, st) {
+      if (code === 'ArrowLeft' || code === 'KeyA') { g.dialSel = (g.dialSel + 3) % 4; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowRight' || code === 'KeyD') { g.dialSel = (g.dialSel + 1) % 4; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') { g.cycleDial(1); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { g.cycleDial(-1); return true; }
+      if (code === 'KeyE' || code === 'Enter') { if (!g.submitDials()) s.shake = 0.3; return true; }
+      if (code === 'Escape') { st.pop(); g.afterOverlayClose(); return true; }
+      return true;
+    },
+  },
+
+  /* ---------------- DEATH ---------------- */
+  death: {
+    draw(x, W, H, s, g, t) {
+      x.fillStyle = 'rgba(30,4,2,.88)'; x.fillRect(0, 0, W, H);
+      x.fillStyle = 'rgba(0,0,0,.4)';
+      for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
+      const wob = Math.round(Math.sin(t * 4) * 1);
+      drawText(x, 'YOU DIED', { x: W / 2 + wob, y: H / 2 - 34, scale: 3, align: 'center', color: '#c8352a' });
+      drawText(x, s.sub || '', { x: W / 2, y: H / 2 - 6, scale: 1, align: 'center', color: '#c9a89a' });
+      const rows = menuList(x, ['WASH ASHORE AGAIN', 'QUIT TO TITLE'], s.sel, W / 2, H / 2 + 14, t, { width: 130 });
+      return rows;
+    },
+    key(code, s, g, st) {
+      return nav(code, s, 2, (i) => { if (i === 0) g.respawn(); else g.quitToTitle(); });
+    },
+  },
+
+  /* ---------------- ENDING ---------------- */
+  ending: {
+    draw(x, W, H, s, g, t) {
+      x.fillStyle = '#100a04'; x.fillRect(0, 0, W, H);
+      for (let i = 0; i < 60; i++) {
+        const a = (i * 2.399 + t * 0.2);
+        const r = (i % 20) * 6 + 10;
+        x.fillStyle = i % 3 ? 'rgba(255,210,74,.12)' : 'rgba(255,240,180,.2)';
+        x.fillRect(W / 2 + Math.cos(a) * r, H / 2 + Math.sin(a) * r * 0.6, 1, 1);
+      }
+      drawText(x, 'YOU FOUND IT', { x: W / 2, y: 22, scale: 1, align: 'center', color: GOLD });
+      drawText(x, 'THE IDOL OF', { x: W / 2, y: 36, scale: 2, align: 'center', color: GOLD_LT });
+      drawText(x, 'KING ILLIC', { x: W / 2, y: 54, scale: 2, align: 'center', color: GOLD });
+
+      const st2 = s.stats || {};
+      drawText(x, st2.time || '00:00.00', { x: W / 2, y: 78, scale: 2, align: 'center', color: GOLD_LT });
+      let y = 100;
+      for (const [k, v] of (st2.rows || [])) {
+        drawText(x, k, { x: W / 2 - 6, y, scale: 1, align: 'right', color: DIM });
+        drawText(x, v, { x: W / 2 + 6, y, scale: 1, color: GOLD_LT });
+        y += 10;
+      }
+      const rows = menuList(x, ['PLAY AGAIN', 'COPY BRAG', 'TITLE'], s.sel, W / 2, y + 8, t, { width: 120 });
+      return rows;
+    },
+    key(code, s, g, st) {
+      return nav(code, s, 3, (i) => {
+        if (i === 0) g.beginGame();
+        else if (i === 1) g.copyBrag();
+        else g.quitToTitle();
+      });
+    },
+  },
+};
+
+/* ===========================================================
+   CONTENT
+   =========================================================== */
+export const LORE_PAGES = [
+  {
+    title: 'ILLIC ISLE',
+    text: `A rock in a warm sea that nobody visits twice.\n\nIt was named for the man who owned it, and he owned it the way a fist owns a coin.`,
+  },
+  {
+    title: 'KING ILLIC',
+    text: `He ruled badly and at length.\n\nHe took a third of everything anyone grew, and when the wells failed he took a third of the water too. He built no roads. He built one temple, and he built it for himself.`,
+    icon: 'coin',
+  },
+  {
+    title: 'SYNERGY HOLDINGS',
+    text: `Before the king there was a company.\n\nThey dug here for something they never named, paid the diggers in their own coin, and left so completely that only the coins remain.`,
+    icon: 'syncoin',
+  },
+  {
+    title: 'THE ROGUE AGENTS',
+    text: `They came at night and they came for him.\n\nNobody agrees who sent them. They ended the king, sealed what was left of him in gold, and buried the gold under his own temple.\n\nThen they built four Pendulums to mark the way, and stayed, and grew old.`,
+  },
+  {
+    title: 'TASHA — UNIT 03',
+    text: `The Agents did not come alone.\n\nOne of them was not a person. She is still on the west shore, and her optic still flickers about once a minute, which is worse than if it did not.`,
+    icon: 'tasha',
+  },
+  {
+    title: 'HECTOR',
+    text: `The king's brother.\n\nHe arrived eleven years ago, killed every Rogue Agent on the island, found a staff that makes food out of nothing, and sat down on top of his brother's corpse.\n\nHe has not been hungry since. He calls the temple his LAYER.`,
+    icon: 'watermelon',
+  },
+  {
+    title: 'AND YOU',
+    text: `The storm took the ship, the crew, and most of your good sense.\n\nIt did not take the reason you came.`,
+    icon: 'aerlingus',
+  },
+];
+
+const FERDI_LINES = [
+  '"Everything here fell off a boat. Some of it twice."',
+  '"No refunds. Not because of policy. Because of physics."',
+  '"You want the boots? Everyone wants the boots."',
+  '"I have been open eleven years. You are the fourth."',
+  '"Do not go in the temple. You are going in the temple."',
+];
+
+export const GLYPH_NAMES = ['SUN', 'MOON', 'EYE', 'SPIRAL'];
+
+const OPTION_DEFS = [
+  { label: 'MOUSE SENS', values: [{ v: 0.9, n: 'LOW' }, { v: 1.4, n: 'NORMAL' }, { v: 2.1, n: 'HIGH' }, { v: 3.0, n: 'V.HIGH' }],
+    get: (g) => g.settings.sens, set: (g, v) => (g.settings.sens = v) },
+  { label: 'INVERT LOOK', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
+    get: (g) => g.settings.invert, set: (g, v) => (g.settings.invert = v) },
+  { label: 'RESOLUTION', values: [{ v: 180, n: '240x180' }, { v: 224, n: '320x224' }, { v: 320, n: '427x320' }, { v: 0, n: 'NATIVE' }],
+    get: (g) => g.settings.res, set: (g, v) => (g.settings.res = v) },
+  { label: 'VERTEX JITTER', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
+    get: (g) => g.settings.jitter, set: (g, v) => (g.settings.jitter = v) },
+  { label: 'CRT / DITHER', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
+    get: (g) => g.settings.crt, set: (g, v) => (g.settings.crt = v) },
+  { label: 'FOLIAGE', values: [{ v: 0.55, n: 'LOW' }, { v: 1, n: 'NORMAL' }, { v: 1.45, n: 'LUSH' }],
+    get: (g) => g.settings.density, set: (g, v) => (g.settings.density = v) },
+  { label: 'DAY LENGTH', values: [{ v: 240, n: '4 MIN' }, { v: 480, n: '8 MIN' }, { v: 99999, n: 'ALWAYS DAY' }],
+    get: (g) => g.DAY_LEN, set: (g, v) => (g.DAY_LEN = v) },
+  { label: 'AUDIO', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
+    get: (g) => g.settings.audio, set: (g, v) => (g.settings.audio = v) },
+];
+
+/* ===========================================================
+   PIXEL GLYPHS (shared by dials and the chart)
+   =========================================================== */
+export function drawGlyphPixels(x, name, ox, oy, size, color) {
+  const u = size / 16;
+  const px = (gx, gy, w = 1, h = 1) => x.fillRect(
+    Math.round(ox + gx * u), Math.round(oy + gy * u), Math.ceil(w * u), Math.ceil(h * u));
+  x.fillStyle = color;
+  if (name === 'SUN') {
+    px(6, 6, 4, 4);
+    for (const [a, b] of [[7, 1], [7, 13], [1, 7], [13, 7]]) px(a, b, 2, 2);
+    for (const [a, b] of [[3, 3], [11, 3], [3, 11], [11, 11]]) px(a, b, 2, 2);
+  } else if (name === 'MOON') {
+    for (let gy = 2; gy < 14; gy++) {
+      const dy = gy - 8;
+      const half = Math.sqrt(Math.max(0, 36 - dy * dy));
+      const bx0 = Math.round(11 - Math.sqrt(Math.max(0, 30 - dy * dy)));
+      for (let gx = Math.round(8 - half); gx < bx0; gx++) px(gx, gy);
+    }
+  } else if (name === 'EYE') {
+    for (let gy = 5; gy < 11; gy++) {
+      const tt = Math.abs(gy - 7.5) / 3;
+      const half = Math.round(7 * (1 - tt * tt));
+      if (half > 0) px(8 - half, gy, half * 2, 1);
+    }
+    x.fillStyle = '#1a1006'; px(6, 6, 4, 4);
+    x.fillStyle = color; px(7, 7, 2, 2);
+  } else if (name === 'SPIRAL') {
+    const seen = new Set();
+    for (let i = 0; i < 48; i++) {
+      const a = i * 0.42, r = 0.8 + i * 0.135;
+      const gx = Math.round(8 + Math.cos(a) * r), gy = Math.round(8 + Math.sin(a) * r);
+      const k = gx + ',' + gy;
+      if (seen.has(k) || gx < 0 || gy < 0 || gx > 15 || gy > 15) continue;
+      seen.add(k); px(gx, gy);
+    }
+  }
+}
+
+/* ===========================================================
+   THE CHART — drawn from the real height function
+   =========================================================== */
+export function drawChart(x, ox, oy, S, data, t) {
+  if (!data) return;
+  const R = data.radius;
+  const toPx = (wx, wz) => [ox + S / 2 + (wx / R) * (S / 2 - 6), oy + S / 2 + (wz / R) * (S / 2 - 6)];
+
+  // parchment with a dithered grain
+  ditherRect(x, ox, oy, S, S, '#d8c69a', PAPER, 0.5, 1);
+
+  // land, sampled coarsely so it reads as a drawn map
+  const STEP = 2;
+  for (let py = 0; py < S; py += STEP) {
+    for (let pxx = 0; pxx < S; pxx += STEP) {
+      const wx = ((pxx - S / 2) / (S / 2 - 6)) * R;
+      const wz = ((py - S / 2) / (S / 2 - 6)) * R;
+      const h = data.heightAt(wx, wz);
+      if (h < 0) continue;
+      x.fillStyle = h < 2.6 ? '#c9b078' : h < 12 ? '#8b9c62' : h < 28 ? '#6d8450' : '#8a8468';
+      x.fillRect(ox + pxx, oy + py, STEP, STEP);
+    }
+  }
+  // coast stipple
+  x.fillStyle = 'rgba(70,52,26,.55)';
+  for (let a = 0; a < Math.PI * 2; a += 0.012) {
+    let rr = R;
+    for (let r = R; r > 20; r -= 2) {
+      if (data.heightAt(Math.cos(a) * r, Math.sin(a) * r) > 0) { rr = r; break; }
+    }
+    const [sx, sy] = toPx(Math.cos(a) * rr, Math.sin(a) * rr);
+    x.fillRect(Math.round(sx), Math.round(sy), 1, 1);
+  }
+
+  const label = (txt, sx, sy, col) => drawText(x, txt, {
+    x: sx, y: sy, scale: 1, align: 'center', color: col || '#3f2f14', shadowColor: PAPER,
+  });
+
+  if (data.wreck) {
+    const [sx, sy] = toPx(data.wreck.x, data.wreck.z);
+    x.fillStyle = '#5a3a18';
+    x.fillRect(sx - 4, sy, 9, 2); x.fillRect(sx + 1, sy - 4, 2, 5);
+    label('WRECK', sx, sy + 5);
+  }
+  if (data.hut) {
+    const [sx, sy] = toPx(data.hut.x, data.hut.z);
+    x.fillStyle = '#6b4a18';
+    x.fillRect(sx - 4, sy - 1, 9, 5); x.fillRect(sx - 5, sy - 3, 11, 2);
+    label('FERDI', sx, sy + 6, '#5a3a18');
+  }
+  if (data.rogue) {
+    const [sx, sy] = toPx(data.rogue.x, data.rogue.z);
+    label('"ROGUE"', sx, sy, '#7a2418');
+  }
+  for (const m of data.marks) {
+    const [sx, sy] = toPx(m.x, m.z);
+    const col = m.found ? '#2f6a4a' : '#8a2418';
+    x.fillStyle = col;
+    for (let i = -4; i <= 4; i++) { x.fillRect(sx + i, sy + i, 2, 2); x.fillRect(sx + i, sy - i, 2, 2); }
+    if (!m.found && Math.floor(t * 2) % 2 === 0) {
+      x.fillStyle = '#c02a1a';
+      x.fillRect(sx - 6, sy - 6, 13, 1); x.fillRect(sx - 6, sy + 6, 13, 1);
+      x.fillRect(sx - 6, sy - 6, 1, 13); x.fillRect(sx + 6, sy - 6, 1, 13);
+    }
+    label(m.label, sx, sy - 13, col);
+    if (m.glyph) drawGlyphPixels(x, m.glyph, sx - 5, sy + 7, 11, '#2f6a4a');
+  }
+  for (const r of (data.relics || [])) {
+    const [sx, sy] = toPx(r.x, r.z);
+    if (r.found) {
+      drawRelicIcon(x, r.kind, sx - 6, sy - 6, 13);
+    } else {
+      x.fillStyle = '#6b4a8a';
+      x.fillRect(sx - 3, sy - 4, 6, 2); x.fillRect(sx + 1, sy - 2, 2, 3);
+      x.fillRect(sx - 1, sy + 1, 3, 2); x.fillRect(sx - 1, sy + 4, 3, 2);
+    }
+  }
+  if (data.temple) {
+    const [sx, sy] = toPx(data.temple.x, data.temple.z);
+    x.fillStyle = '#4a3a1a';
+    x.fillRect(sx - 6, sy - 1, 13, 6); x.fillRect(sx - 4, sy - 4, 9, 3); x.fillRect(sx - 2, sy - 6, 5, 2);
+    x.fillStyle = '#1a1206'; x.fillRect(sx - 1, sy + 1, 3, 4);
+    label('TEMPLE', sx, sy + 8);
+  }
+  if (data.player) {
+    const [sx, sy] = toPx(data.player.x, data.player.z);
+    x.fillStyle = '#c02a1a'; x.fillRect(sx - 2, sy - 2, 5, 5);
+    x.fillStyle = '#fff'; x.fillRect(sx - 1, sy - 1, 3, 3);
+  }
+
+  // compass rose + border
+  x.fillStyle = '#3f2f14';
+  drawText(x, 'N', { x: ox + S - 12, y: oy + 5, scale: 1, align: 'center', color: '#3f2f14', shadowColor: PAPER });
+  x.fillRect(ox + S - 13, oy + 14, 3, 8);
+  x.fillRect(ox + S - 15, oy + 16, 7, 2);
+  x.fillStyle = '#5c3f1c';
+  x.fillRect(ox, oy, S, 2); x.fillRect(ox, oy + S - 2, S, 2);
+  x.fillRect(ox, oy, 2, S); x.fillRect(ox + S - 2, oy, 2, S);
+}
+
+/* ---------- Ferdi, in pixels ---------- */
+function drawFerdiPortrait(x, ox, oy, t) {
+  const u = 2;
+  const px = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx * u, oy + gy * u, w * u, h * u); };
+  const blink = Math.sin(t * 0.9) > 0.93;
+  px(0, 0, 18, 18, '#0d0906');
+  px(1, 1, 16, 16, '#231708');
+  // hat
+  px(3, 2, 12, 2, '#54492f');
+  px(5, 0, 8, 2, '#54492f');
+  // face
+  px(5, 4, 8, 5, '#c79a72');
+  px(6, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
+  px(10, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
+  px(8, 6, 2, 1, '#c4614a');          // nose
+  // beard
+  px(4, 8, 10, 6, '#9a9388');
+  px(5, 9, 8, 4, '#8a8378');
+  px(7, 10, 4, 1, '#3a2f22');         // mouth
+  // shoulders
+  px(2, 14, 14, 4, '#6b5f48');
+}
