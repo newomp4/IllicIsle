@@ -239,15 +239,25 @@ export function jitterVerts(geo, amount, rng, salt) {
  * Push vertices out along their own radius by a hashed amount — a lumpy but
  * strictly star-shaped solid. Better than jitterVerts for boulders because
  * it can never fold the surface through itself.
+ *
+ * Radius is measured from the geometry's own centre, not from the world
+ * origin. Scaling about the origin is only harmless while the shape happens
+ * to sit there; give it a boulder that has already been translated forty
+ * units and every vertex flies off in its own direction, which is where the
+ * black shards around the temple door came from.
  */
 export function lumpify(geo, amount, rng, salt) {
   const p = geo.attributes.position;
   const s = salt !== undefined ? salt : ((rng ? rng() : Math.random()) * 65536) | 0;
+
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < p.count; i++) { cx += p.getX(i); cy += p.getY(i); cz += p.getZ(i); }
+  cx /= p.count; cy /= p.count; cz /= p.count;
+
   for (let i = 0; i < p.count; i++) {
-    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-    const len = Math.hypot(x, y, z) || 1e-5;
+    const x = p.getX(i) - cx, y = p.getY(i) - cy, z = p.getZ(i) - cz;
     const k = 1 + (posHash(x, y, z, s) - 0.5) * 2 * amount;
-    p.setXYZ(i, (x / len) * len * k, (y / len) * len * k, (z / len) * len * k);
+    p.setXYZ(i, cx + x * k, cy + y * k, cz + z * k);
   }
   p.needsUpdate = true;
   geo.computeVertexNormals();

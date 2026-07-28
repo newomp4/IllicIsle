@@ -57,6 +57,26 @@ export const ISLAND = {
   lagoon: { x: 108, z: 44, r: 30, d: 14 },
 };
 
+/**
+ * Ground the builders cut away.
+ *
+ * The temple is a flat-backed facade with terraces climbing behind it,
+ * dropped onto a mountainside — so the mountain used to come straight
+ * through the masonry. Rather than fight it in geometry, the hill itself
+ * is excavated: an oriented ellipse levelled to the doorway's height,
+ * blending back to the natural slope at its rim. Because it lives inside
+ * heightAt, the mesh, the collision and every prop placed afterwards all
+ * agree about where the ground now is.
+ */
+let CARVES = [];
+
+/** @param {Array<{x,z,y,rx,rz,yaw}>} list  set before the terrain is built. */
+export function setCarves(list) {
+  CARVES = (list || []).map((c) => ({
+    ...c, cos: Math.cos(c.yaw || 0), sin: Math.sin(c.yaw || 0),
+  }));
+}
+
 /** The one true height function. */
 export function heightAt(x, z) {
   const warp = fbm(x * 0.0050 + 31.7, z * 0.0050 - 12.3, 3);
@@ -95,6 +115,17 @@ export function heightAt(x, z) {
 
   // seabed falls away outside the coast
   h -= Math.max(0, d - S) * 0.55;
+
+  for (let i = 0; i < CARVES.length; i++) {
+    const c = CARVES[i];
+    const dx = x - c.x, dz = z - c.z;
+    const lx = dx * c.cos - dz * c.sin;
+    const lz = dx * c.sin + dz * c.cos;
+    const q = Math.hypot(lx / c.rx, lz / c.rz);
+    if (q >= 1.45) continue;
+    const k = 1 - THREE.MathUtils.smoothstep(q, 0.70, 1.45);
+    h = THREE.MathUtils.lerp(h, c.y, k);
+  }
 
   return Math.max(h, -24);
 }

@@ -209,8 +209,10 @@ export class Hud {
       if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 2, 118, 10); }
       // a hard pixel checkbox rather than a glyph
       x.fillStyle = INK; x.fillRect(ox, y, 7, 7);
-      x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : '#2a1c0c';
+      x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : (t.half ? '#5a4a12' : '#2a1c0c');
       x.fillRect(ox + 1, y + 1, 5, 5);
+      // half a chore reads as half a box filled
+      if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 4, 5, 2); }
       if (done) {
         x.fillStyle = '#7ec850';
         x.fillRect(ox + 2, y + 4, 1, 1);
@@ -220,7 +222,7 @@ export class Hud {
       }
       drawText(x, t.name, {
         x: ox + 11, y: y + 1, scale: 1,
-        color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (agent ? '#d8a898' : '#e2d2a4')),
+        color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4'))),
       });
       y += 10;
     }

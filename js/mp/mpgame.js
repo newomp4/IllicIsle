@@ -14,7 +14,7 @@ import { Net, Ticker, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
 import { Avatar, Body, colourHex } from './avatar.js';
-import { TASK_DEFS, SABOTAGE_DEFS, taskById } from './tasks.js';
+import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { setTime } from '../lib/ps1.js';
@@ -37,6 +37,8 @@ export class MPGame extends Game {
       bodies: new Map(),   // id -> Body
       sites: {},           // taskId -> {x,y,z}
       chat: [],
+      cool: {},          // kind -> when it may be pulled again
+      finished: false,   // the match is over; stop putting screens back
       taskProgress: null,  // { taskId, t, secs }
       killTarget: null,
       reportTarget: null,
@@ -52,6 +54,9 @@ export class MPGame extends Game {
      =========================================================== */
   async hostGame(name, room) {
     const M = this.mp;
+    M.finished = false;
+    M.cool = {};
+    M.chat.length = 0;
     M.myName = name;
     M.room = room || makeRoomCode();
     M.net = new Net();
@@ -64,15 +69,23 @@ export class MPGame extends Game {
       onPhase: (p, secs, meta) => this._phase(p, secs, meta),
       onLocalRole: (card) => M.view.handle(card),
       onTasks: (d, t) => { M.view.tasksDone = d; M.view.tasksTotal = t; },
-      onTaskOk: (id) => { M.view.doneTasks.add(id); this._taskDone(id); },
+      onTaskOk: (id, step, done) => {
+        if (done) M.view.doneTasks.add(id); else M.view.taskStep.set(id, step);
+        this._taskDone(id, done);
+      },
       onCooldown: (secs) => { M.myKillReady = now() + secs; },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onCouncil: (by, body) => this._onCouncil(by, body),
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
       onChat: (m) => this._onChat(m),
-      onSabotage: (k, s2, f) => this._onSabotage(k, s2, f),
-      onFixed: (k) => { M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false); },
+      onSabotage: (k, s2, f, sites) => this._onSabotage(k, s2, f, sites),
+      onFixed: (k, cd) => {
+        M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false);
+        if (cd) (M.cool = M.cool || {})[k] = now() + cd;
+      },
+      onFixProgress: (k, d, n) => this._fixProgress(k, d, n),
+      siteOf: (at) => this._namedSite(at),
       onOver: (w, a, r) => this._onOver(w, a, r),
       onEvent: (e) => { if (e.kind === 'left') this._notice(`${e.name} LEFT`); },
     });
@@ -100,12 +113,16 @@ export class MPGame extends Game {
 
   async joinGame(name, room) {
     const M = this.mp;
+    M.finished = false;
+    M.cool = {};
+    M.chat.length = 0;
     M.myName = name;
     M.room = room;
     M.net = new Net();
     M.net.onStatus = (t) => this.screens.top && (this.screens.top.status = t);
     M.net.onMessage = (msg) => this._clientMsg(msg);
     M.net.onHostGone = () => {
+      M.finished = true;
       this._notice('THE HOST LEFT');
       this.screens.replace('mpEnd', { winner: null, reason: 'THE HOST LEFT THE ISLAND', agents: [] });
     };
@@ -126,12 +143,23 @@ export class MPGame extends Game {
       case S.COUNCIL: this._onCouncil(msg.calledBy, msg.bodyOf); break;
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
-      case S.SABOTAGE: this._onSabotage(msg.kind, msg.secs, msg.fatal); break;
-      case S.FIXED: this._notice('REPAIRED'); this._applySabotage(msg.kind, false); break;
-      case S.TASK_OK: this._taskDone(msg.taskId); break;
+      case S.SABOTAGE:
+        if (msg.refused) { this.ui.toast('THAT ONE IS STILL COOLING', 'bad', 1600); this.audio.sfx('deny'); break; }
+        this._onSabotage(msg.kind, msg.secs, msg.fatal, msg.sites);
+        break;
+      case S.FIXPROGRESS: this._fixProgress(msg.kind, msg.done, msg.need); break;
+      case S.FIXED:
+        this._notice('REPAIRED'); this._applySabotage(msg.kind, false);
+        if (msg.cooldown) (M.cool = M.cool || {})[msg.kind] = now() + msg.cooldown;
+        break;
+      case S.TASK_OK:
+        if (!msg.done) M.view.taskStep.set(msg.taskId, msg.step);
+        this._taskDone(msg.taskId, msg.done !== false);
+        break;
       case S.COOLDOWN: M.myKillReady = now() + (msg.secs || 0); break;
       case S.OVER: this._onOver(msg.winner, msg.agents, msg.reason); break;
       case S.KICK:
+        M.finished = true;
         this._notice(msg.reason);
         this.screens.replace('mpEnd', { winner: null, reason: msg.reason, agents: [] });
         break;
@@ -290,7 +318,13 @@ export class MPGame extends Game {
         /* The card comes up over the last shot rather than after it. Hanging
            it off the phase timer meant a slow machine could spend the whole
            reveal on the flight and never show anybody what they were. */
-        { at: 17.6, fn: () => { if (this.mp.view.phase === PHASE.REVEAL) this.screens.replace('mpRole', {}); } },
+        { at: 17.6, fn: () => {
+          if (this.mp.view.phase !== PHASE.REVEAL) return;
+          this.screens.replace('mpRole', {});
+          this.audio.sfx('descend');
+          setTimeout(() => this.audio.sfx(this.amAgent ? 'bossIntro' : 'idolRise'), 1250);
+          setTimeout(() => this.audio.sfx('stinger'), 2050);
+        } },
       ],
       onDone: () => {
         setCinemaBars(false);
@@ -382,9 +416,20 @@ export class MPGame extends Game {
     if (msg.targetId === M.view.selfId) this.ui.hud.data.hp = 0;
   }
 
-  _onSabotage(kind, secs, fatal) {
+  _fixProgress(kind, done, need) {
+    const sab = this.mp.view.sabotage;
+    if (sab && sab.kind === kind) { sab.done = done; sab.need = need; }
+    this.audio.sfx('gemHit');
+    this.ui.toast(`${done} OF ${need} REPAIRED`, 'jade', 1800);
+    if (this.taskFx) {
+      const p = this.player.pos;
+      this.taskFx.burst(p.x, heightAt(p.x, p.z), p.z, 0x8fe8c8);
+    }
+  }
+
+  _onSabotage(kind, secs, fatal, sites) {
     const def = SABOTAGE_DEFS[kind];
-    this.mp.view.sabotage = { kind, endsAt: now() + secs, fatal };
+    this.mp.view.sabotage = { kind, endsAt: now() + secs, fatal, done: 0, need: sites || 1 };
     this._notice(def ? def.name : 'SABOTAGE');
     this.audio.sfx(fatal ? 'bossIntro' : 'charge');
     this.player.punch?.(0.7);
@@ -411,11 +456,20 @@ export class MPGame extends Game {
     }
     if (kind === 'jam') {
       this.jammed = on;
-      this.audio.playMusic(on ? 'boss' : 'island');
+      // its own track: two notes a semitone apart over a heartbeat
+      this.audio.playMusic(on ? 'alarm' : 'island');
+      for (const m of (this.pendulumMeshes || [])) {
+        if (m.userData.setJammed) m.userData.setJammed(on);
+      }
+    }
+    if (kind === 'storm') {
+      // one crack straight away, so it reads as an event and not weather
+      if (on) { this.audio.sfx('thunder'); this.ui.flashLightning?.(); }
     }
   }
 
   _onOver(winner, agents, reason) {
+    this.mp.finished = true;
     this.audio.stopMusic();
     this.audio.sfx(winner === 'castaways' ? 'victory' : 'bossDie');
     document.exitPointerLock?.();
@@ -427,21 +481,49 @@ export class MPGame extends Game {
    * in a form, so the world answers back: a ring thrown out across the
    * ground, the frame flashing, and the row on the HUD lighting up.
    */
-  _taskDone(id) {
+  /**
+   * The payoff for a step of a chore. Each one has its own colour, sound
+   * and weight of camera shake, so winding a Pendulum does not land like
+   * folding a sail.
+   */
+  _taskDone(id, finished = true) {
     const M = this.mp;
-    const def = taskById(id);
-    const site = M.sites[id];
+    const stage = this._taskStage(id);
+    const fx = TASK_FX[stage.fx] || TASK_FX.spark;
+    const site = this._taskSite(id);
+
     if (site && this.taskFx) {
-      this.taskFx.burst(site.x, Math.max(site.y, heightAt(site.x, site.z)), site.z, 0x7ec850);
+      this.taskFx.burst(site.x, Math.max(site.y, heightAt(site.x, site.z)), site.z, fx.colour, 'done', fx.ring);
     }
-    this.pipeline.tint.setHex(0x8fe8c8);
-    this.pipeline.tintAmt = 0.42;
-    this.player.punch?.(0.5);
+    this.pipeline.tint.setHex(fx.colour);
+    this.pipeline.tintAmt = 0.30 + fx.shake * 0.3;
+    this.player.punch?.(fx.shake);
     M.doneFlash = { id, t: 1.4 };
-    this.audio.sfx('gemHit');
-    this.audio.sfx('confirm');
-    this.ui.showPopup(def ? def.name : 'TASK DONE', 'THAT ONE IS FINISHED', 'task');
+    this.audio.sfx(fx.sfx);
+    this.audio.sfx(finished ? 'confirm' : 'select');
+
+    const def = taskById(id);
+    if (!finished && def?.then) {
+      this.ui.showPopup(def.then.name, 'NOW TAKE IT THERE', 'task');
+      this.ui.toast('HALF DONE', 'gold', 1800);
+    } else {
+      this.ui.showPopup(stage.name, 'THAT ONE IS FINISHED', 'task');
+    }
     this._compassForTasks();
+  }
+
+  /** Which half of a chore you are on, and what it is called right now. */
+  _taskStage(id) {
+    const def = taskById(id);
+    if (!def) return { name: 'THE TASK', verb: 'WORKING', secs: 3, at: null, fx: 'spark' };
+    const step = this.mp.view.taskStep.get(id) || 0;
+    return (def.then && step >= 1) ? { ...def.then, id } : def;
+  }
+
+  /** Where the current half of a chore happens. */
+  _taskSite(id) {
+    const stage = this._taskStage(id);
+    return this._namedSite(stage.at) || this.mp.sites[id] || null;
   }
 
   _notice(text) {
@@ -516,7 +598,7 @@ export class MPGame extends Game {
     const bell = this.campPos || this.spawn;
     const pois = [{ label: 'BELL', x: bell.x, z: bell.z, kind: 'poi' }];
     for (const id of M.view.tasks) {
-      const site = M.sites[id];
+      const site = this._taskSite(id);
       if (!site) continue;
       pois.push({
         label: '', x: site.x, z: site.z, kind: 'job',
@@ -562,13 +644,13 @@ export class MPGame extends Game {
     let taskD = Infinity, taskBest = null;
     for (const id of M.view.tasks) {
       if (M.view.doneTasks.has(id)) continue;
-      const site = M.sites[id];
+      const site = this._taskSite(id);
       if (!site) continue;
       const d = Math.hypot(p.x - site.x, p.z - site.z);
       if (d < 4.6 && d < taskD) {
-        const def = taskById(id);
+        const stage = this._taskStage(id);
         taskD = d;
-        taskBest = { kind: 'mpTask', taskId: id, prompt: def ? def.name : 'DO THE TASK' };
+        taskBest = { kind: 'mpTask', taskId: id, prompt: stage.name };
       }
     }
     if (taskBest) { bestD = taskD; best = taskBest; }
@@ -581,7 +663,14 @@ export class MPGame extends Game {
         const site = this._namedSite(at);
         if (!site) continue;
         const d = Math.hypot(p.x - site.x, p.z - site.z);
-        if (d < 4.5 && d < bestD) { bestD = d; best = { kind: 'mpFix', fix: sab.kind, prompt: 'REPAIR' }; }
+        if (d < 5.0 && d < bestD) {
+          bestD = d;
+          const need = sab.need || 1, done = sab.done || 0;
+          best = {
+            kind: 'mpFix', fix: sab.kind, at,
+            prompt: need > 1 ? `REPAIR  (${done}/${need})` : 'REPAIR',
+          };
+        }
       }
     }
     return best;
@@ -601,10 +690,10 @@ export class MPGame extends Game {
 
     switch (it.kind) {
       case 'mpTask': {
-        const def = taskById(it.taskId);
+        const stage = this._taskStage(it.taskId);
         M.taskProgress = {
-          taskId: it.taskId, t: 0, secs: def ? def.secs : 3, verb: def?.verb || 'WORKING',
-          name: def ? def.name : 'THE TASK',
+          taskId: it.taskId, t: 0, secs: stage.secs || 3, verb: stage.verb || 'WORKING',
+          name: stage.name, fx: stage.fx,
           x: this.player.pos.x, z: this.player.pos.z,
         };
         this.player.playThrow();
@@ -613,7 +702,7 @@ export class MPGame extends Game {
       }
       case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
       case 'mpBell': this._send({ t: C.REPORT, bodyId: null }); break;
-      case 'mpFix': this._send({ t: C.FIX, kind: it.fix }); break;
+      case 'mpFix': this._send({ t: C.FIX, kind: it.fix, at: it.at }); break;
       default: break;
     }
   }
@@ -673,7 +762,7 @@ export class MPGame extends Game {
     if (!this.mp.started) { this.audio.sfx('deny'); return; }
     const M = this.mp;
     const jobs = M.view.tasks
-      .map((id) => ({ id, site: M.sites[id], done: M.view.doneTasks.has(id) }))
+      .map((id) => ({ id, site: this._taskSite(id), done: M.view.doneTasks.has(id) }))
       .filter((j) => j.site);
     const left = jobs.filter((j) => !j.done).length;
     this.audio.sfx('page');
@@ -777,6 +866,26 @@ export class MPGame extends Game {
       return;
     }
 
+    /* Whatever happened — a pause card, an alt-tab, a stray Escape — if the
+       council is sitting then the council screen is what you should be
+       looking at. Without this you could end up frozen in the world with no
+       interface at all and no way back short of a refresh. */
+    const meeting = M.view.phase === PHASE.COUNCIL || M.view.phase === PHASE.VOTE;
+    /* ...but not over the top of a card that is deliberately final. The
+       results screen and the "the host left" screen both sit on a phase
+       that never advances, and the watchdog would put the council straight
+       back over them. */
+    const FINAL = ['mpEnd', 'mpExile', 'mpRole', 'pause'];
+    const held = FINAL.includes(this.screens.name);
+    if (meeting && !M.finished && !held && this.screens.name !== 'mpCouncil') {
+      this.paused = false;
+      this.screens.replace('mpCouncil', {});
+    }
+    if ((!meeting || M.finished) && this.screens.name === 'mpCouncil') {
+      this.screens.clear();
+      this.ui.show();
+    }
+
     const inPlay = M.view.phase === PHASE.ROAM;
     const frozen = this.paused || this.screens.open || !inPlay;
 
@@ -819,6 +928,13 @@ export class MPGame extends Game {
     // world + avatars
     this.tickIslandWorld(dt);
     this.updateDayNight(dt);
+    /* The storm sabotage started the weather and then nothing drove it, so
+       no rain fell, no thunder cracked and the only sign of it was a
+       countdown on the HUD. */
+    if (this.storm) this.storm.tick(this.time, dt, this.camera.position);
+    for (const m of (this.pendulumMeshes || [])) {
+      if (m.userData.setNight) m.userData.setNight(this.night || 0);
+    }
     const t = now();
     const ghost = !this.amAlive;
     for (const av of M.avatars.values()) {
@@ -904,7 +1020,8 @@ export class MPGame extends Game {
       tasksDone: M.view.tasksDone,
       tasksTotal: M.view.tasksTotal,
       myTasks: M.view.tasks.map((id) => ({
-        id, name: taskById(id)?.name || id, done: M.view.doneTasks.has(id),
+        id, name: this._taskStage(id).name, done: M.view.doneTasks.has(id),
+        half: !M.view.doneTasks.has(id) && (M.view.taskStep.get(id) || 0) >= 1,
       })),
       killIn: this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0,
       sabotage: M.view.sabotage

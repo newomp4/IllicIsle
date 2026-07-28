@@ -50,7 +50,7 @@ export class TaskFx {
    * @param {number} colour  hex
    * @param {'done'|'fail'} kind
    */
-  burst(x, y, z, colour = 0x7ec850, kind = 'done') {
+  burst(x, y, z, colour = 0x7ec850, kind = 'done', ringSize = 5.4) {
     const N = kind === 'done' ? 14 : 8;
     const ring = makeRing(colour);
     ring.position.set(x, y + 0.08, z);
@@ -70,7 +70,11 @@ export class TaskFx {
         spin: (Math.random() - 0.5) * 9,
       });
     }
-    this.live.push({ ring, sparks, bits, t: 0, dur: kind === 'done' ? 1.15 : 0.7, kind });
+    this.live.push({
+      ring, sparks, bits, t: 0, kind,
+      dur: kind === 'done' ? 1.15 : 0.7,
+      reach: ringSize,
+    });
   }
 
   update(dt) {
@@ -81,7 +85,7 @@ export class TaskFx {
 
       // the ring snaps out fast then eases, which reads as impact
       const ease = 1 - Math.pow(1 - k, 3);
-      const r = 0.6 + ease * (f.kind === 'done' ? 5.4 : 2.2);
+      const r = 0.6 + ease * (f.kind === 'done' ? f.reach : 2.2);
       f.ring.scale.set(r, 1, r);
       f.ring.material.opacity = (1 - k) * 0.9;
 

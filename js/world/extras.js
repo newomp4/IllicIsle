@@ -132,7 +132,12 @@ export function buildRelic(kind, rng, mats) {
    FERDI STEINMAN'S HUT
    A landmark you can navigate by, and the only shop on the island.
    =========================================================== */
-export function buildFerdiHut(rng, mats, flameFactory) {
+/**
+ * @param {(lx:number, lz:number) => number} groundAt  terrain height in the
+ *   hut's own space, relative to the hut's origin. Without it the walkway
+ *   is a flat plank that ploughs into any slope it runs up.
+ */
+export function buildFerdiHut(rng, mats, flameFactory, groundAt = () => 0) {
   const group = new THREE.Group();
   const P = [], C = [];
   const WOOD = G(0x7a6242), WOOD_D = G(0x5a4730);
@@ -141,7 +146,9 @@ export function buildFerdiHut(rng, mats, flameFactory) {
      the clearing is not a table, and a leg that stops at ground level leaves
      the uphill side of the hut buried and the downhill side in mid-air. */
   for (const [sx, sz] of [[-2.6, -2.2], [2.6, -2.2], [-2.6, 2.2], [2.6, 2.2]]) {
-    const leg = cyl(0.18, 0.24, 3.6, 6, 'driftwood', { pos: [sx, -0.3, sz] });
+    const gp = groundAt(sx, sz);
+    const len = Math.max(1.2, 1.5 - gp + 1.4);          // deck at 1.5, buried 1.4 below the ground
+    const leg = cyl(0.18, 0.24, len, 6, 'driftwood', { pos: [sx, 1.5 - len / 2, sz] });
     tint(leg, WOOD_D); P.push(leg);
   }
   const deck = box(6.2, 0.28, 5.2, 'planks', { pos: [0, 1.5, 0] });
@@ -192,14 +199,19 @@ export function buildFerdiHut(rng, mats, flameFactory) {
   tint(nail, G(0x6a6a66)); P.push(nail);
 
   /* --- a proper shopfront: boardwalk, steps, awning, hanging wares --- */
-  // posts under the boardwalk, for the same reason as the stilts
-  for (const [sx, sz] of [[-2.7, 3.6], [2.7, 3.6], [-2.7, 6.4], [2.7, 6.4]]) {
-    const post = cyl(0.13, 0.16, 3.4, 5, 'driftwood', { pos: [sx, -0.3, sz] });
-    tint(post, WOOD_D); P.push(post);
-  }
-  // boardwalk out front so you approach along something
+  /* Boardwalk out front so you approach along something. Each plank sits
+     above the ground under it and steps down from the deck, so a clearing
+     that is not a billiard table cannot swallow the front of the shop. */
   for (let i = 0; i < 5; i++) {
-    const pl = box(6.4, 0.16, 1.0, 'planks', { pos: [0, 1.42, 3.2 + i * 1.0], rot: [0, 0, 0] });
+    const z = 3.2 + i * 1.0;
+    const want = Math.max(groundAt(0, z) + 0.18, 1.42 - i * 0.28);
+    for (const sx of [-2.7, 2.7]) {
+      const gp = groundAt(sx, z);
+      const len = Math.max(0.5, want - gp + 0.9);
+      const post = cyl(0.13, 0.16, len, 5, 'driftwood', { pos: [sx, want - len / 2 + 0.09, z] });
+      tint(post, WOOD_D); P.push(post);
+    }
+    const pl = box(6.4, 0.16, 1.0, 'planks', { pos: [0, want, z], rot: [0, 0, 0] });
     tint(pl, WOOD.clone().multiplyScalar(0.7 + rng() * 0.35)); P.push(pl);
   }
   for (let i = 0; i < 3; i++) {
@@ -720,7 +732,10 @@ export function buildStorm(scene) {
     set onThunder(fn) { state.onThunder = fn; },
     tick(t, dt, camPos) {
       const target = state.active ? 1 : 0;
-      state.strength += (target - state.strength) * Math.min(1, dt * 0.35);
+      /* Fast in, slow out. A sabotage that takes eight seconds to become
+         visible is a sabotage nobody notices. */
+      const rate = target > state.strength ? 1.4 : 0.5;
+      state.strength += (target - state.strength) * Math.min(1, dt * rate);
       mat.opacity = state.strength * 0.5;
       rain.visible = state.strength > 0.02;
       if (!rain.visible) return state.strength;

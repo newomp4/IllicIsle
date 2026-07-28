@@ -40,6 +40,7 @@ export const S = {
   VOTES:      's.votes',      // { counts, voted }
   EXILE:      's.exile',      // { targetId | null, wasAgent, reveal }
   SABOTAGE:   's.sabotage',   // { kind, endsAt }
+  FIXPROGRESS: 's.fixprog',   // { kind, done, need }
   FIXED:      's.fixed',      // { kind }
   OVER:       's.over',       // { winner, agents, reason }
   KICK:       's.kick',       // { reason }

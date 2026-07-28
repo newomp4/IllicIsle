@@ -203,7 +203,37 @@ const STORM = {
   },
 };
 
-const TRACKS = { island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS, storm: STORM };
+/* ---- ALARM: the Pendulums are jammed and the island is counting down.
+   Two notes a semitone apart, forever, over a heartbeat kick. It is meant
+   to be unpleasant — it only ever plays while somebody is about to die. ---- */
+const ALARM = {
+  bpm: 132, len: 16, sections: 3,
+  voices: {
+    bass: {
+      layers: [1, 1, 1],
+      notes: [
+        29, _, 29, _, 30, _, 29, _, 29, _, 29, _, 28, _, 29, _,
+      ],
+    },
+    stab: {
+      layers: [1, 1, 1],
+      chords: [
+        [53, 54, 60], _, _, _, _, _, _, _, [52, 53, 59], _, _, _, _, _, _, _,
+      ],
+    },
+    lead: {
+      layers: [0, 1, 1],
+      notes: [
+        77, _, _, _, 78, _, _, _, 77, _, _, _, 78, _, _, _,
+      ],
+    },
+    kick:  { layers: [1, 1, 1], hits: 'x...x...x...x..x' },
+    snare: { layers: [0, 0, 1], hits: '....x.......x...' },
+    hat:   { layers: [0, 1, 1], hits: 'x.x.x.x.x.x.x.xx' },
+  },
+};
+
+const TRACKS = { island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS, storm: STORM, alarm: ALARM };
 
 export class GameAudio {
   constructor() {

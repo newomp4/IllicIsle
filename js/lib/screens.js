@@ -132,9 +132,15 @@ export class ScreenStack {
   click(cx, cy) {
     const s = this.top;
     if (!s) return false;
+    const def = SCREENS[s.name];
     for (let i = 0; i < this._rows.length; i++) {
       const r = this._rows[i];
+      if (!r) continue;
       if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
+        /* Some screens have rows that are not menu entries — a chat box, a
+           confirm button — so they get told which row was hit rather than
+           having the index forced into `sel`. */
+        if (def?.click) { def.click(r, i, s, this.game, this); return true; }
         s.sel = i;
         this.key('Enter');
         return true;
@@ -344,45 +350,123 @@ export const SCREENS = {
   mpRole: {
     draw(x, W, H, s, g, t) {
       const agent = g.amAgent;
+      const HOT = agent ? '#ff6a5a' : '#8fe8c8';
+      const DK = agent ? '#8a2018' : '#2f6a5c';
+
+      /* Four beats, so it lands like a reveal instead of a box sliding up:
+         the dark closes in, a slot opens, the card turns over, and then it
+         settles and the words arrive. */
+      const T1 = 0.55, T2 = 1.25, T3 = 2.0;
+      const e = (a2, b2) => Math.max(0, Math.min(1, (s.t - a2) / (b2 - a2)));
+      const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+
+      // 1. the world drains away
+      const drain = easeOut(e(0, T1));
       x.fillStyle = agent ? '#180404' : '#04090e';
+      x.globalAlpha = drain;
       x.fillRect(0, 0, W, H);
-      ditherRect(x, 0, 0, W, H, agent ? '#180404' : '#04090e',
-        agent ? '#240707' : '#071018', 0.5, 2);
-      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(0, y, W, 1); }
+      x.globalAlpha = 1;
+      if (drain > 0.02) ditherRect(x, 0, 0, W, H, agent ? '#180404' : '#04090e',
+        agent ? '#240707' : '#071018', 0.5 * drain, 2);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = `rgba(0,0,0,${(0.42 * drain).toFixed(2)})`; x.fillRect(0, y, W, 1); }
 
-      // the card slides up and settles
-      const pop = Math.min(1, s.t * 2.2);
-      const lift = Math.round((1 - pop * pop) * 26);
-      const cw = 220, ch = 96;
-      const cx = Math.round((W - cw) / 2), cy = Math.round((H - ch) / 2) + lift - 6;
+      const CW = 226, CH = 104;
+      const cx = Math.round((W - CW) / 2), cy = Math.round((H - CH) / 2) - 4;
+
+      // 2. a slot of light opens across the middle
+      const slot = easeOut(e(T1 * 0.7, T2));
+      if (slot > 0 && s.t < T2) {
+        const sh = Math.max(1, Math.round(CH * slot));
+        const sy = Math.round(cy + (CH - sh) / 2);
+        x.fillStyle = DK;
+        x.fillRect(cx - 2, sy - 1, CW + 4, sh + 2);
+        x.fillStyle = agent ? '#2c0a08' : '#07131a';
+        x.fillRect(cx, sy, CW, sh);
+        ditherRect(x, cx, sy, CW, sh, agent ? '#2c0a08' : '#07131a',
+          agent ? '#3a0f0c' : '#0b1c26', 0.4, 2);
+        // a hot line racing along the opening edges
+        if (slot < 1) {
+          x.fillStyle = HOT;
+          x.fillRect(cx, sy, CW, 1);
+          x.fillRect(cx, sy + sh - 1, CW, 1);
+        }
+      }
+      if (s.t < T2) return [];
+
+      // 3. the card turns over: squash horizontally through the halfway point
+      const flip = e(T2, T3);
+      const face = flip < 0.5 ? Math.cos(flip * Math.PI) : Math.cos((1 - flip) * Math.PI) * -1;
+      const squash = Math.max(0.04, Math.abs(Math.cos(flip * Math.PI)));
+      const fw = Math.round(CW * (flip < 1 ? squash : 1));
+      const fx = Math.round(W / 2 - fw / 2);
+
       x.fillStyle = agent ? '#2c0a08' : '#07131a';
-      x.fillRect(cx, cy, cw, ch);
-      ditherRect(x, cx, cy, cw, ch, agent ? '#2c0a08' : '#07131a',
+      x.fillRect(fx, cy, fw, CH);
+      ditherRect(x, fx, cy, fw, CH, agent ? '#2c0a08' : '#07131a',
         agent ? '#3a0f0c' : '#0b1c26', 0.4, 2);
-      x.fillStyle = agent ? '#8a2018' : '#2f6a5c';
-      x.fillRect(cx, cy, cw, 1); x.fillRect(cx, cy + ch - 1, cw, 1);
-      x.fillRect(cx, cy, 1, ch); x.fillRect(cx + cw - 1, cy, 1, ch);
+      x.fillStyle = DK;
+      x.fillRect(fx, cy, fw, 1); x.fillRect(fx, cy + CH - 1, fw, 1);
+      x.fillRect(fx, cy, 1, CH); x.fillRect(fx + fw - 1, cy, 1, CH);
 
-      drawText(x, 'YOU ARE', { x: W / 2, y: cy + 12, scale: 1, align: 'center', color: DIM });
-      drawText(x, agent ? 'A ROGUE AGENT' : 'A CASTAWAY', {
-        x: W / 2, y: cy + 24, scale: 2, align: 'center', color: agent ? '#ff6a5a' : '#8fe8c8',
-      });
-      x.fillStyle = agent ? '#8a2018' : '#2f6a5c';
-      x.fillRect(cx + 30, cy + 44, cw - 60, 1);
+      if (flip < 1 && face < 0) {
+        // the back of the card, mid-turn: a blank plate with a seal on it
+        if (fw > 22) {
+          x.fillStyle = DK;
+          const bx = Math.round(W / 2 - Math.min(14, fw / 3) / 2);
+          x.fillRect(bx, cy + CH / 2 - 7, Math.min(14, fw / 3), 14);
+        }
+        return [];
+      }
+      if (flip < 1) return [];
 
+      // 4. settled: the words arrive line by line
+      const line = (i) => e(T3 + 0.12 * i, T3 + 0.12 * i + 0.18);
+      const fade = (k, c1, c2) => (k > 0.66 ? c1 : k > 0.25 ? c2 : DK);
+
+      if (line(0) > 0) {
+        drawText(x, 'YOU ARE', { x: W / 2, y: cy + 13, scale: 1, align: 'center',
+          color: fade(line(0), DIM, '#5a4a34') });
+      }
+      if (line(1) > 0) {
+        // the title stamps in: oversized for a frame, then settles
+        const k = line(1);
+        const sc = k < 0.55 ? 3 : 2;
+        drawText(x, agent ? 'A ROGUE AGENT' : 'A CASTAWAY', {
+          x: W / 2, y: cy + 26 + (sc === 3 ? -4 : 0), scale: sc, align: 'center',
+          color: k < 0.55 ? '#ffffff' : HOT,
+        });
+        if (k > 0.7) {
+          x.fillStyle = DK;
+          const rw = Math.round((CW - 70) * Math.min(1, (k - 0.7) / 0.3));
+          x.fillRect(Math.round(W / 2 - rw / 2), cy + 48, rw, 1);
+        }
+      }
       const blurb = agent
         ? ['CUT THEM DOWN. DO NOT BE SEEN.', 'JAM THE ISLAND WHEN IT SUITS YOU.']
         : ['DO YOUR WORK. WATCH THE OTHERS.', 'SOMEBODY HERE IS NOT WHAT THEY SAY.'];
-      let y = cy + 52;
-      for (const ln of blurb) {
-        drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: GOLD_LT }); y += 11;
+      blurb.forEach((ln, i) => {
+        const k = line(2 + i);
+        if (k <= 0) return;
+        drawText(x, ln, { x: W / 2, y: cy + 57 + i * 11, scale: 1, align: 'center',
+          color: fade(k, GOLD_LT, '#8a7a52') });
+      });
+
+      const k4 = line(4);
+      if (k4 > 0) {
+        const mates = g.mp.view.mates;
+        const txt = agent
+          ? (mates && mates.length > 1 ? 'WITH YOU: ' + mates.join('  ') : 'YOU WORK ALONE')
+          : `${[...g.mp.view.players.values()].length} ASHORE. TRUST NOBODY.`;
+        drawText(x, txt, { x: W / 2, y: cy + 84, scale: 1, align: 'center',
+          color: fade(k4, agent ? '#ff9a8a' : '#9fd8c4', DK) });
       }
-      if (agent && g.mp.view.mates && g.mp.view.mates.length > 1) {
-        drawText(x, 'WITH YOU: ' + g.mp.view.mates.join(' '), {
-          x: W / 2, y: y + 4, scale: 1, align: 'center', color: '#ff9a8a',
-        });
-      } else if (agent) {
-        drawText(x, 'YOU WORK ALONE', { x: W / 2, y: y + 4, scale: 1, align: 'center', color: '#a8564c' });
+
+      // a slow pulse on the border once it is all up
+      if (k4 >= 1) {
+        const p = 0.5 + Math.sin(s.t * 3.1) * 0.5;
+        x.fillStyle = p > 0.6 ? HOT : DK;
+        x.fillRect(cx, cy, 6, 1); x.fillRect(cx + CW - 6, cy, 6, 1);
+        x.fillRect(cx, cy + CH - 1, 6, 1); x.fillRect(cx + CW - 6, cy + CH - 1, 6, 1);
       }
       return [];
     },
@@ -391,13 +475,14 @@ export const SCREENS = {
 
   /* ---------------- COUNCIL + VOTE ---------------- */
   mpCouncil: {
-    init(s, g) { s.sel = 0; s.typing = ''; s.ready = false; },
+    init(s) { s.sel = 0; s.typing = ''; s.talking = false; s.ready = false; s.cast = null; },
     draw(x, W, H, s, g, t) {
       const voting = g.mp.view.phase === 'vote';
       const players = [...g.mp.view.players.values()];
       const alive = players.filter((p) => p.alive !== false);
       const total = Math.max(0.001, g.mp.view.phaseTotal || 45);
       const left = Math.max(0, (g.mp.view.phaseEndsAt || 0) - performance.now() / 1000);
+      if (!voting) s.cast = null;
 
       /* ---- the fire everyone is sitting around ---- */
       x.fillStyle = '#080604'; x.fillRect(0, 0, W, H);
@@ -405,60 +490,60 @@ export const SCREENS = {
       const flick = 0.82 + Math.sin(t * 11) * 0.09 + Math.sin(t * 6.3) * 0.09;
       for (let i = 7; i >= 0; i--) {
         const r = 40 + i * 15;
-        x.fillStyle = `rgba(${90 - i * 6},${44 - i * 3},${10},${(0.05 * flick).toFixed(3)})`;
+        x.fillStyle = `rgba(${90 - i * 6},${44 - i * 3},10,${(0.05 * flick).toFixed(3)})`;
         x.beginPath(); x.arc(W / 2, H - 6, r, 0, Math.PI * 2); x.fill();
       }
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
-      /* ---- header: which half of the meeting you are in ---- */
-      const title = voting ? 'THE VOTE' : 'THE COUNCIL';
-      drawText(x, title, { x: W / 2, y: 8, scale: 2, align: 'center', color: voting ? RED : GOLD });
+      /* ---- header ---- */
+      drawText(x, voting ? 'THE VOTE' : 'THE COUNCIL',
+        { x: W / 2, y: 8, scale: 2, align: 'center', color: voting ? RED : GOLD });
       drawText(x, g.mp.councilHeader || '', { x: W / 2, y: 26, scale: 1, align: 'center', color: GOLD_LT });
 
-      // a draining bar reads faster than a number, so it gets both
       const bw = W - 60, bx = 30, by = 38;
       x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 6);
       x.fillStyle = '#1c1208'; x.fillRect(bx, by, bw, 4);
       const n = Math.round((left / total) * bw);
       const urgent = left < 8;
       for (let i = 0; i < n; i += 3) {
-        x.fillStyle = urgent
-          ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018')
-          : (i % 6 ? '#c39a2c' : GOLD);
+        x.fillStyle = urgent ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : (i % 6 ? '#c39a2c' : GOLD);
         x.fillRect(bx + i, by, 2, 4);
       }
-      drawText(x, `${Math.ceil(left)}`, {
-        x: W - 30, y: by - 10, scale: 1, align: 'right', color: urgent ? RED : DIM,
-      });
-      drawText(x, voting ? 'CAST YOUR VOTE' : 'TALK IT OUT', {
-        x: 30, y: by - 10, scale: 1, color: DIM,
-      });
+      drawText(x, `${Math.ceil(left)}`, { x: W - 30, y: by - 10, scale: 1, align: 'right', color: urgent ? RED : DIM });
+      drawText(x, voting ? 'CHOOSE SOMEBODY' : 'TALK IT OUT', { x: 30, y: by - 10, scale: 1, color: DIM });
 
-      /* ---- left: the roster, which doubles as the ballot ---- */
+      /* ---- the list, which is the ballot during the vote ---- */
       s.targets = alive.map((p) => p.id);
       if (voting) s.targets.push('skip');
       if (s.sel >= s.targets.length) s.sel = 0;
 
-      const LX = 12, LW = 122;
+      const LX = 12, LW = 132;
       let y = 52;
       const rows = [];
       const voted = new Set(g.mp.view.votes?.voted || []);
+      const canPick = voting && g.amAlive && !s.cast;
+
       const line = (id, label, swatch, dead, tag, tagCol) => {
         const idx = s.targets.indexOf(id);
-        const on = idx >= 0 && idx === s.sel;
-        if (on) {
-          x.fillStyle = voting ? '#4a1410' : '#3a2a10';
-          x.fillRect(LX, y - 2, LW, 11);
-          x.fillStyle = voting ? RED : GOLD;
-          x.fillRect(LX, y - 2, 1, 11);
+        const on = idx >= 0 && idx === s.sel && !s.talking;
+        if (on && canPick) {
+          x.fillStyle = '#5a1810'; x.fillRect(LX, y - 2, LW, 11);
+          x.fillStyle = RED; x.fillRect(LX, y - 2, 2, 11);
+          // an arrow, so "this is the one Enter will pick" is unmissable
+          x.fillStyle = GOLD_LT;
+          x.fillRect(LX + LW - 8, y + 1, 4, 1);
+          x.fillRect(LX + LW - 6, y, 1, 3);
+          x.fillRect(LX + LW - 5, y + 1, 1, 1);
+        } else if (on) {
+          x.fillStyle = '#2e2210'; x.fillRect(LX, y - 2, LW, 11);
         }
-        if (swatch) { x.fillStyle = dead ? '#4a4a4a' : swatch; x.fillRect(LX + 4, y, 7, 7); }
+        if (swatch) { x.fillStyle = dead ? '#4a4a4a' : swatch; x.fillRect(LX + 5, y, 7, 7); }
         drawText(x, label, {
-          x: LX + 16, y, scale: 1,
+          x: LX + 17, y, scale: 1,
           color: dead ? '#6a6a6a' : (on ? GOLD_LT : '#c9b98a'),
         });
-        if (tag) drawText(x, tag, { x: LX + LW - 4, y, scale: 1, align: 'right', color: tagCol });
-        if (idx >= 0) rows[idx] = { x: LX, y: y - 2, w: LW, h: 11 };
+        if (tag) drawText(x, tag, { x: LX + LW - 12, y, scale: 1, align: 'right', color: tagCol });
+        if (idx >= 0 && canPick) rows[idx] = { x: LX, y: y - 2, w: LW, h: 11 };
         y += 11;
       };
 
@@ -475,25 +560,51 @@ export const SCREENS = {
       }
       if (voting) {
         const c = g.mp.view.votes?.counts?.skip || 0;
-        line('skip', 'SKIP THE VOTE', null, false, c ? '*'.repeat(Math.min(c, 5)) : '', GOLD);
+        line('skip', 'NOBODY - SKIP', null, false, c ? '*'.repeat(Math.min(c, 5)) : '', GOLD);
       }
 
-      // a running count, so nobody wonders who they are waiting on
+      /* ---- one clear instruction under the list ---- */
+      y += 4;
+      const box = (label, colour, hot) => {
+        const w = LW, bx2 = LX;
+        x.fillStyle = hot ? colour : '#241708';
+        x.fillRect(bx2, y, w, 13);
+        x.fillStyle = colour;
+        x.fillRect(bx2, y, w, 1); x.fillRect(bx2, y + 12, w, 1);
+        x.fillRect(bx2, y, 1, 13); x.fillRect(bx2 + w - 1, y, 1, 13);
+        drawText(x, label, { x: bx2 + w / 2, y: y + 3, scale: 1, align: 'center',
+          color: hot ? '#160c04' : colour });
+        const r = { x: bx2, y, w, h: 13 };
+        y += 17;
+        return r;
+      };
+
       if (voting) {
-        drawText(x, `${voted.size} OF ${alive.length} VOTED`,
-          { x: LX + 4, y: y + 4, scale: 1, color: DIM });
+        if (!g.amAlive) drawText(x, 'THE DEAD DO NOT VOTE', { x: LX, y, scale: 1, color: '#6a6a6a' });
+        else if (s.cast) {
+          const who = s.cast === 'skip' ? 'NOBODY'
+            : (players.find((p) => p.id === s.cast)?.name || '?');
+          drawText(x, `YOU VOTED FOR ${who}`, { x: LX, y, scale: 1, color: JADE });
+        } else {
+          rows.push(box('ENTER  VOTE FOR THIS ONE', RED, false));
+          rows[rows.length - 1].vote = true;
+        }
       } else {
+        const r = box(s.ready ? 'WAITING FOR THE REST' : 'ENTER  I AM DONE TALKING',
+          s.ready ? JADE : GOLD, s.ready);
+        r.ready = true;
+        rows.push(r);
         const done = alive.filter((p) => p.ready).length;
-        drawText(x, `${done} OF ${alive.length} DONE TALKING`,
-          { x: LX + 4, y: y + 4, scale: 1, color: done === alive.length ? JADE : DIM });
+        drawText(x, `${done} OF ${alive.length} READY TO VOTE`,
+          { x: LX, y, scale: 1, color: done === alive.length ? JADE : DIM });
       }
 
-      /* ---- right: the chat ---- */
+      /* ---- chat ---- */
       const cx = LX + LW + 8;
       const cw = W - cx - 12;
       const ctop = 52, cbot = H - 36;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx, ctop, cw, cbot - ctop);
-      x.fillStyle = '#3a2a10';
+      x.fillStyle = s.talking ? JADE : '#3a2a10';
       x.fillRect(cx, ctop, cw, 1); x.fillRect(cx, cbot - 1, cw, 1);
       x.fillRect(cx, ctop, 1, cbot - ctop); x.fillRect(cx + cw - 1, ctop, 1, cbot - ctop);
 
@@ -512,69 +623,102 @@ export const SCREENS = {
         cy += 9;
       }
       if (!lines.length) {
-        drawText(x, g.amAlive ? 'NOBODY HAS SPOKEN YET' : 'THE DEAD TALK AMONG THEMSELVES', {
+        drawText(x, 'NOBODY HAS SPOKEN YET', {
           x: cx + cw / 2, y: ctop + 8, scale: 1, align: 'center', color: '#4a3f2a',
         });
       }
 
-      // input line
-      field(x, cx, H - 33, cw, 12, true);
-      drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
-        x: cx + 3, y: H - 30, scale: 1, color: g.amAlive ? JADE : '#8fb0c8',
-      });
+      // the chat line only takes your keys when you say so
+      field(x, cx, H - 33, cw, 12, s.talking);
+      if (s.talking) {
+        drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
+          x: cx + 3, y: H - 30, scale: 1, color: g.amAlive ? JADE : '#8fb0c8',
+        });
+      } else {
+        drawText(x, 'T  TO TALK', { x: cx + 3, y: H - 30, scale: 1, color: '#5a4a30' });
+        const r = { x: cx, y: H - 33, w: cw, h: 12, talk: true };
+        rows.push(r);
+      }
 
-      /* ---- footer ---- */
-      const hint = voting
-        ? (s.typing ? 'ENTER SENDS' : 'UP DOWN CHOOSE   ENTER CASTS YOUR VOTE')
-        : (s.typing ? 'ENTER SENDS'
-          : (s.ready ? 'ENTER AGAIN TO SPEAK UP' : 'ENTER WHEN YOU ARE DONE TALKING'));
-      footer(x, W, H, hint);
-      return voting ? rows.filter(Boolean) : [];
+      footer(x, W, H, s.talking
+        ? 'ENTER SENDS   ESC STOPS TYPING'
+        : (voting ? 'UP DOWN CHOOSE   ENTER VOTES   T TALKS'
+          : 'ENTER WHEN DONE TALKING   T TALKS'));
+      return rows;
     },
+
     key(code, s, g, st) {
       const voting = g.mp.view.phase === 'vote';
-      /* Enter carries the whole screen: it sends what you have typed, and
-         when the line is empty it means "I am done" — which during the
-         discussion ends it early once everyone agrees, and during the vote
-         casts your ballot. Binding these to letters would make those
-         letters untypable in a screen that is mostly typing. */
-      if (code === 'Enter' || code === 'NumpadEnter') {
-        if (s.typing.trim()) { g.sendChat(s.typing.trim()); s.typing = ''; return true; }
-        if (voting) { if (s.targets?.length) g.sendVote(s.targets[s.sel] || 'skip'); }
-        else { s.ready = !s.ready; g.sendReady(s.ready); }
+
+      /* Typing is a mode you enter deliberately. Before, every key was
+         ambiguous — Enter meant send, or ready, or vote, depending on
+         whether the line happened to be empty. */
+      if (s.talking) {
+        if (code === 'Escape') { s.talking = false; s.typing = ''; return true; }
+        if (code === 'Enter' || code === 'NumpadEnter') {
+          if (s.typing.trim()) g.sendChat(s.typing.trim());
+          s.typing = ''; s.talking = false;
+          return true;
+        }
+        if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
+        const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
+        if (m && s.typing.length < 60) { s.typing += m[1]; return true; }
+        const punct = { Space: ' ', Period: '.', Comma: ',', Slash: '?', Minus: '-', Quote: "'" };
+        if (punct[code] && s.typing.length < 60) { s.typing += punct[code]; return true; }
         return true;
       }
-      if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
-      if (code === 'ArrowUp' || code === 'ArrowDown') {
+
+      if (code === 'KeyT') { s.talking = true; return true; }
+      if (code === 'ArrowUp' || code === 'ArrowDown' || code === 'KeyW' || code === 'KeyS') {
         const n = s.targets?.length || 1;
-        s.sel = (s.sel + (code === 'ArrowUp' ? n - 1 : 1)) % n;
+        const up = code === 'ArrowUp' || code === 'KeyW';
+        s.sel = (s.sel + (up ? n - 1 : 1)) % n;
+        g.audio?.sfx('select');
         return true;
       }
-      const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
-      if (m && s.typing.length < 60) { s.typing += m[1]; return true; }
-      if (code === 'Space' && s.typing.length < 60) { s.typing += ' '; return true; }
-      if (code === 'Period' && s.typing.length < 60) { s.typing += '.'; return true; }
-      if (code === 'Comma' && s.typing.length < 60) { s.typing += ','; return true; }
-      if (code === 'Slash' && s.typing.length < 60) { s.typing += '?'; return true; }
-      if (code === 'Minus' && s.typing.length < 60) { s.typing += '-'; return true; }
-      if (code === 'Quote' && s.typing.length < 60) { s.typing += "'"; return true; }
+      if (code === 'Enter' || code === 'NumpadEnter' || code === 'KeyE' || code === 'Space') {
+        if (voting) {
+          if (!g.amAlive || s.cast) return true;
+          s.cast = s.targets?.[s.sel] || 'skip';
+          g.sendVote(s.cast);
+        } else {
+          s.ready = !s.ready;
+          g.sendReady(s.ready);
+        }
+        return true;
+      }
+      return true;
+    },
+
+    /** Clicking a name chooses it and casts in one go. */
+    click(row, i, s, g) {
+      if (row?.talk) { s.talking = true; return true; }
+      if (row?.ready) { s.ready = !s.ready; g.sendReady(s.ready); return true; }
+      const voting = g.mp.view.phase === 'vote';
+      if (!voting || !g.amAlive || s.cast) return true;
+      // a row that is not the confirm button is a name; i indexes targets
+      if (!row?.vote && i < (s.targets?.length || 0)) s.sel = i;
+      s.cast = s.targets?.[s.sel] || 'skip';
+      g.sendVote(s.cast);
       return true;
     },
   },
 
   /* ---------------- SABOTAGE WHEEL ---------------- */
   mpSabotage: {
-    init(s) { s.sel = 0; },
+    init(s) { s.sel = 0; s.pull = 0; },
     draw(x, W, H, s, g, t) {
       const defs = Object.values(SABOTAGE_DEFS);
       const d = defs[s.sel] || defs[0];
+      const cool = g.mp.cool || {};
+      const now = performance.now() / 1000;
+      const left = (id) => Math.max(0, (cool[id] || 0) - now);
+      if (s.pull > 0) s.pull = Math.max(0, s.pull - 0.03);
 
-      /* A dark console rather than a menu: this is the one screen that is
-         entirely the villain's, so it gets its own colour and its own
-         furniture instead of the game's gold panel. */
+      /* A console, not a menu. This is the one screen that belongs entirely
+         to the villain, so it gets its own colour and its own furniture. */
       x.fillStyle = '#0e0403'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#0e0403', '#1a0605', 0.5, 2);
-      // a slow sweep, like something is scanning
       const sweep = ((t * 40) % (H + 60)) - 30;
       for (let i = 0; i < 20; i++) {
         const yy = Math.round(sweep + i);
@@ -584,7 +728,6 @@ export const SCREENS = {
       }
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.40)'; x.fillRect(0, y, W, 1); }
 
-      // frame
       x.fillStyle = '#8a2018';
       x.fillRect(8, 8, W - 16, 1); x.fillRect(8, H - 9, W - 16, 1);
       x.fillRect(8, 8, 1, H - 17); x.fillRect(W - 9, 8, 1, H - 17);
@@ -592,81 +735,114 @@ export const SCREENS = {
         x.fillStyle = RED; x.fillRect(cx2, cy2, 4, 4);
       }
 
-      drawText(x, 'SABOTAGE', { x: W / 2, y: 15, scale: 2, align: 'center', color: RED });
-      drawText(x, 'THEY WILL COME RUNNING. BE SOMEWHERE ELSE.', {
-        x: W / 2, y: 33, scale: 1, align: 'center', color: '#8a5a52',
-      });
+      drawText(x, 'SABOTAGE', { x: 22, y: 15, scale: 2, align: 'left', color: RED });
+      // a live readout of what the island is currently doing
+      const sab = g.mp.view.sabotage;
+      const status = sab
+        ? `RUNNING: ${(SABOTAGE_DEFS[sab.kind]?.name) || sab.kind}`
+        : 'ISLAND NOMINAL';
+      drawText(x, status, { x: W - 22, y: 12, scale: 1, align: 'right', color: sab ? '#ff6a5a' : '#6a8a5a' });
+      drawText(x, `${[...g.mp.view.players.values()].filter((p) => p.alive !== false).length} STILL BREATHING`,
+        { x: W - 22, y: 22, scale: 1, align: 'right', color: '#8a5a52' });
 
       /* three plates across, the lit one raised */
-      const CW = 92, CH = 74, GAP = 8;
+      const CW = 92, CH = 70, GAP = 8;
       const total = defs.length * CW + (defs.length - 1) * GAP;
       const ox = Math.round((W - total) / 2);
       const rows = [];
       defs.forEach((def, i) => {
         const on = i === s.sel;
+        const cd = left(def.id);
+        const locked = cd > 0 || !!sab;
         const cx2 = ox + i * (CW + GAP);
-        const cy2 = 46 - (on ? 2 : 0);
+        const cy2 = 40 - (on ? 2 : 0);
         x.fillStyle = on ? '#2a0a08' : '#160605';
         x.fillRect(cx2, cy2, CW, CH);
         ditherRect(x, cx2, cy2, CW, CH, on ? '#2a0a08' : '#160605', on ? '#3a0e0b' : '#1c0807', 0.4, 2);
-        x.fillStyle = on ? RED : '#5a1a14';
+        x.fillStyle = locked ? '#4a2a26' : (on ? RED : '#5a1a14');
         x.fillRect(cx2, cy2, CW, 1); x.fillRect(cx2, cy2 + CH - 1, CW, 1);
         x.fillRect(cx2, cy2, 1, CH); x.fillRect(cx2 + CW - 1, cy2, 1, CH);
-        if (on) { x.fillStyle = RED; x.fillRect(cx2, cy2, CW, 3); }
+        if (on) { x.fillStyle = locked ? '#4a2a26' : RED; x.fillRect(cx2, cy2, CW, 3); }
 
-        drawSabotageIcon(x, def.id, cx2 + CW / 2 - 12, cy2 + 10, 24, on, t);
+        drawSabotageIcon(x, def.id, cx2 + CW / 2 - 12, cy2 + 9, 24, on && !locked, t);
 
-        let ty = cy2 + 40;
+        let ty = cy2 + 38;
         for (const ln of wrapText(def.name, CW - 8, 1, 1)) {
-          drawText(x, ln, { x: cx2 + CW / 2, y: ty, scale: 1, align: 'center', color: on ? '#ffd8ce' : '#8a5a52' });
+          drawText(x, ln, { x: cx2 + CW / 2, y: ty, scale: 1, align: 'center',
+            color: locked ? '#6a4a44' : (on ? '#ffd8ce' : '#8a5a52') });
           ty += 9;
         }
-        drawText(x, def.fatal ? 'FATAL' : `${def.secs} SEC`, {
+        // cooldown, or how long it will run for
+        const foot = cd > 0 ? `COOLING ${Math.ceil(cd)}` : (def.fatal ? 'FATAL' : `${def.secs} SEC`);
+        drawText(x, foot, {
           x: cx2 + CW / 2, y: cy2 + CH - 10, scale: 1, align: 'center',
-          color: def.fatal ? (Math.floor(t * 5) % 2 ? '#ff6a5a' : '#8a2018') : '#7a4a44',
+          color: cd > 0 ? '#7a5a54'
+            : (def.fatal ? (Math.floor(t * 5) % 2 ? '#ff6a5a' : '#8a2018') : '#7a4a44'),
         });
+        if (locked) {
+          // hatching over a plate you cannot use
+          for (let k = -CH; k < CW; k += 6) {
+            x.fillStyle = 'rgba(20,4,3,.55)';
+            for (let q = 0; q < CH; q++) {
+              const px2 = cx2 + k + q;
+              if (px2 > cx2 && px2 < cx2 + CW - 1) x.fillRect(px2, cy2 + q, 2, 1);
+            }
+          }
+        }
         rows.push({ x: cx2, y: cy2, w: CW, h: CH });
       });
 
       // what the lit one actually does
-      let by = 132;
-      for (const ln of wrapText(d.blurb.toUpperCase(), W - 60, 1, 1)) {
+      let by = 116;
+      for (const ln of wrapText(d.blurb.toUpperCase(), W - 50, 1, 1)) {
         drawText(x, ln, { x: W / 2, y: by, scale: 1, align: 'center', color: '#e2b0a4' });
         by += 10;
       }
-      const fixers = d.fixers > 1 ? `${d.fixers} OF THEM MUST FIX IT` : 'ONE OF THEM CAN FIX IT';
-      drawText(x, fixers, { x: W / 2, y: by + 4, scale: 1, align: 'center', color: '#7a4a44' });
-
-      // where they will be while they fix it — which is the useful part
       const WHERE = {
         camp: 'THE CAMPFIRE', hut: "FERDI'S HUT", wreck: 'THE WRECK',
         pend1: 'THE WEST PENDULUM', pend2: 'THE RIDGE PENDULUM',
         pend3: 'THE EAST PENDULUM', pend4: 'THE NORTH PENDULUM',
       };
       const spots = (d.fixAt || []).map((k) => WHERE[k] || k.toUpperCase());
-      x.fillStyle = '#5a1a14';
-      x.fillRect(W / 2 - 70, by + 18, 140, 1);
-      drawText(x, 'THEY WILL RUN TO', { x: W / 2, y: by + 24, scale: 1, align: 'center', color: '#7a4a44' });
-      let sy = by + 34;
-      for (const ln of wrapText(spots.join(' - '), W - 60, 1, 1)) {
-        drawText(x, ln, { x: W / 2, y: sy, scale: 1, align: 'center', color: '#c08078' });
-        sy += 9;
+      const need = d.sites > 1 ? `${d.sites} DIFFERENT PLACES` : 'ONE PLACE';
+      drawText(x, `REPAIRED AT ${need}:`, { x: W / 2, y: by + 4, scale: 1, align: 'center', color: '#7a4a44' });
+      by += 14;
+      for (const ln of wrapText(spots.join('  -  '), W - 50, 1, 1)) {
+        drawText(x, ln, { x: W / 2, y: by, scale: 1, align: 'center', color: '#c08078' });
+        by += 9;
       }
+
+      /* the lever you actually throw */
+      const lx = W - 32, ly = H - 64;
+      x.fillStyle = '#2a0a08'; x.fillRect(lx - 10, ly, 20, 30);
+      x.fillStyle = '#5a1a14'; x.fillRect(lx - 10, ly, 20, 1); x.fillRect(lx - 10, ly + 29, 20, 1);
+      const throwK = s.pull;
+      const ly2 = Math.round(ly + 4 + throwK * 18);
+      x.fillStyle = '#8a2018'; x.fillRect(lx - 1, ly + 4, 2, 22);
+      x.fillStyle = throwK > 0.1 ? '#ff6a5a' : '#c03a2c';
+      x.fillRect(lx - 6, ly2, 12, 5);
+      drawText(x, 'PULL', { x: lx, y: ly + 32, scale: 1, align: 'center', color: '#7a4a44' });
 
       footer(x, W, H, 'LEFT RIGHT CHOOSE   E PULL IT   Q OR ESC AWAY');
       return rows;
     },
     key(code, s, g, st) {
       const defs = Object.values(SABOTAGE_DEFS);
-      if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + defs.length - 1) % defs.length; return true; }
-      if (code === 'ArrowRight' || code === 'KeyD') { s.sel = (s.sel + 1) % defs.length; return true; }
+      if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + defs.length - 1) % defs.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowRight' || code === 'KeyD') { s.sel = (s.sel + 1) % defs.length; g.audio?.sfx('select'); return true; }
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        s.pull = 1;
         g.sendSabotage(defs[s.sel].id);
-        st.pop();
-        g.afterOverlayClose();
+        setTimeout(() => { if (st.name === 'mpSabotage') { st.pop(); g.afterOverlayClose(); } }, 260);
         return true;
       }
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (i === s.sel) { this.key('Enter', s, g, st); return true; }
+      s.sel = i;
+      g.audio?.sfx('select');
       return true;
     },
   },

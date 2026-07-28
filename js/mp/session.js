@@ -8,7 +8,7 @@
    =========================================================== */
 
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
-import { TASK_DEFS, SABOTAGE_DEFS, dealTasks, taskById } from './tasks.js';
+import { TASK_DEFS, SABOTAGE_DEFS, dealTasks, taskById, taskSteps } from './tasks.js';
 
 const now = () => performance.now() / 1000;
 
@@ -141,7 +141,7 @@ export class HostSession {
       case C.VOTE: { this._tryVote(from, msg.targetId); break; }
       case C.CHAT: { this._chat(from, msg.text); break; }
       case C.SABOTAGE: { this._trySabotage(from, msg.kind); break; }
-      case C.FIX: { this._tryFix(from, msg.kind); break; }
+      case C.FIX: { this._tryFix(from, msg.kind, msg.at); break; }
       default: break;
     }
   }
@@ -178,7 +178,10 @@ export class HostSession {
       p.tasks = p.role === ROLE.CASTAWAY
         ? dealTasks(this.rng, this.settings.tasksPerPlayer)
         : dealTasks(this.rng, this.settings.tasksPerPlayer);   // agents get a fake list
-      if (p.role === ROLE.CASTAWAY) this.tasksTotal += p.tasks.length;
+      p.step = {};                       // taskId -> how far through it they are
+      if (p.role === ROLE.CASTAWAY) {
+        for (const t of p.tasks) this.tasksTotal += taskSteps(t);
+      }
     }
     this.bodies = [];
     this.sabotage = null;
@@ -230,12 +233,22 @@ export class HostSession {
     const p = this.players.get(id);
     if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
     if (!p.tasks.includes(taskId) || p.doneTasks.has(taskId)) return;
+
+    const def = taskById(taskId);
+    p.step = p.step || {};
+    const at = p.step[taskId] || 0;
+    const twoPart = !!def?.then;
+    const finished = !twoPart || at >= 1;
+
+    if (finished) p.doneTasks.add(taskId);
+    else p.step[taskId] = 1;
+
     // Agents get a decoy list so they can be seen "doing tasks"; it just
     // never counts toward the bar.
-    p.doneTasks.add(taskId);
     if (p.role === ROLE.CASTAWAY) { this.tasksDone++; this._tasks(); }
-    if (id === 'host') this.hooks.onTaskOk?.(taskId);
-    else this.net.sendTo(id, { t: S.TASK_OK, taskId });
+    const packet = { t: S.TASK_OK, taskId, step: p.step[taskId] || 0, done: finished };
+    if (id === 'host') this.hooks.onTaskOk?.(taskId, packet.step, finished);
+    else this.net.sendTo(id, packet);
     this._checkWin();
   }
 
@@ -382,20 +395,39 @@ export class HostSession {
     const def = SABOTAGE_DEFS[kind];
     if (!p || !def || p.role !== ROLE.AGENT || !p.alive) return;
     if (this.phase !== PHASE.ROAM || this.sabotage) return;
-    this.sabotage = { kind, endsAt: now() + def.secs, fatal: !!def.fatal, fixers: new Set() };
-    this.net.broadcast({ t: S.SABOTAGE, kind, secs: def.secs, fatal: !!def.fatal });
-    this.hooks.onSabotage?.(kind, def.secs, !!def.fatal);
+    // per-kind cooldown, so the fatal one cannot simply be run back
+    this.cool = this.cool || {};
+    if (this.cool[kind] && now() < this.cool[kind]) {
+      this.net.sendTo(id, { t: S.SABOTAGE, kind, secs: 0, fatal: false, refused: true });
+      return;
+    }
+    this.sabotage = { kind, endsAt: now() + def.secs, fatal: !!def.fatal, sites: new Set() };
+    this.net.broadcast({ t: S.SABOTAGE, kind, secs: def.secs, fatal: !!def.fatal, sites: def.sites });
+    this.hooks.onSabotage?.(kind, def.secs, !!def.fatal, def.sites);
   }
 
-  _tryFix(id, kind) {
+  /**
+   * @param {string} at  which of the sabotage's repair points they are at.
+   *   The host checks they are really standing there, and counts distinct
+   *   places rather than distinct people.
+   */
+  _tryFix(id, kind, at) {
     const p = this.players.get(id);
     if (!p || !p.alive || !this.sabotage || this.sabotage.kind !== kind) return;
     const def = SABOTAGE_DEFS[kind];
-    this.sabotage.fixers.add(id);
-    if (this.sabotage.fixers.size >= def.fixers) {
+    const site = def.fixAt.includes(at) ? at : def.fixAt[0];
+    const where = this.hooks.siteOf?.(site);
+    if (where && Math.hypot(p.x - where.x, p.z - where.z) > 6) return;
+    this.sabotage.sites.add(site);
+    const need = def.sites || 1;
+    this.net.broadcast({ t: S.FIXPROGRESS, kind, done: this.sabotage.sites.size, need });
+    this.hooks.onFixProgress?.(kind, this.sabotage.sites.size, need);
+    if (this.sabotage.sites.size >= need) {
       this.sabotage = null;
-      this.net.broadcast({ t: S.FIXED, kind });
-      this.hooks.onFixed?.(kind);
+      this.cool = this.cool || {};
+      this.cool[kind] = now() + (def.cooldown || 0);
+      this.net.broadcast({ t: S.FIXED, kind, cooldown: def.cooldown || 0 });
+      this.hooks.onFixed?.(kind, def.cooldown || 0);
     }
   }
 
@@ -442,7 +474,10 @@ export class HostSession {
       const wasFatal = this.sabotage.fatal;
       const kind = this.sabotage.kind;
       this.sabotage = null;
-      this.net.broadcast({ t: S.FIXED, kind });
+      this.cool = this.cool || {};
+      const cd = SABOTAGE_DEFS[kind]?.cooldown || 0;
+      this.cool[kind] = now() + cd;
+      this.net.broadcast({ t: S.FIXED, kind, cooldown: cd });
       this.hooks.onFixed?.(kind);
       if (wasFatal && !this.over) {
         this.over = { winner: 'agents', reason: 'THE PENDULUMS STOPPED' };
@@ -483,6 +518,7 @@ export class MirrorSession {
     this.role = null;
     this.tasks = [];
     this.doneTasks = new Set();
+    this.taskStep = new Map();      // taskId -> how far through a two-part chore
     this.mates = null;
     this.tasksDone = 0;
     this.tasksTotal = 0;
@@ -519,6 +555,7 @@ export class MirrorSession {
       case S.ROLE:
         this.role = msg.role; this.tasks = msg.tasks || []; this.mates = msg.mates;
         this.doneTasks = new Set();
+        this.taskStep = new Map();
         this.hooks.onRole?.(msg);
         break;
       case S.SNAPSHOT:
@@ -535,7 +572,11 @@ export class MirrorSession {
         this.hooks.onCooldown?.(msg.secs || 0);
         break;
       case S.TASKS: this.tasksDone = msg.done; this.tasksTotal = msg.total; break;
-      case S.TASK_OK: this.doneTasks.add(msg.taskId); this.hooks.onTaskOk?.(msg.taskId); break;
+      case S.TASK_OK:
+        if (msg.done === false) this.taskStep.set(msg.taskId, msg.step);
+        else this.doneTasks.add(msg.taskId);
+        this.hooks.onTaskOk?.(msg.taskId, msg.step, msg.done !== false);
+        break;
       case S.KILLED:
         this.bodies.push({ id: msg.victimId, x: msg.x, y: msg.y, z: msg.z });
         this.hooks.onKilled?.(msg.victimId, msg.x, msg.y, msg.z);
@@ -545,10 +586,16 @@ export class MirrorSession {
       case S.VOTES: this.votes = { counts: msg.counts, voted: msg.voted }; this.hooks.onVotes?.(msg); break;
       case S.EXILE: this.hooks.onExile?.(msg); break;
       case S.SABOTAGE:
-        this.sabotage = { kind: msg.kind, endsAt: performance.now() / 1000 + msg.secs, fatal: msg.fatal };
+        if (msg.refused) { this.hooks.onRefused?.(msg.kind); break; }
+        this.sabotage = { kind: msg.kind, endsAt: performance.now() / 1000 + msg.secs,
+          fatal: msg.fatal, done: 0, need: msg.sites || 1 };
         this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
         break;
-      case S.FIXED: this.sabotage = null; this.hooks.onFixed?.(msg.kind); break;
+      case S.FIXPROGRESS:
+        if (this.sabotage) { this.sabotage.done = msg.done; this.sabotage.need = msg.need; }
+        this.hooks.onFixProgress?.(msg.kind, msg.done, msg.need);
+        break;
+      case S.FIXED: this.sabotage = null; this.hooks.onFixed?.(msg.kind, msg.cooldown || 0); break;
       case S.OVER: this.over = msg; this.hooks.onOver?.(msg.winner, msg.agents, msg.reason); break;
       case S.KICK: this.hooks.onKick?.(msg.reason); break;
       default: break;

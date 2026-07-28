@@ -13,10 +13,10 @@ import { ScreenStack, GLYPH_NAMES } from './lib/screens.js';
 
 import {
   buildTerrain, buildOcean, buildSurf, buildSky, buildClouds,
-  heightAt, slopeAt, biomeAt, findBeach, ISLAND,
+  heightAt, slopeAt, biomeAt, findBeach, ISLAND, setCarves,
 } from './world/terrain.js';
 import {
-  buildPropMaterials, scatterIsland, LANDMARKS, findGround,
+  buildPropMaterials, scatterIsland, LANDMARKS, findGround, findFlatGround,
   buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting,
   buildRoguePendulum, buildCoconutPile, buildCoconutMesh, buildSatchel,
   buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS,
@@ -227,22 +227,6 @@ const HUT_FOOT = [
   [-2.9, 5.0], [2.9, 5.0], [-2.9, 7.6], [2.9, 7.6], [0, 0],
 ];
 
-/**
- * Lowest terrain height under a rotated footprint. Anything standing on
- * legs wants this rather than the height at its centre: the centre buries
- * whichever corner the hill rises towards.
- */
-function lowestUnder(ox, oz, yaw, pts) {
-  const c = Math.cos(yaw), s = Math.sin(yaw);
-  let lo = Infinity;
-  for (const [lx, lz] of pts) {
-    const wx = ox + lx * c + lz * s;
-    const wz = oz - lx * s + lz * c;
-    lo = Math.min(lo, heightAt(wx, wz));
-  }
-  return lo;
-}
-
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
@@ -391,8 +375,19 @@ export class Game {
     });
 
     await step('RAISING ISLA DORADA', 0.18, () => {
-      this._buildIslandScene();
+      /* The temple site is chosen against the natural hill, then the hill
+         is excavated around it, and only then is the mesh built — so the
+         ground, the collision and everything planted later all agree. */
       this.templeDoorPos = this._findTempleSpot();
+      const dg = this.templeDoorPos;
+      const yaw = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+      const cs = Math.cos(yaw), sn = Math.sin(yaw);
+      setCarves([{
+        // centred a little into the hill, so the terraces stand on the shelf
+        x: dg.x + (-4) * sn, z: dg.z + (-4) * cs,
+        y: dg.y - 0.55, rx: 21, rz: 20, yaw,
+      }]);
+      this._buildIslandScene();
     });
 
     await step('PLANTING THE JUNGLE', 0.42, () => {
@@ -599,16 +594,23 @@ export class Game {
     }
 
     /* ---- Ferdi Steinman's hut: the one landmark you can steer by ---- */
-    const fh = findGround(-30, 46, { rng, radius: 22, minH: 5, maxH: 22, maxSlope: 0.16 });
-    const hut = buildFerdiHut(rng, this.propMats, buildFlameCluster);
-    // The counter is on the hut's +Z face; aim it at the wreck camp so you
-    // come out of the trees looking straight at Ferdi.
-    hut.rotation.y = Math.atan2(this.spawn.x - fh.x, this.spawn.z - fh.z);
-    /* Sit it on the LOWEST ground under its footprint. Averaging or using
-       the centre buries the uphill corner, which is what made the shack
-       look like it was sliding into the hillside. The legs are long enough
-       to swallow the difference at the other corners. */
-    hut.position.set(fh.x, lowestUnder(fh.x, fh.z, hut.rotation.y, HUT_FOOT) - 0.05, fh.z);
+    /* The counter is on the hut's +Z face; aim it at the wreck camp so you
+       come out of the trees looking straight at Ferdi. The yaw has to be
+       decided before the site, because "is this ground flat" depends on
+       which way the building is pointing. */
+    const hutYaw = Math.atan2(this.spawn.x - (-30), this.spawn.z - 46);
+    const fh = findFlatGround(-30, 46, HUT_FOOT, {
+      rng, radius: 26, minH: 5, maxH: 22, yaw: hutYaw, maxRise: 1.2,
+    });
+    // terrain height in the hut's own space, relative to its origin
+    const hutGround = (lx, lz) => {
+      const c = Math.cos(hutYaw), sn = Math.sin(hutYaw);
+      return heightAt(fh.x + lx * c + lz * sn, fh.z - lx * sn + lz * c) - fh.y;
+    };
+    const hut = buildFerdiHut(rng, this.propMats, buildFlameCluster, hutGround);
+    hut.rotation.y = hutYaw;
+    // its origin is the lowest ground under the whole footprint
+    hut.position.set(fh.x, fh.y, fh.z);
     scene.add(hut);
     this.tickers.push(hut);
     this.hutPos = fh;
@@ -919,19 +921,22 @@ export class Game {
         skirt.push(b);
       }
     }
-    // rough boulders masking the join between cut stone and hillside
-    for (let i = 0; i < 26; i++) {
-      const lx = -19 + rng() * 38;
-      const lz = -9 + rng() * 17;
-      if (Math.abs(lx) < 6 && lz > 0) continue;    // keep the doorway clear
+    /* Scree along the rim of the cut, masking the join between dressed
+       stone and hillside. Same stone as the temple so they read as spoil
+       from the excavation rather than as holes in the world. */
+    for (let i = 0; i < 30; i++) {
+      const lx = -21 + rng() * 42;
+      const lz = -11 + rng() * 20;
+      if (Math.abs(lx) < 7 && lz > -1) continue;   // keep the doorway clear
+      if (Math.abs(lx) < 13 && Math.abs(lz) < 4) continue;
       const w = toWorld(lx, lz);
       const gh = heightAt(w.x, w.z) - (dg.y - 0.6);
-      const sSize = 1.1 + rng() * 2.2;
-      const r = ico(sSize, 0, 'caveRock', {
-        pos: [lx, gh + sSize * 0.2, lz], rot: [rng() * 3, rng() * 3, rng() * 3],
+      const sSize = 0.8 + rng() * 1.5;
+      const r = ico(sSize, 0, 'templeStone', {
+        pos: [lx, gh + sSize * 0.05, lz], rot: [rng() * 3, rng() * 3, rng() * 3],
       });
-      lumpify(r, 0.3, rng);
-      tint(r, new THREE.Color(0x6f6656).multiplyScalar(0.7 + rng() * 0.4));
+      lumpify(r, 0.26, rng);
+      tint(r, new THREE.Color(0x8d8770).multiplyScalar(0.78 + rng() * 0.34));
       skirt.push(r);
     }
     group.add(new THREE.Mesh(mergeGeos(skirt), M.opaque));
@@ -1068,7 +1073,11 @@ export class Game {
       if (e.button === 0) this.throwCoconut();
     });
 
-    window.addEventListener('blur', () => { if (this.playing) this.pause(true); });
+    /* Alt-tabbing out of a menu should do nothing; there is nothing to
+       pause, and pausing on top of an open screen stacks two of them. */
+    window.addEventListener('blur', () => {
+      if (this.playing && !this.paused && !this.anyOverlayOpen()) this.pause(true);
+    });
   }
 
   get playing() { return this.state === 'island' || this.state === 'temple'; }
@@ -1799,11 +1808,14 @@ I have snacks."`);
     if (!this.playing) return;
     this.paused = on;
     if (on) {
-      document.exitPointerLock?.();
       if (this.screens.name !== 'pause') this.screens.push('pause');
+      document.exitPointerLock?.();
     } else {
-      this.screens.clear();
-      this._requestLock();
+      /* Pop the pause card, do not clear the stack. Clearing took the
+         council down with it, which left you standing in the world during
+         a meeting with no interface and no way to move or vote. */
+      while (this.screens.name === 'pause') this.screens.pop();
+      if (!this.screens.open) this._requestLock();
     }
   }
 
@@ -2489,7 +2501,7 @@ I have snacks."`);
     this.critters.userData.tick(t, dt, this.player?.pos);
     this.sky.position.copy(this.camera.position);
     for (const g of this.tickers) g.userData?.tick?.(t, dt);
-    if (this.campfire) {
+    if (this.campfire && !this.doused) {
       this.campfire.userData.light.intensity = 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
     }
   }

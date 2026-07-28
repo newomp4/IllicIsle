@@ -524,6 +524,40 @@ export const LANDMARKS = {
   temple:   { x: 6,   z: -46,  minH: 34, maxH: 50, maxSlope: 0.30, radius: 10 },
 };
 
+/**
+ * Find a spot where a whole FOOTPRINT is flat, not just its centre point.
+ * `slopeAt` samples one place; a building twelve metres long can sit on a
+ * perfectly gentle spot and still have its far end three metres in the air
+ * — or three metres underground, which is worse.
+ *
+ * @param {Array<[number,number]>} foot  points in the building's own space
+ */
+export function findFlatGround(x, z, foot, opts = {}) {
+  const { minH = 1.2, maxH = 40, radius = 26, rng = Math.random, yaw = 0, maxRise = 1.4 } = opts;
+  const c = Math.cos(yaw), sn = Math.sin(yaw);
+  let best = null, bestScore = -Infinity;
+  for (let i = 0; i < 500; i++) {
+    const a = rng() * Math.PI * 2;
+    const r = Math.sqrt(rng()) * radius;
+    const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+    let lo = Infinity, hi = -Infinity, wet = false;
+    for (const [lx, lz] of foot) {
+      const wx = px + lx * c + lz * sn;
+      const wz = pz - lx * sn + lz * c;
+      const h = heightAt(wx, wz);
+      if (h < minH || h > maxH) { wet = true; break; }
+      lo = Math.min(lo, h); hi = Math.max(hi, h);
+    }
+    if (wet) continue;
+    const rise = hi - lo;
+    // flatness first, closeness second
+    const score = -rise * 12 - r * 0.35;
+    if (score > bestScore) { bestScore = score; best = { x: px, y: lo, z: pz, rise }; }
+    if (rise < maxRise * 0.6 && r < radius * 0.6) break;   // good enough
+  }
+  return best || { x, y: Math.max(heightAt(x, z), 0.5), z, rise: 99 };
+}
+
 /** Find a sane spot near a target: on land, gentle slope, above water. */
 export function findGround(x, z, opts = {}) {
   const { minH = 1.2, maxH = 40, maxSlope = 0.3, radius = 26, rng = Math.random } = opts;
@@ -949,27 +983,35 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   let nightK = 0;
   let wake = 0;            // 0 dormant, 1 fully awake
   let wakeT = -1;          // seconds since activation began
+  let jam = 0;             // Castaways: the bob is arrested and the lamp is red
   group.userData.setNight = (n) => { nightK = n; };
+  group.userData.setJammed = (on) => { jam = on ? 1 : 0; };
   group.userData.activate = () => { if (wakeT < 0) wakeT = 0; };
   group.userData.wakeProgress = () => wake;
 
   group.userData.tick = (t, dt = 0.016) => {
     if (wakeT >= 0) { wakeT += dt; wake = Math.min(1, wakeT / 3.2); }
 
-    // the bob accelerates hard as it wakes, then settles into a fast beat
+    /* Jammed: the bob stops dead at the top of its arc and judders there,
+       and the lamp goes red. From across the island that reads as an alarm,
+       which is the point — somebody has to run. */
     const speed = 0.85 + wake * 5.5;
     const swing = 0.55 + wake * 0.75;
-    pivot.rotation.x = Math.sin(t * speed + phase) * swing;
+    pivot.rotation.x = jam
+      ? swing * 0.92 + Math.sin(t * 41) * 0.03
+      : Math.sin(t * speed + phase) * swing;
 
     // the whole tower shudders during the wake
     const shudder = wake > 0 && wake < 1 ? (1 - Math.abs(wake - 0.5) * 2) * 0.10 : 0;
     group.position.x = (group.userData.homeX ?? group.position.x);
-    group.rotation.z = Math.sin(t * 34) * shudder;
+    group.rotation.z = Math.sin(t * 34) * (shudder + jam * 0.012);
 
     // a lantern in daylight, a lighthouse after dark, a flare when woken
-    glow.intensity = (1.1 + nightK * 3.2 + wake * 6.5) + Math.sin(t * 1.7 + phase) * (0.5 + nightK);
+    glow.intensity = jam
+      ? 4.5 + Math.sin(t * 9) * 3.5
+      : (1.1 + nightK * 3.2 + wake * 6.5) + Math.sin(t * 1.7 + phase) * (0.5 + nightK);
     glow.distance = 16 + nightK * 22 + wake * 20;
-    glow.color.setHex(wake > 0.1 ? 0xbdfff0 : 0x8fe6d0);
+    glow.color.setHex(jam ? 0xff3020 : (wake > 0.1 ? 0xbdfff0 : 0x8fe6d0));
 
     // shockwave on the beat it comes alive
     if (wakeT >= 0 && wakeT < 2.4) {
