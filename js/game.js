@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { RetroPipeline, setJitterEnabled, setTime } from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
-import { mergeGeos, tint, plane, box, cyl, ico, lumpify } from './lib/geo.js';
+import { mergeGeos, tint, plane, box, cyl, ico, lumpify, blankUV } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
 import { Cutscene, setCinemaBars, attachHud } from './lib/cutscene.js';
 import { UI } from './ui.js';
@@ -360,12 +360,12 @@ export class Game {
 
     await step('CASTING THE IDOL', 0.90, () => {
       this._buildTitleScene();
-      // the fogged idol for the opening
+      // the Idol itself, standing on the plinth in the opening's pour scene
       const st = this.introStage;
-      const shrine = buildIdol(this.idolMats, { curls: 60, seed: 12 });
-      shrine.position.copy(st.userData.fogAnchor).add(new THREE.Vector3(0, 0, 0));
-      shrine.scale.setScalar(1.6);
-      st.add(shrine);
+      const shrine = buildIdol(this.idolMats, { curls: 66, seed: 12 });
+      shrine.position.set(0, 1.5, 0);
+      shrine.scale.setScalar(1.35);
+      st.userData.idolSet.add(shrine);
       st.userData.idol = shrine;
     });
 
@@ -540,7 +540,7 @@ export class Game {
 
     /* ---- Ferdi Steinman's hut: the one landmark you can steer by ---- */
     const fh = findGround(-30, 46, { rng, radius: 22, minH: 5, maxH: 22, maxSlope: 0.16 });
-    const hut = buildFerdiHut(rng, this.propMats);
+    const hut = buildFerdiHut(rng, this.propMats, buildFlameCluster);
     hut.position.set(fh.x, fh.y - 0.4, fh.z);
     // The counter is on the hut's +Z face; aim it at the wreck camp so you
     // come out of the trees looking straight at Ferdi.
@@ -561,6 +561,8 @@ export class Game {
       const R = 13;
       const g = new THREE.PlaneGeometry(R * 2, R * 2, 24, 24);
       g.rotateX(-Math.PI / 2);
+      // one flat texel, or a 26-unit plane samples the whole atlas
+      blankUV(g, 'dirt');
       const pos = g.attributes.position;
       const colors = new Float32Array(pos.count * 3);
       const col = new THREE.Color();
@@ -760,7 +762,7 @@ export class Game {
 
     /* --- the dark of the passage --- */
     const mouth = new THREE.Mesh(
-      mergeGeos([tint(new THREE.PlaneGeometry(5.0, 8.4), new THREE.Color(0x05070a))]),
+      mergeGeos([tint(blankUV(new THREE.PlaneGeometry(5.0, 8.4), 'caveRock'), new THREE.Color(0x05070a))]),
       M.opaque);
     mouth.position.set(0, 4.2, 0.9);
     group.add(mouth);
@@ -772,7 +774,7 @@ export class Game {
 
     /* --- the slab that seals it --- */
     const slabParts = [];
-    const slabBody = new THREE.BoxGeometry(4.9, 8.2, 0.9);
+    const slabBody = blankUV(new THREE.BoxGeometry(4.9, 8.2, 0.9), 'templeStone');
     slabParts.push(tint(slabBody, STONE.clone().multiplyScalar(1.08)));
     for (let i = 0; i < 3; i++) {
       slabParts.push(tint(box(3.2, 1.8, 0.24, 'templeGlyph', { pos: [0, -2.2 + i * 2.4, 0.55] }),
@@ -787,7 +789,7 @@ export class Game {
     const sockets = [];
     for (let i = 0; i < 4; i++) {
       const m = new THREE.Mesh(
-        mergeGeos([tint(new THREE.BoxGeometry(1.5, 1.5, 0.34), new THREE.Color(0x2c3038))]),
+        mergeGeos([tint(blankUV(new THREE.BoxGeometry(1.5, 1.5, 0.34), 'monolith'), new THREE.Color(0x2c3038))]),
         M.opaque);
       m.position.set((i - 1.5) * 2.1, 9.6, 3.5);
       group.add(m);
@@ -1150,6 +1152,7 @@ export class Game {
     if (this.cutScene === this.islandScene) {
       this.tickIslandWorld(dt);
       if (this.introStage?.visible) {
+        this._introClose?.(dt);
         this.introStage.userData.tick(this.time, dt, this.camera);
       }
       if (this.introStorm != null && this.state === 'cutscene') this.updateIntroWeather(dt);
@@ -1163,9 +1166,11 @@ export class Game {
   }
 
   /* ---------- opening ----------
-     Five movements: the legend told in shadow, then the storm, then the
-     wreck, then dawn over the island. The legend beats play on a pocket
-     set parked below the world (see buildIntroStage). */
+     Seven beats, each framed on the thing its caption is about:
+     the king on his throne, the Agents closing in, the pour, Hector
+     arriving, the storm, the wreck, dawn.
+     The first four play on a pocket stage parked below the world.
+  */
   playIntro() {
     const s = this.spawn;
     const out = Math.hypot(s.x, s.z) || 1;
@@ -1175,97 +1180,140 @@ export class Game {
 
     const ST = this.introStage;
     ST.visible = true;
-    const stagePos = ST.position;
-    const at = (lx, ly, lz) => new THREE.Vector3(stagePos.x + lx, stagePos.y + ly, stagePos.z + lz);
+    ST.userData.closeIn = 0;
+    this.setStageMode(true);
+    const P = ST.position;
+    const at = (lx, ly, lz) => new THREE.Vector3(P.x + lx, P.y + ly, P.z + lz);
 
     this.pipeline.fade = 0;
     this.introStorm = 1;
     this.introClearing = false;
     this.audio.playMusic('storm');
 
+    // the Agents walk in over shots II-III
+    this._introClose = (dt) => {
+      const want = this._introCloseWant || 0;
+      ST.userData.closeIn += (want - ST.userData.closeIn) * Math.min(1, dt * 0.9);
+    };
+    this._introCloseWant = 0;
+
     this.playCutscene({
       shots: [
-        { // I. the Rogue Agents, coming out of the dark
-          dur: 6.5, ease: 'linear',
-          from: at(-7, 1.6, 13), to: at(3, 1.3, 7.2),
-          lookFrom: at(0, 1.2, 0), lookTo: at(0, 1.3, 0),
-        },
-        { // II. the idol in the fog
+        { // I — the throne. Slow push onto the king.
           dur: 6.0, ease: 'smooth',
-          from: at(-60, 2.6, 15), to: at(-59, 2.2, 7.5),
-          lookFrom: at(-60, 2.4, 0), lookTo: at(-60, 2.0, 0),
+          from: at(0, 5.6, 17), to: at(0, 3.9, 8.4),
+          lookFrom: at(0, 3.4, 0), lookTo: at(0, 3.5, 0),
         },
-        { // III. Hector arriving
-          dur: 5.5, ease: 'linear',
-          from: at(52, 3.4, 12), to: at(63, 2.0, 7),
-          lookFrom: at(60, 1.2, 0), lookTo: at(60, 1.0, 0),
-        },
-        { // IV. black water, heaving
+        { // II — low and behind, the Agents arriving out of the dark
           dur: 6.0, ease: 'linear',
-          from: sea(120, 5.5), to: sea(96, 3.2),
-          look: sea(70, 1.0),
+          from: at(-9.5, 1.5, 9.5), to: at(-4.4, 1.9, 5.0),
+          lookFrom: at(0, 2.6, 0), lookTo: at(0, 3.0, 0),
         },
-        { // V. the ship going over
-          dur: 5.0, ease: 'linear', shake: 0.35,
-          from: sea(74, 7.0), to: sea(50, 3.0),
-          look: sea(34, 2.0),
+        { // III — the circle tightens on him
+          dur: 5.0, ease: 'easeOut', shake: 0.10,
+          from: at(3.6, 2.6, 6.4), to: at(1.6, 3.2, 3.6),
+          lookFrom: at(0, 3.2, 0), lookTo: at(0, 3.4, 0),
         },
-        { // VI. time passes — dawn over the island
+        { // IV — the pour: the Idol on its plinth, fog drifting past
+          dur: 6.5, ease: 'smooth',
+          from: at(-220 + 1.5, 4.6, 13), to: at(-220 + 0.4, 2.6, 6.2),
+          lookFrom: at(-220, 2.6, 0), lookTo: at(-220, 2.3, 0),
+        },
+        { // V — Hector, coming in across open water
+          dur: 6.0, ease: 'linear',
+          from: at(220 + 13, 3.6, 13), to: at(220 + 4.5, 2.4, 8.5),
+          lookFrom: at(220, 2.4, 1.5), lookTo: at(220, 2.2, 1.5),
+        },
+        { // VI — black water, the ship going over
+          dur: 6.5, ease: 'linear', shake: 0.3,
+          from: sea(104, 6.0), to: sea(58, 3.0),
+          look: sea(36, 1.6),
+        },
+        { // VII — dawn, then down onto the body
           dur: 6.0, ease: 'smooth',
-          from: sea(46, 26), to: sea(6, 15),
-          look: new THREE.Vector3(0, 12, 0),
+          from: sea(40, 24), to: sea(4, 13),
+          look: new THREE.Vector3(0, 10, 0),
         },
-        { // VII. down to the body on the sand
+        {
           dur: 5.5, ease: 'easeOut',
-          from: new THREE.Vector3(wreck.x + 16, wreck.y + 12, wreck.z + 18),
+          from: new THREE.Vector3(wreck.x + 15, wreck.y + 11, wreck.z + 17),
           to: new THREE.Vector3(s.x - 4.5, s.y + 2.4, s.z + 5.5),
           lookFrom: new THREE.Vector3(wreck.x, wreck.y + 3, wreck.z),
           lookTo: () => new THREE.Vector3(this.player.pos.x, this.player.pos.y + 1.3, this.player.pos.z),
         },
       ],
       text: [
-        { at: 0.8, until: 6.0,
-          text: 'ILLIC ISLE was the seat of KING ILLIC,\nand he ruled it badly, and at length.' },
-        { at: 6.8, until: 12.0,
-          text: 'The ROGUE AGENTS came at night.\nThey ended the king, and poured what was\nleft of him into gold.' },
-        { at: 13.0, until: 17.6,
-          text: 'They buried the Idol under his own temple\nand set four Pendulums to mark the way.' },
-        { at: 18.4, until: 23.0,
-          text: 'Then his brother HECTOR sailed in,\nkilled every Agent on the rock,\nand sat down on top of him.' },
-        { at: 24.4, until: 29.0,
-          text: 'Eleven years later, a storm takes a ship\nthat had no business out here.' },
-        { at: 31.0, until: 35.4,
-          text: 'The sea spits you out on the same beach.' },
+        { at: 0.7, until: 5.6, text: 'KING ILLIC held this island\nfor thirty years, and badly.' },
+        { at: 6.6, until: 11.6, text: 'The ROGUE AGENTS came for him\nout of the dark, and they were thorough.' },
+        { at: 12.6, until: 16.6, text: 'They did not bury him.' },
+        { at: 17.8, until: 23.6, text: 'They poured what was left of him into gold,\nand set four Pendulums to mark where\nthey put it.' },
+        { at: 24.6, until: 30.0, text: 'Eleven years ago his brother HECTOR\nsailed in with a staff that makes food\nfrom nothing.\nHe killed every Agent on the rock.' },
+        { at: 31.6, until: 36.4, text: 'Last night a storm took a ship\nthat had no business out here.' },
+        { at: 38.4, until: 43.0, text: 'This morning the sea gives you back.' },
       ],
       events: [
-        { at: 0.0, visualOnly: true, fn: () => this.fade(1, 2200) },
-        { at: 0.4, fn: () => this.audio.sfx('bossIntro') },
-        { at: 3.2, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 6.6, fn: () => this.audio.sfx('idolRise') },
-        { at: 12.6, fn: () => this.audio.sfx('stinger') },
-        { at: 18.2, fn: () => this.audio.sfx('surfWash') },
-        { at: 21.0, fn: () => this.audio.sfx('slam') },
-        {
-          at: 23.6, fn: () => {
-            ST.visible = false;                      // done with the pocket set
-            this.audio.sfx('stormAmbience');
-          },
-        },
-        { at: 24.6, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 28.0, fn: () => this.audio.sfx('shipBreak') },
-        { at: 30.2, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 31.6, fn: () => this.audio.sfx('shipBreak') },
-        { at: 32.6, fn: () => { this.introClearing = true; this.audio.playMusic('island'); } },
-        { at: 33.0, fn: () => this.audio.sfx('dawn') },
-        { at: 38.0, fn: () => this.audio.sfx('surfWash') },
-        { at: 40.0, visualOnly: true, fn: () => this.fade(0, 1200) },
+        { at: 0.0, visualOnly: true, fn: () => this.fade(1, 2000) },
+        { at: 0.5, fn: () => this.audio.sfx('bossIntro') },
+        { at: 6.2, fn: () => { this._introCloseWant = 0.45; this.audio.sfx('cast'); } },
+        { at: 9.0, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 12.2, fn: () => { this._introCloseWant = 1.0; this.audio.sfx('charge'); } },
+        { at: 15.4, fn: () => { this.audio.sfx('slam'); this.ui.flashLightning(); } },
+        { at: 17.6, fn: () => this.audio.sfx('idolRise') },
+        { at: 22.0, fn: () => this.audio.sfx('stinger') },
+        { at: 24.4, fn: () => this.audio.sfx('surfWash') },
+        { at: 28.6, fn: () => this.audio.sfx('orbShatter') },
+        { at: 30.6, fn: () => { ST.visible = false; this.setStageMode(false); this.audio.sfx('stormAmbience'); } },
+        { at: 31.8, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 34.0, fn: () => this.audio.sfx('shipBreak') },
+        { at: 36.0, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 37.0, fn: () => this.audio.sfx('shipBreak') },
+        { at: 37.8, fn: () => { this.introClearing = true; this.audio.playMusic('island'); } },
+        { at: 38.2, fn: () => this.audio.sfx('dawn') },
+        { at: 42.4, fn: () => this.audio.sfx('surfWash') },
+        { at: 44.6, visualOnly: true, fn: () => this.fade(0, 1200) },
       ],
-      onDone: () => { ST.visible = false; this.endIntro(); },
+      onDone: () => { ST.visible = false; this.setStageMode(false); this._introClose = null; this.endIntro(); },
     }, this.islandScene);
+  }
+
+  /**
+   * The legend beats are lit theatre in a black void. The island's sky
+   * dome follows the camera and its ocean stretches to the horizon, so
+   * both show up behind the pocket stage unless we strike the set.
+   */
+  setStageMode(on) {
+    if (this._stageMode === on) return;
+    this._stageMode = on;
+    const sc = this.islandScene;
+    for (const o of [this.ocean, this.sky, this.terrain, this.surf, this.clouds,
+                     this.birds, this.critters]) {
+      if (o) o.visible = !on;
+    }
+    if (on) {
+      this._savedFog = { near: sc.fog.near, far: sc.fog.far, color: sc.fog.color.getHex(),
+                         bg: sc.background.getHex() };
+      sc.fog.color.setHex(0x000000);
+      sc.fog.near = 14; sc.fog.far = 46;
+      sc.background.setHex(0x000000);
+      if (this.sun) this.sun.intensity = 0.12;
+      if (this.ambient) this.ambient.intensity = 0.16;
+      if (this.hemi) this.hemi.intensity = 0.08;
+    } else if (this._savedFog) {
+      sc.fog.color.setHex(this._savedFog.color);
+      sc.fog.near = this._savedFog.near;
+      sc.fog.far = this._savedFog.far;
+      sc.background.setHex(this._savedFog.bg);
+      if (this.sun) this.sun.intensity = 1.45;
+      if (this.ambient) this.ambient.intensity = 1.05;
+      if (this.hemi) this.hemi.intensity = 0.75;
+    }
   }
 
   /** Drive the sky/sea between squall and morning during the opening. */
   updateIntroWeather(dt) {
+    // While the camera is on the pocket stage the sky is irrelevant and the
+    // storm dimming just crushes the sets, so hold off until we cut to sea.
+    if (this.introStage?.visible) return;
     const target = this.introClearing ? 0 : 1;
     this.introStorm += (target - this.introStorm) * Math.min(1, dt * 0.42);
     const k = this.introStorm;
@@ -1401,12 +1449,8 @@ export class Game {
     const top = base.clone().add(new THREE.Vector3(0, 12, 0));
     const glyphY = base.clone().add(new THREE.Vector3(0, 4.6, 0));
 
-    // the bob speeds up and the housing lights
-    let boost = 0;
-    this._pendBoost = (dt) => {
-      boost = Math.min(1, boost + dt / 2.2);
-      if (tower.userData.setNight) tower.userData.setNight(Math.max(this.night, boost));
-    };
+    tower.userData.activate();
+    this._pendBoost = null;
 
     this.playCutscene({
       shots: [
@@ -1468,12 +1512,8 @@ export class Game {
     const top = base.clone().add(new THREE.Vector3(0, 12, 0));
     const glyphY = base.clone().add(new THREE.Vector3(0, 4.6, 0));
 
-    // the bob speeds up and the housing lights
-    let boost = 0;
-    this._pendBoost = (dt) => {
-      boost = Math.min(1, boost + dt / 2.2);
-      if (tower.userData.setNight) tower.userData.setNight(Math.max(this.night, boost));
-    };
+    tower.userData.activate();
+    this._pendBoost = null;
 
     this.playCutscene({
       shots: [
@@ -1871,7 +1911,7 @@ I have snacks."`);
         this.ui.toast(`+${got} COCONUTS`, 'gold', 1400);
         break;
       }
-      case 'ferdy': this.openShop(); break;
+      case 'ferdi': this.openShop(); break;
 
       case 'relic': {
         it.taken = true;

@@ -88,6 +88,11 @@ const ALPHA_CELLS = new Set([
   'flame', 'hangVine',
 ]);
 
+/* Shared with geo.js: which geometries have had their UVs mapped into a
+   single atlas cell. Un-stamped geometry on an atlas material samples the
+   whole sheet and shows faces, glyphs and food where stone should be. */
+export const STAMPED = new WeakSet();
+
 export function cellUV(name) {
   const [c, r] = CELLS[name];
   const cs = 1 / ATLAS_COLS, rs = 1 / ATLAS_ROWS;
@@ -116,6 +121,7 @@ export function applyRegion(geometry, col, row, cols = 1, rows = 1, flipV = fals
     uv.setXY(i, u0 + u * (u1 - u0), v0 + v * (v1 - v0));
   }
   uv.needsUpdate = true;
+  STAMPED.add(geometry);
   return geometry;
 }
 
@@ -131,6 +137,7 @@ export function applyCell(geometry, name, flipV = false) {
     uv.setXY(i, u0 + u * (u1 - u0), v0 + v * (v1 - v0));
   }
   uv.needsUpdate = true;
+  STAMPED.add(geometry);
   return geometry;
 }
 

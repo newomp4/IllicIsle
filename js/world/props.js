@@ -73,7 +73,10 @@ const TIERS = {
    away, and the whole thing arcs up and then droops.
 */
 function buildFrond(len, wid, droop, rng) {
-  const SEG = 9;
+  /* A coconut palm frond is LONG and NARROW — roughly 8:1 — and it leaves
+     the crown almost horizontally before the last third bends over. Short
+     wide leaves read as a banana plant, which is what these were. */
+  const SEG = 12;
   const g = new THREE.PlaneGeometry(wid, len, 2, SEG);   // 3 columns
   applyCell(g, 'palmFrond');
   const p = g.attributes.position;
@@ -85,17 +88,17 @@ function buildFrond(len, wid, droop, rng) {
     // merged buffer and kills the bounding sphere.
     const t = THREE.MathUtils.clamp((p.getY(i) + len / 2) / len, 0, 1);
 
-    // taper: narrow at the base, widest around 45%, pointed tip
-    const w = Math.sin(Math.PI * Math.pow(t, 0.62)) * 0.95 + 0.05;
-    // arc up then droop over
-    const rise = Math.sin(t * Math.PI * 0.55) * len * 0.30;
-    const fall = Math.pow(t, 2.3) * len * droop;
-    // V fold: rib sits proud, blades hang below it
-    const fold = col === 1 ? wid * 0.20 : -wid * 0.10 * (0.3 + t);
+    // slim at the base, widest a third along, tapering to a long point
+    const w = Math.sin(Math.PI * Math.pow(t, 0.5)) * 0.9 + 0.10;
+    // a shallow arch that only really falls away in the last third
+    const rise = Math.sin(t * Math.PI * 0.42) * len * 0.16;
+    const fall = Math.pow(Math.max(0, t - 0.28) / 0.72, 2.6) * len * droop;
+    // V fold along the rib, deepening toward the tip
+    const fold = col === 1 ? wid * 0.26 : -wid * 0.14 * (0.25 + t * 0.9);
 
     p.setX(i, x0 * w);
-    p.setY(i, t * len * 0.94 + rise - fall);
-    p.setZ(i, fold + Math.sin(t * 3.1) * wid * 0.05);
+    p.setY(i, t * len * 0.96 + rise - fall);
+    p.setZ(i, fold + Math.sin(t * 4.2) * wid * 0.04);
   }
   p.needsUpdate = true;
   g.computeVertexNormals();
@@ -131,33 +134,43 @@ function buildPalm(rng, tierName) {
   opaqueParts.push(collar);
 
   /* fronds — a proper crown of them */
-  const n = tierName === 'sapling' ? 9 : 16 + ((rng() * 5) | 0);
-  const frondLen = T.crown * 7.6;
+  const n = tierName === 'sapling' ? 9 : 15 + ((rng() * 4) | 0);
+  const frondLen = T.crown * 11.0;      // long fronds, palm proportions
   for (let i = 0; i < n; i++) {
     // even radial spacing with only a touch of jitter, or the crown
     // bunches to one side and looks like a broken umbrella
     const a = (i / n) * Math.PI * 2 + (rng() - 0.5) * 0.16;
-    // three rings: near-vertical spears, mid arch, long outer sweep
+    /* Three rings, but all closer to horizontal than before: a palm crown
+       is a fountain, not a shuttlecock. Only a couple of young fronds
+       stand up in the middle. */
     const ring = i % 3;
-    const pitch = ring === 0 ? 0.22 + rng() * 0.18
-                : ring === 1 ? 0.78 + rng() * 0.22
-                :              1.24 + rng() * 0.26;
-    const len = frondLen * (ring === 2 ? 1.05 : ring === 1 ? 0.92 : 0.7) * (0.88 + rng() * 0.24);
-    const wid = T.crown * (1.05 + rng() * 0.35);
+    const pitch = ring === 0 ? 0.55 + rng() * 0.22
+                : ring === 1 ? 1.05 + rng() * 0.20
+                :              1.42 + rng() * 0.22;
+    const len = frondLen * (ring === 2 ? 1.0 : ring === 1 ? 0.94 : 0.76) * (0.9 + rng() * 0.2);
+    const wid = T.crown * (0.62 + rng() * 0.20);
 
-    const f = buildFrond(len, wid, 0.5 + rng() * 0.55, rng);
+    const f = buildFrond(len, wid, 0.55 + rng() * 0.5, rng);
     place(f, { rot: [pitch, a, 0], pos: [cx, H - T.crown * 0.15, cz] });
     tint(f, G(0xffffff).multiplyScalar(0.62 + rng() * 0.55));
     cutoutParts.push(f);
   }
 
-  /* dead fronds hanging down under the crown — very palm */
+  /* two or three spent fronds hanging straight down under the crown */
   if (tierName !== 'sapling') {
     for (let i = 0; i < 3; i++) {
       const a = rng() * Math.PI * 2;
-      const f = buildFrond(frondLen * 0.7, T.crown * 0.8, 1.5, rng);
-      place(f, { rot: [2.3 + rng() * 0.4, a, 0], pos: [cx, H - T.crown * 0.3, cz] });
-      tint(f, G(0xa79052).multiplyScalar(0.7 + rng() * 0.3));
+      const f = buildFrond(frondLen * 0.55, T.crown * 0.5, 1.9, rng);
+      place(f, { rot: [2.5 + rng() * 0.35, a, 0], pos: [cx, H - T.crown * 0.25, cz] });
+      tint(f, G(0xa79052).multiplyScalar(0.62 + rng() * 0.3));
+      cutoutParts.push(f);
+    }
+    // two young spears standing up out of the centre
+    for (let i = 0; i < 2; i++) {
+      const a = rng() * Math.PI * 2;
+      const f = buildFrond(frondLen * 0.5, T.crown * 0.42, 0.25, rng);
+      place(f, { rot: [0.12 + rng() * 0.14, a, 0], pos: [cx, H - T.crown * 0.05, cz] });
+      tint(f, G(0xffffff).multiplyScalar(0.75 + rng() * 0.35));
       cutoutParts.push(f);
     }
   }
@@ -885,6 +898,7 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   const bob = ico(0.55, 0, 'gold', { pos: [0, -3.1, 0], scale: [1, 1.25, 1] });
   tint(bob, G(0xd9b45e)); bobParts.push(bob);
   const bobRing = new THREE.TorusGeometry(0.5, 0.08, 4, 10);
+  applyCell(bobRing, 'gold');
   place(bobRing, { rot: [Math.PI / 2, 0, 0], pos: [0, -3.1, 0] });
   tint(bobRing, G(0xb08c3c)); bobParts.push(bobRing);
   pivot.add(new THREE.Mesh(mergeGeos(bobParts), mats.opaque));
@@ -893,14 +907,61 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   glow.position.set(0, slotY - 1.4, 0);
   group.add(glow);
 
+  /* ---- activation: the tower wakes up when you read the plate ---- */
+  const shockGeo = new THREE.RingGeometry(0.9, 1.25, 26);
+  shockGeo.rotateX(-Math.PI / 2);
+  const shockMat = new THREE.MeshBasicMaterial({
+    color: 0x9ff0dc, transparent: true, opacity: 0, side: THREE.DoubleSide,
+    depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
+  });
+  const shock = new THREE.Mesh(shockGeo, shockMat);
+  shock.position.y = 0.4;
+  group.add(shock);
+
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0x9ff0dc, transparent: true, opacity: 0, side: THREE.DoubleSide,
+    depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
+  });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.9, 120, 10, 1, true), beamMat);
+  beam.position.y = 60;
+  group.add(beam);
+
   const phase = index * 1.3;
   let nightK = 0;
+  let wake = 0;            // 0 dormant, 1 fully awake
+  let wakeT = -1;          // seconds since activation began
   group.userData.setNight = (n) => { nightK = n; };
-  group.userData.tick = (t) => {
-    pivot.rotation.x = Math.sin(t * 0.85 + phase) * 0.55;
-    // a lantern in daylight, a lighthouse after dark
-    glow.intensity = (1.1 + nightK * 3.2) + Math.sin(t * 1.7 + phase) * (0.5 + nightK);
-    glow.distance = 16 + nightK * 22;
+  group.userData.activate = () => { if (wakeT < 0) wakeT = 0; };
+  group.userData.wakeProgress = () => wake;
+
+  group.userData.tick = (t, dt = 0.016) => {
+    if (wakeT >= 0) { wakeT += dt; wake = Math.min(1, wakeT / 3.2); }
+
+    // the bob accelerates hard as it wakes, then settles into a fast beat
+    const speed = 0.85 + wake * 5.5;
+    const swing = 0.55 + wake * 0.75;
+    pivot.rotation.x = Math.sin(t * speed + phase) * swing;
+
+    // the whole tower shudders during the wake
+    const shudder = wake > 0 && wake < 1 ? (1 - Math.abs(wake - 0.5) * 2) * 0.10 : 0;
+    group.position.x = (group.userData.homeX ?? group.position.x);
+    group.rotation.z = Math.sin(t * 34) * shudder;
+
+    // a lantern in daylight, a lighthouse after dark, a flare when woken
+    glow.intensity = (1.1 + nightK * 3.2 + wake * 6.5) + Math.sin(t * 1.7 + phase) * (0.5 + nightK);
+    glow.distance = 16 + nightK * 22 + wake * 20;
+    glow.color.setHex(wake > 0.1 ? 0xbdfff0 : 0x8fe6d0);
+
+    // shockwave on the beat it comes alive
+    if (wakeT >= 0 && wakeT < 2.4) {
+      const k = wakeT / 2.4;
+      shock.scale.setScalar(1 + k * 22);
+      shockMat.opacity = 0.55 * (1 - k);
+    } else shockMat.opacity = 0;
+
+    // and the beam it throws once awake
+    beamMat.opacity = wake * (0.16 + Math.sin(t * 2.4) * 0.05);
+    beam.rotation.y = t * 0.4;
   };
   group.userData.glyph = glyph;
   group.userData.order = order;

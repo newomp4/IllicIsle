@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import {
-  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify,
+  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify, blankUV,
 } from '../lib/geo.js';
 import { applyCell, buildSignTexture } from '../lib/textures.js';
 
@@ -132,7 +132,7 @@ export function buildRelic(kind, rng, mats) {
    FERDI STEINMAN'S HUT
    A landmark you can navigate by, and the only shop on the island.
    =========================================================== */
-export function buildFerdiHut(rng, mats) {
+export function buildFerdiHut(rng, mats, flameFactory) {
   const group = new THREE.Group();
   const P = [], C = [];
   const WOOD = G(0x7a6242), WOOD_D = G(0x5a4730);
@@ -188,6 +188,79 @@ export function buildFerdiHut(rng, mats) {
   tint(signBoard, G(0x9a8058)); P.push(signBoard);
   const nail = cyl(0.05, 0.05, 0.3, 4, 'metal', { pos: [1.15, 5.75, 2.5], rot: [Math.PI / 2, 0, 0] });
   tint(nail, G(0x6a6a66)); P.push(nail);
+
+  /* --- a proper shopfront: boardwalk, steps, awning, hanging wares --- */
+  // boardwalk out front so you approach along something
+  for (let i = 0; i < 5; i++) {
+    const pl = box(6.4, 0.16, 1.0, 'planks', { pos: [0, 1.42, 3.2 + i * 1.0], rot: [0, 0, 0] });
+    tint(pl, WOOD.clone().multiplyScalar(0.7 + rng() * 0.35)); P.push(pl);
+  }
+  for (let i = 0; i < 3; i++) {
+    const st = box(5.0 - i * 0.5, 0.3, 0.8, 'planks', { pos: [0, 1.25 - i * 0.42, 8.2 + i * 0.8] });
+    tint(st, WOOD_D); P.push(st);
+  }
+  for (const sx of [-3.0, 3.0]) {
+    const rail = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 2.1, 4.4] });
+    tint(rail, WOOD_D); P.push(rail);
+    const rail2 = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 2.1, 7.2] });
+    tint(rail2, WOOD_D); P.push(rail2);
+    const bar = cyl(0.06, 0.06, 3.0, 4, 'driftwood', { pos: [sx, 2.7, 5.8], rot: [Math.PI / 2, 0, 0] });
+    tint(bar, WOOD_D); P.push(bar);
+  }
+  // striped awning over the counter
+  for (let i = 0; i < 7; i++) {
+    const t = (i / 6 - 0.5);
+    const aw = box(0.95, 0.1, 2.6, 'sail', { pos: [t * 6.4, 4.05 - Math.abs(t) * 0.5, 3.1], rot: [-0.42, 0, 0] });
+    tint(aw, i % 2 ? G(0xcabfa0) : G(0xa8563c)); P.push(aw);
+  }
+  for (const sx of [-3.1, 3.1]) {
+    const pole = cyl(0.08, 0.1, 2.2, 5, 'driftwood', { pos: [sx, 3.0, 4.3] });
+    tint(pole, WOOD_D); P.push(pole);
+  }
+  // wares hanging off the awning bar
+  for (let i = 0; i < 8; i++) {
+    const hx = -2.7 + i * 0.78;
+    const len = 0.4 + rng() * 0.5;
+    const str = cyl(0.02, 0.02, len, 4, 'rope', { pos: [hx, 3.5 - len / 2, 3.5] });
+    tint(str, G(0x8a7a58)); P.push(str);
+    const kind = rng();
+    let item;
+    if (kind < 0.4) {
+      item = ico(0.16, 0, 'coconut', { pos: [hx, 3.5 - len - 0.14, 3.5] });
+      tint(item, G(0x9c7c50));
+    } else if (kind < 0.7) {
+      item = box(0.14, 0.34, 0.14, 'driftwood', { pos: [hx, 3.5 - len - 0.18, 3.5] });
+      tint(item, G(0xc4b494));
+    } else {
+      item = cyl(0.11, 0.09, 0.3, 6, 'glass', { pos: [hx, 3.5 - len - 0.16, 3.5] });
+      tint(item, G(0x8ab0a0));
+    }
+    P.push(item);
+  }
+  // fishing net slung across one gable
+  for (let i = 0; i < 9; i++) {
+    const nx = -2.4 + i * 0.6;
+    const n1 = cyl(0.018, 0.018, 2.2, 4, 'rope', { pos: [nx, 3.1, -2.62], rot: [0, 0, 0.12] });
+    tint(n1, G(0x9a8a66)); P.push(n1);
+  }
+  for (let i = 0; i < 5; i++) {
+    const n2 = cyl(0.018, 0.018, 5.4, 4, 'rope', { pos: [0, 2.3 + i * 0.42, -2.62], rot: [0, 0, Math.PI / 2] });
+    tint(n2, G(0x9a8a66)); P.push(n2);
+  }
+  // a barrel and a stack of crates on the deck
+  const barrel = cyl(0.42, 0.48, 1.0, 9, 'planks', { pos: [2.2, 2.0, 1.4] });
+  tint(barrel, G(0x6f5a3a)); P.push(barrel);
+  for (let i = 0; i < 2; i++) {
+    const hoop = cyl(0.44, 0.44, 0.08, 9, 'metal', { pos: [2.2, 1.75 + i * 0.55, 1.4] });
+    tint(hoop, G(0x6a6a60)); P.push(hoop);
+  }
+  // a hammock strung in the back corner
+  for (let i = 0; i < 7; i++) {
+    const t = i / 6;
+    const sag = Math.sin(t * Math.PI) * 0.42;
+    const hm = box(1.5, 0.07, 0.22, 'clothTat', { pos: [-1.9, 2.9 - sag, -1.9 + t * 1.4], rot: [0, 0, 0] });
+    tint(hm, G(0x8a7f62)); P.push(hm);
+  }
 
   /* stock: crates, jars, bundles, a hanging lantern */
   for (let i = 0; i < 9; i++) {
@@ -265,10 +338,18 @@ export function buildFerdiHut(rng, mats) {
   lampLight.position.set(1.6, 3.7, 1.6);
   group.add(lampLight);
 
+  // a storm lantern hanging over the counter, and its flame
+  const lantern = flameFactory ? null : null;
+  const frontLight = new THREE.PointLight(0xffc070, 2.4, 20, 1.6);
+  frontLight.position.set(0, 3.5, 4.2);
+  group.add(frontLight);
+  group.userData.frontLight = frontLight;
+
   group.userData.tick = (t) => {
     ferdy.position.y = 1.78 + Math.sin(t * 1.1) * 0.03;
     ferdy.rotation.y = Math.sin(t * 0.42) * 0.28;
     lampLight.intensity = 1.7 + Math.sin(t * 8.3) * 0.35 + Math.sin(t * 3.1) * 0.2;
+    frontLight.intensity = 2.0 + Math.sin(t * 6.1) * 0.4;
   };
   return group;
 }
@@ -281,10 +362,56 @@ export function buildFerdiHut(rng, mats) {
 export function buildIntroStage(rng, mats, flameFactory) {
   const stage = new THREE.Group();
   stage.position.set(0, -400, 0);
+  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x04050a, fog: false });
 
-  /* ---- the Rogue Agents: silhouettes, never lit ---- */
-  const agents = new THREE.Group();
-  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x05060a, fog: false });
+  /* =========================================================
+     SET A — THE THRONE (x ≈ 0): King Illic on his seat, and the
+     Agents closing in around him out of the dark.
+     ========================================================= */
+  const throneSet = new THREE.Group();
+  stage.add(throneSet);
+
+  {
+    const P = [];
+    // a heavy stone seat on a stepped plinth
+    for (let i = 0; i < 3; i++) {
+      P.push(tint(box(7 - i * 1.4, 0.5, 6 - i * 1.2, 'templeStone',
+        { pos: [0, 0.25 + i * 0.5, 0] }), G(0x6f6a58)));
+    }
+    P.push(tint(box(2.6, 0.6, 2.4, 'templeStone', { pos: [0, 1.8, 0] }), G(0x7d7867)));
+    P.push(tint(box(2.6, 4.0, 0.5, 'templeStone', { pos: [0, 3.6, -1.1] }), G(0x6f6a58)));
+    for (const sx of [-1, 1]) {
+      P.push(tint(box(0.5, 1.6, 2.4, 'templeStone', { pos: [sx * 1.3, 2.5, 0] }), G(0x6f6a58)));
+      P.push(tint(cyl(0.28, 0.34, 5.5, 8, 'templeGlyph', { pos: [sx * 3.4, 2.75, -0.6] }), G(0xa89c80)));
+    }
+    throneSet.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+  }
+
+  // the king: a seated silhouette, crowned
+  const king = new THREE.Group();
+  {
+    const K = [];
+    K.push(blankUV(new THREE.LatheGeometry([
+      [0.00, 0.00], [0.46, 0.04], [0.52, 0.5], [0.46, 0.95], [0.24, 1.2], [0.00, 1.25],
+    ].map(([r, y]) => new THREE.Vector2(r, y)), 8), 'monolith'));
+    const kh = new THREE.SphereGeometry(0.26, 8, 6); kh.translate(0, 1.42, 0);
+    K.push(blankUV(kh, 'monolith'));
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      K.push(blankUV(new THREE.BoxGeometry(0.07, 0.26, 0.07)
+        .translate(Math.cos(a) * 0.24, 1.72, Math.sin(a) * 0.24), 'monolith'));
+    }
+    for (const sx of [-1, 1]) K.push(limb([sx * 0.34, 1.0, 0], [sx * 0.42, 0.42, 0.42], 0.09, 0.07));
+    king.add(new THREE.Mesh(mergeGeos(K), shadowMat));
+    king.position.set(0, 2.4, 0);
+    throneSet.add(king);
+  }
+  // a cold rim light so he reads against the black
+  const kingRim = new THREE.PointLight(0xbfd0ff, 2.2, 14, 1.8);
+  kingRim.position.set(0, 4.6, 3.2);
+  throneSet.add(kingRim);
+
+  /* the Agents: six silhouettes, red eyes, closing in */
   const AGENT = [];
   for (let i = 0; i < 6; i++) {
     const a = new THREE.Group();
@@ -293,104 +420,183 @@ export function buildIntroStage(rng, mats, flameFactory) {
       [0.00, 0.00], [0.34, 0.02], [0.40, 0.55], [0.36, 1.05],
       [0.28, 1.35], [0.14, 1.50], [0.00, 1.53],
     ].map(([r, y]) => new THREE.Vector2(r, y)), 7);
-    P.push(coat);
-    // hood
+    blankUV(coat, 'monolith'); P.push(coat);
     const hood = new THREE.SphereGeometry(0.26, 7, 5, 0, Math.PI * 2, 0, Math.PI * 0.72);
     hood.translate(0, 1.46, 0.02);
-    P.push(hood);
-    // long arms, one holding something bladed
-    for (const sgn of [-1, 1]) {
-      P.push(limb([sgn * 0.30, 1.20, 0], [sgn * 0.34, 0.55, 0.10], 0.08, 0.06));
-    }
-    P.push(limb([0.34, 0.55, 0.10], [0.52, 0.20, 0.45], 0.035, 0.02));   // blade
-    const mesh = new THREE.Mesh(mergeGeos(P), shadowMat);
-    a.add(mesh);
-    a.position.set((i - 2.5) * 1.9 + (rng() - 0.5), 0, (rng() - 0.5) * 2.4);
+    blankUV(hood, 'monolith'); P.push(hood);
+    for (const sgn of [-1, 1]) P.push(limb([sgn * 0.30, 1.20, 0], [sgn * 0.34, 0.55, 0.10], 0.08, 0.06));
+    P.push(limb([0.34, 0.55, 0.10], [0.62, 0.30, 0.55], 0.035, 0.015));   // blade
+    a.add(new THREE.Mesh(mergeGeos(P), shadowMat));
+    const ang = (i / 6) * Math.PI * 2;
+    a.userData.ang = ang;
     a.userData.phase = rng() * 6;
-    agents.add(a);
+    a.position.set(Math.cos(ang) * 11, 0, Math.sin(ang) * 11);
+    const eye = new THREE.PointLight(0xff3a2a, 1.0, 5, 2);
+    eye.position.set(0, 1.46, 0.22);
+    a.add(eye);
+    a.userData.eye = eye;
+    throneSet.add(a);
     AGENT.push(a);
   }
-  stage.add(agents);
-  stage.userData.agents = agents;
 
-  // two eye-lights per agent, the only thing you can see of them
-  const eyes = [];
-  for (const a of AGENT) {
-    const l = new THREE.PointLight(0xff4a3a, 0.9, 4, 2);
-    l.position.set(0, 1.46, 0.22);
-    a.add(l);
-    eyes.push(l);
-  }
-
-  /* ---- Hector's boat, arriving ---- */
-  const boat = new THREE.Group();
-  const B = [];
-  for (let i = 0; i < 7; i++) {
-    const t = i / 6;
-    const w = 1.5 * Math.sin(Math.PI * (0.2 + t * 0.7));
-    for (const sgn of [-1, 1]) {
-      B.push(tint(box(0.16, 0.7, 1.0, 'planks', {
-        pos: [sgn * w, 0.35, (t - 0.5) * 6.5], rot: [0, 0, sgn * 0.35],
-      }), G(0x7d6440)));
+  /* =========================================================
+     SET B — THE POUR (x = -60): the Idol on a plinth in fog,
+     lit from below, the Agents' work finished.
+     ========================================================= */
+  const idolSet = new THREE.Group();
+  idolSet.position.set(-220, 0, 0);
+  stage.add(idolSet);
+  {
+    const P = [];
+    for (let i = 0; i < 3; i++) {
+      P.push(tint(cyl(2.4 - i * 0.4, 2.8 - i * 0.4, 0.5, 12, 'templeStone',
+        { pos: [0, 0.25 + i * 0.5, 0] }), G(0x6f6a58)));
+    }
+    // four braziers around it
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.7;
+      P.push(tint(cyl(0.4, 0.24, 0.4, 8, 'goldDark',
+        { pos: [Math.cos(a) * 4.4, 1.9, Math.sin(a) * 4.4] }), G(0xc8a44c)));
+      P.push(tint(cyl(0.14, 0.18, 1.8, 6, 'templeStone',
+        { pos: [Math.cos(a) * 4.4, 0.9, Math.sin(a) * 4.4] }), G(0x5f5a49)));
+    }
+    idolSet.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.7;
+      const f = flameFactory(mats, 3, 0.34);
+      f.position.set(Math.cos(a) * 4.4, 2.05, Math.sin(a) * 4.4);
+      idolSet.add(f);
+      const l = new THREE.PointLight(0xffb050, 1.5, 14, 1.7);
+      l.position.set(Math.cos(a) * 4.4, 2.6, Math.sin(a) * 4.4);
+      idolSet.add(l);
     }
   }
-  B.push(tint(box(1.2, 0.2, 6.4, 'planks', { pos: [0, 0.1, 0] }), G(0x6f5a3a)));
-  B.push(tint(cyl(0.09, 0.12, 4.2, 5, 'planks', { pos: [0, 2.2, -0.6] }), G(0x7a6340)));
-  boat.add(new THREE.Mesh(mergeGeos(B), mats.opaque));
-  const sail = plane(2.6, 3.0, 'sail', { pos: [0, 2.4, -0.5], rot: [0, 0, 0] });
-  tint(sail, G(0xcabfa0));
-  boat.add(new THREE.Mesh(mergeGeos([sail]), mats.cutoutStill));
-  // a bulky silhouette at the tiller
-  const HB = [];
-  HB.push(new THREE.LatheGeometry([
-    [0.00, 0.00], [0.55, 0.05], [0.62, 0.6], [0.5, 1.0], [0.26, 1.25], [0.00, 1.3],
-  ].map(([r, y]) => new THREE.Vector2(r, y)), 8));
-  const hh = new THREE.SphereGeometry(0.3, 7, 5); hh.translate(0, 1.45, 0);
-  HB.push(hh);
-  const hect = new THREE.Mesh(mergeGeos(HB), shadowMat);
-  hect.position.set(0, 0.3, 2.2);
-  boat.add(hect);
-  boat.position.set(60, 0, 0);
-  stage.add(boat);
-  stage.userData.boat = boat;
-
-  /* ---- the idol, half-lost in fog ---- */
-  const fog = new THREE.Group();
   const fogMat = new THREE.MeshBasicMaterial({
-    color: 0x9aa8a0, transparent: true, opacity: 0.20,
+    color: 0x8fa098, transparent: true, opacity: 0.17,
     depthWrite: false, fog: false, side: THREE.DoubleSide,
   });
-  for (let i = 0; i < 16; i++) {
-    const q = new THREE.Mesh(new THREE.PlaneGeometry(9 + rng() * 8, 4 + rng() * 3), fogMat);
-    q.position.set((rng() - 0.5) * 12, 0.6 + rng() * 3.4, 2 + rng() * 5);
-    q.userData.sp = 0.12 + rng() * 0.3;
-    fog.add(q);
+  const fogQuads = [];
+  for (let i = 0; i < 22; i++) {
+    const q = new THREE.Mesh(new THREE.PlaneGeometry(7 + rng() * 7, 3 + rng() * 3), fogMat);
+    q.position.set((rng() - 0.5) * 14, 0.5 + rng() * 3.8, 2 + rng() * 6);
+    q.userData.sp = 0.5 + rng() * 1.1;
+    idolSet.add(q);
+    fogQuads.push(q);
   }
-  fog.position.set(-60, 0, 0);
-  stage.add(fog);
-  stage.userData.fog = fog;
-  stage.userData.fogAnchor = new THREE.Vector3(-60, 0, 0);
+  const idolKey = new THREE.PointLight(0xffd88a, 3.4, 22, 1.5);
+  idolKey.position.set(0, 1.4, 2.4);
+  idolSet.add(idolKey);
+  stage.userData.idolSet = idolSet;
 
-  const idolLight = new THREE.PointLight(0xffd88a, 3.0, 26, 1.6);
-  idolLight.position.set(-60, 3, 0);
-  stage.add(idolLight);
-  stage.userData.idolLight = idolLight;
+  /* =========================================================
+     SET C — THE ARRIVAL (x = +60): Hector's boat on open water.
+     ========================================================= */
+  const boatSet = new THREE.Group();
+  boatSet.position.set(220, 0, 0);
+  stage.add(boatSet);
 
-  stage.userData.tick = (t, dt, cam) => {
-    for (const a of AGENT) {
-      a.position.y = Math.abs(Math.sin(t * 2.2 + a.userData.phase)) * 0.08;
-      a.rotation.y = Math.sin(t * 0.6 + a.userData.phase) * 0.25;
+  // a patch of sea so he isn't sailing on nothing
+  {
+    const sea = new THREE.PlaneGeometry(120, 120, 24, 24);
+    sea.rotateX(-Math.PI / 2);
+    blankUV(sea, 'water');
+    const seaMesh = new THREE.Mesh(
+      mergeGeos([tint(sea, G(0x24404e))]),
+      mats.opaque);
+    seaMesh.position.y = -0.4;
+    boatSet.add(seaMesh);
+    boatSet.userData.sea = seaMesh;
+  }
+
+  const boat = new THREE.Group();
+  {
+    const B = [];
+    for (let i = 0; i < 8; i++) {
+      const t = i / 7;
+      const w = 1.6 * Math.sin(Math.PI * (0.18 + t * 0.72));
+      for (const sgn of [-1, 1]) {
+        B.push(tint(box(0.18, 0.8, 1.0, 'planks', {
+          pos: [sgn * w, 0.4, (t - 0.5) * 7.4], rot: [0, 0, sgn * 0.34],
+        }), G(0x7d6440)));
+      }
     }
-    for (const l of eyes) l.intensity = 0.6 + Math.sin(t * 7 + l.id) * 0.35;
-    boat.position.y = Math.sin(t * 1.1) * 0.22;
-    boat.rotation.z = Math.sin(t * 0.9) * 0.06;
-    boat.rotation.x = Math.sin(t * 1.3 + 1) * 0.04;
-    for (const q of fog.children) {
-      q.position.x += q.userData.sp * dt * 2;
-      if (q.position.x > 8) q.position.x = -8;
+    B.push(tint(box(1.4, 0.22, 7.2, 'planks', { pos: [0, 0.12, 0] }), G(0x6f5a3a)));
+    B.push(tint(cyl(0.10, 0.14, 5.0, 5, 'planks', { pos: [0, 2.6, -0.6] }), G(0x7a6340)));
+    B.push(tint(cyl(0.07, 0.08, 2.4, 4, 'planks', { pos: [0, 4.4, -0.6], rot: [0, 0, Math.PI / 2] }), G(0x7a6340)));
+    boat.add(new THREE.Mesh(mergeGeos(B), mats.opaque));
+    const sail = plane(3.0, 3.4, 'sail', { pos: [0, 3.0, -0.45] });
+    tint(sail, G(0xcabfa0));
+    boat.add(new THREE.Mesh(mergeGeos([sail]), mats.cutoutStill));
+
+    // Hector at the tiller: bulky, crowned, unmistakable
+    const HB = [];
+    HB.push(blankUV(new THREE.LatheGeometry([
+      [0.00, 0.00], [0.62, 0.05], [0.72, 0.55], [0.62, 1.0], [0.3, 1.28], [0.00, 1.34],
+    ].map(([r, y]) => new THREE.Vector2(r, y)), 8), 'monolith'));
+    const hh = new THREE.SphereGeometry(0.32, 7, 5); hh.translate(0, 1.52, 0);
+    HB.push(blankUV(hh, 'monolith'));
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      HB.push(blankUV(new THREE.BoxGeometry(0.08, 0.28, 0.08)
+        .translate(Math.cos(a) * 0.28, 1.86, Math.sin(a) * 0.28), 'monolith'));
+    }
+    HB.push(limb([0.5, 1.0, 0], [1.0, 1.9, -0.3], 0.10, 0.07));    // arm up on the staff
+    const hect = new THREE.Mesh(mergeGeos(HB), shadowMat);
+    hect.position.set(0, 0.3, 2.4);
+    boat.add(hect);
+    // his staff, already lit
+    const staff = new THREE.Mesh(
+      mergeGeos([tint(cyl(0.07, 0.09, 4.4, 5, 'driftwood', { pos: [0, 2.2, 0] }), G(0xb8a684))]),
+      mats.opaque);
+    staff.position.set(1.05, 0.3, 2.1);
+    staff.rotation.z = -0.2;
+    boat.add(staff);
+    const orb = new THREE.Mesh(
+      mergeGeos([tint(ico(0.3, 1, 'staffGem', { pos: [0, 4.5, 0] }), G(0xffe08a))]),
+      new THREE.MeshBasicMaterial({ map: mats.opaque.map, vertexColors: true, fog: false }));
+    orb.position.copy(staff.position);
+    orb.rotation.z = -0.2;
+    boat.add(orb);
+    const orbLight = new THREE.PointLight(0xffc850, 3.0, 20, 1.7);
+    orbLight.position.set(1.9, 4.7, 2.1);
+    boat.add(orbLight);
+    boat.userData.orbLight = orbLight;
+  }
+  boat.position.set(0, 0, 0);
+  boatSet.add(boat);
+  stage.userData.boat = boat;
+
+  /* ---------- per-frame ---------- */
+  const flames = [];
+  stage.traverse((o) => { if (o.userData?.tick && o !== stage) flames.push(o); });
+
+  stage.userData.closeIn = 0;          // 0 = Agents far, 1 = on top of him
+  stage.userData.tick = (t, dt, cam) => {
+    for (const f of flames) f.userData.tick(t, dt);
+
+    const k = stage.userData.closeIn;
+    for (const a of AGENT) {
+      const r = THREE.MathUtils.lerp(11, 2.6, k);
+      a.position.x = Math.cos(a.userData.ang) * r;
+      a.position.z = Math.sin(a.userData.ang) * r;
+      a.position.y = Math.abs(Math.sin(t * 2.6 + a.userData.phase)) * 0.10;
+      a.rotation.y = -a.userData.ang + Math.PI / 2 + Math.sin(t * 0.7 + a.userData.phase) * 0.12;
+      a.userData.eye.intensity = (0.5 + Math.sin(t * 7 + a.userData.phase) * 0.35) * (0.4 + k);
+    }
+    king.rotation.y = Math.sin(t * 0.5) * 0.10;
+    kingRim.intensity = 2.2 * (1 - k * 0.75);
+
+    for (const q of fogQuads) {
+      q.position.x += q.userData.sp * dt;
+      if (q.position.x > 9) q.position.x = -9;
       if (cam) q.lookAt(cam.position);
     }
-    idolLight.intensity = 2.4 + Math.sin(t * 2) * 0.7;
+    idolKey.intensity = 3.0 + Math.sin(t * 2.2) * 0.7;
+
+    boat.position.y = Math.sin(t * 1.05) * 0.24;
+    boat.rotation.z = Math.sin(t * 0.85) * 0.055;
+    boat.rotation.x = Math.sin(t * 1.25 + 1) * 0.04;
+    boat.userData.orbLight.intensity = 2.6 + Math.sin(t * 5) * 0.6;
   };
   return stage;
 }

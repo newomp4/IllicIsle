@@ -6,7 +6,13 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { applyCell, applyRegion } from './textures.js';
+import { applyCell, applyRegion, STAMPED } from './textures.js';
+
+/* Geometry destined for an atlas-mapped material MUST have its UVs stamped
+   into one cell. Raw primitive UVs span 0..1, which samples the entire
+   sheet — you get faces, runes, burgers and glyphs smeared over a wall. */
+export function markStamped(geo) { STAMPED.add(geo); return geo; }
+export function isStamped(geo) { return STAMPED.has(geo); }
 
 /** Merge non-indexed geometries carrying position/normal/uv/color. */
 export function mergeGeos(list) {
@@ -15,6 +21,12 @@ export function mergeGeos(list) {
 
   for (const g of list) {
     if (!g) continue;
+    if (!isStamped(g) && g.attributes.uv) {
+      // Not fatal — some merges are for unmapped materials — but loud,
+      // because on an atlas material this is always a bug.
+      console.warn('[geo] merging geometry with un-stamped UVs; ' +
+        'call applyCell()/applyRegion() or blankUV() first', g.type);
+    }
     const ng = g.index ? g.toNonIndexed() : g;
     if (!ng.attributes.normal) ng.computeVertexNormals();
     if (!ng.attributes.uv) {
@@ -87,19 +99,34 @@ export function tint(geo, color) {
 
 export function box(w, h, d, cell, opts) {
   const g = new THREE.BoxGeometry(w, h, d);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
+}
+
+/**
+ * Collapse a geometry's UVs onto one flat texel so it takes a solid colour
+ * from the atlas instead of the whole sheet. For pieces that are meant to
+ * be plain (dark voids, painted slabs, decal planes).
+ */
+export function blankUV(geo, cell = 'dirt') {
+  const uv = geo.attributes.uv;
+  if (uv) {
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, 0, 0);
+    uv.needsUpdate = true;
+    applyCell(geo, cell);
+  }
+  return markStamped(geo);
 }
 
 export function cyl(rt, rb, h, seg, cell, opts) {
   const g = new THREE.CylinderGeometry(rt, rb, h, seg, 1, false);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
 }
 
 export function cone(r, h, seg, cell, opts) {
   const g = new THREE.ConeGeometry(r, h, seg, 1);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
 }
 
@@ -108,19 +135,19 @@ export function ico(r, detail, cell, opts) {
   // Icosahedra have no useful UVs; just splat the cell across them.
   const uv = g.attributes.uv;
   if (!uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
 }
 
 export function sphere(r, ws, hs, cell, opts) {
   const g = new THREE.SphereGeometry(r, ws, hs);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
 }
 
 export function plane(w, h, cell, opts, segsW = 1, segsH = 1) {
   const g = new THREE.PlaneGeometry(w, h, segsW, segsH);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
 }
 
@@ -136,7 +163,7 @@ export function limb(from, to, r1, r2, cell, seg = 6) {
   _dir.subVectors(_b, _a);
   const len = _dir.length() || 1e-4;
   const g = new THREE.CylinderGeometry(r2, r1, len, seg, 1);
-  if (cell) applyCell(g, cell);
+  if (cell) applyCell(g, cell); else blankUV(g);
   const q = new THREE.Quaternion().setFromUnitVectors(_up, _dir.clone().normalize());
   const m = new THREE.Matrix4().compose(
     _a.clone().addScaledVector(_dir, 0.5),
