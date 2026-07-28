@@ -44,7 +44,48 @@
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js" } }
 </script>
-<script type="module" src="js/main.js"></script>
+
+<!--
+  A module that fails to parse or resolve dies before main.js ever runs, so
+  none of its own error handling is in play and the page just sits on the
+  loading screen forever with the reason only in the console. This inline
+  script exists to put that reason on the screen. The commonest cause by
+  far is a half-stale cache: one module updated, another not, and an import
+  naming an export the old file has never heard of.
+-->
+<script>
+(function () {
+  var el = function () { return document.getElementById('load-text'); };
+  var fired = false;
+  function fail(what, detail) {
+    if (fired) return;
+    fired = true;
+    var t = el(); if (!t) return;
+    var stale = /does not provide an export|Cannot find module|Failed to fetch|Unexpected/i.test(detail || '');
+    t.innerHTML = what + '<br><span style="font-size:.7em;opacity:.85">' + (detail || '') + '</span>'
+      + (stale ? '<br><span style="font-size:.7em;color:#ffd24a">RELOAD WITH SHIFT HELD TO CLEAR THE CACHE</span>' : '');
+    t.style.color = '#e0453a';
+    var f = document.getElementById('load-fill'); if (f) f.style.background = '#8a2018';
+  }
+  window.addEventListener('error', function (e) {
+    if (e.message || e.error) fail('FAILED TO START', String((e.error && e.error.message) || e.message));
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    fail('FAILED TO START', String((e.reason && e.reason.message) || e.reason));
+  });
+  // and a backstop, in case something hangs without throwing at all
+  setTimeout(function () {
+    var t = el();
+    if (t && /LOADING|^$/i.test(t.textContent.trim())) {
+      fail('STILL LOADING', 'Nothing has reported in for 45 seconds.');
+    }
+  }, 45000);
+})();
+</script>
+
+<!-- ?v is bumped whenever the module graph changes shape, so a browser
+     holding half of the previous build cannot mix it with this one. -->
+<script type="module" src="js/main.js?v=5"></script>
 <noscript><div class="screen"><div class="panel"><h2>JAVASCRIPT REQUIRED</h2></div></div></noscript>
 </body>
 </html>
