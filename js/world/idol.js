@@ -196,11 +196,24 @@ export function buildIdol(mats, opts = {}) {
   tint(neck, GOLD_MID); P.push(neck);
 
   // the hood lying back behind the shoulders
-  const hood = new THREE.SphereGeometry(0.44, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
+  const hood = new THREE.SphereGeometry(0.46, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
   applyCell(hood, 'gold');
-  hood.scale(1.06, 0.78, 0.92);
-  place(hood, { rot: [-0.5, 0, 0], pos: [0, 1.60, -0.24] });
+  hood.scale(1.12, 0.80, 0.96);
+  place(hood, { rot: [-0.55, 0, 0], pos: [0, 1.58, -0.28] });
   tint(hood, GOLD_MID); S.push(hood);
+
+  // the bunched roll where the hood gathers on the shoulders
+  for (let i = 0; i < 9; i++) {
+    const a = -1.5 + (i / 8) * 3.0;
+    const r = 0.42;
+    const b = ico(0.115 + rng() * 0.035, 0, 'gold', {
+      pos: [Math.sin(a) * r, 1.56 + Math.cos(a) * 0.06, -0.30 - Math.abs(Math.sin(a)) * 0.05],
+      rot: [rng() * 3, rng() * 3, rng() * 3],
+      scale: [1.15, 0.85, 1],
+    });
+    tint(b, i % 2 ? GOLD_MID : GOLD);
+    P.push(b);
+  }
 
   // bunched collar ring
   const collar = new THREE.TorusGeometry(0.30, 0.105, 5, 12);
@@ -231,10 +244,10 @@ export function buildIdol(mats, opts = {}) {
   /* ==========================================================
      6. HEAD
      ========================================================== */
-  const head = new THREE.SphereGeometry(0.375, 12, 10);
+  const head = new THREE.SphereGeometry(0.385, 12, 10);
   applyCell(head, 'gold');
-  head.scale(1.0, 1.08, 0.94);
-  head.translate(0, 2.03, 0.015);
+  head.scale(1.0, 1.02, 0.97);       // rounder, less egg-like
+  head.translate(0, 2.02, 0.02);
   tint(head, GOLD);
   S.push(head);
 
@@ -249,68 +262,128 @@ export function buildIdol(mats, opts = {}) {
   }
 
   // the face, as a texture patch standing proud of the skull
-  const faceGeo = facePatch(0.402, 1.62, 0.74, 1.98, 8);
+  const faceGeo = facePatch(0.412, 1.70, 0.76, 2.02, 9);
   applyRegion(faceGeo, CELLS.face[0], CELLS.face[1], 2, 1);
-  faceGeo.scale(1.0, 1.08, 0.94);
-  faceGeo.translate(0, 2.03, 0.015);
+  faceGeo.scale(1.0, 1.02, 0.97);
+  faceGeo.translate(0, 2.02, 0.02);
   tint(faceGeo, GOLD_LT);
   S.push(faceGeo);
 
   // a soft jaw/chin block so the profile isn't a perfect ball
-  const jaw = ico(0.20, 0, 'gold', { pos: [0, 1.86, 0.13], scale: [1.25, 0.7, 1.0] });
+  // full cheeks and a soft chin — the sculpt is a round-faced young man
+  const jaw = ico(0.22, 0, 'gold', { pos: [0, 1.85, 0.12], scale: [1.30, 0.72, 1.05] });
   tint(jaw, GOLD); P.push(jaw);
+  for (const side of [-1, 1]) {
+    const cheek = ico(0.13, 0, 'gold', { pos: [side * 0.19, 1.95, 0.26], scale: [1.1, 0.85, 0.8] });
+    tint(cheek, GOLD); P.push(cheek);
+  }
 
   /* ==========================================================
      7. THE HAIR — the whole point of the sculpt
+     ==========================================================
+     The reference is a deep cap of tight ringlets: a mass roughly
+     half a head tall sitting proud of the skull, wider than the
+     skull, coming down over the ears and stopping in a clean line
+     above the brows. Scattering loose spheres on a shell gave a
+     lumpy helmet. Real ringlets read as CLUSTERS — a knot of three
+     or four beads following a short curl path — so that's what
+     these are.
      ========================================================== */
-  const HR = { x: 0.44, y: 0.41, z: 0.43 };
-  const HC = new THREE.Vector3(0, 2.14, -0.02);
+  // The crown in the reference is big: noticeably wider than the skull and
+  // about half a head tall above it.
+  // Shell the ringlets sit on. Pushed back off the brow so the crown
+  // never overhangs the face.
+  const HC = new THREE.Vector3(0, 2.16, -0.09);
+  const HR = { x: 0.525, y: 0.500, z: 0.510 };
 
-  for (let i = 0; i < curlCount; i++) {
+  /** One ringlet: a few beads spiralling outward from a root. */
+  const ringlet = (root, outward, size, turns) => {
+    const beads = 3 + ((rng() * 2) | 0);
+    const axis = new THREE.Vector3(
+      outward.z * 0.6 + (rng() - 0.5) * 0.4, (rng() - 0.5) * 0.5, -outward.x * 0.6
+    ).normalize();
+    for (let b = 0; b < beads; b++) {
+      const f = b / beads;
+      const swirl = f * turns * Math.PI;
+      const pos = root.clone()
+        .addScaledVector(outward, f * size * 1.5)
+        .addScaledVector(axis, Math.sin(swirl) * size * 0.85);
+      pos.y += Math.cos(swirl) * size * 0.5 - f * size * 0.2;
+      const r = size * (1.0 - f * 0.28);
+      const bead = ico(r, 0, 'gold', {
+        pos: [pos.x, pos.y, pos.z],
+        rot: [rng() * 3, rng() * 3, rng() * 3],
+        scale: [1, 0.9 + rng() * 0.22, 1],
+      });
+      tint(bead, b === 0 ? GOLD_LT : (rng() < 0.45 ? GOLD : GOLD_MID));
+      P.push(bead);
+    }
+  };
+
+  const CLUSTERS = Math.max(34, Math.round(curlCount / 1.9));
+  for (let i = 0; i < CLUSTERS; i++) {
     const phi = rng() * Math.PI * 2;
-    // How far forward this curl points: +1 dead ahead, -1 at the back.
     const forward = Math.sin(phi);
-    // A real hairline — curls stop high at the front and run low at the back,
-    // so the face never gets buried.
-    const maxTheta = 1.62 - 0.66 * Math.max(0, forward);
-    const theta = Math.pow(rng(), 0.6) * maxTheta;
-    const bulge = 0.97 + rng() * 0.11;
+    /* Hairline: stops cleanly above the brows at the front, runs down
+       over the ears and well down the nape at the back. */
+    const maxTheta = forward > 0
+      ? 1.28 - 0.32 * forward          // front
+      : 1.62 - 0.42 * forward;         // sides and back, lower
+    const theta = Math.pow(rng(), 0.55) * maxTheta;
 
-    const px = HC.x + Math.sin(theta) * Math.cos(phi) * HR.x * bulge;
-    const py = HC.y + Math.cos(theta) * HR.y * bulge - 0.03;
-    const pz = HC.z + Math.sin(theta) * Math.sin(phi) * HR.z * bulge;
+    const nx = Math.sin(theta) * Math.cos(phi);
+    const nz = Math.sin(theta) * Math.sin(phi);
+    const ny = Math.cos(theta);
+    const root = new THREE.Vector3(
+      HC.x + nx * HR.x, HC.y + ny * HR.y, HC.z + nz * HR.z
+    );
+    // never over the eyes or the smirk
+    if (root.z > 0.16 && root.y < 2.30 && Math.abs(root.x) < 0.32) continue;
 
-    // belt-and-braces: nothing sits over the eyes or the smirk
-    if (pz > 0.06 && py < 2.24 && Math.abs(px) < 0.30) continue;
-
-    const r = 0.072 + rng() * 0.038;
-    const curl = ico(r, 0, 'gold', {
-      pos: [px, py, pz],
-      rot: [rng() * 3, rng() * 3, rng() * 3],
-      scale: [1, 0.88 + rng() * 0.24, 1],
-    });
-    tint(curl, rng() < 0.40 ? GOLD_LT : (rng() < 0.55 ? GOLD : GOLD_MID));
-    P.push(curl);
+    const outward = new THREE.Vector3(nx, ny * 0.55, nz).normalize();
+    ringlet(root, outward, 0.078 + rng() * 0.034, 1.2 + rng() * 1.1);
   }
 
-  // an inner mass so you never see through the curls to the skull
-  const hairCore = new THREE.SphereGeometry(0.405, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.60);
-  applyCell(hairCore, 'gold');
-  hairCore.scale(1.02, 0.98, 1.0);
-  hairCore.translate(0, 2.12, -0.05);
-  tint(hairCore, GOLD_MID);
-  S.push(hairCore);
+  // A solid cap under the ringlets so no daylight shows through to the skull.
+  /* Backing cap. It must stay INSIDE the ringlet shell, or it swallows the
+     curls and reads as a smooth dome, and it must not reach below the brow
+     line or it covers the face. */
+  const cap = new THREE.SphereGeometry(0.425, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.56);
+  applyCell(cap, 'gold');
+  cap.scale(1.05, 0.98, 1.02);
+  cap.translate(HC.x, HC.y - 0.02, HC.z + 0.02);
+  tint(cap, GOLD_DK);
+  S.push(cap);
 
-  // sideburn clusters framing the face, kept out to the sides
+  // a second, lower backing at the nape so the back of the head is solid
+  const nape = new THREE.SphereGeometry(0.40, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  applyCell(nape, 'gold');
+  nape.scale(1.02, 1.05, 0.9);
+  place(nape, { rot: [1.15, 0, 0], pos: [0, 2.02, -0.16] });
+  tint(nape, GOLD_DK);
+  S.push(nape);
+
+  // Fill the very top of the crown, which otherwise shows a bald notch
+  // between the ring of clusters and the backing cap.
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + rng() * 0.4;
+    const rr = 0.10 + rng() * 0.16;
+    const root = new THREE.Vector3(
+      HC.x + Math.cos(a) * rr, HC.y + HR.y * 0.97, HC.z + Math.sin(a) * rr
+    );
+    ringlet(root, new THREE.Vector3(Math.cos(a) * 0.5, 0.85, Math.sin(a) * 0.5).normalize(),
+      0.072 + rng() * 0.026, 1.1);
+  }
+
+  // Sideburns down past the ears, and a short fringe over the temples.
   for (const side of [-1, 1]) {
     for (let i = 0; i < 4; i++) {
-      const r = 0.068 + rng() * 0.032;
-      const c = ico(r, 0, 'gold', {
-        pos: [side * (0.33 + rng() * 0.08), 2.10 - i * 0.085, 0.02 + rng() * 0.10],
-        rot: [rng() * 3, rng() * 3, rng() * 3],
-      });
-      tint(c, GOLD_MID);
-      P.push(c);
+      const root = new THREE.Vector3(side * (0.345 + rng() * 0.05), 2.08 - i * 0.085, 0.02 + rng() * 0.08);
+      ringlet(root, new THREE.Vector3(side * 0.9, -0.35, 0.2).normalize(), 0.058 + rng() * 0.022, 1.0);
+    }
+    for (let i = 0; i < 2; i++) {
+      const root = new THREE.Vector3(side * (0.20 + rng() * 0.10), 2.30, 0.20 + rng() * 0.06);
+      ringlet(root, new THREE.Vector3(side * 0.5, 0.3, 0.8).normalize(), 0.058, 0.9);
     }
   }
 

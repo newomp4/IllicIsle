@@ -342,6 +342,79 @@ function buildBigLeaf(rng) {
   return { opaque: null, cutout: mergeGeos(parts), r: 0 };
 }
 
+/** A tall tree fern: a slim trunk with a crown of arching fronds.
+ *  The jungle floor was three shapes repeated; this adds silhouette. */
+function buildTreeFern(rng) {
+  const opaque = [], cutout = [];
+  const H = 1.6 + rng() * 1.5;
+  const trunk = cyl(0.09, 0.15, H, 6, 'barkDark', { pos: [0, H / 2, 0] });
+  tint(trunk, G(0x6a5a42)); opaque.push(trunk);
+  const plug = cyl(0.16, 0.26, 1.4, 6, 'barkDark', { pos: [0, -0.5, 0] });
+  tint(plug, G(0x5a4c36)); opaque.push(plug);
+
+  const n = 6 + ((rng() * 3) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + rng() * 0.3;
+    const len = 1.0 + rng() * 0.7;
+    const f = plane(0.75, len, 'fernLeaf');
+    f.translate(0, len / 2, 0);
+    const p = f.attributes.position;
+    for (let v = 0; v < p.count; v++) {
+      const t = THREE.MathUtils.clamp(p.getY(v) / len, 0, 1);
+      p.setY(v, p.getY(v) - t * t * len * 0.62);
+    }
+    p.needsUpdate = true;
+    f.computeVertexNormals();
+    place(f, { rot: [0.62 + rng() * 0.3, a, 0], pos: [0, H, 0] });
+    tint(f, G(0xffffff).multiplyScalar(0.6 + rng() * 0.5));
+    cutout.push(f);
+  }
+  return { opaque: mergeGeos(opaque), cutout: mergeGeos(cutout), r: 0 };
+}
+
+/** Elephant-ear: two or three very broad low leaves. */
+function buildBroadLeaf(rng) {
+  const parts = [];
+  const n = 2 + ((rng() * 2) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + rng();
+    const len = 1.1 + rng() * 0.6;
+    const l = plane(1.05, len, 'jungleLeaf');
+    l.translate(0, len / 2, 0);
+    const p = l.attributes.position;
+    for (let v = 0; v < p.count; v++) {
+      const t = THREE.MathUtils.clamp(p.getY(v) / len, 0, 1);
+      p.setZ(v, p.getZ(v) + Math.sin(t * Math.PI) * 0.22);
+    }
+    p.needsUpdate = true;
+    l.computeVertexNormals();
+    place(l, { rot: [0.72 + rng() * 0.35, a, 0], pos: [(rng() - .5) * 0.3, 0.12, (rng() - .5) * 0.3] });
+    tint(l, G(0xffffff).multiplyScalar(0.55 + rng() * 0.5));
+    parts.push(l);
+    // stalk
+    const st = cyl(0.035, 0.045, len * 0.5, 4, 'vine', {
+      pos: [0, len * 0.2, 0], rot: [0.5, a, 0],
+    });
+    tint(st, G(0x7fa05a)); parts.push(st);
+  }
+  return { opaque: null, cutout: mergeGeos(parts), r: 0 };
+}
+
+/** A clump of tall reedy grass, waist high. */
+function buildReeds(rng) {
+  const parts = [];
+  const s = 0.7 + rng() * 0.5;
+  for (let i = 0; i < 4; i++) {
+    const q = plane(0.9 * s, 1.5 * s, 'tuft');
+    q.translate(0, 0.75 * s, 0);
+    place(q, { rot: [(rng() - .5) * 0.2, (i / 4) * Math.PI * 2 + rng(), 0],
+      pos: [(rng() - .5) * 0.4, 0, (rng() - .5) * 0.4] });
+    tint(q, G(0xffffff).multiplyScalar(0.55 + rng() * 0.45));
+    parts.push(q);
+  }
+  return { opaque: null, cutout: mergeGeos(parts), r: 0 };
+}
+
 /* ---------- rock ---------- */
 function buildRock(rng, big) {
   const s = big ? 1.4 + rng() * 2.0 : 0.32 + rng() * 0.6;
@@ -466,6 +539,7 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     palmSap: 2, palmSub: 4, palmCan: 3, palmEmg: 2,
     treeSap: 2, treeSub: 4, treeCan: 3, treeEmg: 2,
     bush: 3, fern: 3, tuft: 2, flowers: 2, bigleaf: 2,
+    treefern: 3, broad: 3, reeds: 2,
     rock: 3, bigrock: 3, drift: 2, gvine: 2,
   };
   for (let i = 0; i < POOL.palmSap; i++) B.addVariant('palmSap' + i, buildPalm(rng, 'sapling'));
@@ -481,6 +555,9 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
   for (let i = 0; i < POOL.tuft; i++) B.addVariant('tuft' + i, buildTuft(rng));
   for (let i = 0; i < POOL.flowers; i++) B.addVariant('flowers' + i, buildFlowers(rng));
   for (let i = 0; i < POOL.bigleaf; i++) B.addVariant('bigleaf' + i, buildBigLeaf(rng));
+  for (let i = 0; i < POOL.treefern; i++) B.addVariant('treefern' + i, buildTreeFern(rng));
+  for (let i = 0; i < POOL.broad; i++) B.addVariant('broad' + i, buildBroadLeaf(rng));
+  for (let i = 0; i < POOL.reeds; i++) B.addVariant('reeds' + i, buildReeds(rng));
   for (let i = 0; i < POOL.rock; i++) B.addVariant('rock' + i, buildRock(rng, false));
   for (let i = 0; i < POOL.bigrock; i++) B.addVariant('bigrock' + i, buildRock(rng, true));
   for (let i = 0; i < POOL.drift; i++) B.addVariant('drift' + i, buildDriftwood(rng));
@@ -562,13 +639,16 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
       } else if (roll < 0.375) {                            // saplings
         const k = rng() < 0.5 ? pick('treeSap', POOL.treeSap) : pick('palmSap', POOL.palmSap);
         put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true);
-      } else if (roll < 0.415) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
-      else if (roll < 0.445) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
-      else if (roll < 0.468) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
-      else if (roll < 0.482) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
-      else if (roll < 0.492) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
-      else if (roll < 0.500) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
-      else if (roll < 0.512) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.7);
+      } else if (roll < 0.425) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
+      else if (roll < 0.462) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
+      else if (roll < 0.492) put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, 0.85 + rng() * 0.4, true);
+      else if (roll < 0.520) put(pick('broad', POOL.broad), x, h - 0.05, z, yaw, 0.85 + rng() * 0.45);
+      else if (roll < 0.542) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
+      else if (roll < 0.562) put(pick('reeds', POOL.reeds), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
+      else if (roll < 0.578) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
+      else if (roll < 0.592) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.606) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.620) put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, 0.7 + rng() * 0.7);
 
     } else if (biome === 'rock') {
       if (roll < 0.045) {
