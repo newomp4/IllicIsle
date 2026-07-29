@@ -338,25 +338,29 @@ export class MPGame extends Game {
     }, this.islandScene);
   }
 
+  /**
+   * Everyone stands round the fire, in their own seat, facing it. This is
+   * where you wake up and where every council is held — arriving in a ring
+   * of faces is half of what makes a meeting feel like one.
+   */
   _teleportToCamp() {
     const M = this.mp;
-    const c = this.spawn;
+    const c = this.campfirePos || this.spawn;
     const ids = [...M.view.players.keys()];
     const i = Math.max(0, ids.indexOf(M.view.selfId));
     const n = Math.max(1, ids.length);
 
-    // one seat per player around the fire, and never inside the wreck
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const a = (i / n) * Math.PI * 2 + attempt * 0.5;
-      const r = 5 + attempt * 1.6;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const a = (i / n) * Math.PI * 2 + attempt * 0.35;
+      const r = 4.4 + attempt * 1.1;
       const x = c.x + Math.cos(a) * r, z = c.z + Math.sin(a) * r;
       const w = this.wreckPos;
-      if (w && Math.hypot(x - w.x, z - w.z) < 9) continue;
+      if (w && Math.hypot(x - w.x, z - w.z) < 8) continue;
       if (heightAt(x, z) < 0.4) continue;                 // not in the sea
       this.player.teleport(x, heightAt(x, z) + 0.6, z, Math.atan2(c.x - x, c.z - z));
       return;
     }
-    this.player.teleport(c.x, Math.max(heightAt(c.x, c.z), 0.6) + 0.6, c.z, 0);
+    this.player.teleport(c.x + 4, Math.max(heightAt(c.x, c.z), 0.6) + 0.6, c.z, 0);
   }
 
   _onKilled(id, x, y, z) {
@@ -440,6 +444,25 @@ export class MPGame extends Game {
 
   /** Sabotages have to be visible from across the island or they are just a timer. */
   _applySabotage(kind, on) {
+    /* The mist. Fog collapses to arm's length and the sky goes with it —
+       and an Agent sees a little further through it than anyone else,
+       which is the whole reason to pull it. */
+    if (kind === 'blind') {
+      this.blinded = on;
+      const f = this.islandScene.fog;
+      if (on) {
+        this._fogWas = { near: f.near, far: f.far, col: f.color.getHex() };
+        this.audio.sfx('descend');
+      } else if (this._fogWas) {
+        f.near = this._fogWas.near; f.far = this._fogWas.far;
+        this.audio.sfx('confirm');
+      }
+    }
+    if (kind === 'scatter') {
+      this.scattered = on;
+      this._compassForTasks();
+      this.audio.sfx(on ? 'deny' : 'confirm');
+    }
     if (kind === 'storm' && this.storm) { on ? this.storm.start() : this.storm.stop(); }
     if (kind === 'douse') {
       this.doused = on;
@@ -464,7 +487,13 @@ export class MPGame extends Game {
     }
     if (kind === 'storm') {
       // one crack straight away, so it reads as an event and not weather
-      if (on) { this.audio.sfx('thunder'); this.ui.flashLightning?.(); }
+      if (on) {
+        this.audio.sfx('thunder');
+        this.ui.flashLightning?.();
+        this.audio.playMusic('storm');
+      } else {
+        this.audio.playMusic('island');
+      }
     }
   }
 
@@ -506,6 +535,8 @@ export class MPGame extends Game {
     this.audio.sfx(fx.sfx);
     this.audio.sfx(finished ? 'confirm' : 'select');
 
+    this._taskWorldFx(id, stage);
+
     const def = taskById(id);
     if (!finished && def?.then) {
       this.ui.showPopup(def.then.name, 'NOW TAKE IT THERE', 'task', 'HALF DONE');
@@ -513,6 +544,49 @@ export class MPGame extends Game {
       this.ui.showPopup(stage.name, 'THAT IS ONE OFF THE LIST', 'task', 'TASK DONE');
     }
     this._compassForTasks();
+  }
+
+  /**
+   * What the island does about it. A ring of light is generic; this is the
+   * bit that makes each chore feel like a different job.
+   */
+  _taskWorldFx(id, stage) {
+    const at = stage?.at;
+    const relic = (k) => (this.relicNodes || []).find((r) => r.kind === k)?.mesh;
+
+    if (id === 'tasha' && at === 'tasha') {
+      relic('tasha')?.userData.setFixed?.(true);
+      this.audio.sfx('orbShatter');
+    }
+    if (id === 'plane' && at === 'aerlingus') {
+      relic('aerlingus')?.userData.setFixed?.(true);
+      this.audio.sfx('slam');
+    }
+    if (at && at.startsWith('pend')) {
+      // the Pendulum you just wound throws a shockwave and flares
+      const i = Number(at.slice(4)) - 1;
+      const m = (this.pendulumMeshes || [])[i];
+      m?.userData.activate?.();
+    }
+    if (id === 'fire' || id === 'torches') {
+      // the fire jumps
+      const f = this.campfire?.userData.flames;
+      if (f) {
+        f.scale.setScalar(1.9);
+        setTimeout(() => f.scale.setScalar(1), 1400);
+      }
+      if (this.campfire?.userData.light) this.campfire.userData.light.intensity = 6;
+    }
+    if (id === 'brazier' && this.templeDoor) {
+      for (const fl of (this.templeDoor.userData.fires || [])) {
+        fl.scale.setScalar(1.8);
+        setTimeout(() => fl.scale.setScalar(1), 1600);
+      }
+    }
+    if (id === 'sweep' && this.templeDoor?.userData.light) {
+      this.templeDoor.userData.light.intensity = 4.2;
+      setTimeout(() => { if (this.templeDoor) this.templeDoor.userData.light.intensity = 1.1; }, 1800);
+    }
   }
 
   /** Which half of a chore you are on, and what it is called right now. */
@@ -598,14 +672,14 @@ export class MPGame extends Game {
   /** Your own chores get compass ticks. Nobody else's do. */
   _compassForTasks() {
     const M = this.mp;
-    const bell = this.campPos || this.spawn;
-    const pois = [{ label: 'BELL', x: bell.x, z: bell.z, kind: 'poi' }];
+    const bell = this.campfirePos || this.campPos || this.spawn;
+    const pois = [{ label: 'FIRE', x: bell.x, z: bell.z, kind: 'poi' }];
     for (const id of M.view.tasks) {
       const site = this._taskSite(id);
       if (!site) continue;
       pois.push({
         label: '', x: site.x, z: site.z, kind: 'job',
-        hidden: M.view.doneTasks.has(id),
+        hidden: this.scattered || M.view.doneTasks.has(id),
       });
     }
     this._taskPois = pois;
@@ -764,15 +838,16 @@ export class MPGame extends Game {
     if (this.screens.name === 'chart') { this.screens.pop(); this.afterOverlayClose(); return; }
     if (!this.mp.started) { this.audio.sfx('deny'); return; }
     const M = this.mp;
-    const jobs = M.view.tasks
+    const jobs = this.scattered ? [] : M.view.tasks
       .map((id) => ({ id, site: this._taskSite(id), done: M.view.doneTasks.has(id) }))
       .filter((j) => j.site);
     const left = jobs.filter((j) => !j.done).length;
     this.audio.sfx('page');
     this.screens.push('chart', {
-      subtitle: this.amAgent
-        ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
-        : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE'),
+      subtitle: this.scattered ? 'THE MARKERS ARE GONE. FROM MEMORY, THEN.'
+        : (this.amAgent
+          ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
+          : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE')),
       data: {
         heightAt, radius: ISLAND.shore + 14,
         marks: [],
@@ -935,6 +1010,16 @@ export class MPGame extends Game {
        no rain fell, no thunder cracked and the only sign of it was a
        countdown on the HUD. */
     if (this.storm) this.storm.tick(this.time, dt, this.camera.position);
+    /* updateDayNight rewrites the fog every frame, so the mist has to be
+       re-imposed after it rather than set once. */
+    if (this.blinded) {
+      const f = this.islandScene.fog;
+      const reach = this.amAgent ? 26 : 11;
+      f.near = reach * 0.25;
+      f.far = reach;
+      f.color.setRGB(0.62, 0.64, 0.66);
+      this.islandScene.background?.setRGB?.(0.62, 0.64, 0.66);
+    }
     for (const m of (this.pendulumMeshes || [])) {
       if (m.userData.setNight) m.userData.setNight(this.night || 0);
     }
@@ -980,17 +1065,24 @@ export class MPGame extends Game {
     const v = this._tagVec || (this._tagVec = new THREE.Vector3());
     const eye = cam.position;
 
+    /* Rain and mist take the names off people. Knowing who is walking
+       towards you is most of what the tags are for, so taking them away is
+       the point of calling weather in. */
+    let reach = 34;
+    if (this.storm?.active) reach = 9;
+    if (this.blinded) reach = this.amAgent ? 12 : 5;
+
     const add = (obj, name, colour, dead) => {
       v.set(obj.position.x, obj.position.y + (dead ? 0.9 : 2.15), obj.position.z);
       const dist = v.distanceTo(eye);
-      if (dist > 34) return;
+      if (dist > reach) return;
       v.project(cam);
       if (v.z > 1 || v.z < -1) return;
       out.push({
         x: Math.round((v.x * 0.5 + 0.5) * W),
         y: Math.round((-v.y * 0.5 + 0.5) * H),
         name, colour, dead,
-        fade: dist > 26 ? 1 - (dist - 26) / 8 : 1,
+        fade: dist > reach * 0.76 ? 1 - (dist - reach * 0.76) / (reach * 0.24) : 1,
       });
     };
 

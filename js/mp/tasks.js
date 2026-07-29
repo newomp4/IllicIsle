@@ -48,6 +48,10 @@ export const TASK_DEFS = [
   { id: 'net',   at: 'lagoon', name: 'HAUL IN THE FISHING NET', verb: 'HAULING',  secs: 4.0, fx: 'water' },
   { id: 'door',  at: 'temple', name: 'CLEAR THE TEMPLE STEPS',  verb: 'CLEARING', secs: 3.5, fx: 'metal' },
   { id: 'sand',  at: 'rogueSand', name: 'READ THE WORD IN THE SAND', verb: 'READING', secs: 2.5, fx: 'paper' },
+  { id: 'sweep', at: 'temple', name: 'SCRUB THE TEMPLE DOORS',      verb: 'SCRUBBING', secs: 4.0, fx: 'paper' },
+  { id: 'brazier', at: 'temple', name: 'LIGHT THE TEMPLE BRAZIERS', verb: 'LIGHTING', secs: 3.0, fx: 'fire' },
+  { id: 'torches', at: 'camp',  name: 'TRIM THE TIKI WICKS',        verb: 'TRIMMING', secs: 3.0, fx: 'fire' },
+  { id: 'lookout', at: 'pend3', name: 'STAND THE LOOKOUT WATCH',    verb: 'WATCHING', secs: 4.5, fx: 'wind' },
 
   /* Two-part chores. You do something here, then you have to walk it over
      there — which is the whole point: it puts people on paths, in front of
@@ -83,19 +87,34 @@ export function taskSteps(id) { return taskById(id)?.then ? 2 : 1; }
  */
 export const SABOTAGE_DEFS = {
   douse: {
-    id: 'douse', name: 'DOUSE THE FIRES', secs: 40, cooldown: 45,
-    blurb: 'Every fire on the island goes out. Nobody sees anybody.',
+    id: 'douse', name: 'DOUSE THE FIRES', short: 'DOUSE', secs: 40, cooldown: 45,
+    blurb: 'Every fire on the island goes out. After dark that is most of what anybody can see by.',
+    tell: 'The light dies. They will head for the camp.',
     fixAt: ['camp'], sites: 1, fixSecs: 3,
   },
-  storm: {
-    id: 'storm', name: 'CALL THE STORM', secs: 45, cooldown: 55,
-    blurb: 'Rain, fog and thunder. You will not hear them coming.',
+  blind: {
+    id: 'blind', name: 'SEND THE MIST', short: 'MIST', secs: 38, cooldown: 70,
+    blurb: 'Fog closes to arm\u2019s length. Nobody can see who is standing next to them \u2014 '
+      + 'including, if you are careless, you.',
+    tell: 'You see a little further through it than they do.',
+    fixAt: ['pend2'], sites: 1, fixSecs: 4,
+  },
+  scatter: {
+    id: 'scatter', name: 'SCATTER THE TOOLS', short: 'SCATTER', secs: 50, cooldown: 60,
+    blurb: 'Every marker off the chart and the compass. They have to remember where they were going.',
+    tell: 'Watch who walks straight there anyway.',
     fixAt: ['hut'], sites: 1, fixSecs: 3,
   },
+  storm: {
+    id: 'storm', name: 'CALL THE STORM', short: 'STORM', secs: 45, cooldown: 55,
+    blurb: 'Rain, thunder and a sky the colour of a bruise. Names stop showing over people at any distance.',
+    tell: 'Nobody will hear you coming.',
+    fixAt: ['wreck'], sites: 1, fixSecs: 3,
+  },
   jam: {
-    id: 'jam', name: 'JAM THE PENDULUMS', secs: 75, fatal: true, cooldown: 150,
-    blurb: 'All four stop. Two different Pendulums must be wound, by anyone, '
-      + 'or the island takes every one of you.',
+    id: 'jam', name: 'JAM THE PENDULUMS', short: 'JAM', secs: 75, fatal: true, cooldown: 150,
+    blurb: 'All four stop. Two different Pendulums must be wound, by anyone, or the island takes every one of you.',
+    tell: 'Including you. Be somewhere useful when it lands.',
     fixAt: ['pend1', 'pend2', 'pend3', 'pend4'], sites: 2, fixSecs: 4,
   },
 };

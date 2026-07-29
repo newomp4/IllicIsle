@@ -43,7 +43,10 @@ export const ISLAND = {
      with a proportionally thin beach — you should be in trees almost
      immediately after leaving the wreck. */
   shore: 168,
-  beachWidth: 42,
+  /* A wider sand band, but the jungle ramp is left where it was: moving it
+     changes the height of the whole interior, and every landmark is placed
+     against height and slope windows that were tuned to it. */
+  beachWidth: 56,
   jungleFrom: 40,
   jungleTo: 104,
   playRadius: 178,
@@ -124,7 +127,9 @@ export function heightAt(x, z) {
     const q = Math.hypot(lx / c.rx, lz / c.rz);
     if (q >= 1.45) continue;
     const k = 1 - THREE.MathUtils.smoothstep(q, 0.70, 1.45);
-    h = THREE.MathUtils.lerp(h, c.y, k);
+    // a carve may be a level shelf or a profile that varies across itself
+    const target = c.h ? c.h(lx, lz) : c.y;
+    h = THREE.MathUtils.lerp(h, target, k);
   }
 
   return Math.max(h, -24);

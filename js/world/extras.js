@@ -125,6 +125,61 @@ export function buildRelic(kind, rng, mats) {
     g.userData.tick = (t) => { g.rotation.y = Math.sin(t * 0.5) * 0.25; };
   }
 
+  /* Something visible has to change when a castaway works on one of
+     these, or "RESTART TASHA'S OPTIC" is a progress bar next to a prop. */
+  if (kind === 'tasha') {
+    const eye = new THREE.PointLight(0x6fd0e0, 0, 7, 1.8);
+    eye.position.set(0.86, 0.24, 0.46);
+    g.add(eye);
+    const beam = new THREE.Mesh(
+      new THREE.ConeGeometry(0.5, 3.4, 7, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0x6fd0e0, transparent: true, opacity: 0,
+        side: THREE.DoubleSide, depthWrite: false, fog: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    beam.position.set(1.9, 0.5, 1.0);
+    beam.rotation.z = -Math.PI / 2;
+    beam.rotation.y = 0.5;
+    g.add(beam);
+    let lit = 0;
+    g.userData.setFixed = (on) => { lit = on ? 1 : 0; };
+    g.userData.tick = (t) => {
+      const flick = lit ? 0.75 + Math.sin(t * 9) * 0.25 : 0;
+      eye.intensity = 3.4 * flick;
+      beam.material.opacity = 0.20 * flick;
+      beam.rotation.y = 0.5 + Math.sin(t * 0.7) * 0.5;
+    };
+  }
+  if (kind === 'aerlingus') {
+    // a panel that comes off, and the hole it leaves
+    const panel = box(1.5, 0.1, 1.1, 'metal', { pos: [0.2, 1.15, 0.1] });
+    tint(panel, G(0x9aa6ae));
+    const pm = new THREE.Mesh(mergeGeos([panel]), mats.opaque);
+    g.add(pm);
+    const holeInner = box(1.4, 0.06, 1.0, 'metal', { pos: [0.2, 1.06, 0.1] });
+    tint(holeInner, G(0x1a2026));
+    const hm = new THREE.Mesh(mergeGeos([holeInner]), mats.opaque);
+    hm.visible = false;
+    g.add(hm);
+    // and the salvage, stacked beside it
+    const pile = [];
+    for (let i = 0; i < 5; i++) {
+      const a = rng() * Math.PI * 2;
+      const pl = box(0.7 + rng() * 0.4, 0.09, 0.5 + rng() * 0.3, 'metal', {
+        pos: [-2.2 + Math.cos(a) * 0.4, 0.10 + i * 0.10, 1.6 + Math.sin(a) * 0.4],
+        rot: [0, a, (rng() - 0.5) * 0.14],
+      });
+      tint(pl, G(0x9aa6ae).multiplyScalar(0.8 + rng() * 0.4));
+      pile.push(pl);
+    }
+    const pileM = new THREE.Mesh(mergeGeos(pile), mats.opaque);
+    pileM.visible = false;
+    g.add(pileM);
+    g.userData.setFixed = (on) => { pm.visible = !on; hm.visible = on; pileM.visible = on; };
+  }
+
   return g;
 }
 
@@ -199,31 +254,53 @@ export function buildFerdiHut(rng, mats, flameFactory, groundAt = () => 0) {
   tint(nail, G(0x6a6a66)); P.push(nail);
 
   /* --- a proper shopfront: boardwalk, steps, awning, hanging wares --- */
-  /* Boardwalk out front so you approach along something. Each plank sits
-     above the ground under it and steps down from the deck, so a clearing
-     that is not a billiard table cannot swallow the front of the shop. */
-  for (let i = 0; i < 5; i++) {
-    const z = 3.2 + i * 1.0;
-    const want = Math.max(groundAt(0, z) + 0.18, 1.42 - i * 0.28);
-    for (const sx of [-2.7, 2.7]) {
+  /* A staircase down from the deck, then a flat landing. Overlapping
+     planks at slightly different heights read as a skewed heap and
+     z-fight; risers and treads read as stairs. */
+  const STEPS = 5, RISE = 0.30, TREAD = 0.85;
+  const deckY = 1.5;
+  for (let i = 0; i < STEPS; i++) {
+    const z = 3.0 + i * TREAD;
+    const top = deckY - (i + 1) * RISE;
+    // tread
+    const tr = box(5.4, 0.16, TREAD + 0.06, 'planks', { pos: [0, top, z] });
+    tint(tr, WOOD.clone().multiplyScalar(0.86 + rng() * 0.2)); P.push(tr);
+    // riser, closing the gap to the step above so you cannot see under it
+    const rs = box(5.4, RISE + 0.1, 0.16, 'planks', {
+      pos: [0, top - RISE / 2 + 0.05, z - TREAD / 2],
+    });
+    tint(rs, WOOD_D.clone().multiplyScalar(0.9 + rng() * 0.2)); P.push(rs);
+    // stringers either side, buried at the bottom
+    for (const sx of [-2.8, 2.8]) {
       const gp = groundAt(sx, z);
-      const len = Math.max(0.5, want - gp + 0.9);
-      const post = cyl(0.13, 0.16, len, 5, 'driftwood', { pos: [sx, want - len / 2 + 0.09, z] });
+      const len = Math.max(0.6, top - gp + 1.2);
+      const post = cyl(0.13, 0.16, len, 5, 'driftwood', { pos: [sx, top - len / 2 + 0.08, z] });
       tint(post, WOOD_D); P.push(post);
     }
-    const pl = box(6.4, 0.16, 1.0, 'planks', { pos: [0, want, z], rot: [0, 0, 0] });
-    tint(pl, WOOD.clone().multiplyScalar(0.7 + rng() * 0.35)); P.push(pl);
   }
-  for (let i = 0; i < 3; i++) {
-    const st = box(5.0 - i * 0.5, 0.3, 0.8, 'planks', { pos: [0, 1.25 - i * 0.42, 8.2 + i * 0.8] });
-    tint(st, WOOD_D); P.push(st);
+  // a landing that meets whatever the ground is doing out front
+  {
+    const z0 = 3.0 + STEPS * TREAD;
+    const g0 = groundAt(0, z0 + 0.9);
+    const y0 = Math.max(g0 + 0.12, deckY - (STEPS + 1) * RISE);
+    const pad = box(5.4, 0.16, 2.0, 'planks', { pos: [0, y0, z0 + 0.9] });
+    tint(pad, WOOD.clone().multiplyScalar(0.78)); P.push(pad);
+    for (const sx of [-2.5, 2.5]) {
+      const gp = groundAt(sx, z0 + 0.9);
+      const len = Math.max(0.6, y0 - gp + 1.2);
+      const post = cyl(0.12, 0.15, len, 5, 'driftwood', { pos: [sx, y0 - len / 2 + 0.08, z0 + 0.9] });
+      tint(post, WOOD_D); P.push(post);
+    }
   }
-  for (const sx of [-3.0, 3.0]) {
-    const rail = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 2.1, 4.4] });
+  for (const sx of [-2.9, 2.9]) {
+    const rail = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 1.55, 3.6] });
     tint(rail, WOOD_D); P.push(rail);
-    const rail2 = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 2.1, 7.2] });
+    const rail2 = cyl(0.09, 0.11, 1.1, 5, 'driftwood', { pos: [sx, 0.5, 6.6] });
     tint(rail2, WOOD_D); P.push(rail2);
-    const bar = cyl(0.06, 0.06, 3.0, 4, 'driftwood', { pos: [sx, 2.7, 5.8], rot: [Math.PI / 2, 0, 0] });
+    // a rail that follows the pitch of the stairs
+    const bar = cyl(0.06, 0.06, 3.6, 4, 'driftwood', {
+      pos: [sx, 1.62, 5.1], rot: [Math.PI / 2 - 0.34, 0, 0],
+    });
     tint(bar, WOOD_D); P.push(bar);
   }
   // striped awning over the counter

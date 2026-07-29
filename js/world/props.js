@@ -804,31 +804,40 @@ export function buildShipwreck(rng, mats) {
 export function buildCampfire(rng, mats) {
   const group = new THREE.Group();
   const opaque = [];
-  for (let i = 0; i < 9; i++) {
-    const a = (i / 9) * Math.PI * 2;
-    const s = ico(0.16 + rng() * 0.08, 0, 'rock', {
-      pos: [Math.cos(a) * 0.6, 0.07, Math.sin(a) * 0.6], rot: [rng(), rng(), rng()],
+  /* A proper bonfire: this is where everyone spawns and where every
+     council is held, so it has to read as a place from across the beach. */
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    const r = 1.35 + rng() * 0.18;
+    const s = ico(0.26 + rng() * 0.14, 0, 'rock', {
+      pos: [Math.cos(a) * r, 0.10, Math.sin(a) * r], rot: [rng(), rng(), rng()],
     });
     tint(s, G(0x8a8070).multiplyScalar(0.8 + rng() * 0.4));
     opaque.push(s);
   }
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    const l = cyl(0.07, 0.09, 0.82, 5, 'torchWood', {
-      pos: [Math.cos(a) * 0.17, 0.24, Math.sin(a) * 0.17], rot: [0.95, a, 0],
+  // a teepee of driftwood
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + rng() * 0.2;
+    const l = cyl(0.11, 0.14, 1.9, 5, 'torchWood', {
+      pos: [Math.cos(a) * 0.34, 0.62, Math.sin(a) * 0.34], rot: [0.86, a, 0],
     });
-    tint(l, G(0x4a3524));
+    tint(l, G(0x4a3524).multiplyScalar(0.85 + rng() * 0.4));
     opaque.push(l);
+  }
+  // and a couple of logs to sit on
+  for (const [lx, lz, ry] of [[0, 2.4, 0], [2.3, -0.9, 1.9], [-2.2, -1.4, -2.2]]) {
+    const log = cyl(0.28, 0.30, 2.6, 6, 'torchWood', { pos: [lx, 0.28, lz], rot: [0, ry, Math.PI / 2] });
+    tint(log, G(0x6a5238)); opaque.push(log);
   }
   group.add(new THREE.Mesh(mergeGeos(opaque), mats.opaque));
 
-  const flames = buildFlameCluster(mats, 4, 0.42);   // ~0.75 tall total
-  flames.position.y = 0.26;
+  const flames = buildFlameCluster(mats, 7, 0.9);    // taller than a person's waist
+  flames.position.y = 0.5;
   group.add(flames);
   group.userData.flames = flames;
 
-  const light = new THREE.PointLight(0xff9a3c, 2.0, 16, 1.6);
-  light.position.y = 0.8;
+  const light = new THREE.PointLight(0xff9a3c, 3.0, 26, 1.6);
+  light.position.y = 1.4;
   group.add(light);
   group.userData.light = light;
   return group;

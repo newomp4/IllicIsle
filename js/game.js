@@ -221,6 +221,16 @@ Do not eat anything he offers you.
 /* ===========================================================
    GAME
    =========================================================== */
+/**
+ * Where the easter-egg relics live. Declared up here because the jungle is
+ * scattered before they are placed, and it has to leave them room.
+ */
+const RELIC_SPOTS = [
+  { x: -140, z: -20 },     // TASHA Unit 03
+  { x: 108, z: 118 },      // the Aer Lingus fuselage
+  { x: -86, z: 95 },       // the First Syncoin's cairn
+];
+
 /** The footprint Ferdi's hut actually occupies, in its own space. */
 const HUT_FOOT = [
   [-3.2, -2.8], [3.2, -2.8], [-3.2, 2.6], [3.2, 2.6],
@@ -381,11 +391,19 @@ export class Game {
       this.templeDoorPos = this._findTempleSpot();
       const dg = this.templeDoorPos;
       const yaw = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
-      const cs = Math.cos(yaw), sn = Math.sin(yaw);
+      /* Not a flat disc. A flat disc levelled the ground BEHIND the temple
+         too, so the hill fell away and the terrace stack stood in mid-air
+         with nothing at its back. The profile is a plaza in front at the
+         height of the threshold, rising behind at the same pitch as the
+         terraces so the hillside meets the top course. */
+      const THRESH = dg.y + 0.10;          // top of the doorway's threshold slab
       setCarves([{
-        // centred a little into the hill, so the terraces stand on the shelf
-        x: dg.x + (-4) * sn, z: dg.z + (-4) * cs,
-        y: dg.y - 0.55, rx: 21, rz: 20, yaw,
+        x: dg.x, z: dg.z, rx: 25, rz: 27, yaw,
+        h: (lx, lz) => {
+          const into = Math.max(0, -lz);   // 0 at the doorway, grows into the hill
+          const shoulder = Math.max(0, Math.abs(lx) - 9) * 0.35;
+          return THRESH + Math.min(14.5, into * 0.80) + shoulder;
+        },
       }]);
       this._buildIslandScene();
     });
@@ -393,10 +411,19 @@ export class Game {
     await step('PLANTING THE JUNGLE', 0.42, () => {
       this.colliders = [];
       const clearZones = Object.keys(LANDMARKS).map((k) => ({
-        x: LANDMARKS[k].x, z: LANDMARKS[k].z, r: 15,
+        x: LANDMARKS[k].x, z: LANDMARKS[k].z, r: 18,
       }));
-      clearZones.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, r: 26 });
-      clearZones.push({ x: -30, z: 46, r: 20 });   // Ferdi's clearing
+      /* The camp is derived from the wreck and sits well inland of it, so
+         the wreck's own clearing has to reach far enough to cover the fire
+         everyone spawns around. A bonfire behind a tree trunk is no use to
+         anybody. */
+      clearZones.push({ x: LANDMARKS.wreck.x, z: LANDMARKS.wreck.z, r: 30 });
+      clearZones.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, r: 30 });
+      clearZones.push({ x: -30, z: 46, r: 24 });   // Ferdi's clearing
+      /* Every place a chore happens needs a clearing. TASHA sat inside a
+         thicket you could walk past three times without seeing her, which
+         is not a puzzle, it is a bad map. */
+      for (const z of RELIC_SPOTS) clearZones.push({ x: z.x, z: z.z, r: 17 });
       scatterIsland(this.islandScene, this.propMats, makeRng(2468),
         this.settings.density, this.colliders, clearZones);
     });
@@ -505,7 +532,7 @@ export class Game {
     this.wreckPos = wg;
 
     // the camp of the ones who got here first
-    const cg = findGround(wg.x + inX * 9 + 6, wg.z + inZ * 9, { rng, radius: 7, minH: 1.0, maxH: 4, maxSlope: 0.18 });
+    const cg = findGround(wg.x + inX * 16 + 8, wg.z + inZ * 16, { rng, radius: 6, minH: 1.0, maxH: 5, maxSlope: 0.18 });
     const camp = buildCastawayCamp(rng, this.propMats);
     camp.position.set(cg.x, cg.y, cg.z);
     camp.rotation.y = Math.atan2(cg.x, cg.z) + 2.1;
@@ -514,7 +541,11 @@ export class Game {
     this.campPos = cg;
 
     const fire = buildCampfire(rng, this.propMats);
-    const fg = findGround(wg.x + inX * 7, wg.z + inZ * 7, { rng, radius: 4, minH: 0.9, maxH: 4, maxSlope: 0.18 });
+    /* Well clear of the wreck and up towards the treeline: it is the social
+       centre of the whole mode, so it wants space around it rather than
+       being tucked against the hull. */
+    const fg = findGround(wg.x + inX * 13, wg.z + inZ * 13,
+      { rng, radius: 6, minH: 1.0, maxH: 4.5, maxSlope: 0.12 });
     fire.position.set(fg.x, fg.y, fg.z);
     scene.add(fire);
     this.tickers.push(fire.userData.flames);
@@ -524,8 +555,12 @@ export class Game {
     this.flameGroups.push(fire.userData.flames);
 
     // HELP dragged into the sand beside the camp
-    const helpPos = findGround(wg.x + inX * 2 - 12, wg.z + inZ * 2 - 6,
-      { rng, radius: 10, minH: 0.7, maxH: 2.4, maxSlope: 0.13 });
+    /* Along the beach rather than under everyone's feet: it used to sit
+       between the wreck and the fire where it was permanently walked over. */
+    const alongX = -inZ, alongZ = inX;               // tangent to the shore
+    const helpPos = findGround(
+      wg.x + alongX * 34 + inX * 3, wg.z + alongZ * 34 + inZ * 3,
+      { rng, radius: 12, minH: 0.7, maxH: 2.6, maxSlope: 0.12 });
     const help = buildSandWriting('HELP', this.propMats, { width: 17, height: 5.5, seed: 12 });
     help.position.set(helpPos.x, helpPos.y, helpPos.z);
     help.rotation.y = Math.atan2(helpPos.x, helpPos.z) + Math.PI;
@@ -711,6 +746,7 @@ export class Game {
       scene.add(m);
       if (m.userData.tick) this.tickers.push(m);
       this.relicNodes.push({ kind, mesh: m });
+      if (m.userData.tick && !this.tickers.includes(m)) this.tickers.push(m);
       // These are set pieces the size of a car; walking through one reads
       // as the world being made of cardboard.
       this.colliders.push({ x: g.x, z: g.z, r: kind === 'aerlingus' ? 2.8 : 1.5 });
@@ -774,7 +810,26 @@ export class Game {
     const door = this._buildTempleDoor(rng, dg);
     scene.add(door);
     this.templeDoor = door;
-    this.colliders.push({ x: dg.x, z: dg.z, r: 2.4 });
+    /* The facade is geometry the ground knows nothing about, so without
+       these you walk straight through the bottom step and into the stack. */
+    {
+      const yaw2 = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+      const c2 = Math.cos(yaw2), s2 = Math.sin(yaw2);
+      const at = (lx, lz, r) => this.colliders.push({
+        x: dg.x + lx * c2 + lz * s2, z: dg.z - lx * s2 + lz * c2, r,
+      });
+      // jambs either side of the doorway, leaving the passage itself open
+      at(-3.6, 1.8, 1.5); at(3.6, 1.8, 1.5);
+      // the flanking stair-blocks
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 5; i++) at(side * (6.2 + i * 0.5), 1.6 - i * 1.0, 2.2);
+      }
+      // and the terrace stack behind, so you cannot walk into the hill
+      for (let i = 0; i < 5; i++) {
+        const w = 26 - i * 3.6;
+        for (let k = -1; k <= 1; k++) at(k * w * 0.3, -1.2 - i * 3.2, 3.0);
+      }
+    }
     this.interactables.push({
       kind: 'templeDoor', x: dg.x, y: dg.y, z: dg.z, r: 6.5,
       prompt: 'Examine the sealed door',
@@ -2283,7 +2338,11 @@ I have snacks."`);
     const inTemple = this.state === 'temple';
     const groundOf = inTemple ? templeHeight : heightAt;
     for (let i = this.coconuts.length - 1; i >= 0; i--) {
+      /* The killing blow on Hector clears every coconut in flight from
+         inside this very loop, so by the next iteration the array is
+         shorter than the index we are walking down from. */
       const c = this.coconuts[i];
+      if (!c) continue;
       c.vel.y -= 24 * dt;
       c.pos.addScaledVector(c.vel, dt);
       c.life -= dt;
