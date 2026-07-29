@@ -133,6 +133,15 @@ export class Avatar {
       this.shell.rotation.y = this.mesh.rotation.y;
       if (this.shellKind === 'thermal' && this.shellMat) {
         this.shellMat.opacity = 0.7 + Math.sin(performance.now() / 260) * 0.15;
+      } else if (this.shellMat) {
+        this.shellMat.opacity = 0.45 + Math.sin(performance.now() / 190) * 0.18;
+      }
+      if (this.shellRing) {
+        const p2 = performance.now() / 340;
+        this.shellRing.position.set(this.pos.x, this.pos.y + 0.06, this.pos.z);
+        const sc = 1 + Math.sin(p2) * 0.12;
+        this.shellRing.scale.set(sc, 1, sc);
+        this.shellRing.material.opacity = 0.6 + Math.sin(p2) * 0.25;
       }
     }
   }
@@ -166,24 +175,41 @@ export class Avatar {
     if (this.shellKind === kind) return;
     this.shellKind = kind;
     if (this.shell) { this.shell.removeFromParent(); this.shell = null; }
+    if (this.shellRing) { this.shellRing.removeFromParent(); this.shellRing = null; }
     if (!kind) return;
 
     const hot = kind === 'thermal';
+    /* A back-face shell scaled a few percent fights the depth buffer at
+       every seam. Pushed out further and drawn without depth testing it is
+       a clean silhouette instead of a shimmering crust. */
     const mat = new THREE.MeshBasicMaterial({
-      color: hot ? 0xff5a2a : 0xffe08a,
+      color: hot ? 0xff5a2a : 0xffdc6a,
       side: THREE.BackSide,
       fog: false,
       transparent: true,
-      opacity: hot ? 0.85 : 0.9,
-      depthTest: !hot,
+      opacity: hot ? 0.8 : 0.55,
+      depthTest: false,
       depthWrite: false,
     });
     const shell = this.mesh.clone(true);
-    shell.traverse((o) => { if (o.isMesh) { o.material = mat; o.renderOrder = hot ? 9 : 3; } });
-    shell.scale.setScalar(hot ? 1.10 : 1.07);
+    shell.traverse((o) => { if (o.isMesh) { o.material = mat; o.renderOrder = hot ? 9 : 8; } });
+    shell.scale.setScalar(hot ? 1.10 : 1.12);
     this.scene.add(shell);
     this.shell = shell;
     this.shellMat = mat;
+
+    if (!hot) {
+      // a ring on the ground, which is what actually reads at this distance
+      const rg = new THREE.RingGeometry(0.62, 0.86, 16, 1);
+      rg.rotateX(-Math.PI / 2);
+      const ring = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({
+        color: 0xff6a5a, transparent: true, opacity: 0.85,
+        side: THREE.DoubleSide, depthWrite: false, fog: false,
+      }));
+      ring.renderOrder = 7;
+      this.scene.add(ring);
+      this.shellRing = ring;
+    }
 
     /* clone() shallow-copies userData, so the copy's `parts` still points at
        the original rig. Pair the hierarchies up by traversal order instead
@@ -199,11 +225,13 @@ export class Avatar {
     this.visible = v;
     this.mesh.visible = v;
     if (this.shell) this.shell.visible = v;
+    if (this.shellRing) this.shellRing.visible = v;
   }
 
   dispose() {
     this.mesh.removeFromParent();
     this.shell?.removeFromParent();
+    this.shellRing?.removeFromParent();
   }
 }
 

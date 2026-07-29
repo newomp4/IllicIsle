@@ -39,47 +39,47 @@ export const TASK_DEFS = [
   /* Straight holds. Quick, and the bulk of anyone's list. */
   { id: 'fire',  at: 'camp',  name: 'STOKE THE CAMPFIRE',      verb: 'STOKING',  secs: 3.0, fx: 'fire' },
   { id: 'coco',  at: 'grove', name: 'GATHER COCONUTS',         verb: 'GATHERING', secs: 3.0, fx: 'food' },
-  { id: 'net',   at: 'lagoon', name: 'HAUL IN THE FISHING NET', verb: 'HAULING',  secs: 4.0, fx: 'water' },
+  { id: 'net',   at: 'lagoon', name: 'HAUL THE NET IN', verb: 'HAULING',  secs: 4.0, fx: 'water' },
   { id: 'door',  at: 'temple', name: 'CLEAR THE TEMPLE STEPS',  verb: 'CLEARING', secs: 3.5, fx: 'metal' },
-  { id: 'sand',  at: 'rogueSand', name: 'READ THE WORD IN THE SAND', verb: 'READING', secs: 2.5, fx: 'paper' },
+  { id: 'sand',  at: 'rogueSand', name: 'READ THE SAND', verb: 'READING', secs: 2.5, fx: 'paper' },
   { id: 'sweep', at: 'temple', name: 'SCRUB THE TEMPLE DOORS',  verb: 'SCRUBBING', secs: 4.0, fx: 'paper' },
-  { id: 'brazier', at: 'temple', name: 'LIGHT THE TEMPLE BRAZIERS', verb: 'LIGHTING', secs: 3.0, fx: 'fire' },
+  { id: 'brazier', at: 'temple', name: 'LIGHT THE BRAZIERS', verb: 'LIGHTING', secs: 3.0, fx: 'fire' },
   { id: 'torches', at: 'camp',  name: 'TRIM THE TIKI WICKS',    verb: 'TRIMMING', secs: 3.0, fx: 'fire' },
 
   /* Puzzles. Roughly a third of the list, and the reason you cannot clear
      it in ninety seconds — each one takes your eyes off the world. */
-  { id: 'wind1', at: 'pend1', name: 'WIND THE WEST PENDULUM',  verb: 'WINDING', game: 'wind', fx: 'wind' },
-  { id: 'wind2', at: 'pend2', name: 'WIND THE RIDGE PENDULUM', verb: 'WINDING', game: 'wind', fx: 'wind' },
-  { id: 'wind3', at: 'pend3', name: 'WIND THE EAST PENDULUM',  verb: 'WINDING', game: 'wind', fx: 'wind' },
-  { id: 'wind4', at: 'pend4', name: 'WIND THE NORTH PENDULUM', verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind1', at: 'pend1', name: 'WIND THE WEST',  verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind2', at: 'pend2', name: 'WIND THE RIDGE', verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind3', at: 'pend3', name: 'WIND THE EAST',  verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind4', at: 'pend4', name: 'WIND THE NORTH', verb: 'WINDING', game: 'wind', fx: 'wind' },
   { id: 'bail',  at: 'wreck', name: 'BAIL OUT THE HULL',       verb: 'BAILING', game: 'bail', fx: 'water' },
   { id: 'sail',  at: 'wreck', name: 'PATCH THE SAIL',          verb: 'STITCHING', game: 'stitch', fx: 'cloth' },
-  { id: 'lookout', at: 'pend3', name: 'SET THE LOOKOUT GLASS', verb: 'SETTING', game: 'dials', fx: 'wind' },
+  { id: 'lookout', at: 'pend3', name: 'SET THE LOOKOUT', verb: 'SETTING', game: 'dials', fx: 'wind' },
 
   /* Two-part: do something here, carry it there. */
   {
-    id: 'crate', at: 'crates', name: 'TAKE A CRATE FROM THE STACK', verb: 'SHOULDERING', secs: 2.5, fx: 'crate',
-    then: { at: 'camp', name: 'CARRY THE CRATE TO CAMP', verb: 'UNLOADING', secs: 2.5, fx: 'crate' },
+    id: 'crate', at: 'crates', name: 'TAKE A CRATE', verb: 'SHOULDERING', secs: 2.5, fx: 'crate',
+    then: { at: 'camp', name: 'CRATE TO CAMP', verb: 'UNLOADING', secs: 2.5, fx: 'crate' },
   },
   {
-    id: 'jars', at: 'wreck', name: 'FETCH JARS FROM THE HULL', verb: 'RUMMAGING', secs: 3.0, fx: 'cloth',
-    then: { at: 'hut', name: "RESTOCK FERDI'S SHELVES", verb: 'STACKING', secs: 3.0, fx: 'crate' },
+    id: 'jars', at: 'wreck', name: 'FETCH THE JARS', verb: 'RUMMAGING', secs: 3.0, fx: 'cloth',
+    then: { at: 'hut', name: "RESTOCK FERDI'S", verb: 'STACKING', secs: 3.0, fx: 'crate' },
   },
 
   /* Three-part: across the island and back, with a puzzle in the middle.
      These are the ones that put people on long walks past each other. */
   {
-    id: 'tasha', at: 'tasha', name: "OPEN TASHA'S HOUSING", verb: 'PRISING', secs: 3.0, fx: 'metal',
+    id: 'tasha', at: 'tasha', name: "OPEN TASHA'S PANEL", verb: 'PRISING', secs: 3.0, fx: 'metal',
     then: {
-      at: 'tasha', name: "SPLICE TASHA'S OPTIC", verb: 'SPLICING', game: 'splice', fx: 'spark',
-      then: { at: 'pend2', name: 'REPORT TASHA TO THE RIDGE', verb: 'UPLOADING', secs: 3.0, fx: 'wind' },
+      at: 'tasha', name: "SPLICE THE OPTIC", verb: 'SPLICING', game: 'splice', fx: 'spark',
+      then: { at: 'pend2', name: 'REPORT AT THE RIDGE', verb: 'UPLOADING', secs: 3.0, fx: 'wind' },
     },
   },
   {
-    id: 'plane', at: 'aerlingus', name: 'SALVAGE THE FUSELAGE', verb: 'SALVAGING', secs: 4.0, fx: 'metal',
+    id: 'plane', at: 'aerlingus', name: 'STRIP THE FUSELAGE', verb: 'SALVAGING', secs: 4.0, fx: 'metal',
     then: {
-      at: 'aerlingus', name: 'SET THE BEACON DIALS', verb: 'SETTING', game: 'dials', fx: 'spark',
-      then: { at: 'camp', name: 'HAUL THE SCRAP BACK TO CAMP', verb: 'DUMPING', secs: 3.0, fx: 'metal' },
+      at: 'aerlingus', name: 'TUNE THE BEACON', verb: 'SETTING', game: 'dials', fx: 'spark',
+      then: { at: 'camp', name: 'SCRAP TO CAMP', verb: 'DUMPING', secs: 3.0, fx: 'metal' },
     },
   },
 ];
@@ -142,10 +142,10 @@ export const SABOTAGE_DEFS = {
     fixAt: ['hut'], sites: 1, fixSecs: 4,
   },
   jam: {
-    id: 'jam', name: 'JAM THE PENDULUMS', short: 'JAM', secs: 75, fatal: true, cooldown: 150,
-    blurb: 'All four stop. Two different Pendulums must be wound, by anyone, or the island takes every one of you.',
+    id: 'jam', name: 'JAM THE PENDULUMS', short: 'JAM', secs: 100, fatal: true, cooldown: 200,
+    blurb: 'All four stop. Two different Pendulums must be wound, by anyone, or the island takes every one of you. A hundred seconds is a long walk, but it is a walk.',
     tell: 'Including you. Be somewhere useful when it lands.',
-    fixAt: ['pend1', 'pend2', 'pend3', 'pend4'], sites: 2, fixSecs: 4,
+    fixAt: ['pend1', 'pend2', 'pend3', 'pend4'], sites: 2, fixSecs: 2.5,
   },
 };
 

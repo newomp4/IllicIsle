@@ -131,25 +131,40 @@ export function buildRelic(kind, rng, mats) {
     const eye = new THREE.PointLight(0x6fd0e0, 0, 7, 1.8);
     eye.position.set(0.86, 0.24, 0.46);
     g.add(eye);
-    const beam = new THREE.Mesh(
-      new THREE.ConeGeometry(0.5, 3.4, 7, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0x6fd0e0, transparent: true, opacity: 0,
-        side: THREE.DoubleSide, depthWrite: false, fog: false,
-        blending: THREE.AdditiveBlending,
-      })
+    /* The beam is pivoted at the eye, not floating beside it: a cone
+       apex-first from the lens, so it reads as light coming OUT of her
+       rather than a blue shape that happens to be nearby. */
+    const beamPivot = new THREE.Group();
+    beamPivot.position.copy(eye.position);
+    g.add(beamPivot);
+    const LEN = 4.2;
+    const cone = new THREE.ConeGeometry(0.62, LEN, 9, 1, true);
+    // apex at the origin, opening away down +Z
+    cone.translate(0, -LEN / 2, 0);
+    cone.rotateX(Math.PI / 2);
+    const beam = new THREE.Mesh(cone, new THREE.MeshBasicMaterial({
+      color: 0x6fd0e0, transparent: true, opacity: 0,
+      side: THREE.DoubleSide, depthWrite: false, fog: false,
+      blending: THREE.AdditiveBlending,
+    }));
+    beamPivot.add(beam);
+    // a bright lens right at the source, so the origin is unmistakable
+    const lens = new THREE.Mesh(
+      new THREE.SphereGeometry(0.10, 6, 5),
+      new THREE.MeshBasicMaterial({ color: 0xcdf6ff, transparent: true, opacity: 0, fog: false })
     );
-    beam.position.set(1.9, 0.5, 1.0);
-    beam.rotation.z = -Math.PI / 2;
-    beam.rotation.y = 0.5;
-    g.add(beam);
+    beamPivot.add(lens);
+
     let lit = 0;
     g.userData.setFixed = (on) => { lit = on ? 1 : 0; };
     g.userData.tick = (t) => {
       const flick = lit ? 0.75 + Math.sin(t * 9) * 0.25 : 0;
       eye.intensity = 3.4 * flick;
-      beam.material.opacity = 0.20 * flick;
-      beam.rotation.y = 0.5 + Math.sin(t * 0.7) * 0.5;
+      beam.material.opacity = 0.17 * flick;
+      lens.material.opacity = 0.95 * flick;
+      // she sweeps the treeline
+      beamPivot.rotation.y = 0.4 + Math.sin(t * 0.55) * 0.75;
+      beamPivot.rotation.x = -0.18 + Math.sin(t * 0.31) * 0.07;
     };
   }
   if (kind === 'aerlingus') {

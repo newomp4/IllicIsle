@@ -676,35 +676,38 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     } else if (biome === 'jungle') {
       /* Dense, layered forest. Trees dominate; ground clutter is kept
          sparse and short so it never fills the camera. */
-      if (roll < 0.020) {                                   // emergent giants
+      /* Thinned out and grown up. It used to be a thicket of small trees
+         packed shoulder to shoulder; now there are fewer of them and the
+         ones that are there are worth looking at. */
+      if (roll < 0.030) {                                   // emergent giants
         const k = rng() < 0.5 ? pick('treeEmg', POOL.treeEmg) : pick('palmEmg', POOL.palmEmg);
-        put(k, x, h - 0.4, z, yaw, 0.9 + rng() * 0.25, true);
-        addCollider(x, z, 1.7);
-      } else if (roll < 0.115) {                            // canopy layer
+        put(k, x, h - 0.5, z, yaw, 1.15 + rng() * 0.45, true);
+        addCollider(x, z, 2.1);
+      } else if (roll < 0.105) {                            // canopy layer
         const k = rng() < 0.55 ? pick('treeCan', POOL.treeCan) : pick('palmCan', POOL.palmCan);
-        put(k, x, h - 0.35, z, yaw, 0.85 + rng() * 0.35, true);
-        addCollider(x, z, 1.15);
-      } else if (roll < 0.300) {                            // sub-canopy bulk
+        put(k, x, h - 0.4, z, yaw, 1.0 + rng() * 0.5, true);
+        addCollider(x, z, 1.35);
+      } else if (roll < 0.205) {                            // sub-canopy, sparser
         const k = rng() < 0.6 ? pick('treeSub', POOL.treeSub) : pick('palmSub', POOL.palmSub);
-        put(k, x, h - 0.3, z, yaw, 0.85 + rng() * 0.4, true);
-        addCollider(x, z, 0.8);
-      } else if (roll < 0.375) {                            // saplings
+        put(k, x, h - 0.35, z, yaw, 0.95 + rng() * 0.5, true);
+        addCollider(x, z, 0.95);
+      } else if (roll < 0.255) {                            // saplings
         const k = rng() < 0.5 ? pick('treeSap', POOL.treeSap) : pick('palmSap', POOL.palmSap);
         put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true);
-      } else if (roll < 0.425) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
-      else if (roll < 0.462) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
-      else if (roll < 0.492) {
+      } else if (roll < 0.320) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
+      else if (roll < 0.360) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
+      else if (roll < 0.392) {
         const s2 = 0.85 + rng() * 0.4;
         put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, s2, true);
         addCollider(x, z, 0.42 * s2);
       }
-      else if (roll < 0.520) put(pick('broad', POOL.broad), x, h - 0.05, z, yaw, 0.85 + rng() * 0.45);
-      else if (roll < 0.542) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
-      else if (roll < 0.562) put(pick('reeds', POOL.reeds), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
-      else if (roll < 0.578) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
-      else if (roll < 0.592) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
-      else if (roll < 0.606) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
-      else if (roll < 0.620) {
+      else if (roll < 0.420) put(pick('broad', POOL.broad), x, h - 0.05, z, yaw, 0.85 + rng() * 0.45);
+      else if (roll < 0.444) put(pick('bush', POOL.bush), x, h - 0.08, z, yaw, 0.85 + rng() * 0.35);
+      else if (roll < 0.466) put(pick('reeds', POOL.reeds), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
+      else if (roll < 0.482) put(pick('gvine', POOL.gvine), x, h, z, yaw, 0.9 + rng() * 0.5);
+      else if (roll < 0.498) put(pick('bigleaf', POOL.bigleaf), x, h - 0.05, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.514) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
+      else if (roll < 0.530) {
         const s2 = 0.7 + rng() * 0.7;
         put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2);
         if (s2 > 1.05) addCollider(x, z, 0.5 * s2);
