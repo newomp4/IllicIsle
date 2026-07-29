@@ -31,6 +31,9 @@ import { buildCasinoBoat, buildBoatBridge, buildVendingMachine } from './world/c
 import {
   BUNKER_SPOTS, buildHatch, buildBunkerRoom, BUNKER_ENTRY, BUNKER_BOX, bunkerHeight,
 } from './world/bunker.js';
+import {
+  buildHighRoller, HR_ENTRY, HR_BOX, HR_COLLIDERS, hrHeight,
+} from './world/highroller.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
 
@@ -546,6 +549,10 @@ export class Game {
       this.templeScene = buildTemple(this.idolMats, this.propMats);
       this._buildSanctum();
       this.bunkerScene = buildBunkerRoom(this.propMats);
+      /* The room behind Tim Grady's portrait. Built at load like the temple
+         and the listening post, so walking through the frame is instant and
+         its shaders are warmed with everything else. */
+      this.hrScene = buildHighRoller(this.propMats, buildFlameCluster);
     });
 
     await step('CASTING THE IDOL', 0.90, () => {
@@ -591,7 +598,8 @@ export class Game {
         this._lanternLight.position.set(0, 4, 0);
         this.islandScene.add(this._lanternLight);
 
-        for (const sc of [this.islandScene, this.templeScene, this.bunkerScene, this.titleScene]) {
+        for (const sc of [this.islandScene, this.templeScene, this.bunkerScene,
+          this.hrScene, this.titleScene]) {
           if (!sc) continue;
           showAll(sc);
           this.renderer.compile(sc, this.camera);
@@ -973,7 +981,14 @@ export class Game {
     const placeRelic = (kind, hintX, hintZ, opts) => {
       const g = findGround(hintX, hintZ, { rng, radius: 16, ...opts });
       const m = buildRelic(kind, rng, this.propMats);
-      m.position.set(g.x, g.y, g.z);
+      // sunk to the lowest ground under it, like everything else with a base
+      let lo = g.y;
+      for (let k = 0; k < 8; k++) {
+        const a2 = (k / 8) * Math.PI * 2;
+        const hh = heightAt(g.x + Math.cos(a2) * 1.8, g.z + Math.sin(a2) * 1.8);
+        if (hh < lo) lo = hh;
+      }
+      m.position.set(g.x, lo, g.z);
       m.rotation.y = rng() * Math.PI * 2;
       scene.add(m);
       if (m.userData.tick) this.tickers.push(m);
@@ -1553,7 +1568,10 @@ export class Game {
     });
   }
 
-  get playing() { return this.state === 'island' || this.state === 'temple'; }
+  get playing() {
+    return this.state === 'island' || this.state === 'temple'
+      || this.state === 'bunker' || this.state === 'highroller';
+  }
   anyOverlayOpen() { return this.screens.open; }
 
   /** Re-grab the pointer once the last overlay closes. */
@@ -3024,6 +3042,14 @@ I have snacks."`);
     this.night = n * n * (3 - 2 * n);                 // smooth the ramp
 
     this._sailCasino(dt);
+
+    /* A new day. The clock wraps at DAY_LEN, so a dawn is the moment the
+       phase steps backwards — Ferdi marks a different line down each one. */
+    {
+      const ph = this.clock24 / this.DAY_LEN;
+      if (this._lastDawn !== undefined && ph < this._lastDawn - 0.5) this.rollSale?.();
+      this._lastDawn = ph;
+    }
 
     const k = this.night;
     const storm = this.storm && this.storm.active ? 1 : 0;

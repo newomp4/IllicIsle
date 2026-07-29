@@ -297,6 +297,21 @@ export class ScreenStack {
 /* ===========================================================
    SCREENS
    =========================================================== */
+/** What Michael Beef says while he waits for you. */
+const BEEF_PROMPTS = [
+  'YOUR CALL.',
+  'TAKE YOUR TIME. THE BOAT IS NOT GOING ANYWHERE.',
+  'I HAVE SEEN WORSE HANDS PLAYED WORSE.',
+  'TIM SENDS HIS REGARDS. TIM SENDS NOTHING ELSE.',
+  'THE ODDS ARE THE ODDS. I ONLY DEAL THEM.',
+];
+const BEEF_WINS = [
+  'THE HOUSE TAKES IT.',
+  'THAT IS THE GAME. IT HAS ALWAYS BEEN THE GAME.',
+  'KEEP YOUR CHIN UP. KEEP YOUR STAKE SMALLER.',
+  'I DID NOT WRITE THE RULES. I JUST NEVER LOSE BY THEM.',
+];
+
 /** How long the command table takes to wake up. */
 const BOOT_LEN = 1.9;
 
@@ -857,6 +872,9 @@ export const SCREENS = {
       s.boot = 0;            // seconds since the terminal was woken
       s.asked = 0;
       s.beeped = 0;
+      s.zoom = 1;            // the plot zooms, like the paper map
+      s.cx = 0;
+      s.cz = 0;
     },
     tick(s, g, dt) {
       const was = s.boot;
@@ -1006,33 +1024,51 @@ export const SCREENS = {
 
         const cx = px0 + PW / 2, cy = py0 + PH / 2;
         const R = Math.min(PW, PH) / 2 - 4;
-        const K = R / 205;                       // world units -> screen
+        /* The plot zooms and pans, exactly like the paper map. At one scale
+           everything within thirty metres of anything else printed on top of
+           it and the table was less use than the compass. */
+        const zoom = Math.max(1, Math.min(5, s.zoom || 1));
+        const span = 205 / zoom;
+        const reach = 205 * (1 - 1 / zoom);
+        if (zoom <= 1) { s.cx = 0; s.cz = 0; }
+        s.cx = Math.max(-reach, Math.min(reach, s.cx || 0));
+        s.cz = Math.max(-reach, Math.min(reach, s.cz || 0));
+        const K = R / span;                      // world units -> screen
+        const wx0 = s.cx, wz0 = s.cz;
+        const onPlot = (qx, qy) => qx > px0 + 2 && qx < px0 + PW - 2
+          && qy > py0 + 2 && qy < py0 + PH - 2;
 
         /* The half the sabotage came from, washed red and pulsing. Drawn
            under everything else so the pips still read on top of it. */
         if (d.half) {
           const pulse = 0.10 + Math.abs(Math.sin(t * 2.6)) * 0.14;
           x.fillStyle = `rgba(200,40,30,${pulse.toFixed(3)})`;
-          if (d.half === 'EAST') x.fillRect(cx, py0, px0 + PW - cx, PH);
-          else if (d.half === 'WEST') x.fillRect(px0, py0, cx - px0, PH);
-          else if (d.half === 'SOUTH') x.fillRect(px0, cy, PW, py0 + PH - cy);
-          else x.fillRect(px0, py0, PW, cy - py0);
+          // the dividing line is the world axis, so it moves with the pan
+          const ax = Math.round(cx - wx0 * K), az = Math.round(cy - wz0 * K);
+          const lx = Math.max(px0, Math.min(px0 + PW, ax));
+          const lz = Math.max(py0, Math.min(py0 + PH, az));
+          if (d.half === 'EAST') x.fillRect(lx, py0, px0 + PW - lx, PH);
+          else if (d.half === 'WEST') x.fillRect(px0, py0, lx - px0, PH);
+          else if (d.half === 'SOUTH') x.fillRect(px0, lz, PW, py0 + PH - lz);
+          else x.fillRect(px0, py0, PW, lz - py0);
           // a hatched edge along the dividing line
           x.fillStyle = `rgba(255,90,70,${(0.4 + pulse).toFixed(2)})`;
           if (d.half === 'EAST' || d.half === 'WEST') {
-            for (let yy = py0; yy < py0 + PH; yy += 3) x.fillRect(cx - 1, yy, 2, 2);
+            for (let yy = py0; yy < py0 + PH; yy += 3) x.fillRect(lx - 1, yy, 2, 2);
           } else {
-            for (let xx = px0; xx < px0 + PW; xx += 3) x.fillRect(xx, cy - 1, 2, 2);
+            for (let xx = px0; xx < px0 + PW; xx += 3) x.fillRect(xx, lz - 1, 2, 2);
           }
         }
 
         // the coastline: a lumpy ring, not a circle
         x.strokeStyle = 'rgba(47,122,96,.85)'; x.lineWidth = 1;
+        x.save();
+        x.beginPath(); x.rect(px0 + 1, py0 + 1, PW - 2, PH - 2); x.clip();
         x.beginPath();
         for (let i = 0; i <= 48; i++) {
           const a = (i / 48) * Math.PI * 2;
-          const rr = R * (0.90 + Math.sin(a * 3 + 0.7) * 0.045 + Math.sin(a * 5 - 1.2) * 0.03);
-          const qx = cx + Math.cos(a) * rr, qy = cy + Math.sin(a) * rr;
+          const rr = 185 * (0.98 + Math.sin(a * 3 + 0.7) * 0.05 + Math.sin(a * 5 - 1.2) * 0.033);
+          const qx = cx + (Math.cos(a) * rr - wx0) * K, qy = cy + (Math.sin(a) * rr - wz0) * K;
           if (i === 0) x.moveTo(qx, qy); else x.lineTo(qx, qy);
         }
         x.closePath(); x.stroke();
@@ -1040,16 +1076,18 @@ export const SCREENS = {
         x.fillStyle = 'rgba(20,70,54,.5)'; x.fill();
         // the ridge, as a couple of contours
         x.strokeStyle = 'rgba(47,122,96,.45)';
-        for (const rr of [R * 0.52, R * 0.3]) {
+        for (const rr of [108, 62]) {
           x.beginPath();
           for (let i = 0; i <= 30; i++) {
             const a = (i / 30) * Math.PI * 2;
             const q = rr * (1 + Math.sin(a * 4 + 2) * 0.12);
-            const qx = cx - R * 0.12 + Math.cos(a) * q, qy = cy - R * 0.16 + Math.sin(a) * q;
+            const qx = cx + (-25 + Math.cos(a) * q - wx0) * K;
+            const qy = cy + (-33 + Math.sin(a) * q - wz0) * K;
             if (i === 0) x.moveTo(qx, qy); else x.lineTo(qx, qy);
           }
           x.closePath(); x.stroke();
         }
+        x.restore();
         /* Compass letters in the corners rather than on the axes. On the
            axes the S sat exactly where the CAMP label lands. */
         drawText(x, 'N', { x: px0 + 4, y: py0 + 3, scale: 1, color: GRN_D });
@@ -1057,31 +1095,41 @@ export const SCREENS = {
         drawText(x, 'W', { x: px0 + 4, y: py0 + PH - 10, scale: 1, color: GRN_D });
         drawText(x, 'S', { x: px0 + PW - 9, y: py0 + PH - 10, scale: 1, color: GRN_D });
 
-        // the sweep
+        // the sweep, from wherever the aerial actually is
+        const swx = Math.round(cx - wx0 * K), swy = Math.round(cy - wz0 * K);
         const a0 = t * 1.1;
+        x.save();
+        x.beginPath(); x.rect(px0 + 1, py0 + 1, PW - 2, PH - 2); x.clip();
         for (let i = 0; i < 22; i++) {
           const a = a0 - i * 0.045;
           x.strokeStyle = `rgba(111,224,184,${(0.26 * (1 - i / 22)).toFixed(3)})`;
-          x.beginPath(); x.moveTo(cx, cy);
-          x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+          x.beginPath(); x.moveTo(swx, swy);
+          x.lineTo(swx + Math.cos(a) * R * zoom, swy + Math.sin(a) * R * zoom);
           x.stroke();
         }
+        x.restore();
 
         /* The places worth knowing. Labels are placed by hand against
            each other: two names printed on the same eight pixels is not a
            map, it is a smear. */
+        /* The sabotage bar owns the bottom of the plot, so it goes into the
+           taken list before anything else — a place name printed behind it
+           is a place name you cannot read. */
         const taken = [];
+        if (d.half) taken.push({ x: px0, y: py0 + PH - 13, w: PW });
         const freeRow = (lx, ly, lw) => {
           for (let tries = 0; tries < 6; tries++) {
-            const clash = taken.some((r) => Math.abs(r.y - ly) < 9 && lx < r.x + r.w && r.x < lx + lw);
+            const clash = taken.some((r) => Math.abs(r.y - ly) < 10 && lx < r.x + r.w && r.x < lx + lw);
             if (!clash) break;
-            ly += 9;
+            // move UP out of the way; the bottom of the plot is committed
+            ly -= 10;
           }
           taken.push({ x: lx, y: ly, w: lw });
           return ly;
         };
         for (const m of (d.marks || [])) {
-          const mx = Math.round(cx + m.x * K), my = Math.round(cy + m.z * K);
+          const mx = Math.round(cx + (m.x - wx0) * K), my = Math.round(cy + (m.z - wz0) * K);
+          if (!onPlot(mx, my)) continue;
           x.fillStyle = m.kind === 'post' ? AMB : 'rgba(120,190,165,.75)';
           if (m.kind === 'post') {
             const pulse = Math.floor(t * 3) % 2 === 0;
@@ -1106,7 +1154,8 @@ export const SCREENS = {
 
         // and everybody on it
         for (const p of d.roster) {
-          const qx = Math.round(cx + p.x * K), qy = Math.round(cy + p.z * K);
+          const qx = Math.round(cx + (p.x - wx0) * K), qy = Math.round(cy + (p.z - wz0) * K);
+          if (!onPlot(qx, qy)) continue;
           const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
           if (p.alive) {
             // a soft return that breathes, so live pips read as live
@@ -1126,6 +1175,12 @@ export const SCREENS = {
           }
         }
 
+        // what scale you are looking at
+        if (zoom > 1) {
+          drawText(x, `x${zoom}`, {
+            x: px0 + PW - 4, y: py0 + PH - 11, scale: 1, align: 'right', color: AMB,
+          });
+        }
         if (d.half) {
           // on its own bar, so it never lands on top of a place name
           const msg2 = `LAST SABOTAGE ORIGINATED ${d.half}`;
@@ -1259,15 +1314,41 @@ export const SCREENS = {
       cell("FERDI'S", d.shop, 148, d.shop === 'TRADING' ? GRN_L : RED);
       cell('ISLAND', d.sabotage || 'NOMINAL', 214, d.sabotage ? RED : GRN_L);
 
-      footer(x, W, H, 'LEFT/RIGHT  CHANGE PAGE      ESC  STEP BACK');
+      footer(x, W, H, s.tab === 0
+        ? '+ -  ZOOM   WASD  PAN   C  CENTRE   TAB  PAGE   ESC  BACK'
+        : 'LEFT/RIGHT  CHANGE PAGE      ESC  STEP BACK');
       return [];
     },
     key(code, s, g, st) {
-      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Tab') {
+      /* On the plot page the arrows and WASD pan, so paging moves to Tab and
+         the bracket keys. Everywhere else they still change page. */
+      const onPlot = s.tab === 0;
+      if (code === 'Tab' || code === 'BracketRight') {
         s.tab = (s.tab + 1) % 4; g.audio?.sfx('terminal'); return true;
       }
-      if (code === 'ArrowLeft' || code === 'KeyA') {
+      if (code === 'BracketLeft') {
         s.tab = (s.tab + 3) % 4; g.audio?.sfx('terminal'); return true;
+      }
+      if (onPlot) {
+        const step = (205 / (s.zoom || 1)) * 0.22;
+        if (code === 'Equal' || code === 'NumpadAdd') {
+          s.zoom = Math.min(5, (s.zoom || 1) + 1); g.audio?.sfx('terminal'); return true;
+        }
+        if (code === 'Minus' || code === 'NumpadSubtract') {
+          s.zoom = Math.max(1, (s.zoom || 1) - 1); g.audio?.sfx('terminal'); return true;
+        }
+        if (code === 'KeyC') { s.cx = 0; s.cz = 0; g.audio?.sfx('ping'); return true; }
+        if (code === 'KeyA' || code === 'ArrowLeft') { s.cx -= step; return true; }
+        if (code === 'KeyD' || code === 'ArrowRight') { s.cx += step; return true; }
+        if (code === 'KeyW' || code === 'ArrowUp') { s.cz -= step; return true; }
+        if (code === 'KeyS' || code === 'ArrowDown') { s.cz += step; return true; }
+      } else {
+        if (code === 'ArrowRight' || code === 'KeyD') {
+          s.tab = (s.tab + 1) % 4; g.audio?.sfx('terminal'); return true;
+        }
+        if (code === 'ArrowLeft' || code === 'KeyA') {
+          s.tab = (s.tab + 3) % 4; g.audio?.sfx('terminal'); return true;
+        }
       }
       if (code === 'Escape' || code === 'Backspace' || code === 'KeyE') {
         st.pop(); g.afterOverlayClose(); return true;
@@ -1663,6 +1744,370 @@ export const SCREENS = {
   },
 
   /* ===========================================================
+     MICHAEL BEEF'S TABLE
+
+     Six decks, dealer stands on all seventeens, blackjack pays three to
+     two, double and split on the first two cards. The rules are in
+     mp/blackjack.js and this only draws them.
+     =========================================================== */
+  mpBlackjack: {
+    init(s, g) {
+      s.stake = Math.min(25, Math.max(5, Math.floor((g.coins || 0) / 4 / 5) * 5)) || 5;
+      s.st = null;
+      s.phase = 'bet';        // bet | dealing | player | dealer | paid
+      s.t0 = 0;
+      s.dealt = 0;
+      s.said = 0;
+      s.line = "SIT DOWN. SIX DECKS, I STAND ON ALL SEVENTEENS.";
+      s.flash = 0;
+      s.won = 0;
+    },
+    draw(x, W, H, s, g, t) {
+      const coins = g.coins || 0;
+      const BJ = g.bjRules;
+      if (!BJ) return [];
+
+      /* ---- the room, behind the felt ---- */
+      x.fillStyle = '#12060a'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#12060a', '#20090e', 0.5, 2);
+      // firelight from either side, breathing on its own beat
+      for (let side = 0; side < 2; side++) {
+        const fx = side ? W + 10 : -10;
+        const flick = 0.55 + Math.abs(Math.sin(t * (6.1 + side * 1.7))) * 0.45;
+        for (let i = 9; i >= 0; i--) {
+          x.fillStyle = `rgba(255,140,50,${(0.012 * flick).toFixed(3)})`;
+          x.beginPath(); x.arc(fx, H * 0.42, 24 + i * 15, 0, 6.283); x.fill();
+        }
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
+
+      /* ---- the baize ----
+         The layout is a set of explicit bands with nothing sharing one.
+         The printed rules used to sit at the top and bottom of the felt,
+         which is exactly where the dealer's total and your chips go. */
+      const TY = 34, TH = H - TY - 48;
+      const DEAL_LBL = TY + 4, DEAL_CARDS = TY + 15;
+      const YOU_CARDS = TY + TH - 62, YOU_LBL = TY + TH - 30, YOU_CHIPS = TY + TH - 19;
+      x.fillStyle = '#0d3a2a'; x.fillRect(10, TY, W - 20, TH);
+      ditherRect(x, 10, TY, W - 20, TH, '#0d3a2a', '#12503a', 0.5, 2);
+      // the arc of the table edge, and the gilt rail on it
+      x.fillStyle = '#5a2418'; x.fillRect(10, TY - 3, W - 20, 3);
+      x.fillStyle = '#c39a2c'; x.fillRect(10, TY - 4, W - 20, 1);
+
+
+      /* ---- a card ---- */
+      const CW = 20, CH = 28;
+      const card = (c, px, py, faceDown, lift) => {
+        const yy = Math.round(py - (lift || 0));
+        x.fillStyle = 'rgba(0,0,0,.45)';
+        x.fillRect(px + 2, yy + 3, CW, CH);
+        if (faceDown) {
+          x.fillStyle = '#8a2018'; x.fillRect(px, yy, CW, CH);
+          x.fillStyle = '#5a1410'; x.fillRect(px + 2, yy + 2, CW - 4, CH - 4);
+          x.fillStyle = '#c39a2c';
+          for (let i = 4; i < CH - 4; i += 4) x.fillRect(px + 3, yy + i, CW - 6, 1);
+          return;
+        }
+        x.fillStyle = '#f2ecd8'; x.fillRect(px, yy, CW, CH);
+        x.fillStyle = '#c8c0a4'; x.fillRect(px, yy + CH - 1, CW, 1);
+        const red = c.s === 'H' || c.s === 'D';
+        const col = red ? '#b02418' : '#1a1410';
+        drawText(x, c.r === '10' ? '10' : c.r, {
+          x: px + 2, y: yy + 3, scale: 1, color: col, shadow: false,
+        });
+        // the pip, drawn rather than lettered
+        const sx = px + CW - 8, sy = yy + CH - 11;
+        x.fillStyle = col;
+        if (c.s === 'H') {
+          x.fillRect(sx, sy + 1, 2, 3); x.fillRect(sx + 3, sy + 1, 2, 3);
+          x.fillRect(sx, sy + 3, 5, 2); x.fillRect(sx + 1, sy + 5, 3, 1); x.fillRect(sx + 2, sy + 6, 1, 1);
+        } else if (c.s === 'D') {
+          x.fillRect(sx + 2, sy, 1, 1); x.fillRect(sx + 1, sy + 1, 3, 1);
+          x.fillRect(sx, sy + 2, 5, 2); x.fillRect(sx + 1, sy + 4, 3, 1); x.fillRect(sx + 2, sy + 5, 1, 1);
+        } else if (c.s === 'S') {
+          x.fillRect(sx + 2, sy, 1, 2); x.fillRect(sx + 1, sy + 1, 3, 2);
+          x.fillRect(sx, sy + 2, 5, 2); x.fillRect(sx + 2, sy + 4, 1, 2);
+        } else {
+          x.fillRect(sx + 1, sy, 3, 2); x.fillRect(sx, sy + 2, 2, 2);
+          x.fillRect(sx + 3, sy + 2, 2, 2); x.fillRect(sx + 2, sy + 4, 1, 2);
+        }
+      };
+
+      /* ---- the dealer's hand ---- */
+      const st = s.st;
+      const dy = DEAL_CARDS;
+      if (st) {
+        const dn = st.dealer.length;
+        const dx0 = Math.round(W / 2 - (dn * (CW + 3) - 3) / 2);
+        st.dealer.forEach((c, i) => {
+          // his second card stays down until it is his turn
+          const down = i === 1 && st.phase === 'player';
+          const shown = s.phase === 'dealing' ? (s.dealt > i * 2 + 1) : true;
+          if (!shown) return;
+          const age = s.phase === 'dealing' ? 0 : 1;
+          card(c, dx0 + i * (CW + 3), dy, down, age ? 0 : 6);
+        });
+        drawText(x, st.phase === 'player' ? 'DEALER' : `DEALER  ${BJ.handText(st.dealer)}`, {
+          x: W / 2, y: DEAL_LBL, scale: 1, align: 'center',
+          color: st.phase !== 'player' && BJ.score(st.dealer).bust ? '#ff8a7a' : '#9fd8c0',
+        });
+      }
+
+      /* ---- your hands ---- */
+      const py0 = YOU_CARDS;
+      if (st) {
+        const hn = st.hands.length;
+        const slotW = (W - 28) / hn;
+        st.hands.forEach((h, hi) => {
+          const cxh = 14 + slotW * hi + slotW / 2;
+          const n = h.cards.length;
+          const px0 = Math.round(cxh - (n * (CW + 3) - 3) / 2);
+          const live = hi === st.active && st.phase === 'player';
+          if (live) {
+            // a pool of light under the hand you are playing
+            x.fillStyle = 'rgba(255,210,74,.10)';
+            x.fillRect(px0 - 5, py0 - 4, n * (CW + 3) + 7, CH + 12);
+            x.fillStyle = Math.floor(t * 4) % 2 ? '#ffd24a' : '#8a7a2a';
+            x.fillRect(px0 - 5, py0 + CH + 7, n * (CW + 3) + 7, 1);
+          }
+          h.cards.forEach((c, i) => {
+            const shown = s.phase === 'dealing' ? (s.dealt > i * 2) : true;
+            if (!shown) return;
+            card(c, px0 + i * (CW + 3), py0, false, 0);
+          });
+          const sc = BJ.score(h.cards);
+          const res = st.results && st.results[hi];
+          let txt = BJ.handText(h.cards);
+          let col = sc.bust ? '#ff8a7a' : (live ? GOLD_LT : '#c9b98a');
+          if (res) {
+            txt = { blackjack: 'BLACKJACK', win: 'WIN', push: 'PUSH', lose: 'LOSE', bust: 'BUST' }[res.outcome];
+            col = res.pays > res.staked ? '#8fe8a0' : (res.pays === res.staked ? GOLD_LT : '#ff8a7a');
+          }
+          drawText(x, txt, {
+            x: cxh, y: YOU_LBL, scale: 1, align: 'center', color: col,
+          });
+          // the chips staked on this hand
+          for (let k = 0; k < Math.min(6, Math.ceil(h.bet / 5)); k++) {
+            // stacked downward: growing upward, the top chip landed on the
+            // hand's own label
+            const chx = Math.round(cxh - 4), chy = YOU_CHIPS + k * 2;
+            x.fillStyle = '#0a0604'; x.fillRect(chx - 1, chy - 1, 10, 4);
+            x.fillStyle = h.doubled ? '#c39a2c' : '#8a2018'; x.fillRect(chx, chy, 8, 3);
+            x.fillStyle = 'rgba(255,255,255,.25)'; x.fillRect(chx, chy, 8, 1);
+          }
+        });
+      }
+
+      /* ---- Michael Beef, a portrait beside his own name ----
+         He used to be drawn across the middle of the header, where the
+         dealer's total lands. He sits in the corner now, out of everything's
+         way, and the house rules go on the line under his name. */
+      {
+        const bx = 18, by = 4;
+        x.fillStyle = '#050304';
+        x.fillRect(bx - 8, by + 9, 17, 12);       // shoulders
+        x.fillRect(bx - 4, by + 3, 9, 7);         // head
+        x.fillRect(bx - 8, by + 1, 17, 2);        // hat brim
+        x.fillRect(bx - 4, by - 2, 9, 3);         // crown
+        const blink = Math.sin(t * 0.83) > 0.985;
+        x.fillStyle = blink ? '#3a2a10' : '#ffd88a';
+        x.fillRect(bx - 3, by + 5, 2, blink ? 1 : 2);
+        x.fillRect(bx + 1, by + 5, 2, blink ? 1 : 2);
+      }
+      drawText(x, 'MICHAEL BEEF', { x: 32, y: 4, scale: 1, color: '#c08078' });
+      drawText(x, 'ASSOCIATE OF T. G. FLOPPER', { x: 32, y: 13, scale: 1, color: '#6a4a44' });
+      drawText(x, '6 DECKS . PAYS 3 TO 2 . STANDS ON ALL 17', {
+        x: 32, y: 22, scale: 1, color: '#4a7a6a',
+      });
+      drawText(x, `PURSE ${coins}`, {
+        x: W - 14, y: 4, scale: 1, align: 'right', color: coins > 0 ? GOLD : RED,
+      });
+      drawText(x, `STAKE ${s.stake}`, {
+        x: W - 14, y: 13, scale: 1, align: 'right', color: '#c9b98a',
+      });
+
+      /* ---- what he is saying ---- */
+      {
+        const lw = textWidth(s.line, 1);
+        const lx = Math.round(Math.max(6, Math.min(W - lw - 6, W / 2 - lw / 2)));
+        x.fillStyle = 'rgba(6,3,4,.86)';
+        x.fillRect(lx - 4, H - 42, lw + 8, 12);
+        x.fillStyle = '#8a2018'; x.fillRect(lx - 4, H - 42, 2, 12);
+        drawText(x, s.line, { x: lx, y: H - 39, scale: 1, color: '#e0c8b8' });
+      }
+
+      /* ---- the keys, and what they do right now ---- */
+      let hint;
+      if (s.phase === 'bet') hint = 'UP DOWN  STAKE      E  DEAL      ESC  LEAVE';
+      else if (s.phase === 'dealing' || s.phase === 'dealer') hint = '';
+      else if (s.phase === 'player') {
+        const bits = ['H  HIT', 'S  STAND'];
+        if (BJ.canDouble(st)) bits.push('D  DOUBLE');
+        if (BJ.canSplit(st) && coins >= st.hands[st.active].bet) bits.push('P  SPLIT');
+        hint = bits.join('     ');
+      } else hint = 'E  AGAIN      ESC  LEAVE';
+      footer(x, W, H, hint);
+
+      // the win flourish
+      if (s.flash > 0 && s.won > 0) {
+        /* In the gap between his cards and yours, which is the one band on
+           the felt that never has anything in it. */
+        const a2 = Math.min(0.26, s.flash * 0.26);
+        x.fillStyle = `rgba(255,210,74,${a2.toFixed(3)})`;
+        x.fillRect(0, 0, W, H);
+        const bw = textWidth(`+${s.won}`, 3) + 20;
+        const by2 = DEAL_CARDS + CH + 8;
+        x.fillStyle = 'rgba(8,20,14,.86)';
+        x.fillRect(Math.round(W / 2 - bw / 2), by2 - 3, bw, 27);
+        x.fillStyle = GOLD;
+        x.fillRect(Math.round(W / 2 - bw / 2), by2 - 3, bw, 1);
+        x.fillRect(Math.round(W / 2 - bw / 2), by2 + 23, bw, 1);
+        drawText(x, `+${s.won}`, {
+          x: W / 2, y: by2, scale: 3, align: 'center',
+          color: Math.floor(t * 10) % 2 ? '#fff3c4' : GOLD,
+        });
+      }
+      return [];
+    },
+    tick(s, g, dt, t) {
+      const BJ = g.bjRules;
+      if (!BJ) return;
+      if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 1.4);
+
+      if (s.phase === 'dealing') {
+        // four cards, one at a time, with a sound each
+        const want = Math.min(4, Math.floor((t - s.t0) / 0.26) + 1);
+        while (s.dealt < want) { s.dealt++; g.audio?.sfx('page'); }
+        if (s.dealt >= 4 && t - s.t0 > 1.2) {
+          s.phase = s.st.phase === 'dealer' ? 'dealer' : 'player';
+          if (s.st.hands[0] && BJ.score(s.st.hands[0].cards).blackjack) {
+            s.line = 'TWENTY-ONE ON THE DEAL. THAT PAYS THREE TO TWO.';
+          } else {
+            s.line = BEEF_PROMPTS[(s.said++) % BEEF_PROMPTS.length];
+          }
+          s.t0 = t;
+        }
+        return;
+      }
+      if (s.phase === 'dealer') {
+        // one card a beat, so you can watch him go over
+        if (t - s.t0 < 0.5) return;
+        s.t0 = t;
+        const done = BJ.dealerStep(s.st);
+        g.audio?.sfx('page');
+        if (done) {
+          s.phase = 'paid';
+          const pays = BJ.payout(s.st);
+          const stk = BJ.staked(s.st);
+          s.won = pays;
+          g.bjSettle?.(pays);
+          if (pays > stk) {
+            s.line = 'THE HOUSE PAYS. THE HOUSE ALWAYS PAYS WHEN IT MUST.';
+            s.flash = 1;
+            g.audio?.sfx(pays >= stk * 2.4 ? 'jackpot' : 'coin');
+          } else if (pays === stk) {
+            s.line = 'A PUSH. NOBODY LEARNS ANYTHING FROM A PUSH.';
+            g.audio?.sfx('select');
+          } else {
+            s.line = BEEF_WINS[(s.said++) % BEEF_WINS.length];
+            g.audio?.sfx('deny');
+          }
+        }
+      }
+    },
+    key(code, s, g, st2) {
+      const BJ = g.bjRules;
+      if (!BJ) return true;
+      const coins = g.coins || 0;
+
+      if (code === 'Escape' || code === 'Backspace') {
+        if (s.phase === 'player' || s.phase === 'dealing' || s.phase === 'dealer') {
+          s.line = 'YOU DO NOT WALK AWAY MID-HAND.';
+          g.audio?.sfx('deny');
+          return true;
+        }
+        st2.pop(); g.afterOverlayClose(); return true;
+      }
+
+      if (s.phase === 'bet') {
+        if (code === 'ArrowUp' || code === 'KeyW') {
+          s.stake = Math.min(100, s.stake + 5); g.audio?.sfx('select'); return true;
+        }
+        if (code === 'ArrowDown' || code === 'KeyS') {
+          s.stake = Math.max(5, s.stake - 5); g.audio?.sfx('select'); return true;
+        }
+        if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+          if (coins < s.stake) {
+            s.line = 'NOT AT THAT STAKE. NOT WITH THAT PURSE.';
+            g.audio?.sfx('deny'); return true;
+          }
+          if (!g.bjStake?.(s.stake)) { g.audio?.sfx('deny'); return true; }
+          s.st = BJ.deal({ bet: s.stake, rand: Math.random, shoe: g.bjShoe || null });
+          if (s.st.reshuffled) s.line = 'NEW SHOE. SIX DECKS. WATCH IF YOU LIKE.';
+          g.bjShoe = s.st.shoe;
+          s.phase = 'dealing';
+          s.dealt = 0;
+          s.t0 = s.t;
+          g.audio?.sfx('lever');
+          return true;
+        }
+        return true;
+      }
+
+      if (s.phase === 'paid') {
+        if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+          SCREENS.mpBlackjack.init(s, g);
+          s.line = 'AGAIN, THEN.';
+          return true;
+        }
+        return true;
+      }
+
+      if (s.phase !== 'player') return true;
+
+      if (code === 'KeyH' || code === 'ArrowRight') {
+        BJ.hit(s.st); g.audio?.sfx('page');
+        const h = s.st.hands[Math.min(s.st.active, s.st.hands.length - 1)];
+        if (h && BJ.score(h.cards).bust) s.line = 'OVER. THAT IS THAT.';
+        if (s.st.phase === 'dealer') { s.phase = 'dealer'; s.t0 = s.t; }
+        return true;
+      }
+      if (code === 'KeyS' || code === 'ArrowLeft') {
+        BJ.stand(s.st); g.audio?.sfx('select');
+        if (s.st.phase === 'dealer') { s.phase = 'dealer'; s.t0 = s.t; }
+        return true;
+      }
+      if (code === 'KeyD') {
+        if (!BJ.canDouble(s.st)) { g.audio?.sfx('deny'); return true; }
+        const extra = s.st.hands[s.st.active].bet;
+        if (coins < extra) {
+          s.line = 'YOU CANNOT COVER IT.'; g.audio?.sfx('deny'); return true;
+        }
+        g.bjStake?.(extra);
+        BJ.double(s.st);
+        s.line = 'DOUBLED. ONE CARD, AND NO MORE.';
+        g.audio?.sfx('charge');
+        if (s.st.phase === 'dealer') { s.phase = 'dealer'; s.t0 = s.t; }
+        return true;
+      }
+      if (code === 'KeyP') {
+        if (!BJ.canSplit(s.st)) { g.audio?.sfx('deny'); return true; }
+        const extra = s.st.hands[s.st.active].bet;
+        if (coins < extra) {
+          s.line = 'A SPLIT COSTS THE SAME AGAIN.'; g.audio?.sfx('deny'); return true;
+        }
+        g.bjStake?.(extra);
+        BJ.split(s.st);
+        s.line = 'SPLIT. TWO HANDS, TWO STAKES.';
+        g.audio?.sfx('confirm');
+        if (s.st.phase === 'dealer') { s.phase = 'dealer'; s.t0 = s.t; }
+        return true;
+      }
+      return true;
+    },
+  },
+
+  /* ===========================================================
      TIM GRADY FLOPPER — the portrait, up close.
      =========================================================== */
   mpFlopper: {
@@ -1996,7 +2441,7 @@ export const SCREENS = {
         const held = it.tag === 'PASSIVE' && g.hasItem?.(it.id);
         const carrying = it.tag !== 'PASSIVE' && g.hasItem?.(it.id);
         const owned = held;
-        const afford = (g.coins || 0) >= it.cost;
+        const afford = (g.coins || 0) >= (g.priceOf ? g.priceOf(it.id) : it.cost);
         if (on) {
           x.fillStyle = black ? '#3a0e0b' : '#3a2a10';
           x.fillRect(LX, y - 1, LW, ROW - 1);
@@ -2009,8 +2454,10 @@ export const SCREENS = {
         /* A dot means "you have one already"; a count only appears when it
            is worth knowing. "x1 13" next to every line was noise. */
         const n = (g.carry || []).filter((q) => q === it.id).length;
+        const price = g.priceOf ? g.priceOf(it.id) : it.cost;
+        const onSale = price < it.cost;
         const right = held ? 'HELD'
-          : (n > 1 ? `x${n}  ${it.cost}` : (n === 1 ? `. ${it.cost}` : String(it.cost)));
+          : (n > 1 ? `x${n}  ${price}` : (n === 1 ? `. ${price}` : String(price)));
         const room = LW - 26 - textWidth(right, 1) - 6;
         let nm = it.name;
         while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
@@ -2019,9 +2466,21 @@ export const SCREENS = {
           x: LX + 21, y: y + 1, scale: 1,
           color: owned ? '#5f7a4a' : (on ? GOLD_LT : (afford ? '#c9b98a' : '#7a6a52')),
         });
+        /* A marked-down line gets its own tag and a struck-through original,
+           so a sale is something you SEE rather than something you have to
+           remember the old price to notice. */
+        if (onSale && !held) {
+          const oldW = textWidth(String(it.cost), 1);
+          const px2 = LX + LW - 6 - textWidth(right, 1) - oldW - 4;
+          drawText(x, String(it.cost), { x: px2, y: y + 1, scale: 1, color: '#7a5a44' });
+          x.fillStyle = '#c02a1a';
+          x.fillRect(px2 - 1, y + 4, oldW + 2, 1);
+        }
         drawText(x, right, {
           x: LX + LW - 4, y: y + 1, scale: 1, align: 'right',
-          color: held ? JADE : (carrying ? '#8fd8b8' : (afford ? GOLD : '#8a4a44')),
+          color: held ? JADE
+            : (onSale ? (Math.floor(t * 5) % 2 ? '#fff3c4' : '#8fe8a0')
+              : (carrying ? '#8fd8b8' : (afford ? GOLD : '#8a4a44'))),
         });
         rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
         y += ROW;
@@ -2056,14 +2515,37 @@ export const SCREENS = {
 
         // a tag, hand-lettered, tilted
         {
-          const tagW = textWidth(String(d.cost), 1) + 16;
+          const dPrice = g.priceOf ? g.priceOf(d.id) : d.cost;
+          const dSale = dPrice < d.cost;
+          const tagW = textWidth(String(dPrice), 1) + 16;
           const tx0 = ICX + 18, ty0 = 52;
           x.fillStyle = '#3a2a12'; x.fillRect(tx0 - 1, ty0 - 1, tagW + 2, 13);
-          x.fillStyle = '#d8c69a'; x.fillRect(tx0, ty0, tagW, 11);
+          x.fillStyle = dSale ? '#f0e0a8' : '#d8c69a'; x.fillRect(tx0, ty0, tagW, 11);
           x.fillStyle = '#3a2a12'; x.fillRect(tx0 + 2, ty0 + 4, 3, 3);
-          drawText(x, String(d.cost), {
-            x: tx0 + 8, y: ty0 + 2, scale: 1, color: '#2a1c08', shadow: false,
+          drawText(x, String(dPrice), {
+            x: tx0 + 8, y: ty0 + 2, scale: 1, color: dSale ? '#8a1a10' : '#2a1c08', shadow: false,
           });
+          if (dSale) {
+            /* A paper flash pinned across the corner of the panel, wobbling
+               on its pin. You should be able to see there is a sale on from
+               the moment the shop opens. */
+            const cut = g.mp?.sale?.cut || 0;
+            const txt = `${cut}% OFF`;
+            const tw = textWidth(txt, 1) + 14;
+            x.save();
+            x.translate(RX + RW - 4, 40);
+            x.rotate(-0.38 + Math.sin(t * 2.1) * 0.03);
+            x.fillStyle = '#8a1a10'; x.fillRect(-tw, -1, tw, 13);
+            x.fillStyle = Math.floor(t * 4) % 2 ? '#ffd24a' : '#c39a2c';
+            x.fillRect(-tw, -1, tw, 1); x.fillRect(-tw, 11, tw, 1);
+            drawText(x, txt, {
+              x: -tw / 2, y: 2, scale: 1, align: 'center', color: '#fff3c4', shadow: false,
+            });
+            x.restore();
+            // the pin
+            x.fillStyle = '#e8eef2';
+            x.fillRect(RX + RW - 7, 38, 3, 3);
+          }
         }
 
         let by = 80;
@@ -2104,9 +2586,10 @@ export const SCREENS = {
 
       // the counter itself: price and the buy key
       const owned = d && g.hasItem?.(d.id);
-      const afford = d && (g.coins || 0) >= d.cost;
+      const dPrice2 = d ? (g.priceOf ? g.priceOf(d.id) : d.cost) : 0;
+      const afford = d && (g.coins || 0) >= dPrice2;
       const label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
-        : (afford ? `E   BUY FOR ${d ? d.cost : 0}` : 'NOT ENOUGH SYNCOIN');
+        : (afford ? `E   BUY FOR ${dPrice2}` : 'NOT ENOUGH SYNCOIN');
       const bw = RW - 12, bx = RX + 6, byy = RB - 16;
       x.fillStyle = s.flash > 0 ? accent : (afford && !owned ? (black ? '#3a0e0b' : '#3a2a10') : '#1a1208');
       x.fillRect(bx, byy, bw, 12);
@@ -2289,9 +2772,13 @@ export const SCREENS = {
         }
         drawSabotageIcon(x, def.id, LX + 5, y, 13, on && !off, t);
         // short names, because the status column owns the right of the row
-        drawText(x, def.short || def.name, { x: LX + 22, y: y + 1, scale: 1,
-          color: off ? '#6a4a44' : (on ? '#ffd8ce' : '#a86a60') });
         const tag = cd > 0 ? `${Math.ceil(cd)}` : (def.fatal ? 'FATAL' : 'READY');
+        // trimmed against the tag that sits to its right, not against a guess
+        let nm2 = def.short || def.name;
+        const room2 = LW - 22 - textWidth(tag, 1) - 14;
+        while (nm2.length > 3 && textWidth(nm2, 1) > room2) nm2 = nm2.slice(0, -1);
+        drawText(x, nm2, { x: LX + 22, y: y + 1, scale: 1,
+          color: off ? '#6a4a44' : (on ? '#ffd8ce' : '#a86a60') });
         drawText(x, tag, { x: LX + LW - 9, y: y + 1, scale: 1, align: 'right',
           color: cd > 0 ? '#7a5a54' : (def.fatal ? '#ff6a5a' : '#5f8a4a') });
         // a little indicator lamp that blinks when ready
@@ -2310,61 +2797,204 @@ export const SCREENS = {
       x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
       x.fillRect(RX, 36, 1, RB - 36); x.fillRect(RX + RW - 1, 36, 1, RB - 36);
 
-      // big animated mark
-      drawSabotageIcon(x, d.id, RX + RW / 2 - 16, 42, 32, !locked(d), t);
-      let by = 80;
+      /* The right-hand panel is a set of bands with a hard floor. The prose
+         used to be allowed to run down until it hit an arbitrary number,
+         which on the longer descriptions put it straight through the timings
+         and the plot underneath. */
+      const PLOT_H = 46;
+      const FIG_TOP = H - 50 - PLOT_H;          // where the figures begin
+      const PROSE_END = FIG_TOP - 5;            // and the hard floor for prose
+
+      drawSabotageIcon(x, d.id, RX + RW / 2 - 14, 40, 28, !locked(d), t);
+      let by = 68;
       for (const ln of wrapText(d.name, RW - 12, 1, 1)) {
         drawText(x, ln, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: '#ffd8ce' });
         by += 10;
       }
       x.fillStyle = '#5a1a14'; x.fillRect(RX + 8, by + 1, RW - 16, 1);
-      by += 7;
-      for (const ln of wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1)) {
-        if (by > H - 88) break;
-        drawText(x, ln, { x: RX + 6, y: by, scale: 1, color: '#e2b0a4' });
-        by += 9;
+      by += 6;
+
+      /* One list, drawn top-down until it runs out of room.
+
+         The previous version reserved space for the tell by moving it up,
+         which on a long description put it above the divider and straight
+         through the name. Now the lines simply queue: the tell is first in
+         the queue because what gives you away is the most useful thing on
+         the panel, then as much of the description as fits. Nothing is ever
+         drawn outside the band. */
+      const lines = [];
+      if (d.tell) for (const ln of wrapText(d.tell.toUpperCase(), RW - 12, 1, 1)) {
+        lines.push({ t: ln, c: '#8fb0c8' });
       }
-      if (d.tell && by < H - 54) {
-        by += 3;
-        for (const ln of wrapText(d.tell.toUpperCase(), RW - 12, 1, 1)) {
-          if (by > H - 68) break;
-          drawText(x, ln, { x: RX + 6, y: by, scale: 1, color: '#8fb0c8' });
-          by += 9;
-        }
+      if (d.tell) lines.push({ t: '', c: null });
+      for (const ln of wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1)) {
+        lines.push({ t: ln, c: '#e2b0a4' });
+      }
+      for (const L of lines) {
+        if (by + 8 > PROSE_END) break;
+        if (L.t) drawText(x, L.t, { x: RX + 6, y: by, scale: 1, color: L.c });
+        by += L.t ? 9 : 4;
       }
 
-      /* ---- the strip along the bottom: duration, repair, lever ---- */
+      /* ---- where it has to be put right, plotted rather than listed ----
+         A list of place names tells you nothing about how far apart they
+         are. This is the island with the repair points on it, so you can
+         see at a glance whether pulling this one splits the island in half
+         or sends everybody to the same corner. */
       const WHERE = {
         camp: 'THE FIRE', hut: "FERDI'S", wreck: 'THE WRECK',
         pend1: 'W PENDULUM', pend2: 'RIDGE PENDULUM',
         pend3: 'E PENDULUM', pend4: 'N PENDULUM',
       };
       const spots = (d.fixAt || []).map((k) => WHERE[k] || k.toUpperCase());
-      const need = d.sites > 1 ? `${d.sites} OF` : 'AT';
-      // pinned to the bottom of the panel so the prose above cannot push it out
-      let fy = H - 56;
-      x.fillStyle = '#5a1a14'; x.fillRect(RX + 8, fy - 4, RW - 16, 1);
-      drawText(x, `RUNS ${d.secs}S      COOLS ${d.cooldown}S`,
-        { x: RX + 6, y: fy, scale: 1, color: '#7a4a44' });
+      const PLOT = PLOT_H;
+      const plx = RX + RW - PLOT - 6, ply = FIG_TOP;
+      x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(plx, ply, PLOT, PLOT);
+      x.fillStyle = '#4a1a16';
+      x.fillRect(plx, ply, PLOT, 1); x.fillRect(plx, ply + PLOT - 1, PLOT, 1);
+      x.fillRect(plx, ply, 1, PLOT); x.fillRect(plx + PLOT - 1, ply, 1, PLOT);
+      {
+        // the island as a lumpy ring
+        const pcx = plx + PLOT / 2, pcy = ply + PLOT / 2, pr = PLOT / 2 - 4;
+        x.strokeStyle = 'rgba(170,80,70,.55)'; x.lineWidth = 1;
+        x.beginPath();
+        for (let i = 0; i <= 26; i++) {
+          const a2 = (i / 26) * Math.PI * 2;
+          const rr = pr * (0.92 + Math.sin(a2 * 3 + 0.7) * 0.06);
+          const qx = pcx + Math.cos(a2) * rr, qy = pcy + Math.sin(a2) * rr;
+          if (i === 0) x.moveTo(qx, qy); else x.lineTo(qx, qy);
+        }
+        x.closePath(); x.stroke();
+        x.fillStyle = 'rgba(90,30,26,.35)'; x.fill();
+        // and the points, blinking
+        const sites = g.sabotageSites?.(d.id) || [];
+        const K = pr / 205;
+        for (const st2 of sites) {
+          const qx = Math.round(pcx + st2.x * K), qy = Math.round(pcy + st2.z * K);
+          const on = Math.floor(t * 3) % 2 === 0;
+          x.fillStyle = on ? '#ff8a7a' : '#8a2018';
+          x.fillRect(qx - 3, qy - 1, 7, 3);
+          x.fillRect(qx - 1, qy - 3, 3, 7);
+        }
+        if (!sites.length) {
+          drawText(x, 'ISLAND-WIDE', {
+            x: pcx, y: pcy - 3, scale: 1, align: 'center', color: '#c08078',
+          });
+        }
+      }
+
+      /* the numbers, to the left of the plot */
+      let fy = FIG_TOP + 4;
+      const NW = plx - RX - 12;
+      drawText(x, `RUNS ${d.secs}S`, { x: RX + 6, y: fy, scale: 1, color: '#c08078' });
       fy += 9;
-      for (const ln of wrapText(`FIXED ${need} ${spots.join(', ')}`, RW - 12, 1, 1).slice(0, 2)) {
-        drawText(x, ln, { x: RX + 6, y: fy, scale: 1, color: '#c08078' });
+      drawText(x, `COOLS ${d.cooldown}S`, { x: RX + 6, y: fy, scale: 1, color: '#7a4a44' });
+      fy += 9;
+      drawText(x, d.sites > 1 ? `${d.sites} POINTS` : 'ONE POINT', {
+        x: RX + 6, y: fy, scale: 1, color: '#7a4a44',
+      });
+      fy += 11;
+      for (const ln of wrapText(spots.join(', '), NW, 1, 1).slice(0, 3)) {
+        drawText(x, ln, { x: RX + 6, y: fy, scale: 1, color: '#8a5a52' });
         fy += 9;
       }
 
-      // the lever, which visibly throws
-      const lvx = W - 30, lvy = H - 28;
-      x.fillStyle = '#2a0a08'; x.fillRect(lvx - 9, lvy, 18, 22);
-      x.fillStyle = '#5a1a14'; x.fillRect(lvx - 9, lvy, 18, 1); x.fillRect(lvx - 9, lvy + 21, 18, 1);
-      x.fillStyle = '#8a2018'; x.fillRect(lvx - 1, lvy + 3, 2, 16);
-      const knob = Math.round(lvy + 3 + s.pull * 13);
-      x.fillStyle = s.pull > 0.15 ? '#ffd8ce' : (locked(d) ? '#5a3a34' : '#c03a2c');
-      x.fillRect(lvx - 6, knob, 12, 5);
+      /* ---- the lever ----
+         A caged switch you throw, and it takes a real pull: the fatal one
+         is behind a cover you have to lift first. Dragging it works, and so
+         does holding E. */
+      const lvx = W - 32, lvy = H - 48, lvH = 36;
+      x.fillStyle = '#1a0605'; x.fillRect(lvx - 12, lvy - 4, 26, lvH + 8);
+      x.fillStyle = '#5a1a14';
+      x.fillRect(lvx - 12, lvy - 4, 26, 1); x.fillRect(lvx - 12, lvy + lvH + 3, 26, 1);
+      x.fillRect(lvx - 12, lvy - 4, 1, lvH + 8); x.fillRect(lvx + 13, lvy - 4, 1, lvH + 8);
+      // hazard stripes down the throat of the slot
+      for (let i = 0; i < lvH; i += 6) {
+        x.fillStyle = (i / 6) % 2 ? 'rgba(200,160,42,.30)' : 'rgba(40,10,8,.6)';
+        x.fillRect(lvx - 5, lvy + i, 10, 6);
+      }
+      const pull = Math.max(s.pull || 0, s.drag || 0);
+      const knobY = Math.round(lvy + pull * (lvH - 8));
+      // the shaft above the knob
+      x.fillStyle = '#8a9096'; x.fillRect(lvx - 2, lvy, 4, knobY - lvy + 4);
+      // the knob
+      const hot = pull > 0.7;
+      x.fillStyle = locked(d) ? '#4a2a26' : (hot ? '#ff6a5a' : '#c03a2c');
+      x.fillRect(lvx - 8, knobY, 16, 8);
+      x.fillStyle = locked(d) ? '#6a3a34' : (hot ? '#ffd8ce' : '#e06a58');
+      x.fillRect(lvx - 8, knobY, 16, 2);
+      s.leverBox = { x: lvx - 14, y: lvy - 6, w: 30, h: lvH + 12, top: lvy, throwLen: lvH - 8 };
+      // and sparks once it is most of the way down
+      if (pull > 0.55 && !locked(d)) {
+        for (let i = 0; i < 5; i++) {
+          const a2 = (t * 40 + i * 13) % 1;
+          x.fillStyle = i % 2 ? '#ffd8a0' : '#ff8a4a';
+          x.fillRect(
+            Math.round(lvx - 8 + a2 * 16 + Math.sin(t * 31 + i) * 3),
+            Math.round(knobY + 6 + a2 * 7), 2, 2
+          );
+        }
+      }
+      if (!locked(d)) {
+        drawText(x, 'PULL', {
+          x: lvx, y: lvy + lvH + 6, scale: 1, align: 'center',
+          color: Math.floor(t * 3) % 2 ? RED : '#7a3a34',
+        });
+      }
+
+      /* a hazard band across the header when the fatal one is selected */
+      if (d.fatal && !locked(d)) {
+        for (let hx = 8; hx < W - 8; hx += 8) {
+          x.fillStyle = (hx / 8) % 2 ? 'rgba(200,160,42,.55)' : 'rgba(120,20,14,.75)';
+          x.fillRect(hx, 24, 8, 3);
+        }
+        const warn = 'THIS ONE ENDS THE ROUND IF IT RUNS OUT';
+        if (Math.floor(t * 2) % 2 === 0) {
+          drawText(x, warn, { x: W / 2, y: 30, scale: 1, align: 'center', color: '#ffd24a' });
+        }
+      }
 
       footer(x, W, H, locked(d)
         ? 'UP DOWN CHOOSE   Q OR ESC AWAY'
-        : 'UP DOWN CHOOSE   E PULL IT   Q OR ESC AWAY');
+        : 'UP DOWN CHOOSE   DRAG OR HOLD E   Q OR ESC AWAY');
       return rows;
+    },
+
+    /** The lever is a handle. Drag it down and it throws. */
+    pointer(kind, cx, cy, s, g, st) {
+      const box = s.leverBox;
+      if (!box) return false;
+      if (kind === 'down') {
+        if (cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) return false;
+        s.dragging = true; s.dragFrom = cy; s.drag = 0;
+        return true;
+      }
+      if (!s.dragging) return false;
+      if (kind === 'move') {
+        s.drag = Math.max(0, Math.min(1, (cy - s.dragFrom) / box.throwLen));
+        return true;
+      }
+      s.dragging = false;
+      const far = s.drag >= 0.8;
+      s.drag = 0;
+      if (far) SCREENS.mpSabotage._throw(s, g, st);
+      else g.audio?.sfx('select');
+      return true;
+    },
+
+    /** Throw the selected switch, if it can be thrown. */
+    _throw(s, g, st) {
+      const defs = Object.values(SABOTAGE_DEFS);
+      const d = defs[s.sel];
+      if (!d) return;
+      const cool = g.mp.cool || {};
+      const nowS = performance.now() / 1000;
+      if ((cool[d.id] || 0) > nowS || g.mp.view.sabotage) { g.audio?.sfx('deny'); return; }
+      s.pull = 1;
+      g.sendSabotage(d.id);
+      g.audio?.sfx('slam');
+      st.pop();
+      g.afterOverlayClose();
     },
 
     key(code, s, g, st) {

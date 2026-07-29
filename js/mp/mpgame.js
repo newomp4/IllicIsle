@@ -32,6 +32,8 @@ import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
 import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
+import { HR_BOX, HR_COLLIDERS, hrHeight } from '../world/highroller.js';
+import * as BJ from './blackjack.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
@@ -935,6 +937,10 @@ export class MPGame extends Game {
     this.carry = [];
     // she keeps her own hours; start her wherever the clock says she is
     if (this.casinoDock) this.casinoIn = this.night > 0.34 ? 1 : 0;
+    M2.sale = null;
+    M2.saleDay = 0;
+    this._lastDawn = 0;
+    this.rollSale();
 
     this._resolveTaskSites();
 
@@ -1151,6 +1157,13 @@ export class MPGame extends Game {
       const db = Math.hypot(p.x - bunk.x, p.z - bunk.z);
       if (db < 4.6 && db < bestD) { bestD = db; best = { kind: 'mpHatch', prompt: 'GO DOWN' }; }
     }
+    if (this.state === 'highroller') {
+      const dt3 = Math.hypot(p.x - 0, p.z - 1.2);
+      if (dt3 < 4.4) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
+      const dd = Math.hypot(p.x - 0, p.z - 6.2);
+      if (dd < 2.6) return { kind: 'mpDoorOut', prompt: 'BACK ON DECK' };
+      return null;
+    }
     if (this.state === 'bunker') {
       const dt2 = Math.hypot(p.x - 0, p.z - 1.5);
       if (dt2 < 3.6) return { kind: 'mpTable', prompt: 'THE COMMAND TABLE' };
@@ -1174,12 +1187,16 @@ export class MPGame extends Game {
           };
         }
       }
-      // the portrait, on the cabin front
+      /* The portrait. Stand right in front of it and the frame is a door —
+         Tim's face is the way into the room that is not on her plan. */
       const pt = this.casino.userData.portrait;
       if (pt) {
         this.casino.localToWorld(_wp.set(pt.x, 0, pt.z));
         const dp = Math.hypot(p.x - _wp.x, p.z - _wp.z);
-        if (dp < 3.4 && dp < bestD) {
+        if (dp < 1.9 && dp < bestD) {
+          bestD = dp;
+          best = { kind: 'mpHighRoller', prompt: 'THE FRAME IS A DOOR' };
+        } else if (dp < 3.6 && dp < bestD) {
           bestD = dp;
           best = { kind: 'mpFlopper', prompt: 'TIM GRADY FLOPPER' };
         }
@@ -1294,6 +1311,20 @@ export class MPGame extends Game {
         this.screens.push('mpSlot', { slot: it.slot });
         document.exitPointerLock?.();
         this.audio.sfx('page');
+        break;
+      }
+      case 'mpHighRoller': {
+        this.enterHighRoller();
+        break;
+      }
+      case 'mpTable2': {
+        this.screens.push('mpBlackjack', {});
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
+      case 'mpDoorOut': {
+        this.leaveHighRoller();
         break;
       }
       case 'mpFlopper': {
@@ -1547,18 +1578,49 @@ export class MPGame extends Game {
     this._send({ t: C.PURSE, coins: this.coins });
   }
 
+  /* =========================================================
+     THE DAY'S SALE
+
+     Ferdi marks one line down every morning, by as little as a tenth and
+     as much as the whole price. He does not explain how he decides.
+     ========================================================= */
+
+  /** Pick the day's offer. Called on each dawn, and once at round start. */
+  rollSale() {
+    const M = this.mp;
+    const open = STOCK.filter((i) => !i.night || (this.night || 0) > 0.5);
+    const pool = open.length ? open : STOCK;
+    const it = pool[(Math.random() * pool.length) | 0];
+    if (!it) return;
+    // ten to a hundred per cent, in fives, so the figure reads cleanly
+    const cut = 10 + ((Math.random() * 19) | 0) * 5;
+    M.sale = { id: it.id, cut, day: M.saleDay = (M.saleDay || 0) + 1, at: now() };
+    this.ui.toast(`FERDI HAS MARKED SOMETHING DOWN ${cut}%`, 'gold', 4200);
+    this.audio.sfx('stinger');
+  }
+
+  /** What this item costs right now. */
+  priceOf(id) {
+    const it = itemById(id);
+    if (!it) return 0;
+    const sale = this.mp.sale;
+    if (!sale || sale.id !== id) return it.cost;
+    return Math.max(0, Math.round(it.cost * (1 - sale.cut / 100)));
+  }
+
   /** Buy something. Nothing here is a number you cannot feel. */
   buyItem(id) {
     const it = itemById(id);
     if (!it) return false;
     this.owned = this.owned || new Set();
     if (this.owned.has(id) && it.tag === 'PASSIVE') { this.audio.sfx('deny'); return false; }
-    if ((this.coins || 0) < it.cost) {
+    const price = this.priceOf(id);
+    if ((this.coins || 0) < price) {
       this.audio.sfx('deny');
       this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
       return false;
     }
-    this.coins -= it.cost;
+    this.coins -= price;
     this._send({ t: C.PURSE, coins: this.coins });
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
@@ -1962,6 +2024,72 @@ export class MPGame extends Game {
     this.ui.toast('THE LISTENING POST', 'jade', 2600);
   }
 
+  /* =========================================================
+     THE HIGH ROLLERS ROOM
+     ========================================================= */
+  enterHighRoller() {
+    if (this.state !== 'island') return;
+    if (!this.hrScene) return;
+    this.state = 'highroller';
+    this.scene = this.hrScene;
+    this.player.mesh.removeFromParent();
+    this.hrScene.add(this.player.mesh);
+    this.player.setColliders(HR_COLLIDERS);
+    this.player.insideBox = HR_BOX;
+    // you arrive through the door, facing the table
+    this.player.teleport(0, 1.0, 5.0, Math.PI);
+    this.player.pitch = -0.04;
+    this.audio.sfx('door');
+    this.audio.sfx('descend');
+    this.audio.playMusic('title');
+    this.pipeline.tint.setHex(0x000000);
+    this.pipeline.tintAmt = 0.8;
+    this.ui.toast('HIGH ROLLERS', 'gold', 2600);
+    setTimeout(() => {
+      if (this.state === 'highroller') this.ui.toast('M. BEEF PRESIDING', 'gold', 2600);
+    }, 1400);
+  }
+
+  leaveHighRoller() {
+    if (this.state !== 'highroller') return;
+    this.state = 'island';
+    this.scene = this.islandScene;
+    this.player.mesh.removeFromParent();
+    this.islandScene.add(this.player.mesh);
+    this.player.setColliders(this.colliders);
+    this.player.insideBox = null;
+    /* Back onto her deck, a little forward of the frame so you are not
+       standing in the doorway you just came out of. */
+    const c = this.casino;
+    if (c) {
+      const w = c.localToWorld(new THREE.Vector3(0, 0, 6.4));
+      this.player.teleport(w.x, 0.95, w.z, c.rotation.y);
+    }
+    this.audio.sfx('door');
+    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+    this.pipeline.tint.setHex(0xffffff);
+    this.pipeline.tintAmt = 0.4;
+  }
+
+  /* ---------- the table ---------- */
+  /** The rules, handed to the screen so it never implements any itself. */
+  get bjRules() { return BJ; }
+
+  /** Take a stake. Returns false if the purse cannot cover it. */
+  bjStake(n) {
+    if ((this.coins || 0) < n) return false;
+    this.coins -= n;
+    this._send({ t: C.PURSE, coins: this.coins });
+    return true;
+  }
+
+  /** Pay a round out. The stake has already been taken. */
+  bjSettle(pays) {
+    if (!pays) return;
+    this.coins = (this.coins || 0) + pays;
+    this._send({ t: C.PURSE, coins: this.coins });
+  }
+
   leaveBunker() {
     const M = this.mp;
     if (this.state !== 'bunker') return;
@@ -2233,6 +2361,13 @@ export class MPGame extends Game {
   sendVote(targetId) { this._send({ t: C.VOTE, targetId }); this.audio.sfx('confirm'); }
   sendReady(on) { this._send({ t: C.READY, ready: !!on }); this.audio.sfx(on ? 'confirm' : 'select'); }
   sendSabotage(kind) { this._send({ t: C.SABOTAGE, kind }); this.audio.sfx('charge'); }
+
+  /** Where a given sabotage has to be repaired, in world coordinates. */
+  sabotageSites(kind) {
+    const def = SABOTAGE_DEFS[kind];
+    if (!def) return [];
+    return (def.fixAt || []).map((k) => this._namedSite(k)).filter(Boolean);
+  }
   startMatch() { if (this.isHost) this.mp.host.start(); }
 
   /** Everything the workshop hands you the moment a round begins. */
@@ -2305,6 +2440,25 @@ export class MPGame extends Game {
 
     /* Down the hatch: its own room, its own walls, and the island keeps
        running above you — which is the whole risk of being down here. */
+    /* The room behind the painting. Its own scene, its own walls, and the
+       island keeps running above you exactly as it does in the bunker. */
+    if (this.state === 'highroller') {
+      if (this.isHost) M.host.update(0);
+      const froze2 = this.paused || this.screens.open;
+      if (!froze2) {
+        this.player.update(dt, this.input, {
+          groundOf: hrHeight, water: false, bounds: false, insideBox: HR_BOX,
+        });
+      } else {
+        this.player.insideBox = HR_BOX;
+        this.player.updateCamera(dt, hrHeight);
+      }
+      this.hrScene.userData.tick(this.time, dt);
+      this._mpHud();
+      const bit2 = froze2 ? null : this.nearestInteractable();
+      this.ui.setPrompt(bit2 ? bit2.prompt : null);
+      return;
+    }
     if (this.state === 'bunker') {
       if (this.isHost) M.host.update(0);
       const froze = this.paused || this.screens.open;

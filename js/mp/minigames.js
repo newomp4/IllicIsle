@@ -48,7 +48,7 @@ function plate(x, ox, oy, w, h, hot) {
    =========================================================== */
 const wind = {
   name: 'WIND IT',
-  hint: 'SPACE ON THE MARK',
+  hint: 'SPACE AT THE TOP OF THE ARC',
   init(s) {
     // a storm has the whole thing juddering, and asks for more of it
     s.phase = 0;
@@ -58,55 +58,145 @@ const wind = {
     s.flash = 0; s.miss = 0;
     s.window = s.hard ? 0.93 : 0.90;
     s.spark = [];
+    s.ring = -1;          // the shock ring thrown by a good catch
+    s.ringX = 0;
+    s.shake = 0;
+    s.ratchet = 0;        // the escape wheel, one tooth per catch
   },
   draw(x, W, H, s, t, dt) {
     s.phase += dt * s.speed;
     if (s.flash > 0) s.flash -= dt * 3;
     if (s.miss > 0) s.miss -= dt * 2.5;
+    if (s.shake > 0) s.shake -= dt * 4;
+    if (s.ring >= 0) { s.ring += dt * 2.6; if (s.ring > 1) s.ring = -1; }
+    s.ratchet += dt * (s.flash > 0 ? 6 : 0.35);
+
     const swing = Math.sin(s.phase);
-    const cx = W / 2, top = 40;
     const inWindow = Math.abs(swing) > s.window;
 
-    /* the tower it hangs in, so it is a machine and not a metronome */
+    /* True pendulum kinematics. The old version moved the bob along a
+       horizontal line with a token vertical wobble, which is why it read as
+       a box sliding about rather than a weight on a rod. It travels on an
+       arc now: the angle is what swings, and the position follows from it. */
+    const MAXA = 1.02;                  // radians either side of vertical
+    const ang = swing * MAXA;
+    const shk = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 2 * s.shake) : 0;
+    const px = W / 2 + shk, py = 34;    // the pivot
+    const L = 84;                       // rod length
+    const bx = px + Math.sin(ang) * L;
+    const by = py + Math.cos(ang) * L;
+
+    /* ---- the frame it hangs in ---- */
     x.fillStyle = '#241708';
-    x.fillRect(cx - 78, top - 12, 156, 6);
-    x.fillRect(cx - 78, top - 12, 6, 104);
-    x.fillRect(cx + 72, top - 12, 6, 104);
+    x.fillRect(px - 84, py - 16, 168, 7);
+    x.fillRect(px - 84, py - 16, 7, 112);
+    x.fillRect(px + 77, py - 16, 7, 112);
     x.fillStyle = '#3a2a10';
-    for (let i = 0; i < 7; i++) x.fillRect(cx - 72 + i * 22, top - 10, 2, 2);
-    // toothed rim it has to be caught on
-    for (let i = 0; i <= 18; i++) {
-      const a2 = -Math.PI * 0.5 + (i / 18 - 0.5) * 2.1;
-      const rx = cx + Math.sin(a2) * 88, ry = top + 62 + Math.cos(a2) * 12;
-      const near = Math.abs(Math.sin(a2)) > s.window * 0.98;
-      x.fillStyle = near ? (inWindow ? '#7ec850' : '#c39a2c') : '#4a3a1c';
-      x.fillRect(Math.round(rx) - 1, Math.round(ry), 3, 4);
+    for (let i = 0; i < 8; i++) x.fillRect(px - 78 + i * 22, py - 14, 2, 2);
+    // cross-bracing in the corners, so the frame reads as built
+    for (const sx of [-1, 1]) {
+      for (let i = 0; i < 9; i++) {
+        x.fillStyle = '#33240c';
+        x.fillRect(Math.round(px + sx * (77 - i * 2)), py - 9 + i * 2, 2, 2);
+      }
     }
 
-    // the lit catch zones
-    x.fillStyle = inWindow ? 'rgba(126,200,80,.20)' : 'rgba(255,210,74,.07)';
-    const zw = Math.round(96 * (1 - s.window) + 14);
-    x.fillRect(cx - 88 - zw / 2, top - 4, zw, 80);
-    x.fillRect(cx + 88 - zw / 2, top - 4, zw, 80);
-
-    // arm, bob, and a trail behind it
-    for (let i = 6; i >= 1; i--) {
-      const sw = Math.sin(s.phase - i * 0.07);
-      const tx = cx + sw * 76, ty = top + 62 - Math.abs(sw) * 8;
-      x.fillStyle = `rgba(200,170,80,${(0.05 * (7 - i)).toFixed(2)})`;
-      x.fillRect(Math.round(tx) - 3, Math.round(ty) - 3, 7, 7);
+    /* ---- the arc it travels, drawn as pixels ---- */
+    for (let i = 0; i <= 40; i++) {
+      const a2 = (-1 + (i / 40) * 2) * MAXA;
+      const tx = Math.round(px + Math.sin(a2) * L);
+      const ty = Math.round(py + Math.cos(a2) * L);
+      const near = Math.abs(Math.sin(a2) / Math.sin(MAXA)) > s.window;
+      x.fillStyle = near
+        ? (inWindow ? '#7ec850' : '#c39a2c')
+        : 'rgba(120,96,44,.35)';
+      x.fillRect(tx - 1, ty - 1, 2, 2);
     }
-    const ax = cx + swing * 76, ay = top + 62 - Math.abs(swing) * 8;
-    x.strokeStyle = '#8a7a52'; x.lineWidth = 1;
-    x.beginPath(); x.moveTo(cx, top); x.lineTo(ax, ay); x.stroke();
-    x.fillStyle = '#5c3f1c'; x.fillRect(cx - 5, top - 5, 11, 10);
-    x.fillStyle = '#8a7a52'; x.fillRect(cx - 2, top - 3, 5, 5);
-    const lit = s.flash > 0;
-    x.fillStyle = lit ? '#dfffc4' : (inWindow ? JADE : GOLD);
-    x.fillRect(Math.round(ax) - 6, Math.round(ay) - 6, 13, 13);
-    x.fillStyle = INK; x.fillRect(Math.round(ax) - 3, Math.round(ay) - 3, 7, 7);
-    x.fillStyle = lit ? '#ffffff' : (inWindow ? '#9ff0dc' : '#c39a2c');
-    x.fillRect(Math.round(ax) - 1, Math.round(ay) - 1, 3, 3);
+
+    /* ---- the catch zones, as wedges at the ends of the arc ---- */
+    for (const side of [-1, 1]) {
+      const a0 = Math.asin(Math.max(-1, Math.min(1, s.window))) * (MAXA / (Math.PI / 2));
+      for (let i = 0; i <= 10; i++) {
+        const a2 = side * (a0 + (i / 10) * (MAXA - a0));
+        const tx = Math.round(px + Math.sin(a2) * L);
+        const ty = Math.round(py + Math.cos(a2) * L);
+        // a short tick pointing outward from the arc
+        for (let k = 0; k < 5; k++) {
+          x.fillStyle = inWindow ? `rgba(126,200,80,${(0.5 - k * 0.08).toFixed(2)})`
+            : `rgba(195,154,44,${(0.22 - k * 0.03).toFixed(2)})`;
+          x.fillRect(
+            Math.round(tx + Math.sin(a2) * k * 2.4) - 1,
+            Math.round(ty + Math.cos(a2) * k * 2.4) - 1, 2, 2
+          );
+        }
+      }
+    }
+
+    /* ---- the rod, in pixel steps rather than a stroked line ---- */
+    const steps = 22;
+    for (let i = 1; i <= steps; i++) {
+      const k = i / steps;
+      const rx = Math.round(px + (bx - px) * k);
+      const ry = Math.round(py + (by - py) * k);
+      x.fillStyle = i > steps - 3 ? '#c9b98a' : '#8a7a52';
+      x.fillRect(rx - 1, ry - 1, 2, 2);
+    }
+
+    /* ---- a trail: three ghosts of the bob, on the same arc ---- */
+    for (let i = 3; i >= 1; i--) {
+      const a2 = Math.sin(s.phase - i * 0.10) * MAXA;
+      const tx = Math.round(px + Math.sin(a2) * L);
+      const ty = Math.round(py + Math.cos(a2) * L);
+      x.fillStyle = `rgba(200,170,80,${(0.10 * (4 - i)).toFixed(2)})`;
+      x.fillRect(tx - 5, ty - 5, 11, 11);
+    }
+
+    /* ---- the pivot: a bearing with an escape wheel behind it ---- */
+    {
+      // the wheel, which advances a tooth every time you catch it
+      for (let i = 0; i < 12; i++) {
+        const a2 = s.ratchet + (i / 12) * Math.PI * 2;
+        const tx = Math.round(px + Math.cos(a2) * 13);
+        const ty = Math.round(py + Math.sin(a2) * 13);
+        x.fillStyle = i % 3 === 0 ? '#8a7a52' : '#5c3f1c';
+        x.fillRect(tx - 1, ty - 1, 3, 3);
+      }
+      x.fillStyle = '#3a2a10'; x.fillRect(px - 8, py - 8, 17, 17);
+      x.fillStyle = '#5c3f1c'; x.fillRect(px - 6, py - 6, 13, 13);
+      x.fillStyle = '#8a7a52'; x.fillRect(px - 3, py - 3, 7, 7);
+      x.fillStyle = '#241708'; x.fillRect(px - 1, py - 1, 3, 3);
+    }
+
+    /* ---- the bob: a weight, with a rim and a highlight ---- */
+    {
+      const lit = s.flash > 0;
+      const R2 = 8;
+      const rx = Math.round(bx), ry = Math.round(by);
+      // its shadow on the arc
+      x.fillStyle = 'rgba(0,0,0,.35)';
+      x.fillRect(rx - R2 + 1, ry - R2 + 2, R2 * 2, R2 * 2);
+      // the body, an octagon rather than a square
+      x.fillStyle = lit ? '#dfffc4' : (inWindow ? JADE : GOLD);
+      x.fillRect(rx - R2, ry - R2 + 3, R2 * 2, R2 * 2 - 6);
+      x.fillRect(rx - R2 + 3, ry - R2, R2 * 2 - 6, R2 * 2);
+      // a darker core and a bright catch of light on the upper left
+      x.fillStyle = lit ? '#8fe8a0' : (inWindow ? '#2f7a60' : '#8a6a1c');
+      x.fillRect(rx - 4, ry - 4, 9, 9);
+      x.fillStyle = lit ? '#ffffff' : (inWindow ? '#9ff0dc' : '#ffe9a8');
+      x.fillRect(rx - 4, ry - 4, 4, 2);
+      x.fillRect(rx - 4, ry - 4, 2, 4);
+    }
+
+    /* ---- a shock ring where a good catch landed ---- */
+    if (s.ring >= 0) {
+      const rr = Math.round(6 + s.ring * 26);
+      const a2 = (1 - s.ring) * 0.55;
+      x.fillStyle = `rgba(190,255,210,${a2.toFixed(2)})`;
+      for (let i = 0; i < 20; i++) {
+        const th = (i / 20) * Math.PI * 2;
+        x.fillRect(Math.round(s.ringX + Math.cos(th) * rr), Math.round(96 + Math.sin(th) * rr * 0.7), 2, 2);
+      }
+    }
 
     // sparks thrown off a good catch
     for (let i = s.spark.length - 1; i >= 0; i--) {
@@ -117,13 +207,22 @@ const wind = {
       x.fillRect(Math.round(sp.x), Math.round(sp.y), 2, 2);
     }
 
-    // the count, and how tight the window has become
+    /* ---- the count, as teeth on a strip ---- */
     for (let i = 0; i < s.need; i++) {
-      const mx = cx - (s.need * 13) / 2 + i * 13;
-      x.fillStyle = i < s.got ? JADE : '#3a2a10';
+      const mx = W / 2 - (s.need * 13) / 2 + i * 13;
+      const done = i < s.got;
+      x.fillStyle = '#1a1206'; x.fillRect(mx - 1, H - 45, 12, 12);
+      x.fillStyle = done ? JADE : '#3a2a10';
       x.fillRect(mx, H - 44, 10, 10);
-      if (i < s.got) { x.fillStyle = '#dfffc4'; x.fillRect(mx + 3, H - 41, 4, 4); }
+      if (done) {
+        x.fillStyle = '#dfffc4'; x.fillRect(mx + 3, H - 41, 4, 4);
+        x.fillStyle = 'rgba(223,255,196,.3)'; x.fillRect(mx, H - 44, 10, 2);
+      }
     }
+    // how tight it has wound
+    drawText3(x, `TENSION ${Math.round((s.window - 0.86) / 0.105 * 100)}%`,
+      W / 2, H - 30, inWindow ? '#9ff0dc' : '#8a7a52');
+
     if (s.miss > 0) {
       x.fillStyle = `rgba(224,69,58,${(s.miss * 0.22).toFixed(2)})`;
       x.fillRect(0, 0, W, H);
@@ -133,21 +232,26 @@ const wind = {
   key(code, s) {
     if (code !== 'Space' && code !== 'Enter' && code !== 'KeyE') return false;
     const swing = Math.sin(s.phase);
+    const MAXA = 1.02, L = 84;
+    const bx = 160 + Math.sin(swing * MAXA) * L;
     if (Math.abs(swing) > s.window) {
       s.got++;
       s.flash = 1;
+      s.ring = 0;
+      s.ringX = bx;
+      s.ratchet += 0.52;
       // each catch winds it tighter: faster, and a narrower window
       s.speed += 0.34;
       s.window = Math.min(0.965, s.window + 0.016);
-      const cx = 160, ax = cx + swing * 76;
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 9; i++) {
         s.spark.push({
-          x: ax, y: 100, t: 0,
-          vx: (Math.random() - 0.5) * 90, vy: -30 - Math.random() * 70,
+          x: bx, y: 34 + Math.cos(swing * MAXA) * L, t: 0,
+          vx: (Math.random() - 0.5) * 110, vy: -30 - Math.random() * 80,
         });
       }
     } else {
       s.miss = 1;
+      s.shake = 1;
       s.speed = Math.max(1.2, s.speed - 0.2);
       s.window = Math.max(0.86, s.window - 0.01);
       s.got = Math.max(0, s.got - 1);

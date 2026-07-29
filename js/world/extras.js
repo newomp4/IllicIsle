@@ -8,6 +8,7 @@ import {
   mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify, blankUV,
 } from '../lib/geo.js';
 import { applyCell, buildSignTexture } from '../lib/textures.js';
+import { drawText } from '../lib/bitfont.js';
 
 const G = (n) => new THREE.Color(n);
 
@@ -133,38 +134,130 @@ export function buildRelic(kind, rng, mats) {
   const P = [];
 
   if (kind === 'tasha') {
-    /* the remains of a female automaton, half buried */
-    const torso = cyl(0.30, 0.36, 0.72, 8, 'metal', { pos: [0, 0.34, 0], rot: [1.35, 0.3, 0] });
-    tint(torso, G(0xbfc4c8)); P.push(torso);
-    const head = ico(0.24, 0, 'metal', { pos: [0.62, 0.20, 0.35], scale: [1, 1.12, 0.95] });
-    tint(head, G(0xd0d6da)); P.push(head);
-    // faceplate
-    const face = box(0.3, 0.22, 0.05, 'glass', { pos: [0.80, 0.22, 0.42], rot: [0, 0.7, 0.2] });
-    tint(face, G(0x6fd0e0)); P.push(face);
-    // one arm still reaching
-    const arm = limb([-0.1, 0.5, -0.1], [-0.7, 0.9, -0.5], 0.09, 0.06, 'metal');
-    tint(arm, G(0xbfc4c8)); P.push(arm);
-    const hand = ico(0.1, 0, 'metal', { pos: [-0.7, 0.92, -0.5] });
-    tint(hand, G(0xd0d6da)); P.push(hand);
-    // scattered plating
-    for (let i = 0; i < 7; i++) {
-      const a = rng() * Math.PI * 2, r = 0.6 + rng() * 1.3;
-      const pl = box(0.2 + rng() * 0.15, 0.05, 0.16 + rng() * 0.12, 'metal', {
-        pos: [Math.cos(a) * r, 0.04, Math.sin(a) * r], rot: [(rng() - .5) * .6, rng() * 3, (rng() - .5) * .6],
-      });
-      tint(pl, G(0xa8b0b6).multiplyScalar(0.8 + rng() * 0.4)); P.push(pl);
-    }
-    g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
-    const eye = new THREE.PointLight(0x6fd0e0, 1.0, 6, 2);
-    eye.position.set(0.8, 0.25, 0.45);
-    g.add(eye);
-    g.userData.tick = (t) => {
-      // she still flickers, occasionally
-      const blink = Math.sin(t * 0.7) > 0.86 ? Math.random() : 1;
-      eye.intensity = (0.5 + Math.sin(t * 3) * 0.2) * blink;
-    };
+    /* TASHA — UNIT 03, on her side where she fell.
 
-  } else if (kind === 'aerlingus') {
+       She used to be a lumpy cylinder with an icosahedron for a head, which
+       read as scrap rather than as a machine. A thing reads as a robot
+       because of its SEAMS: panel lines, a visor rather than a face, joints
+       that are obviously joints, and cabling coming out of where it broke.
+
+       Everything below is built in her own space with her lying on her left
+       side, head toward +X, and then tipped over as one piece. */
+    const STEEL = G(0xb8c0c6), STEEL_D = G(0x7e868c), DARK = G(0x3a4046);
+    const BRASS = G(0xc0a058);
+    const body = [];
+
+    // ---- the chassis: a panelled box, not a tube ----
+    body.push(tint(box(0.52, 0.68, 0.40, 'metal', { pos: [0, 0.34, 0] }), STEEL));
+    // panel seams down the front and round the waist
+    for (const sy of [0.16, 0.34, 0.52]) {
+      body.push(tint(box(0.54, 0.025, 0.42, 'metal', { pos: [0, sy, 0] }), STEEL_D));
+    }
+    body.push(tint(box(0.045, 0.68, 0.42, 'metal', { pos: [0, 0.34, 0] }), STEEL_D));
+    // a chest hatch, hanging open, with the works showing
+    body.push(tint(box(0.30, 0.30, 0.03, 'metal', { pos: [0.16, 0.44, 0.22], rot: [0, -0.9, 0] }), STEEL_D));
+    body.push(tint(box(0.26, 0.26, 0.06, 'metal', { pos: [0, 0.44, 0.19] }), DARK));
+    for (let i = 0; i < 4; i++) {
+      body.push(tint(cyl(0.022, 0.022, 0.22, 4, 'metal', {
+        pos: [-0.09 + i * 0.06, 0.44, 0.20], rot: [0, 0, 0.1 * i],
+      }), i % 2 ? G(0x8a4a2a) : BRASS));
+    }
+    // shoulders
+    for (const sx of [-1, 1]) {
+      body.push(tint(box(0.20, 0.20, 0.44, 'metal', { pos: [sx * 0.32, 0.60, 0] }), STEEL_D));
+      body.push(tint(cyl(0.11, 0.11, 0.16, 8, 'metal', {
+        pos: [sx * 0.34, 0.60, 0], rot: [0, 0, Math.PI / 2],
+      }), DARK));
+    }
+    // hips, and one leg still attached
+    body.push(tint(box(0.46, 0.16, 0.38, 'metal', { pos: [0, 0.06, 0] }), STEEL_D));
+    body.push(tint(cyl(0.10, 0.10, 0.46, 8, 'metal', { pos: [-0.14, -0.18, 0.02] }), STEEL));
+    body.push(tint(cyl(0.11, 0.11, 0.14, 8, 'metal', { pos: [-0.14, -0.42, 0.02], rot: [0, 0, Math.PI / 2] }), DARK));
+    body.push(tint(box(0.16, 0.10, 0.30, 'metal', { pos: [-0.14, -0.52, 0.08] }), STEEL_D));
+    // the other hip is a torn socket with cable spilling out
+    body.push(tint(cyl(0.12, 0.12, 0.08, 8, 'metal', { pos: [0.14, -0.04, 0.02], rot: [0, 0, Math.PI / 2] }), DARK));
+    for (let i = 0; i < 5; i++) {
+      const a2 = rng() * 6.283;
+      body.push(tint(cyl(0.02, 0.02, 0.3 + rng() * 0.3, 4, 'metal', {
+        pos: [0.16 + rng() * 0.1, -0.06 - rng() * 0.05, 0.02 + Math.sin(a2) * 0.08],
+        rot: [1.2 + rng() * 0.6, a2, 0],
+      }), i % 2 ? G(0x8a3a2a) : G(0x2a2e32)));
+    }
+
+    // ---- the head: a visor, not a face ----
+    body.push(tint(cyl(0.09, 0.09, 0.14, 8, 'metal', { pos: [0, 0.74, 0] }), DARK));      // neck
+    body.push(tint(box(0.30, 0.28, 0.34, 'metal', { pos: [0, 0.92, 0] }), STEEL));
+    body.push(tint(box(0.32, 0.06, 0.36, 'metal', { pos: [0, 1.05, 0] }), STEEL_D));      // crown seam
+    // the visor slit, recessed
+    body.push(tint(box(0.24, 0.09, 0.04, 'metal', { pos: [0, 0.94, 0.18] }), G(0x14181c)));
+    // a hinged jaw plate, dropped open
+    body.push(tint(box(0.22, 0.10, 0.16, 'metal', { pos: [0, 0.80, 0.12], rot: [0.5, 0, 0] }), STEEL_D));
+    // an antenna, bent
+    body.push(tint(cyl(0.018, 0.018, 0.34, 4, 'metal', { pos: [0.10, 1.18, -0.06], rot: [0.3, 0, 0.2] }), BRASS));
+    body.push(tint(ico(0.035, 0, 'metal', { pos: [0.16, 1.32, -0.12] }), G(0xffd24a)));
+    // the collar plate, where her number is stamped
+    body.push(tint(box(0.26, 0.08, 0.04, 'metal', { pos: [0, 0.70, 0.19] }), BRASS));
+
+    // ---- the arm still reaching ----
+    body.push(tint(cyl(0.075, 0.065, 0.38, 6, 'metal', { pos: [0.42, 0.66, 0], rot: [0, 0, -0.9] }), STEEL));
+    body.push(tint(cyl(0.09, 0.09, 0.12, 8, 'metal', { pos: [0.58, 0.80, 0], rot: [Math.PI / 2, 0, 0] }), DARK));
+    body.push(tint(cyl(0.06, 0.05, 0.34, 6, 'metal', { pos: [0.70, 0.98, -0.06], rot: [0.3, 0, -0.5] }), STEEL));
+    // a piston alongside the forearm
+    body.push(tint(cyl(0.026, 0.026, 0.26, 4, 'metal', { pos: [0.72, 0.96, 0.04], rot: [0.3, 0, -0.5] }), BRASS));
+    // three fingers, open
+    for (let i = 0; i < 3; i++) {
+      const a2 = -0.4 + i * 0.4;
+      body.push(tint(box(0.035, 0.11, 0.035, 'metal', {
+        pos: [0.84 + Math.sin(a2) * 0.05, 1.14, -0.10 + Math.cos(a2) * 0.05], rot: [0.5, a2, 0],
+      }), STEEL_D));
+    }
+
+    /* Her own frame, tipped onto her side. Doing it here rather than
+       rotating every part means the anatomy above stays readable. */
+    const her = new THREE.Group();
+    her.add(new THREE.Mesh(mergeGeos(body), mats.opaque));
+    her.rotation.set(0.15, 0.4, 1.42);
+    her.position.set(0, 0.34, 0);
+    g.add(her);
+    g.userData.her = her;
+
+    // the number, painted on the collar plate
+    {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 16;
+      const cx2 = c.getContext('2d');
+      cx2.fillStyle = '#8a6a2a'; cx2.fillRect(0, 0, 64, 16);
+      drawText(cx2, 'UNIT 03', { x: 32, y: 4, scale: 1, align: 'center', color: '#2a1c08', shadow: false });
+      const tx = new THREE.CanvasTexture(c);
+      tx.magFilter = THREE.NearestFilter; tx.minFilter = THREE.NearestFilter;
+      tx.generateMipmaps = false; tx.colorSpace = THREE.SRGBColorSpace;
+      const plate2 = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.065),
+        new THREE.MeshLambertMaterial({ map: tx }));
+      plate2.position.set(0, 0.70, 0.215);
+      her.add(plate2);
+    }
+
+    /* ---- her plating, scattered where she came apart ---- */
+    const S = [];
+    for (let i = 0; i < 9; i++) {
+      const a2 = rng() * Math.PI * 2, r = 0.7 + rng() * 1.5;
+      const pl = box(0.22 + rng() * 0.16, 0.045, 0.17 + rng() * 0.13, 'metal', {
+        pos: [Math.cos(a2) * r, 0.03, Math.sin(a2) * r],
+        rot: [(rng() - .5) * .5, rng() * 3, (rng() - .5) * .5],
+      });
+      tint(pl, G(0xa8b0b6).multiplyScalar(0.75 + rng() * 0.4));
+      S.push(pl);
+      // a couple of bolts beside each panel, because detail is what sells it
+      if (rng() < 0.6) {
+        S.push(tint(cyl(0.02, 0.02, 0.03, 5, 'metal', {
+          pos: [Math.cos(a2) * r + 0.14, 0.02, Math.sin(a2) * r - 0.1],
+          rot: [Math.PI / 2, 0, 0],
+        }), BRASS));
+      }
+    }
+    g.add(new THREE.Mesh(mergeGeos(S), mats.opaque));
+
+  } else if (kind === 'aerlingus') {  } else if (kind === 'aerlingus') {
     /* a torn section of green fuselage, half in the sand */
     const skin = cyl(1.5, 1.7, 3.4, 10, 'metal', {
       pos: [0, 0.5, 0], rot: [1.42, 0.4, 0.15],
@@ -212,15 +305,24 @@ export function buildRelic(kind, rng, mats) {
   /* Something visible has to change when a castaway works on one of
      these, or "RESTART TASHA'S OPTIC" is a progress bar next to a prop. */
   if (kind === 'tasha') {
+    /* One eye light, not two. The first version of this prop added a
+       PointLight at full intensity AND defined userData.tick, then this
+       block added a second light and overwrote the tick — so her optic
+       glowed before anybody had repaired it, and the flicker was dead code.
+       There is one light, it starts at zero, and one tick. */
     const eye = new THREE.PointLight(0x6fd0e0, 0, 7, 1.8);
-    eye.position.set(0.86, 0.24, 0.46);
-    g.add(eye);
+    /* Where her visor actually is once she is lying on her side. It is
+       carried on her own frame so it stays with her however she is tipped. */
+    const her = g.userData.her;
+    const eyeLocal = new THREE.Vector3(0, 0.94, 0.19);
+    (her || g).add(eye);
+    eye.position.copy(eyeLocal);
     /* The beam is pivoted at the eye, not floating beside it: a cone
        apex-first from the lens, so it reads as light coming OUT of her
        rather than a blue shape that happens to be nearby. */
     const beamPivot = new THREE.Group();
-    beamPivot.position.copy(eye.position);
-    g.add(beamPivot);
+    beamPivot.position.copy(eyeLocal);
+    (her || g).add(beamPivot);
     const LEN = 4.2;
     const cone = new THREE.ConeGeometry(0.62, LEN, 9, 1, true);
     // apex at the origin, opening away down +Z
