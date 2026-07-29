@@ -128,6 +128,8 @@ export class HostSession {
       case C.CHAT: { this._chat(from, msg.text); break; }
       case C.SABOTAGE: { this._trySabotage(from, msg.kind); break; }
       case C.FIX: { this._tryFix(from, msg.kind, msg.at); break; }
+      case C.SHOOT: { this._tryShoot(from, msg.targetId); break; }
+      case C.SNAP: { this._trySnap(from, !!msg.yes); break; }
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
@@ -229,6 +231,7 @@ export class HostSession {
   _tryTask(id, taskId) {
     const p = this.players.get(id);
     if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
+    if (p.stunnedUntil && now() < p.stunnedUntil) return;
     if (!p.tasks.includes(taskId) || p.doneTasks.has(taskId)) return;
 
     p.step = p.step || {};
@@ -282,6 +285,68 @@ export class HostSession {
     this.hooks.onKilled?.(v.id, v.x, v.y, v.z);
     this._roster();
     this._checkWin();
+  }
+
+  /**
+   * The flare pistol. It cannot kill; it puts somebody on the sand and
+   * calls a vote of whoever was close enough to see it happen. That
+   * radius is the whole design — you are asking the people who happen to
+   * be standing there, not the island.
+   */
+  _tryShoot(id, targetId) {
+    const k = this.players.get(id), v = this.players.get(targetId);
+    if (!k || !v || this.phase !== PHASE.ROAM) return;
+    if (!k.alive || !v.alive || this.snap) return;
+    if (Math.hypot(k.x - v.x, k.z - v.z) > 34) return;
+
+    const SECS = 14;
+    v.stunnedUntil = now() + SECS;
+    this.net.broadcast({ t: S.SHOT, byId: id, victimId: targetId, x: v.x, y: v.y, z: v.z, secs: SECS });
+    this.hooks.onShot?.(id, targetId, v, SECS);
+
+    // everyone near enough to have seen it gets a say
+    const R = 30;
+    const voters = [...this.players.values()]
+      .filter((p) => p.alive && p.id !== targetId && Math.hypot(p.x - v.x, p.z - v.z) < R)
+      .map((p) => p.id);
+    this.snap = { victimId: targetId, byId: id, endsAt: now() + 12, voters, yes: new Set(), no: new Set() };
+    this.net.broadcast({ t: S.SNAPOPEN, victimId: targetId, byId: id, secs: 12, voters });
+    this.hooks.onSnapOpen?.(targetId, id, 12, voters);
+  }
+
+  _trySnap(id, yes) {
+    const s2 = this.snap;
+    if (!s2 || !s2.voters.includes(id)) return;
+    if (s2.yes.has(id) || s2.no.has(id)) return;
+    (yes ? s2.yes : s2.no).add(id);
+    const need = Math.floor(s2.voters.length / 2) + 1;
+    this.net.broadcast({ t: S.SNAPTALLY, yes: s2.yes.size, no: s2.no.size, need });
+    this.hooks.onSnapTally?.(s2.yes.size, s2.no.size, need);
+    if (s2.yes.size >= need || s2.no.size >= need
+      || s2.yes.size + s2.no.size >= s2.voters.length) this._closeSnap();
+  }
+
+  _closeSnap() {
+    const s2 = this.snap;
+    if (!s2) return;
+    this.snap = null;
+    const need = Math.floor(s2.voters.length / 2) + 1;
+    const exiled = s2.yes.size >= need && s2.yes.size > s2.no.size;
+    const v = this.players.get(s2.victimId);
+    if (exiled && v) {
+      v.alive = false;
+      v.stunnedUntil = 0;
+      this.net.broadcast({
+        t: S.SNAPDONE, victimId: s2.victimId, exiled: true,
+        yes: s2.yes.size, no: s2.no.size, wasAgent: v.role === ROLE.AGENT,
+      });
+      this.hooks.onSnapDone?.(s2.victimId, true, v.role === ROLE.AGENT);
+      this._roster();
+      this._checkWin();
+    } else {
+      this.net.broadcast({ t: S.SNAPDONE, victimId: s2.victimId, exiled: false, yes: s2.yes.size, no: s2.no.size });
+      this.hooks.onSnapDone?.(s2.victimId, false, false);
+    }
   }
 
   _tryReport(id, bodyId) {
@@ -484,6 +549,9 @@ export class HostSession {
       else if (this.phase === PHASE.COUNCIL) this._resolveVote();
     }
 
+    // a snap vote nobody finished
+    if (this.snap && now() >= this.snap.endsAt) this._closeSnap();
+
     // a fatal sabotage that runs out ends the game
     if (this.sabotage && now() >= this.sabotage.endsAt) {
       const wasFatal = this.sabotage.fatal;
@@ -605,6 +673,13 @@ export class MirrorSession {
         this.sabotage = { kind: msg.kind, endsAt: performance.now() / 1000 + msg.secs,
           fatal: msg.fatal, done: 0, need: msg.sites || 1 };
         this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
+        break;
+      case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
+      case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;
+      case S.SNAPTALLY: this.hooks.onSnapTally?.(msg.yes, msg.no, msg.need); break;
+      case S.SNAPDONE:
+        if (msg.exiled) { const p2 = this.players.get(msg.victimId); if (p2) p2.alive = false; }
+        this.hooks.onSnapDone?.(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no);
         break;
       case S.SAVED: this.hooks.onSaved?.(msg.victimId); break;
       case S.FIXPROGRESS:

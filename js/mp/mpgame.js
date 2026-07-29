@@ -18,6 +18,7 @@ import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } fro
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import { STOCK, STAGE_PAY, SANCTUARY_R, itemById, stockFor } from './market.js';
+import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
@@ -97,6 +98,10 @@ export class MPGame extends Game {
       },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onSaved: (id) => this._onSaved(id),
+      onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
+      onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
+      onSnapTally: (y, n2, need) => this._onSnapTally(y, n2, need),
+      onSnapDone: (vid, ex, wasAgent, y, n2) => this._onSnapDone(vid, ex, wasAgent, y, n2),
       onCouncil: (by, body) => this._onCouncil(by, body),
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
@@ -164,6 +169,10 @@ export class MPGame extends Game {
       case S.SNAPSHOT: this._applySnapshot(msg); break;
       case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z); break;
       case S.SAVED: this._onSaved(msg.victimId); break;
+      case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
+      case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
+      case S.SNAPTALLY: this._onSnapTally(msg.yes, msg.no, msg.need); break;
+      case S.SNAPDONE: this._onSnapDone(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no); break;
       case S.COUNCIL: this._onCouncil(msg.calledBy, msg.bodyOf); break;
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
@@ -768,6 +777,8 @@ export class MPGame extends Game {
 
     this.taskFx = new TaskFx(this.islandScene);
     this.gore = new Gore(this.islandScene, heightAt);
+    this.flares = new Flare(this.islandScene);
+    this.dizzy = new Dizzy(this.islandScene);
     this._resolveTaskSites();
     this.ui.show();
     this.ui.setObjective('');
@@ -1095,7 +1106,11 @@ export class MPGame extends Game {
       return;
     }
     if (M.active && down && !this.screens.open && this.playing) {
-      if (e.code === 'KeyF') { this.tryKill(); return; }
+      if (e.code === 'KeyG') { this.togglePistol(); return; }
+      if (e.code === 'KeyF') {
+        if (this.pistolOut) this.fireFlare(); else this.tryKill();
+        return;
+      }
       if (e.code === 'KeyQ') {
         /* Push first, release the pointer second. pointerlockchange fires on
            its own task and the auto-pause it triggers checks whether an
@@ -1189,6 +1204,141 @@ export class MPGame extends Game {
     return true;
   }
 
+  /* =========================================================
+     THE FLARE PISTOL
+     ========================================================= */
+  togglePistol() {
+    if (!this.hasItem('gun')) { this.audio.sfx('deny'); return; }
+    if (this.stunnedUntil && now() < this.stunnedUntil) return;
+    this.pistolOut = !this.pistolOut;
+    if (!this.pistolModel) {
+      this.pistolModel = buildPistol();
+      this.camera.add(this.pistolModel);
+      if (!this.camera.parent) this.islandScene.add(this.camera);
+    }
+    this.pistolModel.visible = this.pistolOut;
+    this.audio.sfx(this.pistolOut ? 'charge' : 'select');
+    this.ui.toast(this.pistolOut ? 'FLARE PISTOL  -  F TO FIRE' : 'HOLSTERED', 'gold', 1600);
+  }
+
+  /** Whoever is nearest the middle of the screen, within range. */
+  _flareTarget() {
+    const M = this.mp;
+    const cam = this.camera;
+    const fwd = new THREE.Vector3();
+    cam.getWorldDirection(fwd);
+    const eye = cam.position;
+    let best = null, bestDot = 0.93;
+    for (const av of M.avatars.values()) {
+      const rec = M.view.players.get(av.id);
+      if (!rec || rec.alive === false) continue;
+      const to = new THREE.Vector3(av.pos.x - eye.x, av.pos.y + 1 - eye.y, av.pos.z - eye.z);
+      const d = to.length();
+      if (d > 34) continue;
+      to.normalize();
+      const dot = to.dot(fwd);
+      if (dot > bestDot) { bestDot = dot; best = av; }
+    }
+    return best;
+  }
+
+  fireFlare() {
+    const M = this.mp;
+    if (!this.pistolOut || !this.amAlive || M.view.phase !== PHASE.ROAM) return;
+    if (M.snap) { this.audio.sfx('deny'); return; }
+    const target = this._flareTarget();
+    if (!target) {
+      this.audio.sfx('deny');
+      this.ui.toast('NOBODY IN YOUR SIGHTS', 'bad', 1400);
+      return;
+    }
+    if (!this.useCarried('gun')) { this.audio.sfx('deny'); return; }
+
+    const cam = this.camera;
+    const dir = new THREE.Vector3();
+    cam.getWorldDirection(dir);
+    const from = cam.position.clone().addScaledVector(dir, 0.6);
+    this.flares.fire(from, dir, () => {});
+    this.audio.sfx('slam');
+    this.audio.sfx('cast');
+    this.player.punch?.(0.9);
+    if (this.pistolModel) {
+      this.pistolModel.userData.flare.visible = false;
+      this.pistolModel.userData.glow.intensity = 6;
+      setTimeout(() => { if (this.pistolModel) this.pistolModel.userData.glow.intensity = 0; }, 220);
+    }
+    this.pistolOut = false;
+    if (this.pistolModel) this.pistolModel.visible = false;
+    this._send({ t: C.SHOOT, targetId: target.id });
+  }
+
+  _onShot(byId, victimId, at, secs) {
+    const M = this.mp;
+    const rec = M.view.players.get(victimId);
+    this.dizzy?.add(victimId, colourHex(rec?.colour));
+    M.stunned = M.stunned || new Map();
+    M.stunned.set(victimId, now() + secs);
+    this.audio.sfx('bossHit');
+    this.taskFx?.burst(at.x, heightAt(at.x, at.z), at.z, 0xff9a3a, 'done', 5.0);
+    if (victimId === M.view.selfId) {
+      this.stunnedUntil = now() + secs;
+      this.pistolOut = false;
+      if (this.pistolModel) this.pistolModel.visible = false;
+      this.player.punch?.(1);
+      this.pipeline.tint.setHex(0xffb060);
+      this.pipeline.tintAmt = 0.9;
+      this.ui.showPopup('YOU ARE SEEING STARS', 'THEY ARE DECIDING ABOUT YOU', 'coin', 'FLARED');
+    } else {
+      this.ui.toast(`${rec?.name || 'SOMEBODY'} IS DOWN`, 'bad', 2400);
+    }
+  }
+
+  _onSnapOpen(victimId, byId, secs, voters) {
+    const M = this.mp;
+    const me = M.view.selfId;
+    M.snap = {
+      victimId, byId, endsAt: now() + secs,
+      voters: voters || [], yes: 0, no: 0, need: Math.floor((voters || []).length / 2) + 1,
+      mine: null,
+    };
+    if ((voters || []).includes(me)) {
+      this.screens.replace('mpSnap', {});
+      document.exitPointerLock?.();
+      this.audio.sfx('stinger');
+    }
+  }
+
+  _onSnapTally(yes, no, need) {
+    if (!this.mp.snap) return;
+    this.mp.snap.yes = yes; this.mp.snap.no = no; this.mp.snap.need = need;
+    this.audio.sfx('select');
+  }
+
+  _onSnapDone(victimId, exiled, wasAgent, yes, no) {
+    const M = this.mp;
+    M.snap = null;
+    this.dizzy?.remove(victimId);
+    M.stunned?.delete(victimId);
+    if (victimId === M.view.selfId) this.stunnedUntil = 0;
+    if (this.screens.name === 'mpSnap') this.screens.clear();
+    const rec = M.view.players.get(victimId);
+    if (exiled) {
+      this.screens.replace('mpExile', {
+        line: '', wasAgent, targetId: victimId, who: rec?.name || '?',
+      });
+      setTimeout(() => { if (this.screens.name === 'mpExile') { this.screens.clear(); this.ui.show(); } }, 8000);
+    } else {
+      this.ui.toast(`THE VOTE FAILED  ${yes}-${no}`, 'gold', 3000);
+      this.audio.sfx('deny');
+    }
+  }
+
+  sendSnap(yes) {
+    if (this.mp.snap) this.mp.snap.mine = !!yes;
+    this._send({ t: C.SNAP, yes: !!yes });
+    this.audio.sfx('confirm');
+  }
+
   /** A puzzle stage was solved; it counts exactly like a hold would. */
   finishMinigame(taskId) {
     if (!taskId) return;
@@ -1254,7 +1404,7 @@ export class MPGame extends Game {
        results screen and the "the host left" screen both sit on a phase
        that never advances, and the watchdog would put the council straight
        back over them. */
-    const FINAL = ['mpEnd', 'mpExile', 'mpRole', 'pause', 'mpBodyFound'];
+    const FINAL = ['mpEnd', 'mpExile', 'mpRole', 'pause', 'mpBodyFound', 'mpSnap'];
     const held = FINAL.includes(this.screens.name);
     // the body card gets its moment, then the council takes over
     if (this.screens.name === 'mpBodyFound' && M.bodyCardUntil && now() > M.bodyCardUntil) {
@@ -1272,7 +1422,12 @@ export class MPGame extends Game {
     const inPlay = M.view.phase === PHASE.ROAM;
     const frozen = this.paused || this.screens.open || !inPlay;
 
-    if (!frozen) {
+    const stunned = this.stunnedUntil && now() < this.stunnedUntil;
+    if (stunned) {
+      // on the sand: you can look, and that is all
+      this.player.updateCamera(dt, heightAt);
+      this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
+    } else if (!frozen) {
       this.player.update(dt, this.input, { groundOf: heightAt, water: true, bounds: true });
       if (this.moveTick.ready(dt) && !this.isHost) {
         this._send({
@@ -1313,6 +1468,13 @@ export class MPGame extends Game {
     if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
     this.taskFx?.update(dt);
     this.gore?.update(dt);
+    this.flares?.update(dt);
+    this.dizzy?.update(dt, this.time, (id) => {
+      if (id === M.view.selfId) return this.player.pos;
+      const av = M.avatars.get(id);
+      return av ? av.pos : null;
+    });
+    if (this.stunnedUntil && now() >= this.stunnedUntil) this.stunnedUntil = 0;
     this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
     this._sweepCoins(dt);
     // a body drops rather than appearing already laid out

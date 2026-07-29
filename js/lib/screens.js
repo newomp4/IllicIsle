@@ -741,6 +741,101 @@ export const SCREENS = {
     },
   },
 
+  /* ---------------- THE SNAP VOTE ---------------- */
+  mpSnap: {
+    init(s) { s.sel = 0; },
+    draw(x, W, H, s, g, t) {
+      const snap = g.mp.snap;
+      if (!snap) return [];
+      const left = Math.max(0, snap.endsAt - performance.now() / 1000);
+      const who = g.mp.view.players.get(snap.victimId);
+      const by = g.mp.view.players.get(snap.byId);
+
+      /* Deliberately not the council. This is a handful of people standing
+         over somebody in the sand, deciding on the spot. */
+      x.fillStyle = '#140803'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#140803', '#20100a', 0.5, 2);
+      // the flare still burning
+      const flick = 0.7 + Math.sin(t * 17) * 0.3;
+      for (let i = 7; i >= 0; i--) {
+        x.fillStyle = `rgba(255,150,60,${(0.035 * flick).toFixed(3)})`;
+        x.beginPath(); x.arc(W / 2, H * 0.62, 22 + i * 15, 0, Math.PI * 2); x.fill();
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+
+      drawText(x, 'A FLARE WENT UP', { x: W / 2, y: 14, scale: 2, align: 'center', color: '#ffb060' });
+      drawText(x, `${(by?.name || '?').toUpperCase()} PUT ${(who?.name || '?').toUpperCase()} ON THE SAND`, {
+        x: W / 2, y: 32, scale: 1, align: 'center', color: GOLD_LT,
+      });
+      drawText(x, `${snap.voters.length} OF YOU SAW IT. ${snap.need} DECIDE.`, {
+        x: W / 2, y: 44, scale: 1, align: 'center', color: DIM,
+      });
+
+      // the clock
+      const bw = W - 80, bx = 40;
+      x.fillStyle = INK; x.fillRect(bx - 1, 55, bw + 2, 5);
+      x.fillStyle = '#20100c'; x.fillRect(bx, 56, bw, 3);
+      const n = Math.round((left / 12) * bw);
+      for (let i = 0; i < n; i += 3) {
+        x.fillStyle = left < 4 ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : '#ffb060';
+        x.fillRect(bx + i, 56, 2, 3);
+      }
+
+      // the person on the floor, with their stars
+      const cx = W / 2, cy = H * 0.62;
+      x.fillStyle = '#0b0f14';
+      x.fillRect(cx - 16, cy, 32, 7);
+      x.fillRect(cx + 15, cy - 5, 8, 8);
+      for (let i = 0; i < 5; i++) {
+        const a = t * 3 + (i / 5) * Math.PI * 2;
+        const sx = Math.round(cx + 19 + Math.cos(a) * 11);
+        const sy = Math.round(cy - 12 + Math.sin(a) * 4);
+        x.fillStyle = i % 2 ? '#ffd24a' : '#ffffff';
+        x.fillRect(sx - 2, sy, 5, 1);
+        x.fillRect(sx, sy - 2, 1, 5);
+      }
+
+      const rows = [];
+      const btn = (label, colour, ox, mine) => {
+        const w = 76, bxx = ox - w / 2, byy = H - 48;
+        x.fillStyle = mine ? colour : '#1a1208';
+        x.fillRect(bxx, byy, w, 18);
+        x.fillStyle = colour;
+        x.fillRect(bxx, byy, w, 1); x.fillRect(bxx, byy + 17, w, 1);
+        x.fillRect(bxx, byy, 1, 18); x.fillRect(bxx + w - 1, byy, 1, 18);
+        drawText(x, label, { x: ox, y: byy + 6, scale: 1, align: 'center',
+          color: mine ? '#160c04' : colour });
+        rows.push({ x: bxx, y: byy, w, h: 18 });
+      };
+      if (snap.mine === null) {
+        btn('Y  THROW OUT', RED, W / 2 - 41, false);
+        btn('N  LET THEM UP', JADE, W / 2 + 41, false);
+      } else {
+        btn('THREW THEM OUT', RED, W / 2 - 41, snap.mine === true);
+        btn('LET THEM UP', JADE, W / 2 + 41, snap.mine === false);
+      }
+
+      drawText(x, `${snap.yes} OUT   -   ${snap.no} STAY`, {
+        x: W / 2, y: H - 27, scale: 1, align: 'center', color: GOLD_LT,
+      });
+      footer(x, W, H, snap.mine === null ? 'Y OR N' : 'WAITING ON THE REST');
+      return rows;
+    },
+    key(code, s, g) {
+      const snap = g.mp.snap;
+      if (!snap || snap.mine !== null) return true;
+      if (code === 'KeyY') { g.sendSnap(true); return true; }
+      if (code === 'KeyN') { g.sendSnap(false); return true; }
+      return true;
+    },
+    click(row, i, s, g) {
+      const snap = g.mp.snap;
+      if (!snap || snap.mine !== null) return true;
+      g.sendSnap(i === 0);
+      return true;
+    },
+  },
+
   /* ---------------- FERDI'S, AND THE ROOM BEHIND IT ---------------- */
   mpShop: {
     init(s, g) { s.sel = 0; s.side = 0; s.flash = 0; },

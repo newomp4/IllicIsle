@@ -20,6 +20,8 @@ export const C = {
   SABOTAGE:   'c.sabotage',   // { kind }
   FIX:        'c.fix',        // { kind }
   READY:      'c.ready',      // { ready }
+  SHOOT:      'c.shoot',      // { targetId }   the flare pistol
+  SNAP:       'c.snap',       // { yes }        a snap vote answer
   PERK:       'c.perk',       // { perk, on }   something bought that others must see
   SETTINGS:   'c.settings',   // host-only UI echo; ignored from clients
 };
@@ -34,6 +36,10 @@ export const S = {
   TASKS:      's.tasks',      // { done, total }
   TASK_OK:    's.taskok',     // { taskId }               PRIVATE
   COOLDOWN:   's.cool',       // { secs }                 PRIVATE, to one agent
+  SHOT:       's.shot',       // { byId, victimId, x, y, z, secs }
+  SNAPOPEN:   's.snapopen',   // { victimId, byId, endsAt, voters }
+  SNAPTALLY:  's.snaptally',  // { yes, no, need }
+  SNAPDONE:   's.snapdone',   // { victimId, exiled, yes, no }
   SAVED:      's.saved',      // { victimId }   a cork vest took the strike
   KILLED:     's.killed',     // { victimId, x, y, z }
   BODY_GONE:  's.bodygone',   // { victimId }
