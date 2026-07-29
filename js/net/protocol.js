@@ -22,6 +22,7 @@ export const C = {
   READY:      'c.ready',      // { ready }
   SHOOT:      'c.shoot',      // { targetId }   the flare pistol
   SNAP:       'c.snap',       // { yes }        a snap vote answer
+  PURSE:      'c.purse',      // { coins }      tell the host what you are carrying
   PERK:       'c.perk',       // { perk, on }   something bought that others must see
   SETTINGS:   'c.settings',   // host-only UI echo; ignored from clients
 };
@@ -36,6 +37,8 @@ export const S = {
   TASKS:      's.tasks',      // { done, total }
   TASK_OK:    's.taskok',     // { taskId }               PRIVATE
   COOLDOWN:   's.cool',       // { secs }                 PRIVATE, to one agent
+  PURSE:      's.purse',      // { coins }              PRIVATE, your wallet
+  DROP:       's.drop',       // { x, y, z, coins, id }  a purse on the ground
   SHOT:       's.shot',       // { byId, victimId, x, y, z, secs }
   SNAPOPEN:   's.snapopen',   // { victimId, byId, endsAt, voters }
   SNAPTALLY:  's.snaptally',  // { yes, no, need }

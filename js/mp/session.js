@@ -130,6 +130,7 @@ export class HostSession {
       case C.FIX: { this._tryFix(from, msg.kind, msg.at); break; }
       case C.SHOOT: { this._tryShoot(from, msg.targetId); break; }
       case C.SNAP: { this._trySnap(from, !!msg.yes); break; }
+      case C.PURSE: { if (p) p.coins = Math.max(0, msg.coins | 0); break; }
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
@@ -197,7 +198,7 @@ export class HostSession {
     this.graceEnds = now() + (this.settings.graceSeconds || 0);
     for (const p of this.players.values()) this._sendCooldown(p);
     this._roster();
-    this._setPhase(PHASE.REVEAL, 26);
+    this._setPhase(PHASE.REVEAL, 22);
     this._tasks();
     return true;
   }
@@ -230,7 +231,7 @@ export class HostSession {
   /* ---------- actions ---------- */
   _tryTask(id, taskId) {
     const p = this.players.get(id);
-    if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
+    if (!p || this.phase !== PHASE.ROAM) return;
     if (p.stunnedUntil && now() < p.stunnedUntil) return;
     if (!p.tasks.includes(taskId) || p.doneTasks.has(taskId)) return;
 
@@ -242,8 +243,10 @@ export class HostSession {
     if (finished) p.doneTasks.add(taskId);
     else p.step[taskId] = at + 1;
 
-    // Agents get a decoy list so they can be seen "doing tasks"; it just
-    // never counts toward the bar.
+    /* Agents get a decoy list so they can be seen "doing tasks"; it just
+       never counts toward the bar. The dead do count — finishing the work
+       is how the Castaways win, and being killed should not take you out
+       of that fight. */
     if (p.role === ROLE.CASTAWAY) { this.tasksDone++; this._tasks(); }
     const packet = { t: S.TASK_OK, taskId, step: p.step[taskId] || 0, done: finished };
     if (id === 'host') this.hooks.onTaskOk?.(taskId, packet.step, finished);
@@ -280,6 +283,25 @@ export class HostSession {
     v.alive = false;
     k.killReady = now() + this.settings.killCooldown;
     this._sendCooldown(k);
+
+    /* What they were carrying goes on the ground, and the Agent takes
+       three quarters of it off the body. Killing a Castaway who has been
+       working all round is now worth something beyond the kill. */
+    const purse = Math.max(0, v.coins | 0);
+    if (purse > 0) {
+      const taken = Math.floor(purse * 0.75);
+      const left = purse - taken;
+      v.coins = 0;
+      if (taken > 0) {
+        k.coins = (k.coins | 0) + taken;
+        if (k.id === 'host') this.hooks.onPurse?.(k.coins, taken);
+        else this.net.sendTo(k.id, { t: S.PURSE, coins: k.coins, gained: taken });
+      }
+      if (left > 0) {
+        this.net.broadcast({ t: S.DROP, x: v.x, y: v.y, z: v.z, coins: left, id: v.id });
+        this.hooks.onDrop?.(v.x, v.y, v.z, left, v.id);
+      }
+    }
     this.bodies.push({ id: v.id, x: v.x, y: v.y, z: v.z });
     this.net.broadcast({ t: S.KILLED, victimId: v.id, x: v.x, y: v.y, z: v.z });
     this.hooks.onKilled?.(v.id, v.x, v.y, v.z);
@@ -674,6 +696,8 @@ export class MirrorSession {
           fatal: msg.fatal, done: 0, need: msg.sites || 1 };
         this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
         break;
+      case S.PURSE: this.hooks.onPurse?.(msg.coins, msg.gained); break;
+      case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;
       case S.SNAPTALLY: this.hooks.onSnapTally?.(msg.yes, msg.no, msg.need); break;

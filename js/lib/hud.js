@@ -296,7 +296,7 @@ export class Hud {
     const x = this.x;
     const players = mp.players || [];
     const PW = 52;
-    plate(x, ox - PW, oy - 2, PW, 16 + players.length * 8);
+    plate(x, ox - PW, oy - 2, PW, 27 + players.length * 8);
 
     const total = mp.tasksTotal || 0;
     const frac = total ? Math.min(1, (mp.tasksDone || 0) / total) : 0;
@@ -309,7 +309,14 @@ export class Hud {
       x.fillRect(bx + i, oy + 9, 2, 4);
     }
 
-    let py = oy + 17;
+    // what is in your pocket
+    drawCoinPip(x, ox - PW + 3, oy + 17);
+    drawText(x, String(mp.coins || 0), {
+      x: ox - 3, y: oy + 18, scale: 1, align: 'right',
+      color: (mp.coins || 0) > 0 ? GOLD : '#6a5c40',
+    });
+
+    let py = oy + 28;
     for (const p of players) {
       const hex = '#' + (COLOUR_HEX[p.colour] || '888888');
       const dead = p.alive === false;
@@ -646,6 +653,14 @@ function plate(x, ox, oy, w, h) {
   ditherRect(x, ox, oy, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox, oy + h - 2, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox + w - 2, oy, 2, h, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+}
+
+/** A Syncoin, eight pixels across. */
+function drawCoinPip(x, ox, oy) {
+  const p = (gx, gy, w, h, c) => { x.fillStyle = c; x.fillRect(ox + gx, oy + gy, w, h); };
+  p(2, 0, 4, 1, '#c39a2c'); p(1, 1, 6, 5, '#ffd24a');
+  p(2, 6, 4, 1, '#c39a2c'); p(3, 2, 2, 3, '#fff3c4');
+  p(0, 2, 1, 3, '#8a6a1c'); p(7, 2, 1, 3, '#8a6a1c');
 }
 
 /** A little knife, so the agent panel is not three words in a box. */

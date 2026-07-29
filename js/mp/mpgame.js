@@ -17,9 +17,10 @@ import { Avatar, Body, colourHex } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
-import { STOCK, STAGE_PAY, SANCTUARY_R, itemById, stockFor } from './market.js';
+import { STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R, itemById, stockFor } from './market.js';
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
+import { buildSyncoin } from '../world/extras.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
@@ -63,8 +64,7 @@ export class MPGame extends Game {
       notice: '',
       noticeT: 0,
     };
-    this.moveTick = new Ticker(12);
-    this.mp.snapTick = new Ticker(12);
+
   }
 
   /* ===========================================================
@@ -72,6 +72,7 @@ export class MPGame extends Game {
      =========================================================== */
   async hostGame(name, room) {
     const M = this.mp;
+    clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
     M.cool = {};
     M.chat.length = 0;
@@ -98,6 +99,8 @@ export class MPGame extends Game {
       },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onSaved: (id) => this._onSaved(id),
+      onPurse: (c, gained) => this._onPurse(c, gained),
+      onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
       onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
       onSnapTally: (y, n2, need) => this._onSnapTally(y, n2, need),
@@ -134,13 +137,14 @@ export class MPGame extends Game {
       const dt = Math.min(1, t - (M.hostLast || t));
       M.hostLast = t;
       M.host.update(dt);
-      if (M.snapTick.ready(dt)) this._applySnapshot({ p: M.host.snapshot() });
     }, 200);
+    this._startNetTimer();
     return M.room;
   }
 
   async joinGame(name, room) {
     const M = this.mp;
+    clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
     M.cool = {};
     M.chat.length = 0;
@@ -157,7 +161,41 @@ export class MPGame extends Game {
     await M.net.join(room);
     M.net.sendHost({ t: C.HELLO, name });
     M.active = true;
+    this._startNetTimer();
     return room;
+  }
+
+  /**
+   * Everything that goes on the wire goes from here.
+   *
+   * It used to ride the animation loop, which meant the rate of position
+   * updates was whatever frame rate the host happened to be getting. A
+   * host at fifteen frames a second sent fifteen snapshots a second, every
+   * client's interpolation buffer ran dry between them, and every remote
+   * body on the island stuttered in lockstep — which reads as "everyone
+   * lagged at the same moment" even though almost no data is moving.
+   */
+  _startNetTimer() {
+    const M = this.mp;
+    clearInterval(M.netTimer);
+    M.netTimer = setInterval(() => {
+      if (!M.active) return;
+      if (this.isHost) {
+        if (!M.host) return;
+        const hp = M.host.players.get('host');
+        if (hp && this.player) {
+          hp.x = this.player.pos.x; hp.y = this.player.pos.y; hp.z = this.player.pos.z;
+          hp.yaw = this.player.facing;
+        }
+        this._applySnapshot({ p: M.host.snapshot() });
+      } else if (M.view.phase === PHASE.ROAM && this.player) {
+        this._send({
+          t: C.MOVE,
+          x: +this.player.pos.x.toFixed(2), y: +this.player.pos.y.toFixed(2),
+          z: +this.player.pos.z.toFixed(2), yaw: +this.player.facing.toFixed(2), anim: 0,
+        });
+      }
+    }, 55);
   }
 
   _clientMsg(msg) {
@@ -169,6 +207,8 @@ export class MPGame extends Game {
       case S.SNAPSHOT: this._applySnapshot(msg); break;
       case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z); break;
       case S.SAVED: this._onSaved(msg.victimId); break;
+      case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
+      case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
       case S.SNAPTALLY: this._onSnapTally(msg.yes, msg.no, msg.need); break;
@@ -359,7 +399,7 @@ export class MPGame extends Game {
         /* The card comes up over the last shot rather than after it. Hanging
            it off the phase timer meant a slow machine could spend the whole
            reveal on the flight and never show anybody what they were. */
-        { at: 17.6, fn: () => {
+        { at: 16.4, fn: () => {
           if (this.mp.view.phase !== PHASE.REVEAL) return;
           this.screens.replace('mpRole', {});
           this.audio.sfx('descend');
@@ -433,6 +473,30 @@ export class MPGame extends Game {
     } else {
       this.audio.sfx('splat');
     }
+  }
+
+  /** The host is the authority on what is in your pocket. */
+  _onPurse(coins, gained) {
+    this.coins = Math.max(0, coins | 0);
+    if (gained > 0) {
+      this.audio.sfx('coin');
+      this.ui.toast(`+${gained} OFF THE BODY`, 'gold', 2400);
+      this.ui.showPopup(`${gained} SYNCOIN`, 'THEY WILL NOT BE NEEDING IT', 'coin', 'TAKEN');
+    }
+  }
+
+  /** What the Agent left behind, lying where they fell. */
+  _onDrop(x, y, z, coins, id) {
+    if (!coins || !this.islandScene) return;
+    const M = this.mp;
+    M.drops = M.drops || [];
+    const g = buildSyncoin(this.propMats, true);
+    const gy = Math.max(y, heightAt(x, z));
+    g.position.set(x, gy + 0.4, z);
+    this.islandScene.add(g);
+    this.tickers.push(g);
+    M.drops.push({ mesh: g, x, z, coins, taken: false });
+    this.taskFx?.burst(x, gy, z, 0xffd24a, 'done', 3.0);
   }
 
   /** The cork vest earned its keep. */
@@ -584,6 +648,8 @@ export class MPGame extends Game {
     }
     if (kind === 'shut') {
       this.shopShut = on;
+      // the host enforces the sanctuary, so the host has to know
+      if (this.mp.host) this.mp.host.shopShut = on;
       const hut = this.hutNode;
       if (hut) {
         if (!hut.userData.boards) {
@@ -646,6 +712,7 @@ export class MPGame extends Game {
    */
   _taskDone(id, finished = true) {
     const M = this.mp;
+    this._buildTaskBeacons();
     const stage = this._taskStage(id);
     const fx = TASK_FX[stage.fx] || TASK_FX.spark;
     const site = this._taskSite(id);
@@ -669,8 +736,9 @@ export class MPGame extends Game {
        if they want anything off Ferdi they have to go and find coins on
        the ground like a scavenger, which puts them out in the open. */
     if (!this.amAgent) {
-      this.coins = (this.coins || 0) + STAGE_PAY;
-      this.ui.toast(`+${STAGE_PAY} SYNCOIN`, 'gold', 1400);
+      const pay = STAGE_PAY_MIN + Math.floor(Math.random() * (STAGE_PAY_MAX - STAGE_PAY_MIN + 1));
+      this.coins = (this.coins || 0) + pay;
+      this.ui.toast(`+${pay} SYNCOIN`, 'gold', 1600);
     }
 
     const def = taskById(id);
@@ -777,6 +845,7 @@ export class MPGame extends Game {
 
     this.taskFx = new TaskFx(this.islandScene);
     this.gore = new Gore(this.islandScene, heightAt);
+    this._buildTaskBeacons();
     this.flares = new Flare(this.islandScene);
     this.dizzy = new Dizzy(this.islandScene);
     this._resolveTaskSites();
@@ -821,6 +890,52 @@ export class MPGame extends Game {
     this._compassForTasks();
   }
 
+  /**
+   * A pillar of light over every chore on your own list.
+   *
+   * Reading a compass tick and a name is fine once you know the island;
+   * for the first few rounds it is a scavenger hunt. These are visible
+   * over the canopy from a long way off, only to you, and they go out as
+   * you finish them.
+   */
+  _buildTaskBeacons() {
+    const M = this.mp;
+    for (const b of (M.beaconNodes || [])) b.removeFromParent();
+    M.beaconNodes = [];
+    for (const id of M.view.tasks) {
+      const geo = new THREE.CylinderGeometry(0.5, 1.5, 90, 8, 1, true);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x9ff0dc, transparent: true, opacity: 0.16,
+        side: THREE.DoubleSide, depthWrite: false, fog: true,
+        blending: THREE.AdditiveBlending,
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.userData.taskId = id;
+      m.visible = false;
+      this.islandScene.add(m);
+      M.beaconNodes.push(m);
+    }
+  }
+
+  _updateTaskBeacons(dt) {
+    const M = this.mp;
+    if (!M.beaconNodes) return;
+    const roam = M.view.phase === PHASE.ROAM;
+    for (const m of M.beaconNodes) {
+      const id = m.userData.taskId;
+      const done = M.view.doneTasks.has(id);
+      const site = this._taskSite(id);
+      if (!roam || done || !site || this.scattered) { m.visible = false; continue; }
+      m.visible = true;
+      m.position.set(site.x, heightAt(site.x, site.z) + 45, site.z);
+      m.rotation.y += dt * 0.5;
+      // brighter the further away you are, so it is a signpost, not a glare
+      const d = Math.hypot(this.player.pos.x - site.x, this.player.pos.z - site.z);
+      const near = Math.max(0, Math.min(1, (d - 6) / 40));
+      m.material.opacity = 0.05 + near * 0.16 + Math.sin(this.time * 2) * 0.02;
+    }
+  }
+
   /** Your own chores get compass ticks. Nobody else's do. */
   _compassForTasks() {
     const M = this.mp;
@@ -859,6 +974,9 @@ export class MPGame extends Game {
     const p = this.player.pos;
     let best = null, bestD = Infinity;
 
+    /* Ghosts can work. They cannot report, ring the bell, or be seen — but
+       leaving them with nothing to do for the rest of a round was a
+       punishment for having been murdered. */
     if (this.amAlive) {
       // a body to report
       for (const b of M.bodies.values()) {
@@ -918,6 +1036,13 @@ export class MPGame extends Game {
     if (this.amAlive && this.hutPos && !this.shopShut) {
       const dh = Math.hypot(p.x - this.hutPos.x, p.z - this.hutPos.z);
       if (dh < 7.5 && dh < bestD) { bestD = dh; best = { kind: 'mpShop', prompt: 'FERDI STEINMAN' }; }
+    }
+
+    // a dead player's purse, lying where they fell
+    for (const d of (M.drops || [])) {
+      if (d.taken) continue;
+      const dd = Math.hypot(p.x - d.x, p.z - d.z);
+      if (dd < 6.0 && dd < bestD) { bestD = dd; best = { kind: 'purse', drop: d, prompt: `${d.coins} SYNCOIN` }; }
     }
 
     /* Coins are collected by walking into them (see _sweepCoins); the
@@ -981,6 +1106,7 @@ export class MPGame extends Game {
         this.audio.sfx('page');
         break;
       case 'coin': this._takeCoin(it.coin); break;
+      case 'purse': this._takePurse(it.drop); break;
       default: break;
     }
   }
@@ -1080,6 +1206,7 @@ export class MPGame extends Game {
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
+        shop: this.shopShut ? null : this.hutPos,
         relics: [],
         fixes: (() => {
           const sab2 = M.view.sabotage;
@@ -1139,6 +1266,10 @@ export class MPGame extends Game {
    */
   _sweepCoins(dt) {
     const p = this.player.pos;
+    for (const d of (this.mp.drops || [])) {
+      if (d.taken) continue;
+      if (Math.hypot(p.x - d.x, p.z - d.z) < 2.2) this._takePurse(d);
+    }
     for (const c of (this.syncoins || [])) {
       if (c.taken) continue;
       const d = Math.hypot(p.x - c.x, p.z - c.z);
@@ -1156,6 +1287,18 @@ export class MPGame extends Game {
     }
   }
 
+  _takePurse(d) {
+    if (d.taken) return;
+    d.taken = true;
+    d.mesh.visible = false;
+    this.coins = (this.coins || 0) + d.coins;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.audio.sfx('coin');
+    this.ui.toast(`+${d.coins} SYNCOIN`, 'gold', 1800);
+    this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
+    this.player.punch?.(0.2);
+  }
+
   _takeCoin(c) {
     c.taken = true;
     this.coins = (this.coins || 0) + 1;
@@ -1165,6 +1308,7 @@ export class MPGame extends Game {
     this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1200);
     this.taskFx?.burst(c.x, heightAt(c.x, c.z), c.z, 0xffd24a, 'done', 2.4);
     this.player.punch?.(0.16);
+    this._send({ t: C.PURSE, coins: this.coins });
   }
 
   /** Buy something. Nothing here is a number you cannot feel. */
@@ -1179,6 +1323,7 @@ export class MPGame extends Game {
       return false;
     }
     this.coins -= it.cost;
+    this._send({ t: C.PURSE, coins: this.coins });
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
 
@@ -1366,14 +1511,9 @@ export class MPGame extends Game {
     if (M.noticeT > 0) M.noticeT -= dt;
 
     if (this.isHost) {
-      // the rules and the snapshot ticker run on M.hostTimer; all this loop
-      // owes them is the host's own position
-      const hp = M.host.players.get('host');
-      if (hp) {
-        hp.x = this.player.pos.x; hp.y = this.player.pos.y; hp.z = this.player.pos.z;
-        hp.yaw = this.player.facing;
-      }
-      // mirror the host's own truth into the view we render from
+      // rules on M.hostTimer, wire on M.netTimer; this loop only mirrors
+      // the host's own truth into the view it renders from
+
       M.view.phase = M.host.phase;
       M.view.tasksDone = M.host.tasksDone;
       M.view.tasksTotal = M.host.tasksTotal;
@@ -1429,13 +1569,6 @@ export class MPGame extends Game {
       this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
     } else if (!frozen) {
       this.player.update(dt, this.input, { groundOf: heightAt, water: true, bounds: true });
-      if (this.moveTick.ready(dt) && !this.isHost) {
-        this._send({
-          t: C.MOVE,
-          x: +this.player.pos.x.toFixed(2), y: +this.player.pos.y.toFixed(2),
-          z: +this.player.pos.z.toFixed(2), yaw: +this.player.facing.toFixed(2), anim: 0,
-        });
-      }
       this.runTime += dt;
     } else {
       this.player.updateCamera(dt, heightAt);
@@ -1467,6 +1600,7 @@ export class MPGame extends Game {
 
     if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
     this.taskFx?.update(dt);
+    this._updateTaskBeacons(dt);
     this.gore?.update(dt);
     this.flares?.update(dt);
     this.dizzy?.update(dt, this.time, (id) => {
@@ -1667,6 +1801,7 @@ export class MPGame extends Game {
         : null,
       flash: M.doneFlash ? M.doneFlash.id : null,
       players: [...M.view.players.values()],
+      coins: this.coins || 0,
       selfId: M.view.selfId,
       tags: this._tags(),
       phase: M.view.phase,

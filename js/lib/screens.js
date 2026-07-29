@@ -2219,12 +2219,29 @@ export function drawChart(x, ox, oy, S, data, t) {
     x.fillRect(sx - 4, sy, 9, 2); x.fillRect(sx + 1, sy - 4, 2, 5);
     label('WRECK', sx, sy + 5);
   }
-  if (data.hut) {
-    const [sx, sy] = toPx(data.hut.x, data.hut.z);
-    x.fillStyle = '#6b4a18';
-    x.fillRect(sx - 4, sy - 1, 9, 5); x.fillRect(sx - 5, sy - 3, 11, 2);
-    label('FERDI', sx, sy + 6, '#5a3a18');
+  // Ferdi's, marked as a shop rather than a place name
+  if (data.shop) {
+    const [sx, sy] = toPx(data.shop.x, data.shop.z);
+    x.fillStyle = '#5a3a18';
+    x.fillRect(sx - 6, sy - 2, 13, 7);
+    x.fillStyle = '#8a5a24';
+    x.fillRect(sx - 7, sy - 5, 15, 3);
+    x.fillStyle = '#ffd24a';
+    x.fillRect(sx - 2, sy, 5, 5);
+    x.fillStyle = '#3a2410';
+    x.fillRect(sx - 1, sy + 1, 3, 3);
+    label("FERDI'S", sx, sy + 8, '#5a3a18');
   }
+  if (data.hut && !data.shop) {
+    // shut, but you still want to know where it is
+    const [sx, sy] = toPx(data.hut.x, data.hut.z);
+    x.fillStyle = '#6a5a48';
+    x.fillRect(sx - 6, sy - 2, 13, 7); x.fillRect(sx - 7, sy - 5, 15, 3);
+    x.fillStyle = '#3a2f22';
+    for (let i = -6; i < 7; i += 3) x.fillRect(sx + i, sy - 2, 2, 7);
+    label('SHUT', sx, sy + 8, '#6a5a48');
+  }
+
   if (data.rogue) {
     const [sx, sy] = toPx(data.rogue.x, data.rogue.z);
     label('"ROGUE"', sx, sy, '#7a2418');

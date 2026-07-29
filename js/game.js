@@ -16,7 +16,7 @@ import {
   heightAt, slopeAt, biomeAt, findBeach, ISLAND, setCarves,
 } from './world/terrain.js';
 import {
-  buildPropMaterials, scatterIsland, LANDMARKS, findGround, findFlatGround,
+  buildPropMaterials, scatterIsland, LANDMARKS, findGround, findFlatGround, buildDirtPath,
   buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting,
   buildRoguePendulum, buildCoconutPile, buildCoconutMesh, buildSatchel,
   buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS,
@@ -431,6 +431,31 @@ export class Game {
          thicket you could walk past three times without seeing her, which
          is not a puzzle, it is a bad map. */
       for (const z of RELIC_SPOTS) clearZones.push({ x: z.x, z: z.z, r: 17 });
+
+      /* Trodden paths between the places people actually go, and the jungle
+         is kept off them — a path with a tree standing in it is not a path.
+         They are the difference between an island you learn and an island
+         you get lost in. */
+      this.paths = [];
+      /* The camp is derived from the wreck, and neither exists yet — the
+         jungle is scattered before the landmarks are placed — so the routes
+         are drawn between the fixed points the landmarks are found near. */
+      const FERDI = { x: -30, z: 46 };
+      const routes = [
+        [LANDMARKS.wreck, FERDI],
+        [FERDI, this.templeDoorPos],
+        [LANDMARKS.wreck, LANDMARKS.lagoon],
+        [FERDI, LANDMARKS.pend1],
+        [FERDI, LANDMARKS.rogueSand],
+      ];
+      for (const [a, b] of routes) {
+        if (!a || !b) continue;
+        const path = buildDirtPath(a.x, a.z, b.x, b.z, this.propMats, this.atlas,
+          { rng: makeRng(7717 + this.paths.length * 13), width: 3.0, wobble: 7 });
+        this.islandScene.add(path);
+        this.paths.push(path);
+        for (const p of path.userData.line) clearZones.push({ x: p.x, z: p.z, r: 3.4 });
+      }
       scatterIsland(this.islandScene, this.propMats, makeRng(2468),
         this.settings.density, this.colliders, clearZones);
     });

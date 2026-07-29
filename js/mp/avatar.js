@@ -14,8 +14,9 @@ import * as THREE from 'three';
 import { buildCastaway } from '../entities/player.js';
 import { COLOURS } from '../net/protocol.js';
 
-const INTERP_DELAY = 0.12;      // seconds behind the newest snapshot
-const BUFFER = 12;
+const INTERP_DELAY = 0.14;      // seconds behind the newest snapshot
+const BUFFER = 16;
+const COAST = 0.22;             // how long we will guess for before giving up
 
 export function colourHex(id) {
   return (COLOURS.find((c) => c.id === id) || COLOURS[0]).hex;
@@ -99,6 +100,36 @@ export class Avatar {
       this.pos.set(b[0].x, b[0].y, b[0].z);
       this.yaw = b[0].yaw;
     } else {
+      const newest = b[b.length - 1];
+      /* If the newest packet is older than where we want to be, the buffer
+         has run dry — a dropped or late snapshot. Carry on at the last
+         known speed for a fifth of a second rather than stopping dead,
+         because a body that freezes and teleports is far more obvious than
+         one that drifts a few centimetres wrong. */
+      if (target > newest.t) {
+        Avatar.coasted = (Avatar.coasted || 0) + 1;
+        const prev = b[b.length - 2];
+        const span = Math.max(1e-4, newest.t - prev.t);
+        const over = Math.min(COAST, target - newest.t);
+        const k2 = over / span;
+        const px2 = this.pos.x, pz2 = this.pos.z;
+        this.pos.set(
+          newest.x + (newest.x - prev.x) * k2,
+          newest.y + (newest.y - prev.y) * k2,
+          newest.z + (newest.z - prev.z) * k2
+        );
+        let d2 = newest.yaw - prev.yaw;
+        while (d2 > Math.PI) d2 -= Math.PI * 2;
+        while (d2 < -Math.PI) d2 += Math.PI * 2;
+        this.yaw = newest.yaw + d2 * Math.min(1, k2);
+        this.speed = Math.hypot(this.pos.x - px2, this.pos.z - pz2) / Math.max(1e-3, dt);
+        this.mesh.position.copy(this.pos);
+        this.mesh.rotation.y = this.yaw;
+        this._animate(dt);
+        this._shellFollow();
+        return;
+      }
+      Avatar.interp = (Avatar.interp || 0) + 1;
       // find the pair straddling `target`
       let i = b.length - 1;
       while (i > 0 && b[i - 1].t > target) i--;
@@ -123,6 +154,10 @@ export class Avatar {
     this.mesh.rotation.y = this.yaw;
     this._animate(dt);
 
+    this._shellFollow();
+  }
+
+  _shellFollow() {
     if (this.shell) {
       for (let i = 1; i < this.shellPairs.length; i++) {
         const [src, dst] = this.shellPairs[i];

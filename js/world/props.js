@@ -559,6 +559,67 @@ export function findFlatGround(x, z, foot, opts = {}) {
   return best || { x, y: Math.max(heightAt(x, z), 0.5), z, rise: 99 };
 }
 
+/**
+ * A trodden path between two points: a strip of bare dirt draped over the
+ * terrain, wandering a little so it reads as worn rather than surveyed.
+ * Returns the mesh and the centre-line, so the jungle can be cleared along
+ * it — a path with trees standing in it is not a path.
+ */
+export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
+  const { width = 2.6, wobble = 5, segs = 26, rng = Math.random } = opts;
+  const pts = [];
+  const dx = bx - ax, dz = bz - az;
+  const len = Math.hypot(dx, dz) || 1;
+  const nx = -dz / len, nz = dx / len;          // sideways
+  const phase = rng() * 6.283;
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    // ease the wander to nothing at both ends so it meets its landmarks
+    const sway = Math.sin(t * 3.1 + phase) * wobble * Math.sin(t * Math.PI);
+    pts.push({ x: ax + dx * t + nx * sway, z: az + dz * t + nz * sway });
+  }
+
+  const pos = [], uv = [], col = [];
+  /* Bare earth under a closed canopy is dark, and a dark ribbon on dark
+     ground is not a path anybody will follow. These are pitched well
+     lighter than the real thing so they read from a distance. */
+  const dirt = new THREE.Color(0xb09062), dirt2 = new THREE.Color(0xd0b487);
+  const c = new THREE.Color();
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i], p1 = pts[i + 1];
+    const sx = p1.x - p0.x, sz = p1.z - p0.z;
+    const sl = Math.hypot(sx, sz) || 1;
+    const ox = (-sz / sl) * width * 0.5, oz = (sx / sl) * width * 0.5;
+    const quad = [
+      [p0.x - ox, p0.z - oz], [p0.x + ox, p0.z + oz],
+      [p1.x + ox, p1.z + oz], [p1.x - ox, p1.z - oz],
+    ];
+    const tri = [0, 1, 2, 0, 2, 3];
+    for (const k of tri) {
+      const [qx, qz] = quad[k];
+      pos.push(qx, heightAt(qx, qz) + 0.06, qz);
+      uv.push(0, 0);
+      // edges are paler where the sand and leaf litter creep back in
+      const edge = (k === 0 || k === 3) ? 0.5 : 0.5;
+      c.copy(dirt).lerp(dirt2, rng() * 0.6 + edge * 0.2);
+      col.push(c.r, c.g, c.b);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  applyCell(g, 'dirt');
+
+  // unlit, so the canopy shadow does not swallow it
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, map: atlas });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.renderOrder = 1;
+  mesh.userData.line = pts;
+  return mesh;
+}
+
 /** Find a sane spot near a target: on land, gentle slope, above water. */
 export function findGround(x, z, opts = {}) {
   const { minH = 1.2, maxH = 40, maxSlope = 0.3, radius = 26, rng = Math.random } = opts;
@@ -681,12 +742,12 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
          ones that are there are worth looking at. */
       if (roll < 0.030) {                                   // emergent giants
         const k = rng() < 0.5 ? pick('treeEmg', POOL.treeEmg) : pick('palmEmg', POOL.palmEmg);
-        put(k, x, h - 0.5, z, yaw, 1.15 + rng() * 0.45, true);
-        addCollider(x, z, 2.1);
+        put(k, x, h - 0.5, z, yaw, 1.05 + rng() * 0.30, true);
+        addCollider(x, z, 2.0);
       } else if (roll < 0.105) {                            // canopy layer
         const k = rng() < 0.55 ? pick('treeCan', POOL.treeCan) : pick('palmCan', POOL.palmCan);
-        put(k, x, h - 0.4, z, yaw, 1.0 + rng() * 0.5, true);
-        addCollider(x, z, 1.35);
+        put(k, x, h - 0.4, z, yaw, 0.95 + rng() * 0.40, true);
+        addCollider(x, z, 1.3);
       } else if (roll < 0.205) {                            // sub-canopy, sparser
         const k = rng() < 0.6 ? pick('treeSub', POOL.treeSub) : pick('palmSub', POOL.palmSub);
         put(k, x, h - 0.35, z, yaw, 0.95 + rng() * 0.5, true);
