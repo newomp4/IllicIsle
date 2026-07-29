@@ -82,7 +82,11 @@ export class MPGame extends Game {
         if (done) M.view.doneTasks.add(id); else M.view.taskStep.set(id, step);
         this._taskDone(id, done);
       },
-      onCooldown: (secs) => { M.myKillReady = now() + secs; },
+      onCooldown: (secs, grace) => {
+        M.myKillReady = now() + secs;
+        M.killTotal = Math.max(secs, 0.001);
+        if (grace) M.graceEnds = now() + grace;
+      },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onCouncil: (by, body) => this._onCouncil(by, body),
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
@@ -92,6 +96,7 @@ export class MPGame extends Game {
       onFixed: (k, cd) => {
         M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false);
         if (cd) (M.cool = M.cool || {})[k] = now() + cd;
+        this._compassForTasks();
       },
       onFixProgress: (k, d, n) => this._fixProgress(k, d, n),
       siteOf: (at) => this._namedSite(at),
@@ -160,12 +165,17 @@ export class MPGame extends Game {
       case S.FIXED:
         this._notice('REPAIRED'); this._applySabotage(msg.kind, false);
         if (msg.cooldown) (M.cool = M.cool || {})[msg.kind] = now() + msg.cooldown;
+        this._compassForTasks();
         break;
       case S.TASK_OK:
         if (!msg.done) M.view.taskStep.set(msg.taskId, msg.step);
         this._taskDone(msg.taskId, msg.done !== false);
         break;
-      case S.COOLDOWN: M.myKillReady = now() + (msg.secs || 0); break;
+      case S.COOLDOWN:
+        M.myKillReady = now() + (msg.secs || 0);
+        M.killTotal = Math.max(msg.secs || 0, 0.001);
+        if (msg.grace) M.graceEnds = now() + msg.grace;
+        break;
       case S.OVER: this._onOver(msg.winner, msg.agents, msg.reason); break;
       case S.KICK:
         M.finished = true;
@@ -482,6 +492,7 @@ export class MPGame extends Game {
     this.pipeline.tint.setHex(fatal ? 0xff4030 : 0x4060a0);
     this.pipeline.tintAmt = 0.6;
     this._applySabotage(kind, true);
+    this._compassForTasks();
   }
 
   /** Sabotages have to be visible from across the island or they are just a timer. */
@@ -504,9 +515,16 @@ export class MPGame extends Game {
       }
     }
     if (kind === 'scatter') {
+      /* Not just markers off the map. Your list is shuffled and the names
+         are stripped back to what the job is, so you have to walk the
+         island and recognise the place rather than read a label. */
       this.scattered = on;
       this._compassForTasks();
       this.audio.sfx(on ? 'deny' : 'confirm');
+      if (on) {
+        this.player.punch?.(0.3);
+        this.ui.toast('YOUR TOOLS ARE EVERYWHERE', 'bad', 2600);
+      }
     }
     if (kind === 'storm' && this.storm) { on ? this.storm.start() : this.storm.stop(); }
     if (kind === 'douse') {
@@ -531,13 +549,14 @@ export class MPGame extends Game {
       }
     }
     if (kind === 'storm') {
-      // one crack straight away, so it reads as an event and not weather
+      this.stormOn = on;
       if (on) {
         this.audio.sfx('thunder');
         this.ui.flashLightning?.();
         this.audio.playMusic('storm');
+        this.ui.toast('THE WORK IS SCRAMBLED', 'bad', 3000);
       } else {
-        this.audio.playMusic('island');
+        this.audio.playMusic(this.night > 0.5 ? 'night' : 'island');
       }
     }
   }
@@ -612,6 +631,15 @@ export class MPGame extends Game {
       const i = Number(at.slice(4)) - 1;
       const m = (this.pendulumMeshes || [])[i];
       m?.userData.activate?.();
+    }
+    if (id === 'crate' && at === 'crates') {
+      // the crate you just shouldered comes off the stack
+      const loose = this.hutNode?.userData.crate;
+      if (loose && loose.visible) {
+        loose.visible = false;
+        this.audio.sfx('door');
+        setTimeout(() => { if (loose) loose.visible = true; }, 45000);
+      }
     }
     if (id === 'fire' || id === 'torches') {
       // the fire jumps
@@ -688,14 +716,19 @@ export class MPGame extends Game {
     const M = this.mp;
     const named = {
       camp: this.campfirePos || this.spawn,
+      crates: this.cratePos || this.hutPos,
       wreck: this.wreckPos,
       hut: this.hutPos,
       temple: this.templeDoorPos,
       rogueSand: this.rogueSandPos,
-      // there is no LANDMARKS entry for the grove; it is wherever the
-      // coconut piles were actually scattered, which is the thing players
-      // will walk to anyway.
-      grove: this.coconutPiles?.[0] || LANDMARKS.lagoon,
+      /* The grove is wherever the coconut piles actually landed — but only
+         one that is out in the open. The first pile in the list had been
+         scattered inside the temple's own footprint, so the chore was a
+         prompt you had to stand in a wall to reach. */
+      grove: (this.coconutPiles || []).find((c) => {
+        const t = this.templeDoorPos;
+        return !t || Math.hypot(c.x - t.x, c.z - t.z) > 34;
+      }) || this.coconutPiles?.[0] || LANDMARKS.lagoon,
       lagoon: LANDMARKS.lagoon,
     };
     const pend = this.interactables.filter((i) => i.kind === 'pendulum');
@@ -726,6 +759,17 @@ export class MPGame extends Game {
         label: '', x: site.x, z: site.z, kind: 'job',
         hidden: this.scattered || M.view.doneTasks.has(id),
       });
+    }
+    /* Wherever the current sabotage has to be repaired, marked in red and
+       blinking. Being told the island is on fire without being told where
+       the bucket is was not much of a callout. */
+    const sab = M.view.sabotage;
+    if (sab) {
+      const def = SABOTAGE_DEFS[sab.kind];
+      for (const at of (def?.fixAt || [])) {
+        const site = this._namedSite(at);
+        if (site) pois.push({ label: 'FIX', x: site.x, z: site.z, kind: 'fix' });
+      }
     }
     this._taskPois = pois;
     this.ui.setCompassPois(pois);
@@ -820,6 +864,9 @@ export class MPGame extends Game {
           const step = M.view.taskStep.get(it.taskId) || 0;
           this.screens.push('mpMinigame', {
             game: stage.game, taskId: it.taskId, title: stage.name,
+            // the storm fries the instruments: every puzzle gets its
+            // harder variant while it is running
+            hard: !!this.stormOn,
             seed: hashSeed(it.taskId + ':' + step + ':' + (M.view.selfId || '')),
             step: step + 1, steps: taskSteps(it.taskId),
           });
@@ -839,6 +886,15 @@ export class MPGame extends Game {
       case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
       case 'mpBell': this._send({ t: C.REPORT, bodyId: null }); break;
       case 'mpFix': this._send({ t: C.FIX, kind: it.fix, at: it.at }); break;
+      case 'coin': {
+        it.coin.taken = true;
+        this.coins = (this.coins || 0) + 1;
+        this.audio.sfx('coin');
+        this.startCoinFlourish(it.coin);
+        this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1400);
+        this.taskFx?.burst(it.coin.x, heightAt(it.coin.x, it.coin.z), it.coin.z, 0xffd24a, 'done', 2.6);
+        break;
+      }
       default: break;
     }
   }
@@ -931,6 +987,12 @@ export class MPGame extends Game {
         rogue: this.rogueSandPos,
         hut: this.hutPos,
         relics: [],
+        fixes: (() => {
+          const sab2 = M.view.sabotage;
+          if (!sab2) return [];
+          const def2 = SABOTAGE_DEFS[sab2.kind];
+          return (def2?.fixAt || []).map((k2) => this._namedSite(k2)).filter(Boolean);
+        })(),
         others: [...M.avatars.values()]
           .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !this.amAlive)
           .map((a) => ({ x: a.pos.x, z: a.pos.z, colour: colourHex(a.colour) })),
@@ -941,6 +1003,8 @@ export class MPGame extends Game {
 
   _key(e, down) {
     const M = this.mp;
+    // a chore is something you hold down, not something you tap once
+    if (M.active && e.code === 'KeyE') M.holdingE = down;
     // Q toggles: pressing it again on the wheel should put it away
     if (M.active && down && e.code === 'KeyQ' && this.screens.name === 'mpSabotage') {
       this.screens.pop();
@@ -1075,8 +1139,13 @@ export class MPGame extends Game {
         M.taskProgress = null;
         this.audio.sfx('deny');
         this.ui.toast('YOU MOVED - START AGAIN', 'bad', 1400);
-      }
-      else {
+      } else if (!M.holdingE) {
+        // let go and it drains, so you cannot start six chores at once
+        tp.t = Math.max(0, tp.t - dt * 1.6);
+        tp.slack = (tp.slack || 0) + dt;
+        if (tp.slack > 1.1) { M.taskProgress = null; this.audio.sfx('deny'); }
+      } else {
+        tp.slack = 0;
         tp.t += dt;
         if (tp.t >= tp.secs) {
           this._send({ t: C.DO_TASK, taskId: tp.taskId });
@@ -1089,6 +1158,7 @@ export class MPGame extends Game {
     if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
     this.taskFx?.update(dt);
     this.gore?.update(dt);
+    this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
     // a body drops rather than appearing already laid out
     for (const b of M.bodies.values()) {
       if (b.fall === undefined || b.fall >= 1) continue;
@@ -1106,10 +1176,36 @@ export class MPGame extends Game {
     // world + avatars
     this.tickIslandWorld(dt);
     this.updateDayNight(dt);
+    /* The island after dark is a different game — you cannot see who is
+       behind you — so it gets its own track. */
+    if (!this.stormOn && !this.jammed && M.view.phase === PHASE.ROAM) {
+      const wantNight = (this.night || 0) > 0.55;
+      if (wantNight !== this._nightMusic) {
+        this._nightMusic = wantNight;
+        this.audio.playMusic(wantNight ? 'night' : 'island');
+      }
+    }
     /* The storm sabotage started the weather and then nothing drove it, so
        no rain fell, no thunder cracked and the only sign of it was a
        countdown on the HUD. */
     if (this.storm) this.storm.tick(this.time, dt, this.camera.position);
+    /* A sabotaged storm is not weather, it is an assault: a much darker
+       sky and strikes that land near people rather than somewhere on the
+       horizon. */
+    if (this.stormOn) {
+      this._strikeT = (this._strikeT || 0) - dt;
+      if (this._strikeT <= 0) {
+        this._strikeT = 1.6 + Math.random() * 2.6;
+        const a = Math.random() * Math.PI * 2;
+        const r = 18 + Math.random() * 46;
+        const sx = this.player.pos.x + Math.cos(a) * r;
+        const sz = this.player.pos.z + Math.sin(a) * r;
+        this.taskFx?.burst(sx, heightAt(sx, sz), sz, 0xbfe8ff, 'done', 7.0);
+        this.ui.flashLightning?.();
+        this.audio.sfx('thunder');
+        this.player.punch?.(0.35);
+      }
+    }
     /* updateDayNight rewrites the fog every frame, so the mist has to be
        re-imposed after it rather than set once. */
     if (this.blinded) {
@@ -1158,7 +1254,10 @@ export class MPGame extends Game {
     if (this.mp.view.phase !== PHASE.ROAM) return null;
     const ready = !this.mp.myKillReady || now() >= this.mp.myKillReady;
     if (!ready) return null;
-    return this._nearestVictim() ? 'F  TAKE THEM' : null;
+    const v = this._nearestVictim();
+    if (!v) return null;
+    const rec = this.mp.view.players.get(v.id);
+    return `F   ELIMINATE ${(rec?.name || 'THEM').toUpperCase()}`;
   }
 
   /**
@@ -1231,11 +1330,21 @@ export class MPGame extends Game {
         step: (M.view.taskStep.get(id) || 0), steps: taskSteps(id),
       })),
       killIn: this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0,
+      killTotal: M.killTotal || 1,
+      graceIn: this.amAgent && M.graceEnds ? Math.max(0, M.graceEnds - now()) : 0,
+      cools: this.amAgent ? Object.entries(M.cool || {}).map(([k, at]) => ({
+        kind: k, left: Math.max(0, at - now()),
+        total: (SABOTAGE_DEFS[k]?.cooldown || 1),
+      })).filter((c) => c.left > 0) : [],
       sabotage: M.view.sabotage
         ? { name: SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '', left: Math.max(0, M.view.sabotage.endsAt - now()), fatal: M.view.sabotage.fatal }
         : null,
       task: M.taskProgress
-        ? { verb: M.taskProgress.verb, name: M.taskProgress.name, k: M.taskProgress.t / M.taskProgress.secs }
+        ? {
+          verb: M.taskProgress.verb, name: M.taskProgress.name,
+          k: M.taskProgress.t / M.taskProgress.secs,
+          holding: !!M.holdingE,
+        }
         : null,
       flash: M.doneFlash ? M.doneFlash.id : null,
       players: [...M.view.players.values()],

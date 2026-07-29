@@ -649,6 +649,12 @@ export class Game {
     scene.add(hut);
     this.tickers.push(hut);
     this.hutPos = fh;
+    this.hutNode = hut;
+    // where the crates are stacked, in world space
+    {
+      const c2 = Math.cos(hutYaw), s2 = Math.sin(hutYaw);
+      this.cratePos = { x: fh.x + (-4.5) * c2 + 0.5 * s2, z: fh.z - (-4.5) * s2 + 0.5 * c2 };
+    }
     this.colliders.push({ x: fh.x, z: fh.z, r: 3.4 });
 
     const fwdX = Math.sin(hut.rotation.y), fwdZ = Math.cos(hut.rotation.y);
@@ -811,25 +817,38 @@ export class Game {
     scene.add(door);
     this.templeDoor = door;
     /* The facade is geometry the ground knows nothing about, so without
-       these you walk straight through the bottom step and into the stack. */
+       these you walk straight through it. Laid out along the actual boxes
+       rather than at a handful of guessed points — a sparse ring left gaps
+       you could squeeze between. */
     {
       const yaw2 = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
       const c2 = Math.cos(yaw2), s2 = Math.sin(yaw2);
       const at = (lx, lz, r) => this.colliders.push({
         x: dg.x + lx * c2 + lz * s2, z: dg.z - lx * s2 + lz * c2, r,
       });
-      // jambs either side of the doorway, leaving the passage itself open
-      at(-3.6, 1.8, 1.5); at(3.6, 1.8, 1.5);
-      // the flanking stair-blocks
-      for (const side of [-1, 1]) {
-        for (let i = 0; i < 5; i++) at(side * (6.2 + i * 0.5), 1.6 - i * 1.0, 2.2);
-      }
-      // and the terrace stack behind, so you cannot walk into the hill
+      // a run of colliders along a box's width
+      const wall = (cxL, lz, width, r, step = 2.2) => {
+        const n = Math.max(1, Math.round(width / step));
+        for (let i = 0; i <= n; i++) at(cxL - width / 2 + (i / n) * width, lz, r);
+      };
+
+      // doorway jambs, leaving the passage between them open
+      wall(-3.5, 1.8, 2.2, 1.3); wall(3.5, 1.8, 2.2, 1.3);
+      // the terrace stack, course by course
       for (let i = 0; i < 5; i++) {
         const w = 26 - i * 3.6;
-        for (let k = -1; k <= 1; k++) at(k * w * 0.3, -1.2 - i * 3.2, 3.0);
+        wall(0, -1.2 - i * 3.2, w, 2.4, 2.6);
       }
+      // flanking stair-blocks
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 5; i++) {
+          wall(side * (6.2 + i * 0.5), 1.6 - i * 1.0, 4.4, 1.6, 2.0);
+        }
+      }
+      // the braziers, which are waist high and solid
+      at(-7.0, 4.2, 0.8); at(7.0, 4.2, 0.8);
     }
+
     this.interactables.push({
       kind: 'templeDoor', x: dg.x, y: dg.y, z: dg.z, r: 6.5,
       prompt: 'Examine the sealed door',
@@ -1092,6 +1111,15 @@ export class Game {
     window.addEventListener('keydown', (e) => this._key(e, true));
     window.addEventListener('keyup', (e) => this._key(e, false));
 
+    /* There is no <input> anywhere in this game, so the browser will never
+       hand a paste to anything on its own. Catch it at the document and
+       offer it to whichever screen is open. */
+    window.addEventListener('paste', (e) => {
+      const text = e.clipboardData?.getData('text');
+      if (!text) return;
+      if (this.screens.paste(text)) e.preventDefault();
+    });
+
     document.addEventListener('pointerlockchange', () => {
       const was = this.mouse.locked;
       this.mouse.locked = document.pointerLockElement === this.canvas;
@@ -1156,6 +1184,14 @@ export class Game {
     /* Canvas screens take priority over everything, including movement,
        so arrow keys drive menus instead of walking you into the sea. */
     if (down && this.screens.open) {
+      // let the browser's own paste through; we listen for it above
+      if ((e.metaKey || e.ctrlKey) && k === 'KeyV') {
+        navigator.clipboard?.readText?.()
+          .then((t) => { if (t) this.screens.paste(t); })
+          .catch(() => {});
+        return;
+      }
+      if (e.metaKey || e.ctrlKey) return;
       e.preventDefault();
       this.screens.key(k);
       return;
@@ -2583,7 +2619,9 @@ I have snacks."`);
 
     const k = this.night;
     const storm = this.storm && this.storm.active ? 1 : 0;
-    const dark = Math.max(k, storm * 0.55);
+    /* A sabotaged storm is far darker than the scripted one — the point of
+       calling it is that nobody can see. */
+    const dark = Math.max(k, storm * (this.stormOn ? 0.92 : 0.55));
 
     // sky and fog
     const f = this.islandScene.fog;

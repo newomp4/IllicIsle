@@ -196,8 +196,10 @@ export class Hud {
       ...(mp.myTasks || []).map((t) => (t.steps > 1 ? `${t.name}  1/${t.steps}` : t.name))];
     if (agent) lines.push('THESE ARE FOR SHOW', 'KNIFE COLD  00', 'Q  SABOTAGE');
     else lines.push('TAB  CHART');
-    const pw = Math.max(74, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
-    const ph = 18 + ((mp.myTasks?.length || 0) + (agent ? 4 : 1)) * 10;
+    const pw = Math.max(agent ? 118 : 74,
+      lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
+    const ph = 18 + (mp.myTasks?.length || 0) * 10
+      + (agent ? 74 + Math.min(3, (mp.cools || []).length) * 8 : 10);
     plate(x, ox - 3, oy - 3, pw, ph);
     drawText(x, agent ? 'ROGUE AGENT' : 'CASTAWAY', {
       x: ox, y: oy, scale: 1, color: agent ? '#ff6a5a' : '#8fe8c8',
@@ -230,15 +232,72 @@ export class Hud {
     }
     if (agent) {
       drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 2, scale: 1, color: '#b06a5c' });
-      y += 12;
+      y += 14;
+
+      /* The knife's own panel. Two states — a grace period at the start of
+         the round that nobody can kill through, and the cooldown after a
+         kill — drawn the same way so the shape means "wait". */
+      const grace = mp.graceIn || 0;
       const cd = mp.killIn || 0;
-      drawText(x, cd > 0 ? `KNIFE COLD  ${Math.ceil(cd)}` : 'KNIFE READY', {
-        x: ox, y: y + 2, scale: 1, color: cd > 0 ? '#a87a70' : '#ff6a5a',
+      const total = grace > 0 ? Math.max(grace, 1) : Math.max(mp.killTotal || 1, 1);
+      const left = grace > 0 ? grace : cd;
+      const ready = left <= 0;
+      const pw2 = 116;
+
+      x.fillStyle = ready ? 'rgba(70,10,6,.85)' : 'rgba(30,14,10,.85)';
+      x.fillRect(ox - 2, y, pw2, 24);
+      x.fillStyle = ready ? '#ff6a5a' : '#7a3a32';
+      x.fillRect(ox - 2, y, pw2, 1); x.fillRect(ox - 2, y + 23, pw2, 1);
+
+      drawKnife(x, ox + 2, y + 3, ready);
+      drawText(x, ready ? 'READY' : (grace > 0 ? 'TRUCE' : 'COLD'), {
+        x: ox + 16, y: y + 3, scale: 1, color: ready ? '#ff8a7a' : '#a87a70',
       });
-      // the sabotage wheel has nothing to do with the knife's cooldown, so
-      // the hint stays put rather than blinking in and out
-      drawText(x, 'Q  SABOTAGE', { x: ox, y: y + 12, scale: 1, color: '#a89872' });
-      drawText(x, 'TAB  CHART', { x: ox, y: y + 22, scale: 1, color: '#8a7a52' });
+      if (!ready) {
+        drawText(x, `${Math.ceil(left)}`, {
+          x: ox + pw2 - 8, y: y + 3, scale: 1, align: 'right', color: '#a87a70',
+        });
+      }
+      // the bar fills as the wait runs out
+      const bw2 = pw2 - 8, bx2 = ox + 2, by2 = y + 14;
+      x.fillStyle = INK; x.fillRect(bx2 - 1, by2 - 1, bw2 + 2, 7);
+      x.fillStyle = '#20100c'; x.fillRect(bx2, by2, bw2, 5);
+      const k2 = ready ? 1 : 1 - Math.min(1, left / total);
+      const n2 = Math.round(k2 * bw2);
+      for (let i = 0; i < n2; i += 3) {
+        x.fillStyle = ready
+          ? (Math.floor(performance.now() / 220) % 2 ? '#ff6a5a' : '#c03a2c')
+          : (i % 6 ? '#8a2018' : '#c03a2c');
+        x.fillRect(bx2 + i, by2, 2, 5);
+      }
+      y += 28;
+
+      // sabotage: the key, made to stand apart from the chore list
+      const sabReady = !(mp.cools || []).length && !mp.sabotage;
+      x.fillStyle = sabReady ? 'rgba(60,20,6,.85)' : 'rgba(26,16,10,.85)';
+      x.fillRect(ox - 2, y, pw2, 13);
+      x.fillStyle = sabReady ? GOLD : '#6a4a30';
+      x.fillRect(ox - 2, y, pw2, 1); x.fillRect(ox - 2, y + 12, pw2, 1);
+      x.fillStyle = sabReady ? GOLD : '#3a2a18';
+      x.fillRect(ox - 1, y + 2, 9, 9);
+      drawText(x, 'Q', { x: ox + 3, y: y + 3, scale: 1, align: 'center', color: sabReady ? '#160c04' : '#8a7a52' });
+      drawText(x, 'SABOTAGE', { x: ox + 12, y: y + 3, scale: 1, color: sabReady ? GOLD_LT : '#7a6a4a' });
+      y += 17;
+
+      // and a small bar per sabotage that is still cooling
+      for (const c of (mp.cools || []).slice(0, 3)) {
+        const cbw = pw2 - 40;
+        drawText(x, (c.kind || '').toUpperCase().slice(0, 7), { x: ox, y: y + 1, scale: 1, color: '#7a5a54' });
+        x.fillStyle = INK; x.fillRect(ox + 34, y, cbw + 2, 6);
+        x.fillStyle = '#20100c'; x.fillRect(ox + 35, y + 1, cbw, 4);
+        const nn = Math.round((1 - Math.min(1, c.left / Math.max(1, c.total))) * cbw);
+        for (let i = 0; i < nn; i += 3) {
+          x.fillStyle = i % 6 ? '#6a4a24' : '#c39a2c';
+          x.fillRect(ox + 35 + i, y + 1, 2, 4);
+        }
+        y += 8;
+      }
+      drawText(x, 'TAB  CHART', { x: ox, y: y + 2, scale: 1, color: '#8a7a52' });
     } else {
       drawText(x, 'TAB  CHART', { x: ox, y: y + 2, scale: 1, color: '#8a7a52' });
     }
@@ -304,9 +363,9 @@ export class Hud {
       // a chaser so it never looks frozen when progress is slow
       const cx2 = bx + ((performance.now() / 9) % bw | 0);
       x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 7);
-      drawText(x, `${t2.verb}   HOLD STILL`, {
-        x: W / 2, y: py + 25, scale: 1, align: 'center', color: '#9fd8c4',
-      });
+      drawText(x, t2.holding ? `${t2.verb}   HOLD STILL` : 'HOLD E',
+        { x: W / 2, y: py + 25, scale: 1, align: 'center',
+          color: t2.holding ? '#9fd8c4' : (Math.floor(performance.now() / 200) % 2 ? GOLD : '#8a7a52') });
     }
 
     // sabotage countdown
@@ -426,7 +485,9 @@ export class Hud {
       const col = m.kind === 'card' ? GOLD
         : m.kind === 'inter' ? '#8a7a52'
           : m.kind === 'goal' ? '#ffe07a'
-            : m.kind === 'job' ? '#7ec850' : '#8fd8ff';
+            : m.kind === 'job' ? '#7ec850'
+            : m.kind === 'fix' ? (Math.floor(performance.now() / 180) % 2 ? '#ff5a4a' : '#ffd0c0')
+              : '#8fd8ff';
       if (near < 0.10) continue;
       if (m.kind === 'job') {
         // a small diamond, low in the strip, clear of the lettering
@@ -597,6 +658,17 @@ function plate(x, ox, oy, w, h) {
   ditherRect(x, ox, oy, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox, oy + h - 2, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox + w - 2, oy, 2, h, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+}
+
+/** A little knife, so the agent panel is not three words in a box. */
+function drawKnife(x, ox, oy, ready) {
+  const p = (gx, gy, w, h, c) => { x.fillStyle = c; x.fillRect(ox + gx, oy + gy, w, h); };
+  const blade = ready ? '#e8eef2' : '#6a7278';
+  p(4, 0, 2, 5, blade);
+  p(3, 1, 1, 4, blade);
+  p(5, 1, 1, 4, ready ? '#b8c2c8' : '#4a5258');
+  p(3, 5, 4, 1, ready ? '#8a2018' : '#3a2018');
+  p(4, 6, 2, 4, ready ? '#6a4a28' : '#3a2a18');
 }
 
 /** A labelled progress bar, hard-edged and segmented. */

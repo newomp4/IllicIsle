@@ -174,7 +174,7 @@ export class HostSession {
       p.alive = true;
       p.doneTasks = new Set();
       p.emergencies = this.settings.emergencyPerPlayer;
-      p.killReady = now() + this.settings.killCooldown;
+      p.killReady = now() + Math.max(this.settings.killCooldown, this.settings.graceSeconds || 0);
       p.tasks = p.role === ROLE.CASTAWAY
         ? dealTasks(this.rng, this.settings.tasksPerPlayer)
         : dealTasks(this.rng, this.settings.tasksPerPlayer);   // agents get a fake list
@@ -197,6 +197,7 @@ export class HostSession {
       if (id === 'host') this.hooks.onLocalRole?.(card);
       else this.net.sendTo(id, card);
     }
+    this.graceEnds = now() + (this.settings.graceSeconds || 0);
     for (const p of this.players.values()) this._sendCooldown(p);
     this._roster();
     this._setPhase(PHASE.REVEAL, 26);
@@ -212,8 +213,9 @@ export class HostSession {
   _sendCooldown(p) {
     if (!p || p.role !== ROLE.AGENT) return;
     const secs = Math.max(0, p.killReady - now());
-    if (p.id === 'host') this.hooks.onCooldown?.(secs);
-    else this.net.sendTo(p.id, { t: S.COOLDOWN, secs });
+    const grace = Math.max(0, (this.graceEnds || 0) - now());
+    if (p.id === 'host') this.hooks.onCooldown?.(secs, grace);
+    else this.net.sendTo(p.id, { t: S.COOLDOWN, secs, grace });
   }
 
   _setPhase(phase, seconds, meta) {

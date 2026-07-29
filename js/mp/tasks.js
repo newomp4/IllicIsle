@@ -58,7 +58,7 @@ export const TASK_DEFS = [
 
   /* Two-part: do something here, carry it there. */
   {
-    id: 'crate', at: 'hut', name: 'COLLECT A CRATE FROM FERDI', verb: 'LOADING', secs: 2.5, fx: 'crate',
+    id: 'crate', at: 'crates', name: 'TAKE A CRATE FROM THE STACK', verb: 'SHOULDERING', secs: 2.5, fx: 'crate',
     then: { at: 'camp', name: 'CARRY THE CRATE TO CAMP', verb: 'UNLOADING', secs: 2.5, fx: 'crate' },
   },
   {

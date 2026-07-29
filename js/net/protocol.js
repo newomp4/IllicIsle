@@ -78,7 +78,12 @@ export const COLOURS = [
 
 export const DEFAULT_SETTINGS = {
   agents: 0,          // 0 = scale with the size of the lobby
-  killCooldown: 28,
+  killCooldown: 32,
+  /* Nobody dies in the first two minutes. It gives the Castaways a chance
+     to build a picture of where people are before that picture starts
+     being worth lying about — and it gives the Agents time to be seen
+     somewhere innocent. */
+  graceSeconds: 120,
   councilSeconds: 45,
   voteSeconds: 30,
   revealOnExile: true,

@@ -233,7 +233,47 @@ const ALARM = {
   },
 };
 
-const TRACKS = { island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS, storm: STORM, alarm: ALARM };
+/* ---- NIGHT: the same island with the lights off. Sparser, lower, and
+   it leaves gaps you fill in yourself. ---- */
+const NIGHT = {
+  bpm: 62, len: 32, sections: 3,
+  voices: {
+    bass: {
+      layers: [1, 1, 1],
+      notes: [
+        33, _, _, _, _, _, _, _, 31, _, _, _, _, _, _, _,
+        29, _, _, _, _, _, _, _, 28, _, _, _, 31, _, _, _,
+      ],
+    },
+    pad: {
+      layers: [1, 1, 1],
+      chords: [
+        [45, 52, 57], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        [43, 50, 55], _, _, _, _, _, _, _, [41, 48, 53], _, _, _, _, _, _, _,
+      ],
+    },
+    lead: {
+      layers: [0, 1, 1],
+      notes: [
+        _, _, _, _, 69, _, _, _, _, _, 67, _, _, _, _, _,
+        _, _, 64, _, _, _, _, _, 62, _, _, _, _, _, 60, _,
+      ],
+    },
+    bell: {
+      layers: [0, 0, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, 76, _,
+      ],
+    },
+    drip: { layers: [1, 1, 1], hits: '....x.......x...' },
+  },
+};
+
+const TRACKS = {
+  island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS,
+  storm: STORM, alarm: ALARM, night: NIGHT,
+};
 
 export class GameAudio {
   constructor() {

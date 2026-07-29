@@ -171,6 +171,14 @@ export class ScreenStack {
     return false;
   }
 
+  /** Clipboard text, handed to the top screen if it takes any. */
+  paste(text) {
+    const s = this.top;
+    if (!s) return false;
+    const def = SCREENS[s.name];
+    return def?.paste ? !!def.paste(text, s, this.game, this) : false;
+  }
+
   update(dt) { this.t += dt; if (this.top) this.top.t += dt; }
 
   draw(x, W, H) {
@@ -237,6 +245,7 @@ export const SCREENS = {
       const caret = (on) => (on && Math.floor(t * 3) % 2 ? '_' : '');
 
       // name
+      const rows = [];
       let y = b.top + 4;
       const nw = 120, nx = Math.round((W - nw) / 2);
       drawText(x, 'YOUR NAME', { x: W / 2, y, scale: 1, align: 'center', color: s.field === 0 ? GOLD : DIM });
@@ -244,6 +253,7 @@ export const SCREENS = {
       drawText(x, s.who + caret(s.field === 0), {
         x: W / 2, y: y + 14, scale: 1, align: 'center', color: GOLD_LT,
       });
+      rows.push({ x: nx - 4, y: y + 7, w: nw + 8, h: 21, focus: 0 });
 
       // room
       y += 36;
@@ -253,13 +263,17 @@ export const SCREENS = {
       drawText(x, s.code + caret(s.field === 1), {
         x: W / 2, y: y + 16, scale: 2, align: 'center', color: GOLD_LT,
       });
-      drawText(x, 'LEAVE IT BLANK TO OPEN A ROOM OF YOUR OWN', {
-        x: W / 2, y: y + 34, scale: 1, align: 'center', color: DIM,
+      rows.push({ x: rx - 4, y: y + 7, w: rw + 8, h: 26, focus: 1 });
+      drawText(x, 'CLICK A BOX TO TYPE IN IT   CTRL V PASTES', {
+        x: W / 2, y: y + 36, scale: 1, align: 'center', color: DIM,
+      });
+      drawText(x, 'LEAVE THE CODE BLANK TO OPEN A ROOM OF YOUR OWN', {
+        x: W / 2, y: y + 45, scale: 1, align: 'center', color: '#6a5c40',
       });
 
-      y += 58;
-      const rows = menuList(x, [s.code ? 'JOIN THAT ROOM' : 'OPEN A NEW ROOM'],
-        s.sel, W / 2, y, t, { width: 150 });
+      y += 60;
+      for (const r of menuList(x, [s.code ? 'JOIN THAT ROOM' : 'OPEN A NEW ROOM'],
+        0, W / 2, y, t, { width: 150 })) rows.push({ ...r, go: true });
       if (!s.busy && !s.err) {
         x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, y + 22, 140, 1);
         const rules = [
@@ -283,6 +297,23 @@ export const SCREENS = {
       footer(x, W, H, 'TAB SWITCH FIELD   ENTER GO   ESC BACK');
       return rows;
     },
+
+    /** Clicking a box puts the caret in it. */
+    click(row, i, s, g, st) {
+      if (row?.focus !== undefined) { s.field = row.focus; g.audio?.sfx('select'); return true; }
+      if (row?.go) this.key('Enter', s, g, st);
+      return true;
+    },
+
+    /** Ctrl/Cmd+V. Room codes get read out loud and pasted, not retyped. */
+    paste(text, s) {
+      const clean = String(text || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '');
+      if (!clean) return true;
+      if (s.field === 1) s.code = (s.code + clean).replace(/\s/g, '').slice(0, 6);
+      else s.who = (s.who + clean).replace(/^\s+/, '').slice(0, 12);
+      return true;
+    },
+
     key(code, s, g, st) {
       if (s.busy) return true;
       if (code === 'Tab') { s.field = 1 - s.field; return true; }
@@ -707,6 +738,12 @@ export const SCREENS = {
       return rows;
     },
 
+    paste(text, s) {
+      if (!s.talking) return false;
+      s.typing = (s.typing + String(text || '').toUpperCase().replace(/[^A-Z0-9 .,'?-]/g, '')).slice(0, 60);
+      return true;
+    },
+
     key(code, s, g, st) {
       const voting = g.mp.view.phase === 'vote';
 
@@ -786,7 +823,8 @@ export const SCREENS = {
       const dt = Math.min(0.05, s.t - (s._last ?? s.t));
       s._last = s.t;
 
-      const b = frame(x, W, H, s.title || G?.name || 'WORK');
+      const b = frame(x, W, H, s.title || G?.name || 'WORK',
+        s.hard ? 'STORM DAMAGE - THIS ONE IS WORSE' : null);
       if (!G) { footer(x, W, H, 'ESC'); return []; }
 
       let rows = [];
@@ -1980,6 +2018,19 @@ export function drawChart(x, ox, oy, S, data, t) {
         x.fillRect(sx - 6, sy - 6, 13, 1); x.fillRect(sx - 6, sy + 5, 13, 1);
         x.fillRect(sx - 6, sy - 6, 1, 12); x.fillRect(sx + 6, sy - 6, 1, 12);
       }
+    }
+  }
+  // where the current sabotage has to be put right
+  for (const f of (data.fixes || [])) {
+    const [sx, sy] = toPx(f.x, f.z);
+    const on = Math.floor(t * 3) % 2 === 0;
+    x.fillStyle = on ? '#c02a1a' : '#7a2418';
+    x.fillRect(sx - 5, sy - 1, 11, 3);
+    x.fillRect(sx - 1, sy - 5, 3, 11);
+    if (on) {
+      x.fillStyle = '#ffd0c0';
+      x.fillRect(sx - 8, sy - 8, 17, 1); x.fillRect(sx - 8, sy + 7, 17, 1);
+      x.fillRect(sx - 8, sy - 8, 1, 16); x.fillRect(sx + 8, sy - 8, 1, 16);
     }
   }
   // ghosts get to watch the living move about

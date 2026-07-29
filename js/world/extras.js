@@ -247,6 +247,38 @@ export function buildFerdiHut(rng, mats, flameFactory, groundAt = () => 0) {
   const patch = plane(3.0, 2.4, 'sail', { pos: [1.4, 4.7, 1.4], rot: [-1.1, 0.2, 0.2] });
   tint(patch, G(0xcabfa0)); C.push(patch);
 
+  /* a stack of crates round the side, which is where the collection
+     chore actually happens — you take one off the top */
+  {
+    const crates = [];
+    const spots = [[-4.6, -0.6, 0], [-4.6, -0.6, 1], [-4.4, 1.4, 0], [-5.0, -2.4, 0], [-4.2, 0.4, 2]];
+    for (const [cx2, cz2, lvl] of spots) {
+      const y = 0.55 + lvl * 1.05;
+      const bx2 = box(1.0, 0.95, 1.0, 'planks', { pos: [cx2, y, cz2], rot: [0, (rng() - 0.5) * 0.5, 0] });
+      tint(bx2, G(0x9a7a4c).multiplyScalar(0.82 + rng() * 0.35));
+      crates.push(bx2);
+      // slats, so they read as crates and not blocks
+      for (const dy of [-0.3, 0.3]) {
+        const sl = box(1.06, 0.12, 1.06, 'planks', { pos: [cx2, y + dy, cz2], rot: [0, (rng() - 0.5) * 0.5, 0] });
+        tint(sl, G(0x6a5230)); crates.push(sl);
+      }
+    }
+    const stack = new THREE.Mesh(mergeGeos(crates), mats.opaque);
+    group.add(stack);
+    group.userData.crates = stack;
+    // the one you take, on its own so it can vanish
+    const one = [];
+    const top = box(1.0, 0.95, 1.0, 'planks', { pos: [-4.4, 2.55, 0.5], rot: [0, 0.3, 0] });
+    tint(top, G(0xb08a58)); one.push(top);
+    for (const dy of [-0.3, 0.3]) {
+      const sl = box(1.06, 0.12, 1.06, 'planks', { pos: [-4.4, 2.55 + dy, 0.5], rot: [0, 0.3, 0] });
+      tint(sl, G(0x7a5f38)); one.push(sl);
+    }
+    const loose = new THREE.Mesh(mergeGeos(one), mats.opaque);
+    group.add(loose);
+    group.userData.crate = loose;
+  }
+
   /* the sign, hanging off one nail */
   const signBoard = box(3.4, 1.1, 0.12, 'planks', { pos: [-0.4, 5.35, 2.5], rot: [0, 0, -0.22] });
   tint(signBoard, G(0x9a8058)); P.push(signBoard);
