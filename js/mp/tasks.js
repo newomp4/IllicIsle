@@ -135,6 +135,12 @@ export const SABOTAGE_DEFS = {
     tell: 'Nobody will hear you coming.',
     fixAt: ['wreck'], sites: 1, fixSecs: 3,
   },
+  shut: {
+    id: 'shut', name: "SHUT FERDI'S", short: 'SHUT SHOP', secs: 55, cooldown: 80,
+    blurb: 'The shutters come down. Nothing is for sale, and the counter stops being neutral ground.',
+    tell: 'Anybody hiding there stops being safe the moment it lands.',
+    fixAt: ['hut'], sites: 1, fixSecs: 4,
+  },
   jam: {
     id: 'jam', name: 'JAM THE PENDULUMS', short: 'JAM', secs: 75, fatal: true, cooldown: 150,
     blurb: 'All four stop. Two different Pendulums must be wound, by anyone, or the island takes every one of you.',

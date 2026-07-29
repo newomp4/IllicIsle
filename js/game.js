@@ -738,9 +738,9 @@ export class Game {
 
     /* ---- syncoins scattered as currency ---- */
     this.syncoins = [];
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 38; i++) {
       const a = rng() * Math.PI * 2;
-      const r = 40 + rng() * 120;
+      const r = 26 + rng() * 132;
       const g = findGround(Math.cos(a) * r, Math.sin(a) * r,
         { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
       const coin = buildSyncoin(this.propMats);
@@ -2025,7 +2025,7 @@ I have snacks."`);
     for (const c of this.syncoins) {
       if (c.taken) continue;
       const d = Math.hypot(p.x - c.x, p.z - c.z);
-      if (d < 2.4 && d < bestD) { bestD = d; best = { kind: 'coin', coin: c, prompt: 'Take Syncoin' }; }
+      if (d < 4.2 && d < bestD) { bestD = d; best = { kind: 'coin', coin: c, prompt: 'Take Syncoin' }; }
     }
     return best;
   }

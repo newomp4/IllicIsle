@@ -17,12 +17,20 @@ import { Avatar, Body, colourHex } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
+import { STOCK, STAGE_PAY, SANCTUARY_R, itemById, stockFor } from './market.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
 
 const now = () => performance.now() / 1000;
+
+/** One board for the shutters, built on demand. */
+function boxGeo(w, h, d, i) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const m = new THREE.MeshLambertMaterial({ color: i % 2 ? 0x8a6a3c : 0x6e5330 });
+  return new THREE.Mesh(g, m);
+}
 
 /** A stable 32-bit seed from a string, so a puzzle looks the same if reopened. */
 function hashSeed(str) {
@@ -88,6 +96,7 @@ export class MPGame extends Game {
         if (grace) M.graceEnds = now() + grace;
       },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
+      onSaved: (id) => this._onSaved(id),
       onCouncil: (by, body) => this._onCouncil(by, body),
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
@@ -154,6 +163,7 @@ export class MPGame extends Game {
       case S.PHASE: this._phase(msg.phase, msg.endsAt, msg.meta); break;
       case S.SNAPSHOT: this._applySnapshot(msg); break;
       case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z); break;
+      case S.SAVED: this._onSaved(msg.victimId); break;
       case S.COUNCIL: this._onCouncil(msg.calledBy, msg.bodyOf); break;
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
@@ -416,6 +426,26 @@ export class MPGame extends Game {
     }
   }
 
+  /** The cork vest earned its keep. */
+  _onSaved(id) {
+    const M = this.mp;
+    const rec = M.view.players.get(id);
+    this.audio.sfx('gemHit');
+    this.audio.sfx('deny');
+    if (id === M.view.selfId) {
+      this.owned?.delete('vest');
+      this.carry = (this.carry || []).filter((c) => c !== 'vest');
+      this.player.punch?.(1);
+      this.pipeline.tint.setHex(0xffd24a);
+      this.pipeline.tintAmt = 0.85;
+      this.ui.showPopup('THE CORK VEST HELD', 'SOMEBODY JUST TRIED FOR YOU', 'vest', 'YOU ARE ALIVE');
+    } else {
+      this.ui.toast(`${rec?.name || 'SOMEBODY'} SURVIVED A STRIKE`, 'jade', 2600);
+    }
+    const p = this.player.pos;
+    this.taskFx?.burst(p.x, heightAt(p.x, p.z), p.z, 0xffd24a, 'done', 3.4);
+  }
+
   _clearBodies() {
     for (const b of this.mp.bodies.values()) b.dispose();
     this.mp.bodies.clear();
@@ -543,6 +573,29 @@ export class MPGame extends Game {
       }
       this.audio.sfx(on ? 'deny' : 'confirm');
     }
+    if (kind === 'shut') {
+      this.shopShut = on;
+      const hut = this.hutNode;
+      if (hut) {
+        if (!hut.userData.boards) {
+          // planks nailed across the counter, made once and hidden
+          const B = [];
+          for (let i = 0; i < 4; i++) {
+            const b2 = boxGeo(7.4, 0.55, 0.24, i);
+            b2.position.set(0, 2.2 + i * 0.75, 2.55);
+            b2.rotation.z = (i % 2 ? 1 : -1) * 0.09;
+            B.push(b2);
+          }
+          const grp = new THREE.Group();
+          for (const b2 of B) grp.add(b2);
+          hut.add(grp);
+          hut.userData.boards = grp;
+        }
+        hut.userData.boards.visible = on;
+      }
+      this.audio.sfx(on ? 'slam' : 'door');
+      if (on) this.ui.toast('FERDI IS SHUT. NOWHERE IS SAFE.', 'bad', 3200);
+    }
     if (kind === 'jam') {
       this.jammed = on;
       // its own track: two notes a semitone apart over a heartbeat
@@ -603,6 +656,13 @@ export class MPGame extends Game {
     this.audio.sfx(finished ? 'confirm' : 'select');
 
     this._taskWorldFx(id, stage);
+    /* Work pays. Agents' lists are a cover, so their "work" pays nothing —
+       if they want anything off Ferdi they have to go and find coins on
+       the ground like a scavenger, which puts them out in the open. */
+    if (!this.amAgent) {
+      this.coins = (this.coins || 0) + STAGE_PAY;
+      this.ui.toast(`+${STAGE_PAY} SYNCOIN`, 'gold', 1400);
+    }
 
     const def = taskById(id);
     if (!finished && def?.then) {
@@ -842,6 +902,21 @@ export class MPGame extends Game {
         }
       }
     }
+
+    // Ferdi's counter
+    if (this.amAlive && this.hutPos && !this.shopShut) {
+      const dh = Math.hypot(p.x - this.hutPos.x, p.z - this.hutPos.z);
+      if (dh < 7.5 && dh < bestD) { bestD = dh; best = { kind: 'mpShop', prompt: 'FERDI STEINMAN' }; }
+    }
+
+    /* Coins are collected by walking into them (see _sweepCoins); the
+       prompt only exists so you know one is nearby if you walk past
+       looking the other way. */
+    for (const c of (this.syncoins || [])) {
+      if (c.taken) continue;
+      const d = Math.hypot(p.x - c.x, p.z - c.z);
+      if (d < 6.0 && d < bestD) { bestD = d; best = { kind: 'coin', coin: c, prompt: 'SYNCOIN' }; }
+    }
     return best;
   }
 
@@ -889,15 +964,12 @@ export class MPGame extends Game {
       case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
       case 'mpBell': this._send({ t: C.REPORT, bodyId: null }); break;
       case 'mpFix': this._send({ t: C.FIX, kind: it.fix, at: it.at }); break;
-      case 'coin': {
-        it.coin.taken = true;
-        this.coins = (this.coins || 0) + 1;
-        this.audio.sfx('coin');
-        this.startCoinFlourish(it.coin);
-        this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1400);
-        this.taskFx?.burst(it.coin.x, heightAt(it.coin.x, it.coin.z), it.coin.z, 0xffd24a, 'done', 2.6);
+      case 'mpShop':
+        this.screens.push('mpShop', { sel: 0, side: 0 });
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
         break;
-      }
+      case 'coin': this._takeCoin(it.coin); break;
       default: break;
     }
   }
@@ -913,13 +985,21 @@ export class MPGame extends Game {
     this.player.playThrow();
   }
 
+  /** Ferdi's is neutral ground, unless somebody has shut it. */
+  inSanctuary(x, z) {
+    if (this.shopShut || !this.hutPos) return false;
+    return Math.hypot(x - this.hutPos.x, z - this.hutPos.z) < SANCTUARY_R;
+  }
+
   _nearestVictim() {
     const M = this.mp;
     const p = this.player.pos;
-    let best = null, bestD = 3.2;
+    if (this.inSanctuary(p.x, p.z)) return null;
+    let best = null, bestD = 4.6;
     for (const av of M.avatars.values()) {
       const rec = M.view.players.get(av.id);
       if (!rec || rec.alive === false) continue;
+      if (this.inSanctuary(av.pos.x, av.pos.z)) continue;
       const d = Math.hypot(p.x - av.pos.x, p.z - av.pos.z);
       if (d < bestD) { bestD = d; best = av; }
     }
@@ -1035,6 +1115,78 @@ export class MPGame extends Game {
       }
     }
     return super._key(e, down);
+  }
+
+  /**
+   * Coins come to you. A two-and-a-half metre radius you had to stand
+   * inside AND press a key in is why they read as broken — a coin should
+   * be something you run over.
+   */
+  _sweepCoins(dt) {
+    const p = this.player.pos;
+    for (const c of (this.syncoins || [])) {
+      if (c.taken) continue;
+      const d = Math.hypot(p.x - c.x, p.z - c.z);
+      if (d > 4.6) { if (c.mesh) c.mesh.position.set(c.x, c.mesh.userData.baseY ?? c.mesh.position.y, c.z); continue; }
+      // drawn in, faster the closer it gets
+      if (c.mesh) {
+        const k = Math.min(1, dt * (2.2 + (4.6 - d) * 2.4));
+        c.mesh.position.x += (p.x - c.mesh.position.x) * k;
+        c.mesh.position.z += (p.z - c.mesh.position.z) * k;
+        c.mesh.position.y += ((p.y + 0.9) - c.mesh.position.y) * k;
+      }
+      const m = c.mesh;
+      const md = m ? Math.hypot(p.x - m.position.x, p.z - m.position.z) : d;
+      if (md < 1.4 || d < 1.2) this._takeCoin(c);
+    }
+  }
+
+  _takeCoin(c) {
+    c.taken = true;
+    this.coins = (this.coins || 0) + 1;
+    this.wallet = this.coins;
+    this.audio.sfx('coin');
+    this.startCoinFlourish(c);
+    this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1200);
+    this.taskFx?.burst(c.x, heightAt(c.x, c.z), c.z, 0xffd24a, 'done', 2.4);
+    this.player.punch?.(0.16);
+  }
+
+  /** Buy something. Nothing here is a number you cannot feel. */
+  buyItem(id) {
+    const it = itemById(id);
+    if (!it) return false;
+    this.owned = this.owned || new Set();
+    if (this.owned.has(id) && it.tag === 'PASSIVE') { this.audio.sfx('deny'); return false; }
+    if ((this.coins || 0) < it.cost) {
+      this.audio.sfx('deny');
+      this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
+      return false;
+    }
+    this.coins -= it.cost;
+    this.audio.sfx('confirm');
+    this.audio.sfx('coin');
+
+    if (it.tag === 'PASSIVE') this.owned.add(id);
+    else this.carry = [...(this.carry || []), id];
+
+    if (id === 'tonic') { this.player.staminaDrain = 0.06; this.player.staminaRegen = 0.5; }
+    if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
+    if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
+    if (id === 'whetstone' && this.mp.myKillReady) {
+      this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
+    }
+    this.ui.showPopup(it.name, it.side === 'black' ? 'NOTHING WAS SOLD HERE' : 'NO REFUNDS', 'coin', 'FERDI SAYS');
+    this.ui.toast(`BOUGHT ${it.name}`, 'jade', 2200);
+    return true;
+  }
+
+  hasItem(id) { return !!this.owned?.has(id) || !!this.carry?.includes(id); }
+
+  useCarried(id) {
+    if (!this.carry?.includes(id)) return false;
+    this.carry.splice(this.carry.indexOf(id), 1);
+    return true;
   }
 
   /** A puzzle stage was solved; it counts exactly like a hold would. */
@@ -1162,6 +1314,7 @@ export class MPGame extends Game {
     this.taskFx?.update(dt);
     this.gore?.update(dt);
     this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
+    this._sweepCoins(dt);
     // a body drops rather than appearing already laid out
     for (const b of M.bodies.values()) {
       if (b.fall === undefined || b.fall >= 1) continue;
@@ -1303,6 +1456,7 @@ export class MPGame extends Game {
       const rec = M.view.players.get(av.id);
       if (!rec || rec.alive === false) continue;
       if (!av.mesh.visible) continue;
+      if (rec.quiet) continue;                 // quiet soles: no name, at any range
       add(av.mesh, rec.name || '?', colourHex(rec.colour), false);
     }
     for (const b of M.bodies.values()) add(b.mesh, 'BODY', 0xb03a2e, true);

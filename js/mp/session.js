@@ -92,6 +92,7 @@ export class HostSession {
   _roster() {
     const list = [...this.players.values()].map((p) => ({
       id: p.id, name: p.name, colour: p.colour, alive: p.alive, ready: p.ready,
+      quiet: !!p.quiet,
     }));
     this.net.broadcast({ t: S.ROSTER, players: list });
     this.hooks.onRoster?.(list);
@@ -127,6 +128,15 @@ export class HostSession {
       case C.CHAT: { this._chat(from, msg.text); break; }
       case C.SABOTAGE: { this._trySabotage(from, msg.kind); break; }
       case C.FIX: { this._tryFix(from, msg.kind, msg.at); break; }
+      case C.PERK: {
+        /* Some purchases change what everyone else sees or how the rules
+           treat you, so the host has to know about them. */
+        if (!p) break;
+        if (msg.perk === 'quiet') p.quiet = !!msg.on;
+        if (msg.perk === 'vest') p.vest = !!msg.on;
+        this._roster();
+        break;
+      }
       default: break;
     }
   }
@@ -244,8 +254,26 @@ export class HostSession {
     if (k.role !== ROLE.AGENT || !k.alive || !v.alive || v.role === ROLE.AGENT) return;
     if (now() < k.killReady) return;
     const d = Math.hypot(k.x - v.x, k.z - v.z);
-    if (d > 3.2) return;                       // host validates range, not the client
+    if (d > 4.8) return;                       // host validates range, not the client
+    // Ferdi's counter is neutral ground while the shop is open
+    const shop = this.hooks.siteOf?.('hut');
+    if (shop && !this.shopShut) {
+      const SANCT = 13;
+      if (Math.hypot(v.x - shop.x, v.z - shop.z) < SANCT) return;
+      if (Math.hypot(k.x - shop.x, k.z - shop.z) < SANCT) return;
+    }
 
+    if (v.vest) {
+      /* A cork vest takes the strike. The knife still goes cold, and the
+         Agent is left standing over somebody who is very much alive. */
+      v.vest = false;
+      k.killReady = now() + this.settings.killCooldown;
+      this._sendCooldown(k);
+      this.net.broadcast({ t: S.SAVED, victimId: v.id });
+      this.hooks.onSaved?.(v.id);
+      this._roster();
+      return;
+    }
     v.alive = false;
     k.killReady = now() + this.settings.killCooldown;
     this._sendCooldown(k);
@@ -578,6 +606,7 @@ export class MirrorSession {
           fatal: msg.fatal, done: 0, need: msg.sites || 1 };
         this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
         break;
+      case S.SAVED: this.hooks.onSaved?.(msg.victimId); break;
       case S.FIXPROGRESS:
         if (this.sabotage) { this.sabotage.done = msg.done; this.sabotage.need = msg.need; }
         this.hooks.onFixProgress?.(msg.kind, msg.done, msg.need);

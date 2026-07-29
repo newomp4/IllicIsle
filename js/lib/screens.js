@@ -14,6 +14,7 @@ import { drawRelicIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
+import { STOCK, stockFor, SANCTUARY_R } from '../mp/market.js';
 
 // the minigames borrow the one font everything else is set in
 bindText(drawText);
@@ -740,6 +741,159 @@ export const SCREENS = {
     },
   },
 
+  /* ---------------- FERDI'S, AND THE ROOM BEHIND IT ---------------- */
+  mpShop: {
+    init(s, g) { s.sel = 0; s.side = 0; s.flash = 0; },
+    draw(x, W, H, s, g, t) {
+      const agent = g.amAgent;
+      const black = agent && s.side === 1;
+      const list = STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
+        : (i.side === 'open' || i.side === 'both')));
+      if (s.sel >= list.length) s.sel = 0;
+      const d = list[s.sel];
+      if (s.flash > 0) s.flash -= 0.016;
+
+      /* Two rooms, and they do not look alike. The front is lamplight on
+         old timber; the back is a shuttered lock-up lit by one bulb. */
+      if (black) {
+        x.fillStyle = '#0a0608'; x.fillRect(0, 0, W, H);
+        ditherRect(x, 0, 0, W, H, '#0a0608', '#140a0c', 0.5, 2);
+        const swing = Math.sin(t * 1.4) * 3;
+        for (let i = 7; i >= 0; i--) {
+          x.fillStyle = `rgba(150,40,30,${(0.035).toFixed(3)})`;
+          x.beginPath(); x.arc(W / 2 + swing, 6, 26 + i * 15, 0, Math.PI * 2); x.fill();
+        }
+        // the bulb on its flex
+        x.fillStyle = '#3a2a18'; x.fillRect(Math.round(W / 2 + swing), 0, 1, 8);
+        x.fillStyle = '#ffd88a'; x.fillRect(Math.round(W / 2 + swing) - 2, 8, 5, 4);
+      } else {
+        x.fillStyle = '#120c06'; x.fillRect(0, 0, W, H);
+        ditherRect(x, 0, 0, W, H, '#120c06', '#1c1208', 0.5, 2);
+        // planking behind the counter
+        for (let i = 0; i < H; i += 7) {
+          x.fillStyle = 'rgba(90,64,28,.10)'; x.fillRect(0, i, W, 1);
+        }
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+
+      const accent = black ? RED : GOLD;
+      x.fillStyle = accent;
+      x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
+      x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
+
+      drawText(x, black ? 'THE BACK ROOM' : "FERDI STEINMAN'S", {
+        x: 14, y: 11, scale: 2, color: accent,
+      });
+      drawText(x, `${g.coins || 0} SYNCOIN`, {
+        x: W - 14, y: 10, scale: 1, align: 'right', color: GOLD_LT,
+      });
+      if (agent) {
+        drawText(x, black ? 'TAB  BACK TO THE SHOP' : 'TAB  THE OTHER LIST', {
+          x: W - 14, y: 21, scale: 1, align: 'right', color: black ? '#c08078' : '#8a5a52',
+        });
+      }
+      x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
+      x.fillRect(14, 28, W - 28, 1);
+
+      /* the stock list */
+      const LX = 10, LW = 138, ROW = 15;
+      let y = 36;
+      const rows = [];
+      list.forEach((it, i) => {
+        const on = i === s.sel;
+        const owned = g.hasItem?.(it.id);
+        const afford = (g.coins || 0) >= it.cost;
+        if (on) {
+          x.fillStyle = black ? '#3a0e0b' : '#3a2a10';
+          x.fillRect(LX, y - 1, LW, ROW - 1);
+          x.fillStyle = accent; x.fillRect(LX, y - 1, 2, ROW - 1);
+        }
+        drawShopIcon(x, it.icon, LX + 5, y, 12, on, t);
+        let nm = it.name;
+        while (nm.length > 3 && textWidth(nm, 1) > LW - 44) nm = nm.slice(0, -1);
+        drawText(x, nm, {
+          x: LX + 21, y: y + 1, scale: 1,
+          color: owned ? '#5f7a4a' : (on ? GOLD_LT : (afford ? '#c9b98a' : '#7a6a52')),
+        });
+        drawText(x, owned ? 'HELD' : String(it.cost), {
+          x: LX + LW - 4, y: y + 1, scale: 1, align: 'right',
+          color: owned ? JADE : (afford ? GOLD : '#8a4a44'),
+        });
+        rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
+        y += ROW;
+      });
+
+      /* what it is, and what it does */
+      const RX = LX + LW + 8, RW = W - RX - 12;
+      const RB = H - 30;
+      x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 36, RW, RB - 36);
+      x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
+      x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
+      x.fillRect(RX, 36, 1, RB - 36); x.fillRect(RX + RW - 1, 36, 1, RB - 36);
+
+      if (d) {
+        drawShopIcon(x, d.icon, RX + RW / 2 - 14, 42, 28, true, t);
+        let by = 76;
+        for (const ln of wrapText(d.name, RW - 10, 1, 1)) {
+          drawText(x, ln, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: GOLD_LT });
+          by += 9;
+        }
+        drawText(x, d.tag, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: black ? '#c08078' : '#8a7a52' });
+        by += 12;
+        x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
+        x.fillRect(RX + 8, by - 4, RW - 16, 1);
+        for (const ln of wrapText(d.blurb.toUpperCase(), RW - 10, 1, 1)) {
+          if (by > RB - 28) break;
+          drawText(x, ln, { x: RX + 5, y: by, scale: 1, color: '#c9b98a' });
+          by += 9;
+        }
+      }
+
+      // the counter itself: price and the buy key
+      const owned = d && g.hasItem?.(d.id);
+      const afford = d && (g.coins || 0) >= d.cost;
+      const label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
+        : (afford ? `E   BUY FOR ${d ? d.cost : 0}` : 'NOT ENOUGH SYNCOIN');
+      const bw = RW - 12, bx = RX + 6, byy = RB - 16;
+      x.fillStyle = s.flash > 0 ? accent : (afford && !owned ? (black ? '#3a0e0b' : '#3a2a10') : '#1a1208');
+      x.fillRect(bx, byy, bw, 12);
+      x.fillStyle = afford && !owned ? accent : '#5a4a30';
+      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
+      x.fillRect(bx, byy, 1, 12); x.fillRect(bx + bw - 1, byy, 1, 12);
+      drawText(x, label, {
+        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
+        color: s.flash > 0 ? '#160c04' : (afford && !owned ? GOLD_LT : '#7a6a4a'),
+      });
+      rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
+
+      footer(x, W, H, 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const agent = g.amAgent;
+      const black = agent && s.side === 1;
+      const list = STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
+        : (i.side === 'open' || i.side === 'both')));
+      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true; }
+      if (code === 'Tab' && agent) { s.side = 1 - s.side; s.sel = 0; g.audio?.sfx('page'); return true; }
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        if (list[s.sel] && g.buyItem(list[s.sel].id)) s.flash = 0.3;
+        return true;
+      }
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (row?.buy) { this.key('Enter', s, g, st); return true; }
+      if (row?.pick !== undefined) {
+        if (row.pick === s.sel) this.key('Enter', s, g, st);
+        else { s.sel = row.pick; g.audio?.sfx('select'); }
+      }
+      return true;
+    },
+  },
+
   /* ---------------- A CHORE THAT IS ACTUALLY A TASK ---------------- */
   mpMinigame: {
     init(s, g) {
@@ -884,7 +1038,7 @@ export const SCREENS = {
 
       /* ---- right: what the selected switch does ---- */
       const RX = LX + LW + 8, RW = W - RX - 14;
-      const RB = H - 26;
+      const RB = H - 30;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 36, RW, RB - 36);
       x.fillStyle = locked(d) ? '#4a2a26' : '#8a2018';
       x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
@@ -1739,6 +1893,85 @@ const OPTION_DEFS = [
 /* ===========================================================
    PIXEL GLYPHS (shared by dials and the chart)
    =========================================================== */
+/** Hand-drawn marks for the shop stock, animated where it helps. */
+function drawShopIcon(x, kind, ox, oy, size, lit, t) {
+  const u = size / 12;
+  const p = (gx, gy, w, h, col) => {
+    x.fillStyle = col;
+    x.fillRect(Math.round(ox + gx * u), Math.round(oy + gy * u), Math.ceil(w * u), Math.ceil(h * u));
+  };
+  const C = (a, b) => (lit ? a : b);
+  const beat = lit ? Math.sin(t * 6) * 0.5 + 0.5 : 0;
+
+  if (kind === 'lantern') {
+    p(4, 0, 4, 1, C('#8a7a52', '#4a4230'));
+    p(5, 1, 2, 1, C('#8a7a52', '#4a4230'));
+    p(3, 2, 6, 8, C('#6a5a3a', '#3a332a'));
+    p(4, 3, 4, 6, C('#1a1408', '#141008'));
+    if (beat > 0.4 || !lit) {
+      p(5, 4, 2, 4, C('#ffd88a', '#5a4a24'));
+      p(4, 5, 4, 2, C('#ffb04a', '#4a3a1c'));
+    }
+    p(3, 10, 6, 1, C('#8a7a52', '#4a4230'));
+  } else if (kind === 'vest') {
+    p(3, 1, 6, 9, C('#b8894a', '#4a3c26'));
+    p(2, 2, 2, 6, C('#a07a40', '#40341f'));
+    p(8, 2, 2, 6, C('#a07a40', '#40341f'));
+    p(5, 1, 2, 9, C('#2a1c0c', '#1c1409'));
+    for (let i = 0; i < 3; i++) p(4, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
+    for (let i = 0; i < 3; i++) p(7, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
+  } else if (kind === 'whistle') {
+    p(2, 4, 7, 4, C('#c8c8d0', '#4a4a52'));
+    p(9, 5, 2, 2, C('#a0a0a8', '#3a3a42'));
+    p(3, 5, 2, 2, C('#2a2a30', '#1c1c22'));
+    if (beat > 0.5) {
+      p(11, 3, 1, 1, C('#ffffff', '#555'));
+      p(11, 6, 1, 1, C('#ffffff', '#555'));
+      p(12, 4, 1, 2, C('#dfefff', '#555'));
+    }
+  } else if (kind === 'tonic') {
+    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
+    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
+    p(3, 4, 6, 7, C('#3a6a4a', '#22332a'));
+    const lvl = 4 + Math.round(beat * 1);
+    p(4, lvl + 1, 4, 9 - lvl, C('#7ec850', '#3a5a2c'));
+    p(4, lvl, 4, 1, C('#bfffa0', '#4a6a3a'));
+  } else if (kind === 'soles') {
+    p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
+    p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
+    p(7, 3, 3, 5, C('#4a4a52', '#2a2a32'));
+    if (beat > 0.5) { p(9, 1, 1, 1, C('#6a6a72', '#333')); p(10, 3, 1, 1, C('#6a6a72', '#333')); }
+  } else if (kind === 'alibi') {
+    p(2, 2, 8, 8, C('#d8c69a', '#4a4436'));
+    p(3, 3, 6, 1, C('#7a6a48', '#332e24'));
+    p(3, 5, 6, 1, C('#7a6a48', '#332e24'));
+    p(3, 7, 4, 1, C('#7a6a48', '#332e24'));
+    const w = Math.round(beat * 2);
+    p(7 + w, 8, 3, 3, C('#c02a1a', '#4a1a12'));
+  } else if (kind === 'knife') {
+    p(5, 0, 2, 6, C('#e8eef2', '#4a5258'));
+    p(4, 1, 1, 5, C('#b8c2c8', '#3a4248'));
+    p(3, 6, 6, 1, C('#8a2018', '#3a1810'));
+    p(5, 7, 2, 4, C('#6a4a28', '#332618'));
+    if (beat > 0.6) { p(8, 1, 1, 1, '#ffffff'); p(9, 3, 1, 1, '#ffffff'); }
+  } else if (kind === 'gun') {
+    // a stubby flare pistol, muzzle up-right
+    p(2, 5, 6, 3, C('#8a4a2a', '#3a2418'));
+    p(8, 4, 3, 3, C('#b0b6bc', '#42474c'));
+    p(11, 4, 1, 3, C('#e8eef2', '#4a5258'));
+    p(3, 8, 3, 4, C('#6a3a20', '#2e1c12'));
+    p(6, 7, 2, 2, C('#c8c8d0', '#4a4a52'));
+    if (beat > 0.55) {
+      p(12, 3, 1, 1, '#ffd24a'); p(12, 6, 1, 1, '#ffd24a');
+      p(13, 4, 1, 2, '#fff3c4');
+    }
+  } else if (kind === 'coin') {
+    p(3, 2, 6, 8, C('#ffd24a', '#6a5a24'));
+    p(4, 3, 4, 6, C('#c39a2c', '#4a3c18'));
+    p(5, 4, 2, 4, C('#fff3c4', '#7a6a34'));
+  }
+}
+
 /** Hand-drawn 24px marks for the three sabotages. */
 function drawSabotageIcon(x, kind, ox, oy, size, lit, t) {
   const u = size / 12;

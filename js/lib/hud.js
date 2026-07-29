@@ -734,6 +734,13 @@ export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
     px(7, 10, 2, 2, '#9fe870');
     px(9, 7, 2, 3, '#9fe870');
     px(11, 5, 2, 2, '#cfffa4');
+  } else if (kind === 'vest') {
+    px(3, 2, 10, 12, '#b8894a');
+    px(2, 3, 3, 8, '#a07a40');
+    px(11, 3, 3, 8, '#a07a40');
+    px(7, 2, 2, 12, '#2a1c0c');
+    px(5, 5, 2, 2, '#ffe0a0'); px(5, 9, 2, 2, '#ffe0a0');
+    px(9, 5, 2, 2, '#ffe0a0'); px(9, 9, 2, 2, '#ffe0a0');
   } else if (kind === 'coin') {
     px(5, 4, 6, 8, '#d8c070');
     px(6, 5, 4, 6, '#f0dc9a');
