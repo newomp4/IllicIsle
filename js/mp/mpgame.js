@@ -75,6 +75,11 @@ export class MPGame extends Game {
     const M = this.mp;
     clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
+    /* 7226 opens a workshop: one player, no minimum, a full purse, the
+       listening post already on your chart and a readout of what the rules
+       think is going on. It exists so the island can be tested without
+       finding three other people first. */
+    M.dev = String(room || '').trim() === '7226';
     M.cool = {};
     M.chat.length = 0;
     M.myName = name;
@@ -104,6 +109,7 @@ export class MPGame extends Game {
       onSpeaker: (x, z, secs) => this._onSpeaker(x, z, secs),
       onChaff: (secs) => { M.chaffUntil = now() + secs; },
       onPurse: (c, gained) => this._onPurse(c, gained),
+      onLedger: (rows) => this._onLedger(rows),
       onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
       onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
@@ -113,7 +119,7 @@ export class MPGame extends Game {
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
       onChat: (m) => this._onChat(m),
-      onSabotage: (k, s2, f, sites) => this._onSabotage(k, s2, f, sites),
+      onSabotage: (k, s2, f, sites, half) => this._onSabotage(k, s2, f, sites, half),
       onFixed: (k, cd) => {
         M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false);
         if (cd) (M.cool = M.cool || {})[k] = now() + cd;
@@ -126,6 +132,11 @@ export class MPGame extends Game {
     });
     M.host.addLocal(name);
     M.view.selfId = 'host';
+    if (M.dev) {
+      M.host.dev = true;
+      M.host.settings.graceSeconds = 0;
+      M.host.settings.killCooldown = 6;
+    }
     M.host._roster();
     M.active = true;
 
@@ -215,6 +226,7 @@ export class MPGame extends Game {
       case S.CHAFF: M.chaffUntil = now() + msg.secs; break;
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
+      case S.LEDGER: this._onLedger(msg.rows); break;
       case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
@@ -225,7 +237,7 @@ export class MPGame extends Game {
       case S.EXILE: this._onExile(msg); break;
       case S.SABOTAGE:
         if (msg.refused) { this.ui.toast('THAT ONE IS STILL COOLING', 'bad', 1600); this.audio.sfx('deny'); break; }
-        this._onSabotage(msg.kind, msg.secs, msg.fatal, msg.sites);
+        this._onSabotage(msg.kind, msg.secs, msg.fatal, msg.sites, msg.half);
         break;
       case S.FIXPROGRESS: this._fixProgress(msg.kind, msg.done, msg.need); break;
       case S.FIXED:
@@ -304,7 +316,7 @@ export class MPGame extends Game {
     M.view.phaseTotal = secs || 0;
 
     if (phase === PHASE.REVEAL) {
-      if (!M.started) { M.started = true; this.startCastaways(); }
+      if (!M.started) { M.started = true; this.startCastaways(); this._applyDevKit(); }
       this._teleportToCamp();
       this._briefing();
     } else if (phase === PHASE.ROAM) {
@@ -596,9 +608,19 @@ export class MPGame extends Game {
     }
   }
 
-  _onSabotage(kind, secs, fatal, sites) {
+  _onSabotage(kind, secs, fatal, sites, half) {
     const def = SABOTAGE_DEFS[kind];
-    this.mp.view.sabotage = { kind, endsAt: now() + secs, fatal, done: 0, need: sites || 1 };
+    this.mp.view.sabotage = {
+      kind, endsAt: now() + secs, fatal, done: 0, need: sites || 1,
+      /* Which half of the island it was pulled from. Everyone receives it,
+         but only the command table ever draws it — you have to be standing
+         in the bunker to know, and you have to be believed afterwards. */
+      half: half || null, at: now(),
+    };
+    const M = this.mp;
+    M.sabLog = M.sabLog || [];
+    M.sabLog.unshift({ kind, half: half || null, at: now(), name: def ? def.name : 'SABOTAGE' });
+    if (M.sabLog.length > 6) M.sabLog.length = 6;
     this._notice(def ? def.name : 'SABOTAGE');
     this.audio.sfx(fatal ? 'bossIntro' : 'charge');
     this.player.punch?.(0.7);
@@ -622,6 +644,7 @@ export class MPGame extends Game {
         this.audio.sfx('rumble');
       } else if (this._fogWas) {
         f.near = this._fogWas.near; f.far = this._fogWas.far;
+        if (this._lanternLight) this._lanternLight.visible = false;
         if (this.sky) this.sky.material.opacity = 1;
         for (const av of this.mp.avatars.values()) av.setShell(null);
         this.audio.sfx('confirm');
@@ -862,11 +885,39 @@ export class MPGame extends Game {
     this._placeBunker(this.mp.bunkerIndex ?? 0);
     // decks and bridges the terrain does not know about
     this.groundOf = makeGroundWith(this.platforms, heightAt);
-    this.taskFx = new TaskFx(this.islandScene);
-    this.gore = new Gore(this.islandScene, heightAt);
+
+    /* A rematch used to build a second set of every effect pool and leave
+       the first one parented to the scene — twelve more rings, six more
+       stains and a dozen materials every round, none of them ever drawn
+       again. Reuse them when they exist and just empty them. */
+    if (this.taskFx) this.taskFx.clear(); else this.taskFx = new TaskFx(this.islandScene);
+    if (this.gore) this.gore.clear(); else this.gore = new Gore(this.islandScene, heightAt);
+    if (this.dizzy) this.dizzy.clear(); else this.dizzy = new Dizzy(this.islandScene);
+    if (!this.flares) this.flares = new Flare(this.islandScene);
     this._buildTaskBeacons();
-    this.flares = new Flare(this.islandScene);
-    this.dizzy = new Dizzy(this.islandScene);
+
+    /* Everything a round accumulates, cleared. Left behind, a second round
+       started with the last one's incident log, its ledger and its emptied
+       vending machines. */
+    const M2 = this.mp;
+    M2.sabLog = [];
+    M2.ledger = null;
+    M2.ledgerPending = 0;
+    M2.drops = [];
+    M2.chaffUntil = 0;
+    M2.speaker = null;
+    if (M2.speakerNode) M2.speakerNode.visible = false;
+    for (const v of (this.vendors || [])) v.spent = false;
+    this.knowsBunker = !!M2.dev;
+    this.blinded = false;
+    this.scattered = false;
+    this.shopShut = false;
+    this.flask = false;
+    this.owned = new Set();
+    this.carry = [];
+    // she keeps her own hours; start her wherever the clock says she is
+    if (this.casinoDock) this.casinoIn = this.night > 0.34 ? 1 : 0;
+
     this._resolveTaskSites();
     this.ui.show();
     this.ui.setObjective('');
@@ -1069,21 +1120,42 @@ export class MPGame extends Game {
       return null;
     }
 
-    // the slot machines on the Flopper
-    for (const s2 of (this.casino?.userData.slots || [])) {
-      const wp = new THREE.Vector3();
-      s2.getWorldPosition(wp);
-      const ds = Math.hypot(p.x - wp.x, p.z - wp.z);
-      if (ds < 3.2 && ds < bestD) {
-        bestD = ds;
-        best = { kind: 'mpSlot', slot: s2, prompt: (this.coins || 0) >= 3 ? 'PULL  (3 SYNCOIN)' : 'NEED 3 SYNCOIN' };
+    /* The Flopper. Everything on her deck is walk-up: all four machines,
+       and the man on the wall. */
+    if (this.casino) {
+      const _wp = (this._wp = this._wp || new THREE.Vector3());
+      for (const s2 of (this.casino.userData.slots || [])) {
+        s2.getWorldPosition(_wp);
+        const ds = Math.hypot(p.x - _wp.x, p.z - _wp.z);
+        if (ds < 3.0 && ds < bestD) {
+          bestD = ds;
+          best = {
+            kind: 'mpSlot', slot: s2,
+            prompt: `MACHINE ${(s2.userData.index | 0) + 1}  (3 SYNCOIN)`,
+          };
+        }
+      }
+      // the portrait, on the cabin front
+      const pt = this.casino.userData.portrait;
+      if (pt) {
+        this.casino.localToWorld(_wp.set(pt.x, 0, pt.z));
+        const dp = Math.hypot(p.x - _wp.x, p.z - _wp.z);
+        if (dp < 3.4 && dp < bestD) {
+          bestD = dp;
+          best = { kind: 'mpFlopper', prompt: 'TIM GRADY FLOPPER' };
+        }
       }
     }
 
     // Ferdi's outlying machines
     for (const v of (this.vendors || [])) {
       const dv = Math.hypot(p.x - v.x, p.z - v.z);
-      if (dv < 4.0 && dv < bestD) { bestD = dv; best = { kind: 'mpVendor', prompt: "FERDI'S MACHINE" }; }
+      if (dv < 4.0 && dv < bestD) {
+        bestD = dv;
+        best = v.spent
+          ? { kind: 'none', prompt: 'THE MACHINE IS EMPTY' }
+          : { kind: 'mpVendor', vendor: v, prompt: "FERDI'S MACHINE" };
+      }
     }
 
     // Ferdi's counter
@@ -1168,7 +1240,9 @@ export class MPGame extends Game {
       case 'mpTable': {
         this.screens.push('mpTable', {});
         document.exitPointerLock?.();
-        this.audio.sfx('page');
+        this.audio.sfx('terminal');
+        setTimeout(() => this.audio.sfx('ping'), 420);
+        this.requestLedger();
         break;
       }
       case 'mpLadder': {
@@ -1176,11 +1250,21 @@ export class MPGame extends Game {
         break;
       }
       case 'mpSlot': {
-        this.playSlot(it.slot);
+        /* The machine's face, full screen, so you can read what landed.
+           Standing at deck height you could never see the drums. */
+        this.screens.push('mpSlot', { slot: it.slot });
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
+      case 'mpFlopper': {
+        this.screens.push('mpFlopper', {});
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
         break;
       }
       case 'mpVendor': {
-        this.screens.push('mpShop', { sel: 0, side: 0, vendor: true });
+        this.screens.push('mpShop', { sel: 0, side: 0, vendor: it.vendor || true });
         document.exitPointerLock?.();
         this.audio.sfx('page');
         break;
@@ -1284,7 +1368,13 @@ export class MPGame extends Game {
           : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE')),
       data: {
         heightAt, radius: ISLAND.shore + 14,
-        marks: [],
+        /* The listening post, once you have paid for the chart that shows
+           it. This was the bug: knowsBunker fed the compass and nothing
+           else, so the one item you bought specifically to put a cross on
+           the chart never put one there. */
+        marks: (this.knowsBunker && M.bunker)
+          ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true }]
+          : [],
         jobs: jobs.map((j) => ({ x: j.site.x, z: j.site.z, done: j.done })),
         temple: this.templeDoorPos,
         player: this.player.pos,
@@ -1301,7 +1391,11 @@ export class MPGame extends Game {
         })(),
         others: [...M.avatars.values()]
           .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !this.amAlive)
-          .map((a) => ({ x: a.pos.x, z: a.pos.z, colour: colourHex(a.colour) })),
+          .map((a) => {
+            const rec = M.view.players.get(a.id);
+            const at = rec?.decoy || a.pos;      // a bought alibi lies here too
+            return { x: at.x, z: at.z, colour: colourHex(a.colour) };
+          }),
       },
     });
     document.exitPointerLock?.();
@@ -1419,7 +1513,11 @@ export class MPGame extends Game {
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
     if (id === 'chart') {
       this.knowsBunker = true;
-      this.ui.toast('THE POST IS ON YOUR CHART', 'jade', 2600);
+      // and the compass has to be told, or the marker only appears the
+      // next time something else happens to rebuild it
+      this._compassForTasks();
+      const b = this.mp.bunker;
+      this.ui.toast(b ? `THE POST: ${b.name}` : 'THE POST IS ON YOUR CHART', 'jade', 3200);
     }
     if (id === 'skeleton') {
       // straight down, from wherever you are standing
@@ -1440,6 +1538,28 @@ export class MPGame extends Game {
       this.useCarried('speaker');
     }
     if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
+    if (id === 'whistle') {
+      /* Twelve seconds of everybody, anywhere, seeing your name over your
+         head. An alibi you can prove, and a thing you can only do once. */
+      this._send({ t: C.PERK, perk: 'whistle', on: true });
+      this.useCarried('whistle');
+      this.audio.sfx('stinger');
+      this.ui.toast('EVERY EYE ON THE ISLAND', 'jade', 2600);
+    }
+    if (id === 'alibi') {
+      /* A decoy on everybody else's chart and on the command table, for
+         twenty seconds. It has to be somewhere plausible — a place people
+         go — or the lie tells itself. */
+      const spots = [this.wreckPos, this.hutPos, this.templeDoorPos, this.casinoPos]
+        .filter(Boolean);
+      const pick = spots[(Math.random() * spots.length) | 0] || { x: 0, z: 0 };
+      const jx = pick.x + (Math.random() - 0.5) * 22;
+      const jz = pick.z + (Math.random() - 0.5) * 22;
+      this._send({ t: C.PERK, perk: 'alibi', on: true, x: +jx.toFixed(1), z: +jz.toFixed(1) });
+      this.useCarried('alibi');
+      this.audio.sfx('cast');
+      this.ui.toast('THEY WILL SWEAR YOU WERE ELSEWHERE', 'jade', 2800);
+    }
     if (id === 'whetstone' && this.mp.myKillReady) {
       this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
     }
@@ -1604,8 +1724,16 @@ export class MPGame extends Game {
     this.bunkerScene.add(this.player.mesh);
     this.player.setColliders([]);
     this.player.teleport(0, 1.0, -5.2, 0);
+    /* Going down should sound like going down: the lid comes off, the
+       rungs go past under you, and the island stops. */
+    this.audio.sfx('hatch');
     this.audio.sfx('descend');
-    this.audio.playMusic('temple');
+    setTimeout(() => { if (this.state === 'bunker') this.audio.sfx('ladder'); }, 380);
+    setTimeout(() => { if (this.state === 'bunker') this.audio.sfx('terminal'); }, 1500);
+    this.audio.playMusic('bunker');
+    // a moment of black at the bottom of the ladder
+    this.pipeline.tint.setHex(0x000000);
+    this.pipeline.tintAmt = 0.85;
     this.ui.toast('THE LISTENING POST', 'jade', 2600);
   }
 
@@ -1620,8 +1748,48 @@ export class MPGame extends Game {
     const b = M.bunker;
     if (b) this.player.teleport(b.x + 2.6, heightAt(b.x + 2.6, b.z) + 0.8, b.z, 0);
     M.bunker?.node.userData.setOpen(false);
-    this.audio.sfx('door');
+    this.audio.sfx('ladder');
+    setTimeout(() => { if (this.state === 'island') this.audio.sfx('hatch'); }, 700);
+    this.pipeline.tint.setHex(0xffffff);
+    this.pipeline.tintAmt = 0.5;
     this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+  }
+
+  /** Positions for the hologram, written into one array that is kept. */
+  _holoRoster(out = (this._holo = this._holo || [])) {
+    const M = this.mp;
+    const pool = (this._holoPool = this._holoPool || []);
+    out.length = 0;
+    let i = 0;
+    for (const p of M.view.players.values()) {
+      const av = M.avatars.get(p.id);
+      const pos = p.id === M.view.selfId ? this.player.pos : (av ? av.pos : null);
+      const r = pool[i] || (pool[i] = { colour: 0, alive: true, x: 0, z: 0 });
+      r.colour = colourHex(p.colour);
+      r.alive = p.alive !== false;
+      r.x = pos ? pos.x : 0;
+      r.z = pos ? pos.z : 0;
+      out.push(r);
+      i++;
+    }
+    return out;
+  }
+
+  /** The host's answer to a ledger request, cached until the next one. */
+  _onLedger(rows) {
+    const M = this.mp;
+    M.ledger = new Map();
+    for (const [id, coins] of (rows || [])) M.ledger.set(id, coins | 0);
+    M.ledgerAt = now();
+  }
+
+  /** Ask for it. Cheap, and only ever while the table is open. */
+  requestLedger() {
+    const M = this.mp;
+    if (M.ledgerPending && now() - M.ledgerPending < 1.2) return;
+    M.ledgerPending = now();
+    if (this.isHost) M.host?._sendLedger('host');
+    else this._send({ t: C.LEDGER });
   }
 
   /** Everything the table knows. Deliberately a lot. */
@@ -1630,18 +1798,32 @@ export class MPGame extends Game {
     const jam = this.jammed, chaff = M.chaffUntil && now() < M.chaffUntil;
     const roster = [...M.view.players.values()].map((p) => {
       const av = M.avatars.get(p.id);
-      const pos = p.id === M.view.selfId ? this.player.pos : (av ? av.pos : null);
+      /* A false alibi shows the buyer somewhere else on everybody's plot —
+         but never on their own, or they could not use it deliberately. */
+      const pos = p.id === M.view.selfId ? this.player.pos
+        : (p.decoy ? p.decoy : (av ? av.pos : null));
       const scatter = chaff ? 120 : 0;
       return {
         id: p.id, name: p.name || '?', colour: colourHex(p.colour),
         alive: p.alive !== false,
+        coins: M.ledger ? (M.ledger.get(p.id) ?? null) : null,
+        me: p.id === M.view.selfId,
         x: (pos ? pos.x : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
         z: (pos ? pos.z : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
       };
     });
+    /* Chaff scrambles the plot AND the ledger. A table you can half-trust
+       is worse than one you cannot, which is exactly the point of buying it. */
+    if (chaff) for (const r of roster) r.coins = r.coins == null ? null : Math.max(0, r.coins + ((Math.random() * 40) | 0) - 20);
+    const sab = M.view.sabotage;
     return {
       roster,
       chaff,
+      /* the places worth marking on the plot */
+      marks: this._tableMarks(),
+      /* where the last sabotage was pulled from, and the ones before it */
+      half: sab && sab.half ? sab.half : null,
+      log: M.sabLog || [],
       alive: roster.filter((r) => r.alive).length,
       total: roster.length,
       work: `${M.view.tasksDone || 0} / ${M.view.tasksTotal || 0}`,
@@ -1649,36 +1831,86 @@ export class MPGame extends Game {
       shop: this.shopShut ? 'SHUTTERED' : 'TRADING',
       weather: this.stormOn ? 'STORM' : (this.blinded ? 'MIST' : (this.night > 0.55 ? 'NIGHT' : 'CLEAR')),
       bunker: M.bunker?.name || '',
+      flopper: this.casinoIn == null ? '--'
+        : (this.casinoIn > 0.9 ? 'ALONGSIDE' : (this.casinoIn < 0.1 ? 'IN THE OFFING' : 'UNDER WAY')),
+      ledger: !!M.ledger,
     };
+  }
+
+  /** Fixed points the plot draws, so the ring of pips means something. */
+  _tableMarks() {
+    const m = [];
+    const L = this.landmarks || LANDMARKS;
+    if (L?.wreck) m.push({ x: L.wreck.x, z: L.wreck.z, label: 'CAMP', kind: 'camp' });
+    if (this.templeDoorPos) m.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, label: 'TEMPLE', kind: 'temple' });
+    if (this.hutPos) m.push({ x: this.hutPos.x, z: this.hutPos.z, label: 'FERDI', kind: 'shop' });
+    if (this.casinoPos) m.push({ x: this.casinoPos.x, z: this.casinoPos.z, label: 'FLOPPER', kind: 'boat' });
+    for (const v of (this.vendors || [])) m.push({ x: v.x, z: v.z, label: '', kind: 'vendor' });
+    const b = this.mp.bunker;
+    if (b) m.push({ x: b.x, z: b.z, label: 'POST', kind: 'post' });
+    return m;
   }
 
   /* =========================================================
      THE LUCKY FLOPPER
      ========================================================= */
-  playSlot(slot) {
-    if ((this.coins || 0) < 3) { this.audio.sfx('deny'); return; }
-    this.coins -= 3;
+  /**
+   * One pull. The result is decided here, in one place, and both the
+   * cabinet on the deck and the screen in front of you are told what it
+   * was — so what you watch land is what you are paid for.
+   *
+   * @returns {{result:number[], win:number}|null} null if you cannot afford it
+   */
+  pullSlot(slot) {
+    const STAKE = 3;
+    if ((this.coins || 0) < STAKE) return null;
+    this.coins -= STAKE;
     this._send({ t: C.PURSE, coins: this.coins });
-    slot.userData.spin();
-    this.audio.sfx('charge');
+    this.audio.sfx('lever');
+
+    // six symbols, three drums, honestly rolled
+    const result = [0, 0, 0].map(() => (Math.random() * 6) | 0);
+    const [a, b, c] = result;
+    let win = 0;
+    if (a === b && b === c) {
+      win = a === 5 ? 60 : (a === 3 ? 30 : 15);        // SEVEN, IDOL, anything
+    } else if (a === b || b === c || a === c) {
+      win = 5;
+    }
+
+    slot?.userData.spin(result);
+    // the drums clacking down, one after another
+    for (let i = 0; i < 3; i++) {
+      setTimeout(() => this.audio.sfx('reel'), 500 + i * 450);
+    }
+    return { result, win };
+  }
+
+  /**
+   * Pay out. Called by the machine's face when the last drum stops, NOT on
+   * a timer — a wall-clock timeout and a screen counting in game time drift
+   * apart on a slow machine, and the coins would arrive before the reels
+   * had finished telling you why.
+   */
+  settleSlot(slot, win) {
+    if (!win) return;
+    this.coins += win;
+    this._send({ t: C.PURSE, coins: this.coins });
+    slot?.userData.payout(true);
+    if (win >= 30) {
+      this.ui.showPopup(`${win} SYNCOIN`, 'TIM WILL BE FURIOUS', 'coin', 'THE FLOPPER PAYS');
+    }
+  }
+
+  /** The old one-key pull, kept for anything that bypasses the screen. */
+  playSlot(slot) {
+    const out = this.pullSlot(slot);
+    if (!out) { this.audio.sfx('deny'); return; }
     setTimeout(() => {
-      /* House edge, and Tim keeps his thumb on it: about one in four pays
-         eight, one in twelve pays twenty-five, the rest pay nothing. */
-      const r = Math.random();
-      let win = 0;
-      if (r < 0.08) win = 25;
-      else if (r < 0.30) win = 8;
-      if (win) {
-        this.coins += win;
-        this._send({ t: C.PURSE, coins: this.coins });
-        slot.userData.payout(true);
-        this.audio.sfx('victory');
-        this.ui.showPopup(`${win} SYNCOIN`, 'TIM WILL BE FURIOUS', 'coin', 'THE FLOPPER PAYS');
-      } else {
-        this.audio.sfx('deny');
-        this.ui.toast('NOTHING', 'bad', 1400);
-      }
-    }, 1700);
+      this.settleSlot(slot, out.win);
+      if (out.win) { this.audio.sfx('victory'); this.ui.toast(`${out.win} SYNCOIN`, 'gold', 2000); }
+      else { this.audio.sfx('deny'); this.ui.toast('NOTHING', 'bad', 1400); }
+    }, 1900);
   }
 
   /** A boombox on the sand, and everybody knows exactly where it is. */
@@ -1737,6 +1969,22 @@ export class MPGame extends Game {
   sendSabotage(kind) { this._send({ t: C.SABOTAGE, kind }); this.audio.sfx('charge'); }
   startMatch() { if (this.isHost) this.mp.host.start(); }
 
+  /** Everything the workshop hands you the moment a round begins. */
+  _applyDevKit() {
+    const M = this.mp;
+    if (!M.dev) return;
+    this.coins = 9999;
+    // the host has to be told, or the command table's ledger shows nothing
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.knowsBunker = true;
+    this.owned = this.owned || new Set();
+    for (const it of STOCK) {
+      if (it.tag === 'PASSIVE') this.owned.add(it.id);
+      else this.carry = [...(this.carry || []), it.id, it.id, it.id];
+    }
+    this.ui.toast('DEV MODE - EVERYTHING UNLOCKED', 'jade', 4000);
+  }
+
   /* ===========================================================
      LOOP
      =========================================================== */
@@ -1756,9 +2004,24 @@ export class MPGame extends Game {
       M.view.phase = M.host.phase;
       M.view.tasksDone = M.host.tasksDone;
       M.view.tasksTotal = M.host.tasksTotal;
-      M.view.sabotage = M.host.sabotage
-        ? { kind: M.host.sabotage.kind, endsAt: M.host.sabotage.endsAt, fatal: M.host.sabotage.fatal }
-        : null;
+      /* Mirror in place rather than rebuilding. A fresh object every frame
+         threw away everything the client side had learned about the
+         sabotage — the repair counter, and now which half of the island it
+         came from — so on the host the table read NOMINAL and the fix
+         progress sat at zero however many people were working on it. */
+      const hs = M.host.sabotage;
+      if (!hs) {
+        M.view.sabotage = null;
+      } else {
+        const v = M.view.sabotage && M.view.sabotage.kind === hs.kind
+          ? M.view.sabotage
+          : (M.view.sabotage = { kind: hs.kind, done: 0, need: 1 });
+        v.kind = hs.kind;
+        v.endsAt = hs.endsAt;
+        v.fatal = hs.fatal;
+        v.half = hs.half || v.half || null;
+        v.done = hs.sites ? hs.sites.size : (v.done || 0);
+      }
       const meRec = M.host.players.get('host');
       if (meRec) {
         const mv = M.view.players.get('host');
@@ -1785,7 +2048,13 @@ export class MPGame extends Game {
           insideBox: BUNKER_BOX,
         });
       } else this.player.updateCamera(dt, bunkerHeight);
-      this.bunkerScene.userData.tick(this.time, dt, this.bunkerReadout().roster);
+      /* The hologram wants positions, nothing else. bunkerReadout() builds
+         the whole dossier and it is not cheap to do sixty times a second. */
+      this.bunkerScene.userData.tick(
+        this.time, dt, this._holoRoster(),
+        this.mp.view.sabotage?.half || this.mp.sabLog?.[0]?.half || null,
+        this.screens.top?.name === 'mpTable'
+      );
       this._mpHud();
       const bit = froze ? null : this.nearestInteractable();
       this.ui.setPrompt(bit ? bit.prompt : null);
@@ -1937,13 +2206,27 @@ export class MPGame extends Game {
       /* Not a white sheet laid over things. A cold, dark murk that takes
          the sky with it, so you cannot navigate by the horizon either. */
       const f = this.islandScene.fog;
-      f.near = 1.5;
-      f.far = 8.5;
+      /* The storm lantern. Bought from the front of the shop, it buys you
+         roughly the reach an Agent has — not enough to be safe, enough to
+         keep working while everybody else is feeling for the path. */
+      const lit = this.hasItem('lantern');
+      f.near = lit ? 3.0 : 1.5;
+      f.far = lit ? 22 : 8.5;
       f.color.setRGB(0.055, 0.065, 0.085);
       this.islandScene.background?.setRGB?.(0.045, 0.055, 0.075);
       if (this.sky) { this.sky.material.transparent = true; this.sky.material.opacity = 0.03; }
-      if (this.ambient) this.ambient.intensity = 0.22;
-      if (this.hemi) this.hemi.intensity = 0.10;
+      if (this.ambient) this.ambient.intensity = lit ? 0.42 : 0.22;
+      if (this.hemi) this.hemi.intensity = lit ? 0.24 : 0.10;
+      if (lit && !this._lanternLight) {
+        this._lanternLight = new THREE.PointLight(0xffc070, 2.6, 20, 1.7);
+        this.islandScene.add(this._lanternLight);
+      }
+      if (this._lanternLight) {
+        this._lanternLight.visible = lit;
+        const pp = this.player.pos;
+        this._lanternLight.position.set(pp.x, pp.y + 1.4, pp.z);
+        this._lanternLight.intensity = 2.4 + Math.sin(this.time * 7.3) * 0.35;
+      }
       // an Agent does not see further; an Agent sees HEAT
       const thermal = this.amAgent || !this.amAlive;
       for (const av of this.mp.avatars.values()) {
@@ -1991,9 +2274,9 @@ export class MPGame extends Game {
    * HUD pixels keeps the letters on the same hard grid as the rest of the
    * interface.
    */
-  _tags() {
+  _tags(out = []) {
     const M = this.mp;
-    const out = [];
+    out.length = 0;
     if (M.view.phase !== PHASE.ROAM) return out;
     const cam = this.camera;
     const W = this.ui.hud.c.width, H = this.ui.hud.c.height;
@@ -2007,18 +2290,33 @@ export class MPGame extends Game {
     if (this.storm?.active) reach = 9;
     if (this.blinded) reach = this.amAgent ? 12 : 5;
 
+    /** A tag that ignores range entirely — the whistle, and nothing else. */
+    const addFar = (obj, name, colour) => {
+      v.set(obj.position.x, obj.position.y + 2.5, obj.position.z);
+      v.project(cam);
+      if (v.z > 1 || v.z < -1) return;
+      if (!out._pool) out._pool = [];
+      const row = out._pool[out.length] || (out._pool[out.length] = {});
+      row.x = Math.round((v.x * 0.5 + 0.5) * W);
+      row.y = Math.round((-v.y * 0.5 + 0.5) * H);
+      row.name = name; row.colour = colour; row.dead = false; row.fade = 1;
+      out.push(row);
+    };
+
     const add = (obj, name, colour, dead) => {
       v.set(obj.position.x, obj.position.y + (dead ? 0.9 : 2.15), obj.position.z);
       const dist = v.distanceTo(eye);
       if (dist > reach) return;
       v.project(cam);
       if (v.z > 1 || v.z < -1) return;
-      out.push({
-        x: Math.round((v.x * 0.5 + 0.5) * W),
-        y: Math.round((-v.y * 0.5 + 0.5) * H),
-        name, colour, dead,
-        fade: dist > reach * 0.76 ? 1 - (dist - reach * 0.76) / (reach * 0.24) : 1,
-      });
+      const row = out._pool && out._pool[out.length] ? out._pool[out.length] : {};
+      if (!out._pool) out._pool = [];
+      out._pool[out.length] = row;
+      row.x = Math.round((v.x * 0.5 + 0.5) * W);
+      row.y = Math.round((-v.y * 0.5 + 0.5) * H);
+      row.name = name; row.colour = colour; row.dead = dead;
+      row.fade = dist > reach * 0.76 ? 1 - (dist - reach * 0.76) / (reach * 0.24) : 1;
+      out.push(row);
     };
 
     for (const av of M.avatars.values()) {
@@ -2026,59 +2324,111 @@ export class MPGame extends Game {
       if (!rec || rec.alive === false) continue;
       if (!av.mesh.visible) continue;
       if (rec.quiet) continue;                 // quiet soles: no name, at any range
+      /* Ferdi's whistle overrides the weather and the distance both. It is
+         the only way to be provably somewhere, and it costs a purchase. */
+      if (rec.whistle > 0) { addFar(av.mesh, rec.name || '?', colourHex(rec.colour)); continue; }
       add(av.mesh, rec.name || '?', colourHex(rec.colour), false);
     }
     for (const b of M.bodies.values()) add(b.mesh, 'BODY', 0xb03a2e, true);
     return out;
   }
 
+  /**
+   * The HUD's data block.
+   *
+   * This runs every single frame, and it used to build a fresh object with
+   * four fresh arrays inside it each time — a steady stream of garbage that
+   * eventually has to be collected, which is felt as the game stopping for
+   * a moment. Everything below is written into structures that persist.
+   */
   _mpHud() {
     const M = this.mp;
     const h = this.ui.hud.data;
     // In the lobby and on the results card there is no world behind the
     // panel worth annotating, and a half-drawn HUD leaking out from under
     // a full-screen menu just looks broken.
-    // Only while you are actually out there. Every other phase is a
-    // full-screen card, and a HUD bleeding out from under it looks broken.
     if (!M.started || M.view.phase !== PHASE.ROAM) {
       h.visible = false; h.mp = null;
       return;
     }
     h.visible = true;
-    h.mp = {
-      role: M.view.role,
-      alive: this.amAlive,
-      tasksDone: M.view.tasksDone,
-      tasksTotal: M.view.tasksTotal,
-      myTasks: M.view.tasks.map((id) => ({
-        id, name: this._taskStage(id).name, done: M.view.doneTasks.has(id),
-        half: !M.view.doneTasks.has(id) && (M.view.taskStep.get(id) || 0) >= 1,
-        step: (M.view.taskStep.get(id) || 0), steps: taskSteps(id),
-      })),
-      killIn: this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0,
-      killTotal: M.killTotal || 1,
-      graceIn: this.amAgent && M.graceEnds ? Math.max(0, M.graceEnds - now()) : 0,
-      cools: this.amAgent ? Object.entries(M.cool || {}).map(([k, at]) => ({
-        kind: k, left: Math.max(0, at - now()),
-        total: (SABOTAGE_DEFS[k]?.cooldown || 1),
-      })).filter((c) => c.left > 0) : [],
-      sabotage: M.view.sabotage
-        ? { name: SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '', left: Math.max(0, M.view.sabotage.endsAt - now()), fatal: M.view.sabotage.fatal }
-        : null,
-      task: M.taskProgress
-        ? {
-          verb: M.taskProgress.verb, name: M.taskProgress.name,
-          k: M.taskProgress.t / M.taskProgress.secs,
-          holding: !!M.holdingE,
+
+    const d = M.hudData || (M.hudData = {
+      role: null, alive: true, tasksDone: 0, tasksTotal: 0,
+      myTasks: [], killIn: 0, killTotal: 1, graceIn: 0, cools: [],
+      sabotage: null, task: null, players: [], coins: 0, selfId: null,
+      tags: [], phase: null, flash: null,
+    });
+
+    d.role = M.view.role;
+    d.alive = this.amAlive;
+    d.tasksDone = M.view.tasksDone;
+    d.tasksTotal = M.view.tasksTotal;
+    d.coins = this.coins || 0;
+    d.selfId = M.view.selfId;
+    d.phase = M.view.phase;
+    d.flash = M.doneFlash ? M.doneFlash.id : null;
+
+    // chores, written into the rows that are already there
+    const ids = M.view.tasks;
+    d.myTasks.length = ids.length;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const row = d.myTasks[i] || (d.myTasks[i] = {});
+      row.id = id;
+      row.name = this._taskStage(id).name;
+      row.done = M.view.doneTasks.has(id);
+      row.half = !row.done && (M.view.taskStep.get(id) || 0) >= 1;
+      row.step = M.view.taskStep.get(id) || 0;
+      row.steps = taskSteps(id);
+    }
+
+    // the knife
+    d.killIn = this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0;
+    d.killTotal = M.killTotal || 1;
+    d.graceIn = this.amAgent && M.graceEnds ? Math.max(0, M.graceEnds - now()) : 0;
+
+    // sabotage cooldowns
+    d.cools.length = 0;
+    if (this.amAgent && M.cool) {
+      const t = now();
+      for (const k in M.cool) {
+        const left = M.cool[k] - t;
+        if (left > 0) {
+          d.cools.push({ kind: k, left, total: SABOTAGE_DEFS[k]?.cooldown || 1 });
         }
-        : null,
-      flash: M.doneFlash ? M.doneFlash.id : null,
-      players: [...M.view.players.values()],
-      coins: this.coins || 0,
-      selfId: M.view.selfId,
-      tags: this._tags(),
-      phase: M.view.phase,
-    };
+      }
+    }
+
+    // whatever the island is doing
+    if (M.view.sabotage) {
+      d.sabotage = d.sabotage || {};
+      d.sabotage.name = SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '';
+      d.sabotage.left = Math.max(0, M.view.sabotage.endsAt - now());
+      d.sabotage.fatal = M.view.sabotage.fatal;
+    } else d.sabotage = null;
+
+    // the chore you are holding
+    if (M.taskProgress) {
+      d.task = d.task || {};
+      d.task.verb = M.taskProgress.verb;
+      d.task.name = M.taskProgress.name;
+      d.task.k = M.taskProgress.t / M.taskProgress.secs;
+      d.task.holding = !!M.holdingE;
+    } else d.task = null;
+
+    // the roster, in place
+    let n = 0;
+    for (const p of M.view.players.values()) {
+      const row = d.players[n] || (d.players[n] = {});
+      row.id = p.id; row.name = p.name; row.colour = p.colour; row.alive = p.alive;
+      n++;
+    }
+    d.players.length = n;
+
+    this._tags(d.tags);
+    h.mp = d;
+
     this.ui.setHearts(this.amAlive ? 1 : 0, 1);
     this.ui.updateCompass(this.player.yaw, this.player.pos.x, this.player.pos.z);
     this.ui.setStamina(this.player.stamina);

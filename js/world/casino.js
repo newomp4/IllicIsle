@@ -15,6 +15,7 @@ import {
   mergeGeos, box, cyl, plane, tint, blankUV,
 } from '../lib/geo.js';
 import { buildSignTexture } from '../lib/textures.js';
+import { drawText, textWidth } from '../lib/bitfont.js';
 
 const G = (n) => new THREE.Color(n);
 
@@ -75,6 +76,126 @@ function flopperPortrait() {
   return t;
 }
 
+/* ---------- the marquee: a canvas of glowing letters ---------- */
+function marqueeTexture(word, hue) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 96;
+  const x = c.getContext('2d');
+  x.fillStyle = '#120410'; x.fillRect(0, 0, 256, 96);
+  // an inner field, so the tubes sit on something
+  x.fillStyle = '#1d0720'; x.fillRect(8, 8, 240, 80);
+
+  /* The scale has to come from the word, not from a guess. CASINO at
+     scale 7 is 280px wide on a 256px canvas, and the C and the O fell off
+     the ends of the sign. */
+  const TRACK = 2;
+  let scale = 8;
+  while (scale > 2 && textWidth(word, scale, TRACK) > 224) scale--;
+  const top = Math.round((96 - 7 * scale) / 2);
+
+  /* Neon is a bright core inside a wide, dim halo. Drawn as three passes
+     of the same glyphs at falling alpha and rising offset — a blur would
+     be smooth, and nothing on this island is smooth. */
+  for (const [spread, alpha] of [[3, 0.10], [2, 0.18], [1, 0.34]]) {
+    for (let dy = -spread; dy <= spread; dy++) {
+      for (let dx = -spread; dx <= spread; dx++) {
+        if (dx * dx + dy * dy > spread * spread) continue;
+        drawText(x, word, {
+          x: 128 + dx, y: top + dy, scale, tracking: TRACK,
+          align: 'center', color: `rgba(${hue},${alpha})`, shadow: false,
+        });
+      }
+    }
+  }
+  drawText(x, word, {
+    x: 128, y: top, scale, tracking: TRACK, align: 'center',
+    color: '#ffffff', shadow: false,
+  });
+
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/**
+ * The sign: a board of glowing letters ringed by bulbs that chase.
+ * Returns a group with a tick that runs the lights.
+ */
+function buildMarquee(mats, word, w, h, hue) {
+  const g = new THREE.Group();
+
+  const board = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: marqueeTexture(word, hue), fog: false })
+  );
+  g.add(board);
+  // the same face on the back, so it reads from the water too
+  const back = board.clone();
+  back.rotation.y = Math.PI;
+  back.position.z = -0.16;
+  g.add(back);
+
+  // the frame it is bolted into
+  const F = [];
+  for (const [bw, bh, by] of [[w + 0.5, 0.22, h / 2 + 0.12], [w + 0.5, 0.22, -h / 2 - 0.12]]) {
+    F.push(tint(box(bw, bh, 0.3, 'metal', { pos: [0, by, -0.08] }), G(0x3a1a2a)));
+  }
+  for (const sx of [-w / 2 - 0.18, w / 2 + 0.18]) {
+    F.push(tint(box(0.24, h + 0.5, 0.3, 'metal', { pos: [sx, 0, -0.08] }), G(0x3a1a2a)));
+  }
+  g.add(new THREE.Mesh(mergeGeos(F), mats.opaque));
+
+  /* The bulbs. One shared sphere, one material per bulb because each is on
+     its own beat — twelve materials is nothing, and the chase is the whole
+     reason anybody looks at a marquee. */
+  const bulbGeo = new THREE.SphereGeometry(0.13, 6, 5);
+  const bulbs = [];
+  const ring = [];
+  const NX = Math.max(3, Math.round(w / 0.75)), NY = Math.max(2, Math.round(h / 0.75));
+  for (let i = 0; i < NX; i++) {
+    const bx = -w / 2 + (i / (NX - 1)) * w;
+    ring.push([bx, h / 2 + 0.12], [bx, -h / 2 - 0.12]);
+  }
+  for (let i = 1; i < NY; i++) {
+    const by = -h / 2 + (i / NY) * h;
+    ring.push([-w / 2 - 0.18, by], [w / 2 + 0.18, by]);
+  }
+  ring.forEach(([bx, by], i) => {
+    const m = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({ color: 0x2a1015, fog: false }));
+    m.position.set(bx, by, 0.02);
+    g.add(m);
+    bulbs.push({ m, phase: i });
+  });
+
+  // two floodlights so the sign throws colour onto the deck
+  const glowA = new THREE.PointLight(0xff3aa0, 2.6, 20, 1.6);
+  glowA.position.set(-w / 3, 0, 1.2);
+  const glowB = new THREE.PointLight(0x3ad0ff, 2.2, 20, 1.6);
+  glowB.position.set(w / 3, 0, 1.2);
+  g.add(glowA, glowB);
+
+  const ON = new THREE.Color(0xfff0d0), OFF = new THREE.Color(0x2a1015);
+  g.userData.tick = (t) => {
+    const step = Math.floor(t * 7);
+    for (const b of bulbs) {
+      const lit = ((b.phase + step) % 3) === 0;
+      b.m.material.color.copy(lit ? ON : OFF);
+    }
+    const pulse = 0.75 + Math.sin(t * 2.3) * 0.25;
+    glowA.intensity = 2.6 * pulse;
+    glowB.intensity = 2.2 * (1.5 - pulse);
+    // a tube that never quite settled
+    board.material.opacity = 1;
+    const brownout = Math.sin(t * 37) > 0.965 ? 0.35 : 1;
+    board.material.color.setScalar(brownout);
+    back.material.color.setScalar(brownout);
+  };
+  return g;
+}
+
 /* ---------- a slot machine ---------- */
 function buildSlot(rng, mats, index) {
   const g = new THREE.Group();
@@ -84,27 +205,45 @@ function buildSlot(rng, mats, index) {
   P.push(tint(box(1.1, 1.5, 0.8, 'planks', { pos: [0, 0.75, 0] }), CAB));
   P.push(tint(box(1.2, 0.16, 0.9, 'planks', { pos: [0, 1.58, 0] }), TRIM));
   P.push(tint(box(1.2, 0.16, 0.9, 'planks', { pos: [0, 0.06, 0] }), TRIM));
+  // a curved crown so they are not just boxes in a row
+  P.push(tint(box(1.0, 0.5, 0.5, 'planks', { pos: [0, 1.85, 0], rot: [0.2, 0, 0] }), CAB));
   // legs
   for (const sx of [-0.42, 0.42]) {
     for (const sz of [-0.3, 0.3]) {
       P.push(tint(cyl(0.06, 0.07, 0.7, 5, 'metal', { pos: [sx, -0.35, sz] }), G(0x6a6a72)));
     }
   }
-  // the window the reels show through
-  P.push(tint(box(0.82, 0.5, 0.06, 'metal', { pos: [0, 1.0, 0.42] }), G(0x2a2018)));
+  // the bezel around the window the reels show through
+  P.push(tint(box(0.98, 0.1, 0.1, 'metal', { pos: [0, 1.27, 0.44] }), TRIM));
+  P.push(tint(box(0.98, 0.1, 0.1, 'metal', { pos: [0, 0.73, 0.44] }), TRIM));
+  for (const sx of [-0.49, 0.49]) {
+    P.push(tint(box(0.1, 0.64, 0.1, 'metal', { pos: [sx, 1.0, 0.44] }), TRIM));
+  }
+  P.push(tint(box(0.82, 0.5, 0.06, 'metal', { pos: [0, 1.0, 0.40] }), G(0x2a2018)));
+  // a coin tray at the bottom
+  P.push(tint(box(0.6, 0.16, 0.24, 'metal', { pos: [0, 0.36, 0.46] }), G(0x2a2a30)));
   g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
 
-  /* three reels, which actually turn */
+  /* Three reels that actually turn, each carrying its symbols as painted
+     bands so you can see them blur past rather than watching a blank drum. */
   const reels = [];
+  const bandTex = reelTexture();
   const REEL = new THREE.CylinderGeometry(0.21, 0.21, 0.22, 12);
   REEL.rotateZ(Math.PI / 2);
   blankUV(REEL, 'goldDark');
   for (let i = 0; i < 3; i++) {
-    const m = new THREE.Mesh(REEL.clone(), new THREE.MeshLambertMaterial({
-      color: i === 1 ? 0xe8dcc0 : 0xd8ccb0,
+    const geo = new THREE.CylinderGeometry(0.21, 0.21, 0.21, 14, 1, true);
+    geo.rotateZ(Math.PI / 2);
+    const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      map: bandTex, color: 0xffffff, side: THREE.DoubleSide,
     }));
     m.position.set(-0.24 + i * 0.24, 1.0, 0.34);
     g.add(m);
+    // the drum ends, so it does not read as an open tube
+    const cap = new THREE.Mesh(REEL.clone(), new THREE.MeshLambertMaterial({ color: 0xb8ac90 }));
+    cap.position.copy(m.position);
+    cap.scale.set(0.98, 0.96, 0.96);
+    g.add(cap);
     reels.push(m);
   }
 
@@ -123,17 +262,25 @@ function buildSlot(rng, mats, index) {
 
   // a lamp on top that flashes when it pays
   const lamp = new THREE.PointLight(0xffd24a, 0, 7, 1.8);
-  lamp.position.set(0, 1.9, 0);
+  lamp.position.set(0, 2.1, 0);
   g.add(lamp);
   const bulb = new THREE.Mesh(
     new THREE.SphereGeometry(0.11, 6, 5),
     new THREE.MeshBasicMaterial({ color: 0x5a4a20, fog: false })
   );
-  bulb.position.set(0, 1.78, 0);
+  bulb.position.set(0, 2.12, 0);
   g.add(bulb);
 
   let spin = 0, pull = 0, win = 0;
-  g.userData.spin = () => { spin = 1.6; pull = 1; };
+  const stopAt = [0, 0, 0];
+  /**
+   * @param {number[]} [result] the three symbol indices to land on, so the
+   *   drums agree with the numbers the game already decided.
+   */
+  g.userData.spin = (result) => {
+    spin = 1.6; pull = 1;
+    if (result) for (let i = 0; i < 3; i++) stopAt[i] = result[i];
+  };
   g.userData.payout = (on) => { win = on ? 2.2 : 0; };
   g.userData.tick = (t, dt = 0.016) => {
     if (pull > 0) pull = Math.max(0, pull - dt * 3);
@@ -141,8 +288,18 @@ function buildSlot(rng, mats, index) {
     if (win > 0) win = Math.max(0, win - dt);
     armPivot.rotation.x = -pull * 1.1;
     reels.forEach((r, i) => {
-      const speed = spin > 0 ? (26 - i * 6) * Math.min(1, spin * 2.2) : 0;
-      r.rotation.x += speed * dt;
+      if (spin > 0) {
+        // each drum runs down at its own rate, so they settle left to right
+        r.rotation.x += (26 - i * 6) * Math.min(1, spin * 2.2) * dt;
+      } else {
+        // ease onto the face that was decided
+        const want = -(stopAt[i] / SYMBOLS.length) * Math.PI * 2;
+        const cur = r.rotation.x % (Math.PI * 2);
+        let d = want - cur;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        r.rotation.x += d * Math.min(1, dt * 9);
+      }
     });
     const flash = win > 0 ? (Math.floor(t * 12) % 2 ? 1 : 0.2) : 0;
     lamp.intensity = 5 * flash;
@@ -152,6 +309,39 @@ function buildSlot(rng, mats, index) {
   return g;
 }
 
+/** The symbols on the drums, in order. Shared with the game's own odds. */
+export const SYMBOLS = ['COCONUT', 'ANCHOR', 'SKULL', 'IDOL', 'FISH', 'SEVEN'];
+const SYM_COL = ['#8a6a3a', '#9aa6b0', '#e0dcd0', '#ffd24a', '#5aa0c0', '#e04a3a'];
+
+/** A strip of the six symbols, wrapped round a drum. */
+function reelTexture() {
+  const c = document.createElement('canvas');
+  c.width = 32; c.height = 192;
+  const x = c.getContext('2d');
+  SYMBOLS.forEach((name, i) => {
+    const y = i * 32;
+    x.fillStyle = i % 2 ? '#efe6cc' : '#e2d7b8';
+    x.fillRect(0, y, 32, 32);
+    x.fillStyle = '#00000022'; x.fillRect(0, y + 30, 32, 2);
+    // a blunt pictogram per symbol — five colours and a shape is enough
+    x.fillStyle = SYM_COL[i];
+    if (name === 'COCONUT') { x.beginPath(); x.arc(16, y + 16, 9, 0, 6.29); x.fill(); }
+    else if (name === 'ANCHOR') { x.fillRect(14, y + 6, 4, 20); x.fillRect(8, y + 10, 16, 3); x.fillRect(7, y + 22, 18, 3); }
+    else if (name === 'SKULL') { x.fillRect(8, y + 7, 16, 13); x.fillRect(11, y + 20, 10, 5); x.fillStyle = '#221a14'; x.fillRect(11, y + 11, 4, 4); x.fillRect(17, y + 11, 4, 4); }
+    else if (name === 'IDOL') { x.fillRect(12, y + 5, 8, 8); x.fillRect(9, y + 13, 14, 13); }
+    else if (name === 'FISH') { x.beginPath(); x.ellipse(15, y + 16, 10, 6, 0, 0, 6.29); x.fill(); x.beginPath(); x.moveTo(24, y + 16); x.lineTo(30, y + 9); x.lineTo(30, y + 23); x.fill(); }
+    else { x.fillRect(7, y + 6, 18, 4); x.fillRect(17, y + 10, 5, 6); x.fillRect(13, y + 16, 5, 10); }
+  });
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
 /* ===========================================================
    THE BOAT
    =========================================================== */
@@ -159,97 +349,204 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
   const g = new THREE.Group();
   const P = [], C = [];
   const HULL = G(0x4a3a26), HULL_D = G(0x33281a), DECK = G(0x7a6242);
-  const LEN = 15, WID = 6.4;
+  /* She was a two-slot skiff and she looked like one. A gambling barge
+     wants to be the biggest thing on the water, so you can see her lit up
+     from the ridge and know the night has started. */
+  const LEN = 26, WID = 10.5;
 
   /* hull: ribs and planking, sitting low */
-  for (let i = 0; i < 9; i++) {
-    const t = i / 8;
+  for (let i = 0; i < 14; i++) {
+    const t = i / 13;
     const w = (WID / 2) * Math.sin(Math.PI * (0.2 + t * 0.7));
     for (const side of [-1, 1]) {
-      P.push(tint(box(0.26, 1.7, 0.5, 'planks', {
-        pos: [side * w, 0.45, (t - 0.5) * LEN], rot: [0, 0, side * 0.16],
+      P.push(tint(box(0.3, 2.3, 0.5, 'planks', {
+        pos: [side * w, 0.55, (t - 0.5) * LEN], rot: [0, 0, side * 0.16],
       }), HULL));
     }
   }
-  for (let i = 0; i < 10; i++) {
+  // strakes, in lengths — see the note on the deck about long thin quads
+  for (let i = 0; i < 14; i++) {
     const side = i % 2 ? 1 : -1;
-    const y = 0.25 + ((i / 2) | 0) * 0.34;
-    P.push(tint(box(0.2, 0.4, LEN * 0.94, 'planks', {
-      pos: [side * (WID / 2 - 0.1 - ((i / 2) | 0) * 0.10), y, 0], rot: [0, 0, side * 0.12],
-    }), HULL_D.clone().multiplyScalar(0.85 + rng() * 0.35)));
+    const y = 0.25 + ((i / 2) | 0) * 0.36;
+    const runs = 8, RL = (LEN * 0.94) / runs;
+    for (let k = 0; k < runs; k++) {
+      const sz = -(LEN * 0.94) / 2 + RL / 2 + k * RL;
+      P.push(tint(box(0.22, 0.42, RL - 0.03, 'planks', {
+        pos: [side * (WID / 2 - 0.1 - ((i / 2) | 0) * 0.10), y, sz], rot: [0, 0, side * 0.12],
+      }), HULL_D.clone().multiplyScalar(0.85 + rng() * 0.35)));
+    }
   }
   // transom and bow
-  P.push(tint(box(WID * 0.8, 1.5, 0.3, 'planks', { pos: [0, 0.5, LEN / 2 - 0.2] }), HULL));
-  P.push(tint(box(WID * 0.35, 1.5, 0.3, 'planks', { pos: [0, 0.5, -LEN / 2 + 0.2] }), HULL));
-
-  /* deck */
-  P.push(tint(box(WID - 0.5, 0.3, LEN - 0.8, 'planks', { pos: [0, 1.3, 0] }), DECK));
-  for (let i = 0; i < 12; i++) {
-    P.push(tint(box(0.16, 0.06, LEN - 1.0, 'planks', {
-      pos: [-WID / 2 + 0.5 + i * ((WID - 1) / 11), 1.47, 0],
-    }), G(0x5f4a2e)));
+  P.push(tint(box(WID * 0.8, 2.0, 0.35, 'planks', { pos: [0, 0.7, LEN / 2 - 0.2] }), HULL));
+  P.push(tint(box(WID * 0.35, 2.0, 0.35, 'planks', { pos: [0, 0.7, -LEN / 2 + 0.2] }), HULL));
+  // a white boot-top stripe, because she is trying
+  for (let k = 0; k < 10; k++) {
+    const sz = -(LEN * 0.9) / 2 + (LEN * 0.9) / 20 + k * (LEN * 0.9) / 10;
+    P.push(tint(box(WID + 0.1, 0.22, (LEN * 0.9) / 10 - 0.02, 'planks', { pos: [0, 1.12, sz] }),
+      G(0xd8cfae)));
   }
 
-  /* a low cabin at the stern with the awning over the slots */
-  P.push(tint(box(WID - 1.4, 1.9, 4.2, 'planks', { pos: [0, 2.4, 4.2] }), G(0x6a5230)));
-  P.push(tint(box(WID - 1.0, 0.2, 4.6, 'planks', { pos: [0, 3.45, 4.2] }), G(0x8a2018)));
+  /* ---------- deck ----------
+     Built in bays rather than as three twenty-five-metre slivers. The
+     atlas is mipmapped, and a quad that is twenty-five metres long and
+     sixteen centimetres wide, seen at a grazing angle down the deck,
+     selects a mip so coarse that a cell collapses to one texel of the
+     WHOLE sheet — you get rainbow stripes of jungle green and glass blue
+     running away from you. Keep every face roughly square and it cannot
+     happen. */
+  const BAYS = 12, BAY = (LEN - 0.8) / BAYS;
+  for (let i = 0; i < BAYS; i++) {
+    const bz = -(LEN - 0.8) / 2 + BAY / 2 + i * BAY;
+    P.push(tint(box(WID - 0.5, 0.3, BAY - 0.02, 'planks', { pos: [0, 1.3, bz] }),
+      DECK.clone().multiplyScalar(0.9 + rng() * 0.2)));
+    // caulked seams between the bays, which is what reads as planking
+    P.push(tint(box(WID - 0.5, 0.05, 0.06, 'planks', { pos: [0, 1.46, bz + BAY / 2] }), G(0x3f3018)));
+  }
+  // a red carpet up the middle, in runners rather than one long strip
+  const CARPET = LEN - 5, CBAYS = 9, CB = CARPET / CBAYS;
+  for (let i = 0; i < CBAYS; i++) {
+    const bz = 0.4 - CARPET / 2 + CB / 2 + i * CB;
+    P.push(tint(box(2.2, 0.06, CB - 0.02, 'clothTat', { pos: [0, 1.5, bz] }),
+      G(0x8a1a18).multiplyScalar(0.88 + rng() * 0.24)));
+    for (const sx of [-1.15, 1.15]) {
+      P.push(tint(box(0.14, 0.08, CB - 0.02, 'clothTat', { pos: [sx, 1.51, bz] }), G(0xc39a2c)));
+    }
+  }
+
+  /* the cabin at the stern: two storeys now, with a balcony */
+  P.push(tint(box(WID - 1.8, 2.6, 6.0, 'planks', { pos: [0, 2.75, 7.0] }), G(0x6a5230)));
+  P.push(tint(box(WID - 1.2, 0.25, 6.4, 'planks', { pos: [0, 4.18, 7.0] }), G(0x8a2018)));
+  P.push(tint(box(WID - 3.4, 2.0, 4.4, 'planks', { pos: [0, 5.35, 7.4] }), G(0x7a5c38)));
+  P.push(tint(box(WID - 2.8, 0.22, 4.8, 'planks', { pos: [0, 6.46, 7.4] }), G(0x8a2018)));
+  // balcony rail round the upper deck
+  for (let i = 0; i <= 10; i++) {
+    const bz = 4.3 + (i / 10) * 5.4;
+    for (const side of [-1, 1]) {
+      P.push(tint(cyl(0.05, 0.06, 0.8, 4, 'driftwood',
+        { pos: [side * (WID / 2 - 1.0), 4.7, bz] }), G(0x6a5230)));
+    }
+  }
+  // portholes down the cabin sides
+  for (let i = 0; i < 4; i++) {
+    for (const side of [-1, 1]) {
+      P.push(tint(cyl(0.28, 0.28, 0.12, 8, 'metal', {
+        pos: [side * (WID / 2 - 0.9), 3.0, 5.0 + i * 1.3], rot: [0, 0, Math.PI / 2],
+      }), G(0xc39a2c)));
+      P.push(tint(cyl(0.2, 0.2, 0.16, 8, 'glass', {
+        pos: [side * (WID / 2 - 0.94), 3.0, 5.0 + i * 1.3], rot: [0, 0, Math.PI / 2],
+      }), G(0xffd8a0)));
+    }
+  }
   // shutters
   for (const sx of [-1, 1]) {
-    P.push(tint(box(0.1, 0.9, 1.2, 'planks', { pos: [sx * (WID / 2 - 0.7), 2.5, 4.2] }), G(0x3a2a18)));
+    P.push(tint(box(0.1, 1.2, 1.6, 'planks', { pos: [sx * (WID / 2 - 1.1), 2.9, 4.0] }), G(0x3a2a18)));
   }
 
-  /* rail posts and rope */
-  for (let i = 0; i <= 8; i++) {
-    const z = -LEN / 2 + 1 + (i / 8) * (LEN - 2);
+  /* rail posts down both sides */
+  for (let i = 0; i <= 12; i++) {
+    const z = -LEN / 2 + 1.4 + (i / 12) * (LEN - 2.8);
     for (const side of [-1, 1]) {
-      const w = (WID / 2 - 0.35) * Math.sin(Math.PI * (0.22 + (i / 8) * 0.66)) / Math.sin(Math.PI * 0.55);
-      P.push(tint(cyl(0.06, 0.07, 0.9, 5, 'driftwood', { pos: [side * w, 1.85, z] }), G(0x6a5230)));
+      const w = (WID / 2 - 0.4) * Math.sin(Math.PI * (0.22 + (i / 12) * 0.66)) / Math.sin(Math.PI * 0.55);
+      P.push(tint(cyl(0.06, 0.07, 1.0, 5, 'driftwood', { pos: [side * w, 1.9, z] }), G(0x6a5230)));
+      P.push(tint(cyl(0.035, 0.035, (LEN - 2.8) / 12 + 0.2, 4, 'rope', {
+        pos: [side * w, 2.3, z + (LEN - 2.8) / 24], rot: [Math.PI / 2, 0, 0],
+      }), G(0x9a8a66)));
     }
   }
 
   const opaque = new THREE.Mesh(mergeGeos(P), mats.opaque);
   g.add(opaque);
 
-  /* the sign, with the proprietor's name on it in full */
-  const signBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(6.0, 1.4),
-    new THREE.MeshLambertMaterial({
-      map: buildSignTexture(['THE LUCKY FLOPPER', 'T. GRADY FLOPPER, PROP.'],
-        '#3a1410', '#ffd24a'),
-      transparent: true,
-    })
-  );
-  signBoard.position.set(0, 4.25, 4.15);
-  g.add(signBoard);
-  const signFrame = [
-    tint(box(6.3, 0.16, 0.14, 'planks', { pos: [0, 5.02, 4.12] }), G(0x8a2018)),
-    tint(box(6.3, 0.16, 0.14, 'planks', { pos: [0, 3.48, 4.12] }), G(0x8a2018)),
-    tint(cyl(0.07, 0.07, 1.0, 5, 'driftwood', { pos: [-2.6, 3.9, 4.4] }), G(0x6a5230)),
-    tint(cyl(0.07, 0.07, 1.0, 5, 'driftwood', { pos: [2.6, 3.9, 4.4] }), G(0x6a5230)),
-  ];
-  g.add(new THREE.Mesh(mergeGeos(signFrame), mats.opaque));
+  /* ---------- THE SIGN ----------
+     A marquee over the bow that you can read from the beach, and a
+     vertical blade on the cabin so she is legible side-on too. */
+  const marquee = buildMarquee(mats, 'CASINO', 7.2, 2.4, '255,60,160');
+  marquee.position.set(0, 7.9, 6.0);
+  g.add(marquee);
+  // the mast it hangs from
+  {
+    const M = [];
+    for (const sx of [-3.6, 3.6]) {
+      M.push(tint(cyl(0.13, 0.16, 3.6, 6, 'metal', { pos: [sx, 8.3, 6.4] }), G(0x4a2a3a)));
+    }
+    M.push(tint(box(8.0, 0.2, 0.25, 'metal', { pos: [0, 9.5, 6.4] }), G(0x4a2a3a)));
+    g.add(new THREE.Mesh(mergeGeos(M), mats.opaque));
+  }
+  const blade = buildMarquee(mats, 'LUCKY', 4.4, 1.7, '60,220,255');
+  blade.position.set(-(WID / 2 - 0.6), 5.4, 7.4);
+  blade.rotation.y = -Math.PI / 2;
+  g.add(blade);
+  const blade2 = buildMarquee(mats, 'FLOPPER', 5.0, 1.7, '255,190,60');
+  blade2.position.set(WID / 2 - 0.6, 5.4, 7.4);
+  blade2.rotation.y = Math.PI / 2;
+  g.add(blade2);
 
-  /* the proprietor, framed */
+  /* a string of bulbs from the mast down to the bow, which is what
+     actually sells a boat as lit up */
+  const strings = [];
+  {
+    const bulbGeo = new THREE.SphereGeometry(0.1, 5, 4);
+    const COLS = [0xff4a8a, 0x4ad0ff, 0xffd24a, 0x8aff6a];
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 14; i++) {
+        const t = i / 13;
+        const z = 6.0 - t * (LEN / 2 + 4.5);
+        const sag = Math.sin(t * Math.PI) * 0.9;
+        const m = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({
+          color: COLS[i % 4], fog: false,
+        }));
+        m.position.set(side * (0.6 + t * (WID / 2 - 1.2)), 9.2 - t * 6.4 - sag, z);
+        g.add(m);
+        strings.push({ m, base: COLS[i % 4], phase: i + (side > 0 ? 2 : 0) });
+      }
+    }
+  }
+
+  /* ---------- THE PROPRIETOR ----------
+     Life-size, in a gilt frame on the cabin front where you cannot miss
+     him, with a plaque under it you can walk up and read. */
   const portrait = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.5, 1.5),
+    new THREE.PlaneGeometry(2.6, 2.6),
     new THREE.MeshLambertMaterial({ map: flopperPortrait() })
   );
-  portrait.position.set(0, 2.7, 2.06);
+  portrait.position.set(0, 3.1, 3.94);
   g.add(portrait);
-  const frameParts = [
-    tint(box(1.75, 0.14, 0.1, 'planks', { pos: [0, 3.48, 2.02] }), G(0xc39a2c)),
-    tint(box(1.75, 0.14, 0.1, 'planks', { pos: [0, 1.92, 2.02] }), G(0xc39a2c)),
-    tint(box(0.14, 1.7, 0.1, 'planks', { pos: [-0.8, 2.7, 2.02] }), G(0xc39a2c)),
-    tint(box(0.14, 1.7, 0.1, 'planks', { pos: [0.8, 2.7, 2.02] }), G(0xc39a2c)),
-  ];
+  const frameParts = [];
+  for (const [fw, fh, fx, fy] of [[3.1, 0.24, 0, 4.52], [3.1, 0.24, 0, 1.68],
+    [0.24, 3.1, -1.43, 3.1], [0.24, 3.1, 1.43, 3.1]]) {
+    frameParts.push(tint(box(fw, fh, 0.16, 'planks', { pos: [fx, fy, 3.92] }), G(0xc39a2c)));
+  }
+  // a scrolled crest over the top of the frame
+  frameParts.push(tint(box(1.2, 0.4, 0.2, 'planks', { pos: [0, 4.82, 3.92] }), G(0xd8b23a)));
+  frameParts.push(tint(cyl(0.2, 0.2, 0.2, 8, 'goldDark', { pos: [0, 5.06, 3.92], rot: [Math.PI / 2, 0, 0] }), G(0xffd24a)));
   g.add(new THREE.Mesh(mergeGeos(frameParts), mats.opaque));
 
-  /* two slot machines, bolted down facing the bow */
+  // the brass plaque, which is the thing you actually interact with
+  const plaque = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.4, 0.62),
+    new THREE.MeshBasicMaterial({
+      map: buildSignTexture(['TIM GRADY FLOPPER', 'PROPRIETOR'], '#4a3410', '#ffd88a'),
+      fog: false,
+    })
+  );
+  plaque.position.set(0, 1.34, 3.95);
+  g.add(plaque);
+  // two picture lights on the frame
+  const picLight = new THREE.PointLight(0xffd8a0, 1.8, 9, 2);
+  picLight.position.set(0, 4.9, 4.6);
+  g.add(picLight);
+
+  /* where you stand to look at him — used for the walk-up prompt */
+  g.userData.portrait = { x: 0, z: 5.6 };
+
+  /* four slot machines, two to a side, all of them live */
   const slots = [];
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 4; i++) {
     const s = buildSlot(rng, mats, i);
-    s.position.set(-1.3 + i * 2.6, 1.45, 1.0);
-    s.rotation.y = Math.PI;
+    const side = i < 2 ? -1 : 1;
+    s.position.set(side * 2.9, 1.45, -1.0 + (i % 2) * 2.6);
+    // they face inward across the carpet, so you play with your back to the rail
+    s.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
     g.add(s);
     slots.push(s);
   }
@@ -258,7 +555,8 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
   /* torches along the rail — the whole point of a sleazy boat is that it
      is lit like one */
   const flames = [];
-  for (const [tx, tz] of [[-2.5, -5.4], [2.5, -5.4], [-2.7, -1.0], [2.7, -1.0], [-2.6, 6.0], [2.6, 6.0]]) {
+  for (const [tx, tz] of [[-3.9, -9.4], [3.9, -9.4], [-4.4, -4.0], [4.4, -4.0],
+    [-4.3, 1.6], [4.3, 1.6], [-4.0, 10.4], [4.0, 10.4]]) {
     const post = new THREE.Mesh(mergeGeos([
       tint(cyl(0.09, 0.11, 1.9, 6, 'driftwood', { pos: [0, 0.95, 0] }), G(0x6a5230)),
       tint(cyl(0.22, 0.14, 0.2, 8, 'metal', { pos: [0, 1.95, 0] }), G(0x8a6a2a)),
@@ -275,9 +573,21 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
   }
   g.userData.flames = flames;
 
+  const OFF = new THREE.Color(0x201018);
+  const _c = new THREE.Color();
   g.userData.tick = (t, dt = 0.016) => {
     for (const f of flames) f.userData.tick?.(t, dt);
     for (const s of slots) s.userData.tick(t, dt);
+    marquee.userData.tick(t);
+    blade.userData.tick(t + 0.7);
+    blade2.userData.tick(t + 1.4);
+    picLight.intensity = 1.6 + Math.sin(t * 5.1) * 0.3;
+    // the festoon runs the other way to the marquee, so they never sync up
+    const step = Math.floor(t * 5);
+    for (const b of strings) {
+      const lit = ((b.phase + step) % 4) !== 0;
+      b.m.material.color.copy(lit ? _c.setHex(b.base) : OFF);
+    }
     // she rolls at anchor
     g.rotation.z = Math.sin(t * 0.55) * 0.022;
     g.rotation.x = Math.sin(t * 0.41 + 1) * 0.014;

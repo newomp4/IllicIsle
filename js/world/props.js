@@ -566,45 +566,63 @@ export function findFlatGround(x, z, foot, opts = {}) {
  * it — a path with trees standing in it is not a path.
  */
 export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
-  const { width = 2.6, wobble = 5, segs = 26, rng = Math.random } = opts;
-  const pts = [];
+  const { width = 4.2, wobble = 6, rng = Math.random } = opts;
   const dx = bx - ax, dz = bz - az;
   const len = Math.hypot(dx, dz) || 1;
-  const nx = -dz / len, nz = dx / len;          // sideways
+  /* One segment every two metres, so the strip follows the ground closely
+     instead of spanning humps and cutting into them. A path that is a few
+     long quads will always clip through a slope somewhere along it. */
+  const segs = Math.max(8, Math.round(len / 2));
+  const nx = -dz / len, nz = dx / len;
   const phase = rng() * 6.283;
+
+  const pts = [];
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
-    // ease the wander to nothing at both ends so it meets its landmarks
     const sway = Math.sin(t * 3.1 + phase) * wobble * Math.sin(t * Math.PI);
     pts.push({ x: ax + dx * t + nx * sway, z: az + dz * t + nz * sway });
   }
 
+  /* Three ribbons: a packed middle and a scuffed edge either side, so it
+     has an edge rather than stopping dead in a straight line. */
   const pos = [], uv = [], col = [];
-  /* Bare earth under a closed canopy is dark, and a dark ribbon on dark
-     ground is not a path anybody will follow. These are pitched well
-     lighter than the real thing so they read from a distance. */
-  const dirt = new THREE.Color(0xb09062), dirt2 = new THREE.Color(0xd0b487);
   const c = new THREE.Color();
+  const MID = new THREE.Color(0x8a7048), EDGE = new THREE.Color(0x6f5c3c);
+
+  const emit = (px, pz, lift, shade, u, v) => {
+    pos.push(px, heightAt(px, pz) + lift, pz);
+    uv.push(u, v);
+    c.copy(shade < 0.5 ? EDGE : MID).multiplyScalar(0.82 + rng() * 0.3);
+    col.push(c.r, c.g, c.b);
+  };
+
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[i], p1 = pts[i + 1];
     const sx = p1.x - p0.x, sz = p1.z - p0.z;
     const sl = Math.hypot(sx, sz) || 1;
-    const ox = (-sz / sl) * width * 0.5, oz = (sx / sl) * width * 0.5;
-    const quad = [
-      [p0.x - ox, p0.z - oz], [p0.x + ox, p0.z + oz],
-      [p1.x + ox, p1.z + oz], [p1.x - ox, p1.z - oz],
-    ];
-    const tri = [0, 1, 2, 0, 2, 3];
-    for (const k of tri) {
-      const [qx, qz] = quad[k];
-      pos.push(qx, heightAt(qx, qz) + 0.06, qz);
-      uv.push(0, 0);
-      // edges are paler where the sand and leaf litter creep back in
-      const edge = (k === 0 || k === 3) ? 0.5 : 0.5;
-      c.copy(dirt).lerp(dirt2, rng() * 0.6 + edge * 0.2);
-      col.push(c.r, c.g, c.b);
-    }
+    const ox = (-sz / sl), oz = (sx / sl);
+    // the strip breathes a little along its length so it is not a ruler
+    const w0 = width * (0.82 + Math.sin(i * 0.7) * 0.18);
+    const w1 = width * (0.82 + Math.sin((i + 1) * 0.7) * 0.18);
+
+    const band = (fromA, toA, fromB, toB, shadeA, shadeB) => {
+      // two triangles per band, draped vertex by vertex
+      const q = [
+        [p0.x + ox * w0 * fromA, p0.z + oz * w0 * fromA, shadeA, 0, 0],
+        [p0.x + ox * w0 * toA, p0.z + oz * w0 * toA, shadeB, 1, 0],
+        [p1.x + ox * w1 * toB, p1.z + oz * w1 * toB, shadeB, 1, 1],
+        [p1.x + ox * w1 * fromB, p1.z + oz * w1 * fromB, shadeA, 0, 1],
+      ];
+      for (const k of [0, 1, 2, 0, 2, 3]) {
+        const [qx, qz, sh, u, v] = q[k];
+        emit(qx, qz, 0.05, sh, u, v);
+      }
+    };
+    band(-0.5, -0.25, -0.5, -0.25, 0.2, 0.8);   // left scuff
+    band(-0.25, 0.25, -0.25, 0.25, 0.9, 0.9);   // the tread
+    band(0.25, 0.5, 0.25, 0.5, 0.8, 0.2);       // right scuff
   }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
@@ -612,8 +630,13 @@ export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
   g.computeVertexNormals();
   applyCell(g, 'dirt');
 
-  // unlit, so the canopy shadow does not swallow it
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, map: atlas });
+  /* Lit, not unlit: an unlit strip reads as a painted stripe and glows in
+     the dark. It is lifted five centimetres and drawn with a polygon
+     offset so it sits ON the ground rather than fighting it. */
+  const mat = new THREE.MeshLambertMaterial({
+    vertexColors: true, map: atlas,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
   const mesh = new THREE.Mesh(g, mat);
   mesh.renderOrder = 1;
   mesh.userData.line = pts;

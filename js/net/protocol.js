@@ -24,6 +24,7 @@ export const C = {
   SNAP:       'c.snap',       // { yes }        a snap vote answer
   PURSE:      'c.purse',      // { coins }      tell the host what you are carrying
   PERK:       'c.perk',       // { perk, on }   something bought that others must see
+  LEDGER:     'c.ledger',     // {}             ask what everybody is carrying
   SETTINGS:   'c.settings',   // host-only UI echo; ignored from clients
 };
 
@@ -53,7 +54,8 @@ export const S = {
   CHAT:       's.chat',       // { from, text, kind }
   VOTES:      's.votes',      // { counts, voted }
   EXILE:      's.exile',      // { targetId | null, wasAgent, reveal }
-  SABOTAGE:   's.sabotage',   // { kind, endsAt }
+  SABOTAGE:   's.sabotage',   // { kind, endsAt, half }  half = where it came from
+  LEDGER:     's.ledger',     // { rows: [[id, coins]] }  PRIVATE, the command table
   FIXPROGRESS: 's.fixprog',   // { kind, done, need }
   FIXED:      's.fixed',      // { kind }
   OVER:       's.over',       // { winner, agents, reason }

@@ -14,7 +14,7 @@ import { drawRelicIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
-import { STOCK, stockFor, SANCTUARY_R } from '../mp/market.js';
+import { STOCK, stockFor, SANCTUARY_R, VENDOR_IDS } from '../mp/market.js';
 
 // the minigames borrow the one font everything else is set in
 bindText(drawText);
@@ -180,7 +180,17 @@ export class ScreenStack {
     return def?.paste ? !!def.paste(text, s, this.game, this) : false;
   }
 
-  update(dt) { this.t += dt; if (this.top) this.top.t += dt; }
+  update(dt) {
+    this.t += dt;
+    const s = this.top;
+    if (!s) return;
+    s.t += dt;
+    /* A screen that runs a state machine (a slot spinning down, a reveal
+       counting itself out) needs a clock that is not the draw call — draw
+       must stay a pure function of state or it misbehaves the moment a
+       frame is dropped. */
+    SCREENS[s.name]?.tick?.(s, this.game, dt, s.t);
+  }
 
   draw(x, W, H) {
     this._rows = [];
@@ -382,8 +392,11 @@ export const SCREENS = {
       }
 
       let rows = [];
+      if (g.mp.dev) {
+        drawText(x, 'DEV MODE', { x: W / 2, y: b.top + 33, scale: 1, align: 'center', color: JADE });
+      }
       if (g.isHost) {
-        const can = players.length >= 3;
+        const can = players.length >= (g.mp.dev ? 1 : 3);
         rows = menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS'], s.sel, W / 2, b.bottom - 26, t, { width: 150 });
         if (!can) drawText(x, 'THREE ASHORE AT LEAST, TEN AT MOST',
           { x: W / 2, y: b.bottom - 40, scale: 1, align: 'center', color: DIM });
@@ -743,10 +756,20 @@ export const SCREENS = {
 
   /* ---------------- THE COMMAND TABLE ---------------- */
   mpTable: {
-    init(s) { s.tab = 0; },
+    init(s) {
+      s.tab = s.tab || 0;
+      s.boot = 0;            // the terminal warming up
+      s.asked = 0;
+    },
     draw(x, W, H, s, g, t) {
       const d = g.bunkerReadout ? g.bunkerReadout() : null;
       if (!d) return [];
+      const TABS = ['PLOT', 'VITALS', 'LEDGER', 'LOG'];
+
+      /* Ask the host for the ledger the moment the table is open, and keep
+         it fresh. The request is answered privately; nobody upstairs learns
+         that anybody looked. */
+      if (!s.asked || t - s.asked > 3) { s.asked = t; g.requestLedger?.(); }
 
       /* A screen from a room nobody has been in for thirty years: phosphor
          green, a scanline crawl, and a bloom that never quite settles. */
@@ -762,103 +785,543 @@ export const SCREENS = {
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
       const GRN = '#6fe0b8', GRN_D = '#2f7a60', GRN_L = '#c8ffe8';
+      const RED = '#ff6a5a', AMB = '#ffd24a';
       x.fillStyle = GRN_D;
       x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
       x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
 
+      /* ---- the header, with the sponsor nobody asked for ---- */
       drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: 2, color: GRN });
+      drawText(x, 'SCHWAB TECHNOLOGY', { x: 14, y: 25, scale: 1, color: GRN_D });
       drawText(x, d.bunker || '', { x: W - 14, y: 10, scale: 1, align: 'right', color: GRN_D });
       drawText(x, d.chaff ? 'SIGNAL DEGRADED' : 'SIGNAL NOMINAL', {
-        x: W - 14, y: 20, scale: 1, align: 'right',
-        color: d.chaff ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : GRN_D,
+        x: W - 14, y: 19, scale: 1, align: 'right',
+        color: d.chaff ? (Math.floor(t * 6) % 2 ? RED : '#8a2018') : GRN_D,
       });
-      x.fillStyle = GRN_D; x.fillRect(14, 28, W - 28, 1);
+      drawText(x, `FLOPPER ${d.flopper}`, {
+        x: W - 14, y: 28, scale: 1, align: 'right', color: GRN_D,
+      });
 
-      /* left: vitals */
-      const LX = 12, LW = 116;
-      let y = 36;
-      drawText(x, 'VITALS', { x: LX, y, scale: 1, color: GRN_D }); y += 11;
-      for (const p of d.roster) {
-        const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
-        x.fillStyle = p.alive ? hex : '#2a3a34';
-        x.fillRect(LX, y, 6, 6);
-        let nm = p.name;
-        while (nm.length > 1 && textWidth(nm, 1) > LW - 44) nm = nm.slice(0, -1);
-        drawText(x, nm, { x: LX + 10, y, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
-        // a heartbeat, or a flat line
-        const bx = LX + LW - 30;
-        x.fillStyle = p.alive ? GRN : '#3f5a52';
-        if (p.alive) {
-          const ph = (t * 2.2 + p.name.length) % 1;
-          for (let i = 0; i < 26; i++) {
-            const u = i / 26;
-            let hgt = 0;
-            const dd = Math.abs(u - ph);
-            if (dd < 0.05) hgt = 4; else if (dd < 0.10) hgt = 2;
-            if (hgt) x.fillRect(bx + i, y + 3 - hgt, 1, hgt * 2);
-            else x.fillRect(bx + i, y + 3, 1, 1);
+      /* ---- tabs ---- */
+      let tx = 14;
+      const TOP = 40;
+      TABS.forEach((name, i) => {
+        const wd = textWidth(name, 1) + 12;
+        const on = s.tab === i;
+        if (on) { x.fillStyle = '#0d3227'; x.fillRect(tx, TOP - 3, wd, 12); }
+        x.fillStyle = on ? GRN : GRN_D;
+        x.fillRect(tx, TOP + 8, wd, 1);
+        drawText(x, name, { x: tx + 6, y: TOP, scale: 1, color: on ? GRN_L : GRN_D });
+        tx += wd + 4;
+      });
+      x.fillStyle = GRN_D; x.fillRect(14, TOP + 8, W - 28, 1);
+
+      const BODY_T = TOP + 16, BODY_B = H - 44;
+
+      /* =====================================================
+         PLOT — the island, everybody on it, and where the last
+         sabotage came from.
+         ===================================================== */
+      if (s.tab === 0) {
+        const PW = W - 28, PH = BODY_B - BODY_T;
+        const px0 = 14, py0 = BODY_T;
+        x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(px0, py0, PW, PH);
+
+        const cx = px0 + PW / 2, cy = py0 + PH / 2;
+        const R = Math.min(PW, PH) / 2 - 4;
+        const K = R / 205;                       // world units -> screen
+
+        /* The half the sabotage came from, washed red and pulsing. Drawn
+           under everything else so the pips still read on top of it. */
+        if (d.half) {
+          const pulse = 0.10 + Math.abs(Math.sin(t * 2.6)) * 0.14;
+          x.fillStyle = `rgba(200,40,30,${pulse.toFixed(3)})`;
+          if (d.half === 'EAST') x.fillRect(cx, py0, px0 + PW - cx, PH);
+          else if (d.half === 'WEST') x.fillRect(px0, py0, cx - px0, PH);
+          else if (d.half === 'SOUTH') x.fillRect(px0, cy, PW, py0 + PH - cy);
+          else x.fillRect(px0, py0, PW, cy - py0);
+          // a hatched edge along the dividing line
+          x.fillStyle = `rgba(255,90,70,${(0.4 + pulse).toFixed(2)})`;
+          if (d.half === 'EAST' || d.half === 'WEST') {
+            for (let yy = py0; yy < py0 + PH; yy += 3) x.fillRect(cx - 1, yy, 2, 2);
+          } else {
+            for (let xx = px0; xx < px0 + PW; xx += 3) x.fillRect(xx, cy - 1, 2, 2);
           }
-        } else {
-          x.fillRect(bx, y + 3, 26, 1);
         }
-        y += 10;
-      }
-      y += 3;
-      drawText(x, `${d.alive} OF ${d.total} BREATHING`, { x: LX, y, scale: 1, color: GRN });
 
-      /* right: the plot */
-      const RX = LX + LW + 8, RW = W - RX - 12, RT = 36, RB = H - 48;
-      x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(RX, RT, RW, RB - RT);
-      x.fillStyle = GRN_D;
-      x.fillRect(RX, RT, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
-      x.fillRect(RX, RT, 1, RB - RT); x.fillRect(RX + RW - 1, RT, 1, RB - RT);
-
-      const cx = RX + RW / 2, cy = RT + (RB - RT) / 2;
-      const R = Math.min(RW, RB - RT) / 2 - 6;
-      // the island, as rings and a sweep
-      for (let i = 1; i <= 3; i++) {
-        x.strokeStyle = `rgba(47,122,96,${0.7 - i * 0.15})`;
-        x.lineWidth = 1;
-        x.beginPath(); x.arc(cx, cy, (R * i) / 3, 0, Math.PI * 2); x.stroke();
-      }
-      x.strokeStyle = 'rgba(47,122,96,.5)';
-      x.beginPath(); x.moveTo(cx - R, cy); x.lineTo(cx + R, cy);
-      x.moveTo(cx, cy - R); x.lineTo(cx, cy + R); x.stroke();
-      // the sweep
-      const a0 = t * 1.1;
-      for (let i = 0; i < 22; i++) {
-        const a = a0 - i * 0.045;
-        x.strokeStyle = `rgba(111,224,184,${(0.30 * (1 - i / 22)).toFixed(3)})`;
-        x.beginPath(); x.moveTo(cx, cy);
-        x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
-        x.stroke();
-      }
-      // and everybody on it
-      const K = R / 190;
-      for (const p of d.roster) {
-        const px = cx + p.x * K, py = cy + p.z * K;
-        const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
-        if (p.alive) {
-          x.fillStyle = hex;
-          x.fillRect(Math.round(px) - 2, Math.round(py) - 2, 5, 5);
-          x.fillStyle = GRN_L;
-          x.fillRect(Math.round(px) - 1, Math.round(py) - 1, 3, 3);
-        } else {
-          x.fillStyle = '#8a2018';
-          x.fillRect(Math.round(px) - 3, Math.round(py), 7, 1);
-          x.fillRect(Math.round(px), Math.round(py) - 3, 1, 7);
+        // the coastline: a lumpy ring, not a circle
+        x.strokeStyle = 'rgba(47,122,96,.85)'; x.lineWidth = 1;
+        x.beginPath();
+        for (let i = 0; i <= 48; i++) {
+          const a = (i / 48) * Math.PI * 2;
+          const rr = R * (0.90 + Math.sin(a * 3 + 0.7) * 0.045 + Math.sin(a * 5 - 1.2) * 0.03);
+          const qx = cx + Math.cos(a) * rr, qy = cy + Math.sin(a) * rr;
+          if (i === 0) x.moveTo(qx, qy); else x.lineTo(qx, qy);
         }
+        x.closePath(); x.stroke();
+        // the interior, one shade up from the sea
+        x.fillStyle = 'rgba(20,70,54,.5)'; x.fill();
+        // the ridge, as a couple of contours
+        x.strokeStyle = 'rgba(47,122,96,.45)';
+        for (const rr of [R * 0.52, R * 0.3]) {
+          x.beginPath();
+          for (let i = 0; i <= 30; i++) {
+            const a = (i / 30) * Math.PI * 2;
+            const q = rr * (1 + Math.sin(a * 4 + 2) * 0.12);
+            const qx = cx - R * 0.12 + Math.cos(a) * q, qy = cy - R * 0.16 + Math.sin(a) * q;
+            if (i === 0) x.moveTo(qx, qy); else x.lineTo(qx, qy);
+          }
+          x.closePath(); x.stroke();
+        }
+        // compass
+        x.fillStyle = GRN_D;
+        drawText(x, 'N', { x: cx, y: py0 + 2, scale: 1, align: 'center', color: GRN_D });
+        drawText(x, 'S', { x: cx, y: py0 + PH - 9, scale: 1, align: 'center', color: GRN_D });
+        drawText(x, 'W', { x: px0 + 3, y: cy - 3, scale: 1, color: GRN_D });
+        drawText(x, 'E', { x: px0 + PW - 8, y: cy - 3, scale: 1, color: GRN_D });
+
+        // the sweep
+        const a0 = t * 1.1;
+        for (let i = 0; i < 22; i++) {
+          const a = a0 - i * 0.045;
+          x.strokeStyle = `rgba(111,224,184,${(0.26 * (1 - i / 22)).toFixed(3)})`;
+          x.beginPath(); x.moveTo(cx, cy);
+          x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+          x.stroke();
+        }
+
+        // the places worth knowing
+        for (const m of (d.marks || [])) {
+          const mx = Math.round(cx + m.x * K), my = Math.round(cy + m.z * K);
+          x.fillStyle = m.kind === 'post' ? AMB : 'rgba(120,190,165,.75)';
+          if (m.kind === 'post') {
+            x.fillRect(mx - 3, my - 3, 7, 1); x.fillRect(mx - 3, my + 3, 7, 1);
+            x.fillRect(mx - 3, my - 3, 1, 7); x.fillRect(mx + 3, my - 3, 1, 7);
+          } else {
+            x.fillRect(mx - 1, my - 1, 3, 3);
+          }
+          if (m.label) {
+            drawText(x, m.label, {
+              x: mx, y: my + 5, scale: 1, align: 'center',
+              color: m.kind === 'post' ? AMB : 'rgba(90,150,130,.9)', shadow: false,
+            });
+          }
+        }
+
+        // and everybody on it
+        for (const p of d.roster) {
+          const qx = Math.round(cx + p.x * K), qy = Math.round(cy + p.z * K);
+          const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+          if (p.alive) {
+            // a soft return that breathes, so live pips read as live
+            const br = 2 + (Math.sin(t * 3 + qx) > 0 ? 1 : 0);
+            x.fillStyle = hex;
+            x.fillRect(qx - br, qy - br, br * 2 + 1, br * 2 + 1);
+            x.fillStyle = GRN_L;
+            x.fillRect(qx - 1, qy - 1, 3, 3);
+          } else {
+            x.fillStyle = '#8a2018';
+            x.fillRect(qx - 3, qy, 7, 1);
+            x.fillRect(qx, qy - 3, 1, 7);
+          }
+          if (p.me) {
+            x.strokeStyle = GRN_L; x.lineWidth = 1;
+            x.strokeRect(qx - 4.5, qy - 4.5, 9, 9);
+          }
+        }
+
+        if (d.half) {
+          // on its own bar, so it never lands on top of a place name
+          const msg2 = `LAST SABOTAGE ORIGINATED ${d.half}`;
+          const mw = textWidth(msg2, 1) + 10;
+          x.fillStyle = 'rgba(4,14,10,.92)';
+          x.fillRect(Math.round(cx - mw / 2), py0 + PH - 12, mw, 11);
+          x.fillStyle = 'rgba(200,60,45,.6)';
+          x.fillRect(Math.round(cx - mw / 2), py0 + PH - 12, mw, 1);
+          drawText(x, msg2, {
+            x: cx, y: py0 + PH - 10, scale: 1, align: 'center',
+            color: Math.floor(t * 4) % 2 ? RED : '#a83a2a',
+          });
+        }
+      }
+
+      /* =====================================================
+         VITALS — who is breathing, with a trace each.
+         ===================================================== */
+      if (s.tab === 1) {
+        let y = BODY_T + 4;
+        const COLW = (W - 32) / 2;
+        d.roster.forEach((p, i) => {
+          const col = i % 2, row = (i / 2) | 0;
+          const ox = 14 + col * (COLW + 4);
+          const oy = y + row * 16;
+          const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+          x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(ox, oy - 2, COLW, 14);
+          x.fillStyle = p.alive ? hex : '#2a3a34';
+          x.fillRect(ox + 2, oy + 1, 7, 7);
+          let nm = p.name;
+          while (nm.length > 1 && textWidth(nm, 1) > COLW - 52) nm = nm.slice(0, -1);
+          drawText(x, nm, { x: ox + 13, y: oy + 1, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
+          const bx = ox + COLW - 34;
+          x.fillStyle = p.alive ? GRN : '#3f5a52';
+          if (p.alive) {
+            const ph = (t * 2.2 + p.name.length) % 1;
+            for (let k = 0; k < 30; k++) {
+              const u = k / 30;
+              let hgt = 0;
+              const dd = Math.abs(u - ph);
+              if (dd < 0.05) hgt = 4; else if (dd < 0.10) hgt = 2;
+              if (hgt) x.fillRect(bx + k, oy + 4 - hgt, 1, hgt * 2);
+              else x.fillRect(bx + k, oy + 4, 1, 1);
+            }
+          } else {
+            x.fillRect(bx, oy + 4, 30, 1);
+          }
+        });
+        const rows = Math.ceil(d.roster.length / 2);
+        drawText(x, `${d.alive} OF ${d.total} BREATHING`, {
+          x: 14, y: y + rows * 16 + 6, scale: 1, color: GRN,
+        });
+      }
+
+      /* =====================================================
+         LEDGER — what everybody is carrying. The single most
+         dangerous thing in the room: a Castaway with a fortune
+         has been working, and an Agent with one has not.
+         ===================================================== */
+      if (s.tab === 2) {
+        let y = BODY_T + 4;
+        if (!d.ledger) {
+          drawText(x, 'QUERYING . . .', { x: 14, y, scale: 1, color: GRN_D });
+        } else {
+          drawText(x, 'NAME', { x: 20, y, scale: 1, color: GRN_D });
+          drawText(x, 'SYNCOIN', { x: W - 60, y, scale: 1, color: GRN_D });
+          drawText(x, 'BAR', { x: W - 130, y, scale: 1, color: GRN_D });
+          y += 11;
+          const sorted = [...d.roster].sort((a2, b2) => (b2.coins || 0) - (a2.coins || 0));
+          const top = Math.max(1, sorted[0]?.coins || 1);
+          for (const p of sorted) {
+            if (y > BODY_B - 8) break;
+            const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+            x.fillStyle = p.alive ? hex : '#2a3a34';
+            x.fillRect(14, y, 5, 7);
+            let nm = p.name + (p.me ? ' (YOU)' : '');
+            while (nm.length > 1 && textWidth(nm, 1) > 96) nm = nm.slice(0, -1);
+            drawText(x, nm, { x: 22, y, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
+            // a bar, because a column of numbers is not a picture
+            const bw = Math.round(((p.coins || 0) / top) * 64);
+            x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(W - 130, y + 1, 64, 5);
+            x.fillStyle = p.alive ? GRN : '#3f5a52';
+            x.fillRect(W - 130, y + 1, bw, 5);
+            drawText(x, p.coins == null ? '--' : String(p.coins), {
+              x: W - 20, y, scale: 1, align: 'right',
+              color: d.chaff ? RED : (p.alive ? AMB : '#5a6a62'),
+            });
+            y += 10;
+          }
+          if (d.chaff) {
+            drawText(x, 'FIGURES UNRELIABLE - CHAFF IN THE AIR', {
+              x: 14, y: y + 3, scale: 1, color: RED,
+            });
+          }
+        }
+      }
+
+      /* =====================================================
+         LOG — what the island has done, and which way it came.
+         ===================================================== */
+      if (s.tab === 3) {
+        let y = BODY_T + 4;
+        drawText(x, 'INCIDENT LOG', { x: 14, y, scale: 1, color: GRN_D }); y += 12;
+        const log = d.log || [];
+        if (!log.length) {
+          drawText(x, 'NOTHING RECORDED THIS ROUND.', { x: 14, y, scale: 1, color: '#3f5a52' });
+        }
+        for (const e of log) {
+          if (y > BODY_B - 8) break;
+          x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(14, y - 2, W - 28, 12);
+          x.fillStyle = RED; x.fillRect(14, y - 2, 2, 12);
+          drawText(x, e.name || 'SABOTAGE', { x: 22, y, scale: 1, color: GRN_L });
+          drawText(x, e.half ? `FROM THE ${e.half}` : 'ORIGIN UNKNOWN', {
+            x: W - 20, y, scale: 1, align: 'right', color: e.half ? AMB : '#3f5a52',
+          });
+          y += 14;
+        }
+        y += 4;
+        drawText(x, 'THE POST TRIANGULATES A HALF, NOT A NAME.', {
+          x: 14, y, scale: 1, color: '#3f5a52',
+        });
       }
 
       /* the strip along the bottom */
       const cell = (label, val, ox, colour) => {
-        drawText(x, label, { x: ox, y: H - 40, scale: 1, color: GRN_D });
-        drawText(x, val, { x: ox, y: H - 30, scale: 1, color: colour || GRN_L });
+        drawText(x, label, { x: ox, y: H - 38, scale: 1, color: GRN_D });
+        drawText(x, val, { x: ox, y: H - 28, scale: 1, color: colour || GRN_L });
       };
       cell('WORK', d.work, 14);
-      cell('WEATHER', d.weather, 76, d.weather === 'CLEAR' ? GRN_L : '#ffd24a');
-      cell("FERDI'S", d.shop, 148, d.shop === 'TRADING' ? GRN_L : '#ff6a5a');
-      cell('ISLAND', d.sabotage || 'NOMINAL', 214, d.sabotage ? '#ff6a5a' : GRN_L);
+      cell('WEATHER', d.weather, 76, d.weather === 'CLEAR' ? GRN_L : AMB);
+      cell("FERDI'S", d.shop, 148, d.shop === 'TRADING' ? GRN_L : RED);
+      cell('ISLAND', d.sabotage || 'NOMINAL', 214, d.sabotage ? RED : GRN_L);
+
+      footer(x, W, H, 'LEFT/RIGHT  CHANGE PAGE      ESC  STEP BACK');
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Tab') {
+        s.tab = (s.tab + 1) % 4; g.audio?.sfx('terminal'); return true;
+      }
+      if (code === 'ArrowLeft' || code === 'KeyA') {
+        s.tab = (s.tab + 3) % 4; g.audio?.sfx('terminal'); return true;
+      }
+      if (code === 'Escape' || code === 'Backspace' || code === 'KeyE') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      return true;
+    },
+  },
+
+  /* ===========================================================
+     THE LUCKY FLOPPER — a slot machine you can actually read.
+
+     The cabinet on the deck turns its drums, but from standing height
+     you could never see what landed. This is the machine's face: three
+     windows, six symbols, a paytable and an arm.
+     =========================================================== */
+  mpSlot: {
+    init(s) {
+      s.phase = 'idle';     // idle | spin | land | paid
+      s.t0 = 0;
+      s.reels = [0, 0, 0];
+      s.result = null;
+      s.win = 0;
+      s.arm = 0;
+      s.flash = 0;
+    },
+    draw(x, W, H, s, g, t) {
+      const SYM = ['COCONUT', 'ANCHOR', 'SKULL', 'IDOL', 'FISH', 'SEVEN'];
+      const COL = ['#a8843c', '#9aa6b0', '#e8e2d2', '#ffd24a', '#5aa0c0', '#e0453a'];
+      const coins = g.coins || 0;
+
+      /* the cabinet */
+      x.fillStyle = '#1a0a08'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#1a0a08', '#2a0f0c', 0.5, 2);
+      const CW = 188, CH = 158;
+      const cx0 = Math.round((W - CW) / 2), cy0 = 26;
+      // body
+      x.fillStyle = '#8a2018'; x.fillRect(cx0, cy0, CW, CH);
+      x.fillStyle = '#6a1410'; x.fillRect(cx0 + 3, cy0 + 3, CW - 6, CH - 6);
+      x.fillStyle = '#c39a2c';
+      x.fillRect(cx0, cy0, CW, 3); x.fillRect(cx0, cy0 + CH - 3, CW, 3);
+      x.fillRect(cx0, cy0, 3, CH); x.fillRect(cx0 + CW - 3, cy0, 3, CH);
+
+      // the crown, with lamps that chase
+      drawText(x, 'THE LUCKY FLOPPER', {
+        x: W / 2, y: cy0 + 8, scale: 1, align: 'center', color: '#ffd24a',
+      });
+      for (let i = 0; i < 14; i++) {
+        const lit = ((i + Math.floor(t * (s.phase === 'paid' ? 14 : 5))) % 3) === 0;
+        x.fillStyle = lit ? '#fff3c4' : '#5a2018';
+        x.fillRect(cx0 + 8 + i * 12, cy0 + 18, 4, 3);
+      }
+
+      /* --- the three windows --- */
+      const RW = 46, RH = 52, RY = cy0 + 26;
+      const gap = 6;
+      const totalW = RW * 3 + gap * 2;
+      const rx0 = Math.round(cx0 + (CW - totalW) / 2);
+      for (let i = 0; i < 3; i++) {
+        const wx = rx0 + i * (RW + gap);
+        x.fillStyle = '#0a0604'; x.fillRect(wx - 2, RY - 2, RW + 4, RH + 4);
+        x.fillStyle = '#e6dcc0'; x.fillRect(wx, RY, RW, RH);
+
+        /* Spinning: the strip is scrolling, so three neighbouring symbols
+           are drawn at an offset. Landed: one symbol, centred, still. */
+        const spinning = s.phase === 'spin' && s.t - s.t0 < 0.55 + i * 0.45;
+        const idx = s.reels[i];
+        const off = spinning ? ((t * (17 - i * 3)) % 1) : 0;
+        for (let k = -1; k <= 1; k++) {
+          const sym = SYM[(((idx + k) % 6) + 6) % 6];
+          const sy = RY + RH / 2 + k * RH - off * RH;
+          if (sy < RY - 12 || sy > RY + RH + 12) continue;
+          x.save();
+          x.beginPath(); x.rect(wx, RY, RW, RH); x.clip();
+          // the symbol's colour block, then its name under it
+          const c = COL[(((idx + k) % 6) + 6) % 6];
+          x.fillStyle = c;
+          const bw = 22, bh = 14;
+          x.fillRect(Math.round(wx + RW / 2 - bw / 2), Math.round(sy - 12), bw, bh);
+          x.fillStyle = 'rgba(0,0,0,.28)';
+          x.fillRect(Math.round(wx + RW / 2 - bw / 2), Math.round(sy - 12 + bh - 3), bw, 3);
+          drawText(x, sym, {
+            x: wx + RW / 2, y: Math.round(sy + 5), scale: 1, align: 'center',
+            color: '#2a1a10', shadow: false,
+          });
+          x.restore();
+        }
+        // the pay line across the middle
+        x.fillStyle = s.phase === 'paid' && s.win > 0
+          ? (Math.floor(t * 10) % 2 ? '#ffd24a' : '#8a2018') : 'rgba(140,40,30,.55)';
+        x.fillRect(wx, RY + RH / 2 - 1, RW, 1);
+      }
+
+      /* --- the arm, on the right of the cabinet --- */
+      {
+        const ax = cx0 + CW + 6;
+        const lean = Math.round(s.arm * 10);
+        x.fillStyle = '#b0b6bc'; x.fillRect(ax, cy0 + 44 + lean, 4, 30 - lean);
+        x.fillStyle = '#c02a1a'; x.fillRect(ax - 3, cy0 + 38 + lean, 10, 8);
+      }
+
+      /* --- the paytable --- */
+      const py0 = RY + RH + 8;
+      const PAY_H = 46;
+      x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx0 + 8, py0, CW - 16, PAY_H);
+      x.fillStyle = 'rgba(195,154,44,.5)'; x.fillRect(cx0 + 8, py0, CW - 16, 1);
+      const pay = [
+        ['3 SEVEN', '60'], ['3 IDOL', '30'], ['ANY 3 ALIKE', '15'], ['ANY 2 ALIKE', '5'],
+      ];
+      /* One column with the figures hard right. Two columns did not fit:
+         "ANY 3 ALIKE" ran under its own payout. */
+      pay.forEach((row, i) => {
+        const ry = py0 + 4 + i * 10;
+        drawText(x, row[0], { x: cx0 + 14, y: ry, scale: 1, color: '#c9b98a' });
+        // a dotted leader, so the eye gets from the name to the number
+        const lx0 = cx0 + 16 + textWidth(row[0], 1);
+        const lx1 = cx0 + CW - 16 - textWidth(row[1], 1) - 4;
+        x.fillStyle = 'rgba(195,154,44,.30)';
+        for (let dx = lx0; dx < lx1; dx += 4) x.fillRect(dx, ry + 5, 2, 1);
+        drawText(x, row[1], {
+          x: cx0 + CW - 14, y: ry, scale: 1, align: 'right', color: '#ffd24a',
+        });
+      });
+
+      /* --- purse and stake --- */
+      drawText(x, `PURSE ${coins}`, { x: 14, y: 12, scale: 1, color: coins >= 3 ? '#ffd24a' : '#e0453a' });
+      drawText(x, 'STAKE 3', { x: W - 14, y: 12, scale: 1, align: 'right', color: '#c9b98a' });
+
+      /* --- the result line --- */
+      let msg = coins >= 3 ? 'PULL THE ARM' : 'TIM DOES NOT EXTEND CREDIT';
+      let mcol = coins >= 3 ? '#c9b98a' : '#e0453a';
+      if (s.phase === 'spin') { msg = 'ROUND SHE GOES'; mcol = '#c9b98a'; }
+      if (s.phase === 'paid') {
+        if (s.win > 0) {
+          msg = `${s.win} SYNCOIN`;
+          mcol = Math.floor(t * 8) % 2 ? '#fff3c4' : '#ffd24a';
+        } else { msg = 'NOTHING'; mcol = '#8a7a52'; }
+      }
+      drawText(x, msg, { x: W / 2, y: cy0 + CH + 6, scale: 2, align: 'center', color: mcol });
+
+      footer(x, W, H, s.phase === 'spin' ? '' : 'E  PULL      ESC  WALK AWAY');
+      return [];
+    },
+    tick(s, g, dt, t) {
+      if (s.arm > 0) s.arm = Math.max(0, s.arm - dt * 3);
+      if (s.phase === 'spin' && s.t - s.t0 > 1.9) {
+        s.phase = 'paid';
+        s.reels = s.result.slice();
+        // the coins land exactly when the last drum does
+        g.settleSlot?.(s.slot, s.win);
+        if (s.win > 0) g.audio?.sfx(s.win >= 30 ? 'jackpot' : 'coin');
+        else g.audio?.sfx('deny');
+      }
+    },
+    key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+        if (s.phase === 'spin') return true;
+        const out = g.pullSlot?.(s.slot);
+        if (!out) { g.audio?.sfx('deny'); return true; }
+        s.phase = 'spin';
+        s.t0 = s.t;
+        s.result = out.result;
+        s.win = out.win;
+        s.arm = 1;
+        return true;
+      }
+      return true;
+    },
+  },
+
+  /* ===========================================================
+     TIM GRADY FLOPPER — the portrait, up close.
+     =========================================================== */
+  mpFlopper: {
+    init(s) { s.scroll = s.scroll || 0; },
+    draw(x, W, H, s, g, t) {
+      x.fillStyle = '#160a06'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#160a06', '#241009', 0.5, 2);
+
+      // the gilt frame
+      const FW = 108, FH = 108;
+      const fx = 18, fy = 30;
+      x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy - 6, FW + 12, FH + 12);
+      x.fillStyle = '#8a6a1c'; x.fillRect(fx - 3, fy - 3, FW + 6, FH + 6);
+
+      /* The man himself, painted here rather than sampled off the model —
+         the same lumps, at a size you can actually look at. */
+      x.fillStyle = '#d8d4cc'; x.fillRect(fx, fy, FW, FH);
+      const cxp = fx + FW / 2, cyp = fy + FH / 2;
+      x.fillStyle = '#b8b2a6';
+      x.beginPath(); x.arc(cxp, cyp + 3, 46, 0, 6.29); x.fill();
+      x.fillStyle = '#4a3320';
+      x.beginPath(); x.arc(cxp, cyp + 3, 41, 0, 6.29); x.fill();
+      const lump = (lx, ly, rx, ry, rot, base) => {
+        x.save(); x.translate(cxp + lx, cyp + ly); x.rotate(rot);
+        x.fillStyle = base;
+        x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, 6.29); x.fill();
+        x.fillStyle = 'rgba(150,116,74,.55)';
+        x.beginPath(); x.ellipse(-rx * 0.22, -ry * 0.3, rx * 0.55, ry * 0.42, 0, 0, 6.29); x.fill();
+        x.fillStyle = 'rgba(30,18,8,.45)';
+        x.beginPath(); x.ellipse(rx * 0.3, ry * 0.35, rx * 0.42, ry * 0.3, 0, 0, 6.29); x.fill();
+        x.restore();
+      };
+      lump(-13, -13, 25, 12, -0.5, '#5b3f24');
+      lump(14, -6, 24, 12, 0.7, '#6a4a2b');
+      lump(-3, 11, 29, 14, 0.15, '#553a21');
+      lump(10, -22, 19, 10, -0.2, '#63452a');
+      lump(-20, 11, 19, 10, 0.9, '#4d351d');
+      lump(2, -2, 20, 10, -1.1, '#6f4d2e');
+      x.fillStyle = 'rgba(220,190,140,.20)';
+      x.beginPath(); x.ellipse(cxp - 20, cyp + 25, 15, 5, -0.3, 0, 6.29); x.fill();
+      // a picture light that never quite settles
+      const glare = 0.06 + Math.abs(Math.sin(t * 1.6)) * 0.05;
+      x.fillStyle = `rgba(255,220,150,${glare.toFixed(3)})`;
+      x.fillRect(fx, fy, FW, 34);
+
+      // the plaque
+      x.fillStyle = '#4a3410'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 16);
+      x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 1);
+      drawText(x, 'T. GRADY FLOPPER', {
+        x: fx + FW / 2, y: fy + FH + 15, scale: 1, align: 'center', color: '#ffd88a',
+      });
+
+      /* the copy, to the right */
+      const TX = fx + FW + 22, TW = W - TX - 16;
+      drawText(x, 'THE PROPRIETOR', { x: TX, y: 22, scale: 2, color: '#ffd24a' });
+      x.fillStyle = '#8a6a1c'; x.fillRect(TX, 38, TW, 1);
+
+      const body = [
+        'TIM GRADY FLOPPER CAME ASHORE WITH A CRATE OF '
+        + 'FRUIT MACHINES AND NO EXPLANATION FOR EITHER.',
+        'HE HAS NEVER BEEN SEEN ON THIS DECK. THE PORTRAIT '
+        + 'IS CONSIDERED SUFFICIENT.',
+        'HOUSE RULES: THREE SYNCOIN A PULL. THE HOUSE PAYS '
+        + 'IN COIN. THE HOUSE DOES NOT PAY IN ADVICE.',
+      ];
+      let y = 46;
+      for (const para of body) {
+        for (const line of wrapText(para, TW, 1)) {
+          drawText(x, line, { x: TX, y, scale: 1, color: '#c9b98a' });
+          y += 9;
+        }
+        y += 5;
+      }
+      x.fillStyle = '#8a6a1c'; x.fillRect(TX, y, TW, 1); y += 6;
+      drawText(x, 'NO CREDIT.  NO REFUNDS.', { x: TX, y, scale: 1, color: '#e0453a' });
+      y += 11;
+      drawText(x, 'SHE WORKS NIGHTS ONLY.', { x: TX, y, scale: 1, color: '#63c6a8' });
 
       footer(x, W, H, 'ESC  STEP BACK');
       return [];
@@ -968,12 +1431,25 @@ export const SCREENS = {
 
   /* ---------------- FERDI'S, AND THE ROOM BEHIND IT ---------------- */
   mpShop: {
-    init(s, g) { s.sel = 0; s.side = 0; s.flash = 0; },
+    init(s) {
+      /* Defaults, not resets. init() runs after the pushed data has been
+         merged in, so assigning unconditionally threw away whatever the
+         caller asked for — pushing this screen straight to the back room
+         landed you on the front counter every time. */
+      s.sel = s.sel || 0;
+      s.side = s.side || 0;
+      s.flash = 0;
+    },
     draw(x, W, H, s, g, t) {
       const agent = g.amAgent;
-      const black = agent && s.side === 1;
-      const list = STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
-        : (i.side === 'open' || i.side === 'both')));
+      const black = agent && s.side === 1 && !s.vendor;
+      /* One of Ferdi's machines in the trees is not Ferdi's shop. It holds
+         whatever did not sell, it has no back room, and once it has taken
+         your coin it is empty for the rest of the round. */
+      const list = s.vendor
+        ? STOCK.filter((i) => i.side === 'open' && VENDOR_IDS.includes(i.id))
+        : STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
+          : (i.side === 'open' || i.side === 'both')));
       if (s.sel >= list.length) s.sel = 0;
       const d = list[s.sel];
       if (s.flash > 0) s.flash -= 0.016;
@@ -981,16 +1457,66 @@ export const SCREENS = {
       /* Two rooms, and they do not look alike. The front is lamplight on
          old timber; the back is a shuttered lock-up lit by one bulb. */
       if (black) {
-        x.fillStyle = '#0a0608'; x.fillRect(0, 0, W, H);
-        ditherRect(x, 0, 0, W, H, '#0a0608', '#140a0c', 0.5, 2);
-        const swing = Math.sin(t * 1.4) * 3;
-        for (let i = 7; i >= 0; i--) {
-          x.fillStyle = `rgba(150,40,30,${(0.035).toFixed(3)})`;
-          x.beginPath(); x.arc(W / 2 + swing, 6, 26 + i * 15, 0, Math.PI * 2); x.fill();
+        /* ---- THE BACK ROOM ----
+           A shuttered lock-up behind the shop: one bulb on a flex that has
+           never stopped swinging, a roller shutter half down, hazard paint
+           on the threshold and a stencil on the wall telling you what did
+           not happen here. It should feel like somewhere you are not
+           supposed to be standing. */
+        x.fillStyle = '#080506'; x.fillRect(0, 0, W, H);
+        ditherRect(x, 0, 0, W, H, '#080506', '#160b0d', 0.5, 2);
+
+        // breeze-block courses on the back wall
+        for (let ry = 0; ry < H; ry += 11) {
+          const off = ((ry / 11) | 0) % 2 ? 13 : 0;
+          x.fillStyle = 'rgba(180,120,110,.035)';
+          x.fillRect(0, ry, W, 10);
+          x.fillStyle = 'rgba(0,0,0,.30)';
+          x.fillRect(0, ry + 10, W, 1);
+          for (let rx = off; rx < W; rx += 26) x.fillRect(rx, ry, 1, 10);
         }
-        // the bulb on its flex
-        x.fillStyle = '#3a2a18'; x.fillRect(Math.round(W / 2 + swing), 0, 1, 8);
-        x.fillStyle = '#ffd88a'; x.fillRect(Math.round(W / 2 + swing) - 2, 8, 5, 4);
+
+        /* The roller shutter, most of the way down, stopped just above
+           where the header sits. Chrome never goes where type goes. */
+        const drop = 8;
+        for (let sy = 0; sy < drop; sy += 3) {
+          x.fillStyle = sy % 6 ? 'rgba(46,34,32,.95)' : 'rgba(70,52,48,.95)';
+          x.fillRect(0, sy, W, 3);
+        }
+        x.fillStyle = '#1a1210'; x.fillRect(0, drop, W, 1);
+        for (let hx = 0; hx < W; hx += 10) {
+          x.fillStyle = (hx / 10) % 2 ? 'rgba(200,160,42,.75)' : 'rgba(42,26,16,.9)';
+          x.fillRect(hx, drop + 1, 10, 2);
+        }
+
+        // the bulb hangs down the side of the room, out of the type
+        const swing = Math.sin(t * 1.4) * 4;
+        const bulbX = 26, bulbY = 62;
+        for (let i = 9; i >= 0; i--) {
+          x.fillStyle = `rgba(170,50,36,${(0.026 + i * 0.001).toFixed(3)})`;
+          x.beginPath(); x.arc(bulbX + swing, bulbY, 20 + i * 15, 0, Math.PI * 2); x.fill();
+        }
+        x.fillStyle = '#2a1c12';
+        x.fillRect(Math.round(bulbX + swing / 2), drop + 3, 1, bulbY - drop - 7);
+        x.fillStyle = '#4a3420';
+        x.fillRect(Math.round(bulbX + swing) - 3, bulbY - 4, 7, 3);
+        const glow = 0.75 + Math.sin(t * 11) * 0.12 + (Math.sin(t * 47) > 0.94 ? -0.4 : 0);
+        x.fillStyle = `rgba(255,216,138,${glow.toFixed(2)})`;
+        x.fillRect(Math.round(bulbX + swing) - 2, bulbY - 1, 5, 5);
+
+        // a chain hanging in one corner, because the room needs weight
+        for (let cy2 = drop + 6; cy2 < H - 46; cy2 += 5) {
+          x.fillStyle = 'rgba(120,110,104,.45)';
+          x.fillRect(W - 16 + (((cy2 / 5) | 0) % 2), cy2, 3, 4);
+        }
+
+        // and the light dies at the edges
+        for (let i = 0; i < 22; i++) {
+          const a = (0.055 * (1 - i / 22)).toFixed(3);
+          x.fillStyle = `rgba(0,0,0,${a})`;
+          x.fillRect(i, 0, 1, H); x.fillRect(W - 1 - i, 0, 1, H);
+          x.fillRect(0, H - 1 - i, W, 1);
+        }
       } else {
         x.fillStyle = '#120c06'; x.fillRect(0, 0, W, H);
         ditherRect(x, 0, 0, W, H, '#120c06', '#1c1208', 0.5, 2);
@@ -1006,13 +1532,28 @@ export const SCREENS = {
       x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
       x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
 
-      drawText(x, black ? 'THE BACK ROOM' : "FERDI STEINMAN'S", {
+      drawText(x, s.vendor ? "FERDI'S MACHINE" : (black ? 'THE BACK ROOM' : "FERDI STEINMAN'S"), {
         x: 14, y: 11, scale: 2, color: accent,
       });
+      if (black) {
+        // painted on the block work, well below the list
+        drawText(x, 'NOTHING WAS SOLD HERE', {
+          x: 14, y: H - 66, scale: 1, color: 'rgba(160,66,54,.55)', shadow: false,
+        });
+        drawText(x, 'NO NAMES.  NO NOTES.', {
+          x: 14, y: H - 56, scale: 1, color: 'rgba(160,66,54,.40)', shadow: false,
+        });
+        drawText(x, 'HE IS NOT HERE.', {
+          x: 14, y: H - 42, scale: 1, color: 'rgba(200,120,110,.55)', shadow: false,
+        });
+      }
+      if (s.vendor) {
+        drawText(x, 'WHATEVER DID NOT SELL', { x: 14, y: 26, scale: 1, color: '#8a7a52' });
+      }
       drawText(x, `${g.coins || 0} SYNCOIN`, {
         x: W - 14, y: 10, scale: 1, align: 'right', color: GOLD_LT,
       });
-      if (agent) {
+      if (agent && !s.vendor) {
         drawText(x, black ? 'TAB  BACK TO THE SHOP' : 'TAB  THE OTHER LIST', {
           x: W - 14, y: 21, scale: 1, align: 'right', color: black ? '#c08078' : '#8a5a52',
         });
@@ -1026,7 +1567,12 @@ export const SCREENS = {
       const rows = [];
       list.forEach((it, i) => {
         const on = i === s.sel;
-        const owned = g.hasItem?.(it.id);
+        /* Only permanent things read as HELD. A consumable you are carrying
+           can be bought again, and showing HELD next to a button that says
+           BUY FOR 13 just made the list look broken. */
+        const held = it.tag === 'PASSIVE' && g.hasItem?.(it.id);
+        const carrying = it.tag !== 'PASSIVE' && g.hasItem?.(it.id);
+        const owned = held;
         const afford = (g.coins || 0) >= it.cost;
         if (on) {
           x.fillStyle = black ? '#3a0e0b' : '#3a2a10';
@@ -1034,15 +1580,21 @@ export const SCREENS = {
           x.fillStyle = accent; x.fillRect(LX, y - 1, 2, ROW - 1);
         }
         drawShopIcon(x, it.icon, LX + 5, y, 12, on, t);
+        /* Trim against the width of the label that is actually going to sit
+           on the right. "HELD" is wider than a two-digit price, and the
+           names used to run straight into it. */
+        const right = held ? 'HELD' : (carrying ? `x1  ${it.cost}` : String(it.cost));
+        const room = LW - 26 - textWidth(right, 1) - 6;
         let nm = it.name;
-        while (nm.length > 3 && textWidth(nm, 1) > LW - 44) nm = nm.slice(0, -1);
+        while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
+        if (nm !== it.name) nm = nm.slice(0, -1) + '.';
         drawText(x, nm, {
           x: LX + 21, y: y + 1, scale: 1,
           color: owned ? '#5f7a4a' : (on ? GOLD_LT : (afford ? '#c9b98a' : '#7a6a52')),
         });
-        drawText(x, owned ? 'HELD' : String(it.cost), {
+        drawText(x, right, {
           x: LX + LW - 4, y: y + 1, scale: 1, align: 'right',
-          color: owned ? JADE : (afford ? GOLD : '#8a4a44'),
+          color: held ? JADE : (carrying ? '#8fd8b8' : (afford ? GOLD : '#8a4a44')),
         });
         rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
         y += ROW;
@@ -1096,15 +1648,28 @@ export const SCREENS = {
     },
     key(code, s, g, st) {
       const agent = g.amAgent;
-      const black = agent && s.side === 1;
-      const list = STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
-        : (i.side === 'open' || i.side === 'both')));
+      const black = agent && s.side === 1 && !s.vendor;
+      const list = s.vendor
+        ? STOCK.filter((i) => i.side === 'open' && VENDOR_IDS.includes(i.id))
+        : STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
+          : (i.side === 'open' || i.side === 'both')));
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true; }
-      if (code === 'Tab' && agent) { s.side = 1 - s.side; s.sel = 0; g.audio?.sfx('page'); return true; }
+      if (code === 'Tab' && agent && !s.vendor) { s.side = 1 - s.side; s.sel = 0; g.audio?.sfx('page'); return true; }
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
-        if (list[s.sel] && g.buyItem(list[s.sel].id)) s.flash = 0.3;
+        if (list[s.sel] && g.buyItem(list[s.sel].id)) {
+          s.flash = 0.3;
+          /* A machine in the trees holds one thing. Once it has taken your
+             coin it is a box, and whoever comes next gets nothing — which
+             is what makes finding one first worth something. */
+          if (s.vendor && typeof s.vendor === 'object') {
+            s.vendor.spent = true;
+            st.pop();
+            g.afterOverlayClose();
+            g.ui?.toast('THE MACHINE IS EMPTY NOW', 'gold', 2400);
+          }
+        }
         return true;
       }
       return true;
@@ -1191,7 +1756,7 @@ export const SCREENS = {
 
   /* ---------------- SABOTAGE CONSOLE ---------------- */
   mpSabotage: {
-    init(s) { s.sel = 0; s.pull = 0; s.arm = 0; },
+    init(s) { s.sel = s.sel || 0; s.pull = 0; s.arm = 0; },
     draw(x, W, H, s, g, t) {
       const defs = Object.values(SABOTAGE_DEFS);
       const d = defs[s.sel] || defs[0];
@@ -1835,7 +2400,10 @@ export const SCREENS = {
       const size = Math.min(W - 34, b.bottom - b.top - 12);
       const ox = Math.round((W - size) / 2), oy = b.top + 1;
       drawChart(x, ox, oy, size, s.data, t);
-      if (s.data.marks.length) {
+      /* The pendulum tally belongs to the single-player hunt. Castaways
+         puts its own marks on this chart — the listening post — and used
+         to inherit "ALL FOUR READ" underneath them. */
+      if (s.data.marks.length && !s.subtitle) {
         const left = s.data.marks.filter((mk) => !mk.found).length;
         drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
           { x: W / 2, y: b.bottom - 1, scale: 1, align: 'center', color: left ? '#7a2418' : '#2f6a4a' });
@@ -1856,7 +2424,7 @@ export const SCREENS = {
 
   /* ---------------- FERDI'S SHOP ---------------- */
   shop: {
-    init(s, g) { s.sel = 0; s.shake = 0; },
+    init(s) { s.sel = s.sel || 0; s.shake = 0; },
     draw(x, W, H, s, g, t) {
       if (s.shake > 0) s.shake -= 0.016;
       const jitter = s.shake > 0 ? Math.round(Math.sin(s.shake * 60) * 2) : 0;

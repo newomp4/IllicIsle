@@ -90,9 +90,12 @@ export class HostSession {
   }
 
   _roster() {
+    const t = now();
     const list = [...this.players.values()].map((p) => ({
       id: p.id, name: p.name, colour: p.colour, alive: p.alive, ready: p.ready,
       quiet: !!p.quiet,
+      whistle: p.whistleUntil && t < p.whistleUntil ? +(p.whistleUntil - t).toFixed(1) : 0,
+      decoy: p.decoy && t < p.decoy.until ? { x: p.decoy.x, z: p.decoy.z } : null,
     }));
     this.net.broadcast({ t: S.ROSTER, players: list });
     this.hooks.onRoster?.(list);
@@ -131,6 +134,10 @@ export class HostSession {
       case C.SHOOT: { this._tryShoot(from, msg.targetId); break; }
       case C.SNAP: { this._trySnap(from, !!msg.yes); break; }
       case C.PURSE: { if (p) p.coins = Math.max(0, msg.coins | 0); break; }
+      /* The command table's ledger. It is answered privately and only for
+         somebody who is really standing in the bunker, so knowing what
+         everybody is carrying stays a thing you have to go and earn. */
+      case C.LEDGER: { this._sendLedger(from); break; }
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
@@ -145,6 +152,14 @@ export class HostSession {
           this.net.broadcast({ t: S.CHAFF, secs: 30 });
           this.hooks.onChaff?.(30);
         }
+        /* Ferdi's whistle. Twelve seconds of your name over your head for
+           everybody, at any range, through any weather. */
+        if (msg.perk === 'whistle') p.whistleUntil = now() + 12;
+        /* A false alibi. The host carries the decoy so it appears on every
+           chart and on the command table, and clears itself. */
+        if (msg.perk === 'alibi') {
+          p.decoy = { x: +msg.x || 0, z: +msg.z || 0, until: now() + 20 };
+        }
         this._roster();
         break;
       }
@@ -154,7 +169,8 @@ export class HostSession {
 
   /* ---------- start ---------- */
   canStart() {
-    return this.players.size >= 3 && this.phase === PHASE.LOBBY;
+    // the workshop runs with one
+    return this.players.size >= (this.dev ? 1 : 3) && this.phase === PHASE.LOBBY;
   }
 
   start() {
@@ -169,7 +185,9 @@ export class HostSession {
        among nine is a needle in a haystack; three among four is a massacre. */
     const auto = ids.length >= 9 ? 3 : ids.length >= 6 ? 2 : 1;
     const want = this.settings.agents > 0 ? this.settings.agents : auto;
-    const agentCount = Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
+    const agentCount = this.dev
+      ? 0                                   // alone, you are whatever you choose
+      : Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
     const agents = new Set(ids.slice(0, agentCount));
 
     this.tasksDone = 0;
@@ -508,6 +526,14 @@ export class HostSession {
     }
   }
 
+  /** Answer one player's request for the ledger. Host-side only. */
+  _sendLedger(id) {
+    const rows = [];
+    for (const [pid, pl] of this.players) rows.push([pid, Math.max(0, pl.coins | 0)]);
+    if (id === 'host') this.hooks.onLedger?.(rows);
+    else this.net.sendTo(id, { t: S.LEDGER, rows });
+  }
+
   _trySabotage(id, kind) {
     const p = this.players.get(id);
     const def = SABOTAGE_DEFS[kind];
@@ -519,9 +545,20 @@ export class HostSession {
       this.net.sendTo(id, { t: S.SABOTAGE, kind, secs: 0, fatal: false, refused: true });
       return;
     }
-    this.sabotage = { kind, endsAt: now() + def.secs, fatal: !!def.fatal, sites: new Set() };
-    this.net.broadcast({ t: S.SABOTAGE, kind, secs: def.secs, fatal: !!def.fatal, sites: def.sites });
-    this.hooks.onSabotage?.(kind, def.secs, !!def.fatal, def.sites);
+    /* Where they were standing when they pulled it. Not a position — a
+       half of the island, which is enough to cut the suspect list roughly
+       in two without handing anybody the answer. Only the listening post
+       ever sees it. */
+    const half = Math.abs(p.x || 0) > Math.abs(p.z || 0)
+      ? ((p.x || 0) > 0 ? 'EAST' : 'WEST')
+      : ((p.z || 0) > 0 ? 'SOUTH' : 'NORTH');
+    this.sabotage = {
+      kind, endsAt: now() + def.secs, fatal: !!def.fatal, sites: new Set(), half,
+    };
+    this.net.broadcast({
+      t: S.SABOTAGE, kind, secs: def.secs, fatal: !!def.fatal, sites: def.sites, half,
+    });
+    this.hooks.onSabotage?.(kind, def.secs, !!def.fatal, def.sites, half);
   }
 
   /**
@@ -562,6 +599,7 @@ export class HostSession {
     else if (this.tasksTotal > 0 && this.tasksDone >= this.tasksTotal) {
       winner = 'castaways'; reason = 'ALL WORK COMPLETE';
     }
+    if (this.dev) return false;             // the workshop never ends on its own
     if (!winner) return false;
 
     this.over = { winner, reason };
@@ -585,6 +623,19 @@ export class HostSession {
 
     // a snap vote nobody finished
     if (this.snap && now() >= this.snap.endsAt) this._closeSnap();
+
+    /* Timed perks expire quietly. The roster is what carries them, so when
+       one runs out the roster has to go again or a whistle blown once
+       lasts for the rest of the round. */
+    {
+      const t = now();
+      let stale = false;
+      for (const p of this.players.values()) {
+        if (p.whistleUntil && t >= p.whistleUntil) { p.whistleUntil = 0; stale = true; }
+        if (p.decoy && t >= p.decoy.until) { p.decoy = null; stale = true; }
+      }
+      if (stale) this._roster();
+    }
 
     // a fatal sabotage that runs out ends the game
     if (this.sabotage && now() >= this.sabotage.endsAt) {
@@ -709,6 +760,7 @@ export class MirrorSession {
         this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
         break;
       case S.PURSE: this.hooks.onPurse?.(msg.coins, msg.gained); break;
+      case S.LEDGER: this.hooks.onLedger?.(msg.rows); break;
       case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;

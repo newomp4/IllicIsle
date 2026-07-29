@@ -194,10 +194,16 @@ export class Hud {
     const x = this.x;
     const agent = mp.role === 'agent';
     const tasks = mp.myTasks || [];
-    const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY',
-      ...tasks.map((t) => (t.steps > 1 ? `${t.name} ${t.step + 1}/${t.steps}` : t.name))];
+    /* Measured without building an array of strings first. This runs every
+       frame; anything it allocates has to be collected later, and a
+       collection mid-round is a visible stutter. */
     const CAP = 136;   // the list is a reminder, not a document
-    const pw = Math.min(CAP, Math.max(64, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 15));
+    let widest = textWidth(agent ? 'ROGUE AGENT' : 'CASTAWAY', 1);
+    for (const t of tasks) {
+      const w = textWidth(t.name, 1) + (t.steps > 1 ? 24 : 0);
+      if (w > widest) widest = w;
+    }
+    const pw = Math.min(CAP, Math.max(64, widest + 15));
     const ph = 12 + tasks.length * 8 + (agent ? 8 : 0);
     plate(x, ox - 2, oy - 2, pw, ph);
 
@@ -291,46 +297,118 @@ export class Hud {
     }
   }
 
-  /** Right column: the shared work bar and who is still ashore. */
+  /**
+   * Right column: your purse, the island's work, and the crew.
+   *
+   * It used to be a bar, a bare number and a ragged tail of colour chips
+   * that ran off the bottom of its own plate. The purse is the thing you
+   * check most often in this mode, so it leads, it says what it is, and it
+   * flinches when it changes.
+   */
   _mpRight(ox, oy, mp) {
     const x = this.x;
     const players = mp.players || [];
-    const PW = 52;
-    plate(x, ox - PW, oy - 2, PW, 27 + players.length * 8);
+    const PW = 74;
 
+    /* the purse's own animation, kept here rather than in the game so it
+       survives whatever the round is doing */
+    const coins = mp.coins || 0;
+    if (this._purse === undefined) { this._purse = coins; this._purseKick = 0; this._purseDelta = 0; }
+    if (coins !== this._purse) {
+      this._purseDelta = coins - this._purse;
+      this._purseKick = 1;
+      this._purse = coins;
+    }
+    if (this._purseKick > 0) this._purseKick = Math.max(0, this._purseKick - 0.02);
+    const kick = this._purseKick;
+    const gain = this._purseDelta > 0;
+
+    /* --- the purse plate --- */
+    const PH = 24;
+    const px0 = ox - PW;
+    plate(x, px0, oy - 2, PW, PH);
+    // a coin-coloured rule top and bottom so it reads as its own thing
+    x.fillStyle = gain && kick > 0.5 ? GOLD_LT : GOLD_DK;
+    x.fillRect(px0, oy - 2, PW, 1);
+    x.fillRect(px0, oy + PH - 3, PW, 1);
+
+    drawText(x, 'SYNCOIN', { x: px0 + 4, y: oy + 1, scale: 1, color: '#c9b98a' });
+    drawCoinPip(x, px0 + 4, oy + 11);
+    // the figure, at double height, with a flash on the way up
+    const numCol = kick > 0
+      ? (gain ? (Math.floor(this._wobble * 14) % 2 ? GOLD_LT : GOLD) : RED)
+      : (coins > 0 ? GOLD : '#6a5c40');
+    drawText(x, String(coins), {
+      x: ox - 4, y: oy + 8 - Math.round(kick * 2), scale: 2, align: 'right', color: numCol,
+    });
+    // and what just happened to it, rising out of the plate
+    if (kick > 0 && this._purseDelta) {
+      const rise = Math.round((1 - kick) * 7);
+      drawText(x, (this._purseDelta > 0 ? '+' : '') + this._purseDelta, {
+        x: ox - 4, y: oy + 6 - rise, scale: 1, align: 'right',
+        color: gain ? '#8fe8a0' : '#ff8a7a',
+      });
+    }
+
+    /* --- the island's work --- */
+    let y = oy + PH + 1;
+    const WH = 18;
+    plate(x, px0, y, PW, WH);
     const total = mp.tasksTotal || 0;
     const frac = total ? Math.min(1, (mp.tasksDone || 0) / total) : 0;
-    drawText(x, 'WORK', { x: ox - 3, y: oy, scale: 1, align: 'right', color: '#c9b98a' });
-    const bw = PW - 8, bx = ox - PW + 4;
-    x.fillStyle = INK; x.fillRect(bx - 1, oy + 8, bw + 2, 6);
-    x.fillStyle = '#231708'; x.fillRect(bx, oy + 9, bw, 4);
+    /* The label gives way to the figure rather than being written over
+       it — a nine-thousand-job dev lobby used to render as "WOR0/9999". */
+    const cnt = total ? `${mp.tasksDone || 0}/${total}` : '--';
+    const cntW = textWidth(cnt, 1);
+    if (cntW + textWidth('WORK', 1) + 10 <= PW) {
+      drawText(x, 'WORK', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
+    }
+    drawText(x, cnt, {
+      x: ox - 4, y: y + 2, scale: 1, align: 'right',
+      color: frac >= 1 ? JADE : '#c9b98a',
+    });
+    const bw = PW - 8, bx = px0 + 4;
+    x.fillStyle = INK; x.fillRect(bx - 1, y + 11, bw + 2, 6);
+    x.fillStyle = '#231708'; x.fillRect(bx, y + 12, bw, 4);
     for (let i = 0; i < Math.round(frac * bw); i += 3) {
       x.fillStyle = i % 6 ? '#c39a2c' : GOLD;
-      x.fillRect(bx + i, oy + 9, 2, 4);
+      x.fillRect(bx + i, y + 12, 2, 4);
     }
 
-    // what is in your pocket
-    drawCoinPip(x, ox - PW + 3, oy + 17);
-    drawText(x, String(mp.coins || 0), {
-      x: ox - 3, y: oy + 18, scale: 1, align: 'right',
-      color: (mp.coins || 0) > 0 ? GOLD : '#6a5c40',
+    /* --- the crew, in rows that fit inside their own plate --- */
+    y += WH + 1;
+    const PER = 6;                                  // chips across
+    const rows = Math.max(1, Math.ceil(players.length / PER));
+    const CH = 11 + rows * 9;
+    plate(x, px0, y, PW, CH);
+    const aliveN = players.filter((p) => p.alive !== false).length;
+    drawText(x, 'CREW', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
+    drawText(x, `${aliveN}/${players.length}`, {
+      x: ox - 4, y: y + 2, scale: 1, align: 'right',
+      color: aliveN <= 2 ? RED : '#c9b98a',
     });
-
-    let py = oy + 28;
-    for (const p of players) {
+    players.forEach((p, i) => {
+      const col = i % PER, row = (i / PER) | 0;
+      const cx2 = px0 + 4 + col * 9;
+      const cy2 = y + 12 + row * 9;
       const hex = '#' + (COLOUR_HEX[p.colour] || '888888');
       const dead = p.alive === false;
-      const px = ox - 9;
-      x.fillStyle = INK; x.fillRect(px - 1, py - 1, 8, 8);
+      x.fillStyle = INK; x.fillRect(cx2 - 1, cy2 - 1, 9, 9);
       x.fillStyle = dead ? '#241a16' : hex;
-      x.fillRect(px, py, 6, 6);
+      x.fillRect(cx2, cy2, 7, 7);
       if (dead) {
         x.fillStyle = '#6a2a22';
-        for (let i = 0; i < 6; i++) { x.fillRect(px + i, py + i, 1, 1); x.fillRect(px + 5 - i, py + i, 1, 1); }
+        for (let k = 0; k < 7; k++) { x.fillRect(cx2 + k, cy2 + k, 1, 1); x.fillRect(cx2 + 6 - k, cy2 + k, 1, 1); }
+      } else {
+        // a light on the top-left corner so live chips are not flat
+        x.fillStyle = 'rgba(255,255,255,.28)';
+        x.fillRect(cx2, cy2, 7, 1); x.fillRect(cx2, cy2, 1, 7);
       }
-      if (p.id === mp.selfId) { x.fillStyle = GOLD; x.fillRect(px - 3, py + 2, 2, 2); }
-      py += 8;
-    }
+      if (p.id === mp.selfId) {
+        x.fillStyle = GOLD;
+        x.fillRect(cx2 - 1, cy2 + 8, 9, 1);
+      }
+    });
   }
 
   /** Centre-bottom: whatever is currently urgent. */

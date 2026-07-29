@@ -62,6 +62,28 @@ export class Gore {
     this.groundAt = groundAt;
     this.tex = splatTexture();
     this.live = [];
+    /* One material, cloned once per stain only because each fades on its
+       own clock. Geometry is rebuilt in place rather than reallocated —
+       a kill used to make six geometries and a material, and the first
+       draw of a new material is a shader compile you feel. */
+    this.base = new THREE.MeshBasicMaterial({
+      map: this.tex, color: 0x8c0f08, transparent: true, opacity: 0.92,
+      depthWrite: false, alphaTest: 0.4, fog: true,
+    });
+    this.pool = [];
+  }
+
+  _take(segs) {
+    const s = this.pool.pop();
+    if (s) return s;
+    const g = new THREE.PlaneGeometry(1, 1, segs, segs);
+    g.rotateX(-Math.PI / 2);
+    const m = this.base.clone();
+    const mesh = new THREE.Mesh(g, m);
+    mesh.renderOrder = 2;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    return { mesh, mat: m };
   }
 
   /**
@@ -70,41 +92,38 @@ export class Gore {
    *   you can sometimes tell who it was before you get close enough to see.
    */
   splat(x, y, z, tintHex = 0xffffff) {
-    const size = 3.6;
-    const g = new THREE.PlaneGeometry(size, size, 6, 6);
-    g.rotateX(-Math.PI / 2);
-    // drape it over whatever the ground is doing
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      p.setY(i, this.groundAt(x + p.getX(i), z + p.getZ(i)) - y + 0.07);
-    }
-    p.needsUpdate = true;
-
     const blood = new THREE.Color(0x8c0f08).lerp(new THREE.Color(tintHex), 0.18);
-    const m = new THREE.MeshBasicMaterial({
-      map: this.tex, color: blood, transparent: true, opacity: 0.92,
-      depthWrite: false, alphaTest: 0.4, fog: true,
-    });
-    const mesh = new THREE.Mesh(g, m);
-    mesh.position.set(x, y, z);
-    mesh.rotation.y = Math.random() * Math.PI * 2;
-    mesh.renderOrder = 2;
-    this.scene.add(mesh);
-    this.live.push({ mesh, mat: m, t: 0 });
 
-    // and a few droplets thrown clear of the main stain
+    const put = (px, pz, size, drop) => {
+      const s = this._take(6);
+      const g = s.mesh.geometry;
+      const p = g.attributes.position;
+      // rewrite the plane in place: sized, and draped over the ground
+      const half = size / 2;
+      const segs = Math.round(Math.sqrt(p.count)) - 1;
+      let i = 0;
+      for (let r = 0; r <= segs; r++) {
+        for (let c = 0; c <= segs; c++, i++) {
+          const lx = -half + (c / segs) * size;
+          const lz = -half + (r / segs) * size;
+          p.setXYZ(i, lx, this.groundAt(px + lx, pz + lz) - y + 0.07, lz);
+        }
+      }
+      p.needsUpdate = true;
+      g.computeBoundingSphere();
+      s.mat.color.copy(blood);
+      s.mat.opacity = 0.92;
+      s.mesh.position.set(px, y, pz);
+      s.mesh.rotation.y = Math.random() * Math.PI * 2;
+      s.mesh.visible = true;
+      this.live.push({ ...s, t: 0, drop });
+    };
+
+    put(x, z, 3.6, false);
     for (let i = 0; i < 4; i++) {
       const a = Math.random() * Math.PI * 2;
       const d = 1.6 + Math.random() * 2.4;
-      const dx = x + Math.cos(a) * d, dz = z + Math.sin(a) * d;
-      const dg = new THREE.PlaneGeometry(0.7 + Math.random() * 0.6, 0.7 + Math.random() * 0.6);
-      dg.rotateX(-Math.PI / 2);
-      const dm = new THREE.Mesh(dg, m);
-      dm.position.set(dx, this.groundAt(dx, dz) + 0.06, dz);
-      dm.rotation.y = Math.random() * Math.PI * 2;
-      dm.renderOrder = 2;
-      this.scene.add(dm);
-      this.live.push({ mesh: dm, mat: m, t: 0, drop: true });
+      put(x + Math.cos(a) * d, z + Math.sin(a) * d, 0.8 + Math.random() * 0.6, true);
     }
   }
 
@@ -116,9 +135,8 @@ export class Gore {
         s.mat.opacity = Math.max(0, 0.92 * (1 - (s.t - (LIFE - FADE)) / FADE));
       }
       if (s.t >= LIFE) {
-        s.mesh.removeFromParent();
-        s.mesh.geometry.dispose();
-        if (!s.drop) s.mat.dispose();
+        s.mesh.visible = false;
+        this.pool.push({ mesh: s.mesh, mat: s.mat });
         this.live.splice(i, 1);
       }
     }
@@ -127,8 +145,8 @@ export class Gore {
   /** A council clears the bodies; it clears the mess with them. */
   clear() {
     for (const s of this.live) {
-      s.mesh.removeFromParent();
-      s.mesh.geometry.dispose();
+      s.mesh.visible = false;
+      this.pool.push({ mesh: s.mesh, mat: s.mat });
     }
     this.live.length = 0;
   }

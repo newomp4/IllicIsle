@@ -270,9 +270,51 @@ const NIGHT = {
   },
 };
 
+/* ---- BUNKER: forty years of standby power and nobody to hear it.
+   A drone on the tonic, a filtered pulse that could be a generator, and a
+   single sonar ping that arrives whenever it feels like it. It should be
+   uncomfortable to stand in for long, because standing in it is exactly
+   what you are trading your round for. ---- */
+const BUNKER = {
+  bpm: 48, len: 32, sections: 3,
+  voices: {
+    bass: {
+      layers: [1, 1, 1],
+      notes: [
+        26, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        26, _, _, _, _, _, _, _, 25, _, _, _, _, _, _, _,
+      ],
+    },
+    pad: {
+      layers: [1, 1, 1],
+      chords: [
+        [38, 45, 50], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        [38, 44, 51], _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+      ],
+    },
+    lead: {
+      layers: [0, 1, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, _, _, _, _, 74, _, _, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, 73, _,
+      ],
+    },
+    bell: {
+      layers: [0, 0, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, 86, _, _, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+      ],
+    },
+    // the generator, ticking over
+    kick: { layers: [1, 1, 1], hits: 'x.......x.......' },
+    hat:  { layers: [0, 1, 1], hits: '..x...x...x...x.' },
+  },
+};
+
 const TRACKS = {
   island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS,
-  storm: STORM, alarm: ALARM, night: NIGHT,
+  storm: STORM, alarm: ALARM, night: NIGHT, bunker: BUNKER,
 };
 
 export class GameAudio {
@@ -732,6 +774,58 @@ export class GameAudio {
         break;
 
       case 'page': this._noiseHit(t, 0.11, { gain: 0.075, filter: 3800, type: 'bandpass', q: 2, sweep: 0.5 }); break;
+
+      /* ---- the Lucky Flopper ---- */
+      case 'horn':
+        // a ship's horn: two low sawtooths a hair apart, so they beat
+        this.duckMusic(0.45, 2.6);
+        this._tone(58, t, 2.2, { type: 'sawtooth', gain: 0.20, filter: 420, attack: 0.18, release: 1.1, send: 0.7 });
+        this._tone(59.5, t, 2.2, { type: 'sawtooth', gain: 0.16, filter: 380, attack: 0.22, release: 1.2, send: 0.7 });
+        this._tone(116, t, 2.0, { type: 'triangle', gain: 0.07, filter: 700, attack: 0.2, release: 1.0, send: 0.5 });
+        break;
+      case 'reel':
+        // one drum going past: a short clacking blip, meant to be repeated
+        this._tone(520 + R() * 90, t, 0.05, { type: 'square', gain: 0.055, filter: 3200, sweep: 0.7 });
+        break;
+      case 'lever':
+        this._noiseHit(t, 0.14, { gain: 0.13, filter: 1200, type: 'bandpass', q: 3, sweep: 0.4 });
+        this._tone(150, t + 0.05, 0.2, { type: 'square', gain: 0.10, sweep: 0.5, filter: 800 });
+        break;
+      case 'jackpot':
+        this.duckMusic(0.5, 1.8);
+        [76, 83, 88, 91, 95].forEach((n, i) =>
+          this._pluck(mtof(n), t + i * 0.07, 0.5, { gain: 0.15, send: 0.6, bright: 2.4 }));
+        for (let i = 0; i < 10; i++) {
+          this._pluck(mtof(88 + (i % 3) * 5), t + 0.4 + i * 0.09, 0.22, { gain: 0.10, send: 0.5, bright: 2.2 });
+        }
+        break;
+
+      /* ---- the listening post ---- */
+      case 'hatch':
+        // a heavy steel lid coming up on a dry hinge
+        this._noiseHit(t, 0.9, { gain: 0.15, filter: 500, q: 2.4, sweep: 1.9, send: 0.5 });
+        this._tone(78, t, 0.7, { type: 'sawtooth', gain: 0.13, sweep: 0.6, filter: 400, release: 0.4 });
+        this._tone(240, t + 0.2, 0.5, { type: 'square', gain: 0.05, sweep: 0.35, filter: 1600 });
+        break;
+      case 'ladder':
+        for (let i = 0; i < 5; i++) {
+          this._noiseHit(t + i * 0.22, 0.09, { gain: 0.09, filter: 2200, type: 'bandpass', q: 4, sweep: 0.6 });
+        }
+        break;
+      case 'terminal':
+        // a switch closing and a CRT finding its line
+        this._tone(880, t, 0.04, { type: 'square', gain: 0.06, filter: 5200 });
+        this._tone(1320, t + 0.04, 0.05, { type: 'square', gain: 0.045, filter: 6000 });
+        this._noiseHit(t + 0.02, 0.3, { gain: 0.05, filter: 4200, type: 'bandpass', q: 6, sweep: 0.4 });
+        break;
+      case 'ping':
+        // sonar: one clean tone with a long tail
+        this._tone(1180, t, 0.9, { type: 'sine', gain: 0.09, sweep: 0.55, filter: 4000, release: 0.7, send: 0.9 });
+        break;
+      case 'alert':
+        this._tone(220, t, 0.22, { type: 'square', gain: 0.13, filter: 1400 });
+        this._tone(180, t + 0.24, 0.28, { type: 'square', gain: 0.13, filter: 1200 });
+        break;
     }
   }
 }

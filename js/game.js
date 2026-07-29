@@ -435,7 +435,15 @@ export class Game {
          looking for somewhere flat enough. */
       const FX = -30, FZ = 46;
       const FY = heightAt(FX, FZ);
-      setCarves([{
+      /* Every hatch gets its own level apron. A steel collar two metres
+         across, dropped onto a hillside, buries its uphill lip and leaves
+         the downhill one hanging in the air — you were looking at half a
+         manhole. Carving the pad means the mesh, the collision and the
+         hatch all agree on one height. */
+      const hatchPads = BUNKER_SPOTS.map((sp) => ({
+        x: sp.x, z: sp.z, rx: 5.5, rz: 5.5, yaw: 0, y: heightAt(sp.x, sp.z),
+      }));
+      setCarves([...hatchPads, {
         x: FX, z: FZ, rx: 21, rz: 21, yaw: 0, y: FY,
       }, {
         x: dg.x, z: dg.z, rx: 25, rz: 27, yaw,
@@ -512,6 +520,19 @@ export class Game {
       shrine.scale.setScalar(1.35);
       st.userData.idolSet.add(shrine);
       st.userData.idol = shrine;
+    });
+
+    await step('WARMING THE PIPES', 0.96, () => {
+      /* Compile every shader the game will ever need, now, while the
+         loading bar is up. The first draw of a material configuration
+         compiles its program, and a compile mid-round is exactly the
+         one-second freeze that has no obvious cause. */
+      try {
+        this.renderer.compile(this.islandScene, this.camera);
+        this.renderer.compile(this.templeScene, this.camera);
+        if (this.bunkerScene) this.renderer.compile(this.bunkerScene, this.camera);
+        if (this.titleScene) this.renderer.compile(this.titleScene, this.camera);
+      } catch (e) { /* a warm-up that fails is not worth failing the load over */ }
     });
 
     await step('READY', 1.0, () => {
@@ -902,6 +923,13 @@ export class Game {
         this.tickers.push(boat);
         this.casino = boat;
         this.casinoPos = { x: bx, z: bz };
+        /* She works nights. During the day she stands well out in the
+           offing, and the bridge ends in empty water — walk it in daylight
+           and there is nothing at the end but the sound of her engines. */
+        const od = Math.hypot(bx, bz) || 1;
+        this.casinoDock = { x: bx, z: bz };
+        this.casinoOffing = { x: (bx / od) * (od + 96), z: (bz / od) * (od + 96) };
+        this.casinoIn = 1;                 // 0 = out at sea, 1 = alongside
 
         // and the bridge in from whatever sand is nearest
         const d = Math.hypot(bx, bz) || 1;
@@ -909,13 +937,44 @@ export class Game {
         const bridge = buildBoatBridge(rng, this.propMats, sx, sz, bx, bz, heightAt);
         scene.add(bridge);
         this.casinoShore = { x: sx, z: sz };
+
+        /* A board at the shore end. In daylight the pier runs out into
+           empty water, and without this it reads as something broken
+           rather than as a boat that keeps her own hours. */
+        {
+          const post = new THREE.Group();
+          post.position.set(sx, heightAt(sx, sz), sz);
+          post.rotation.y = Math.atan2(bx - sx, bz - sz) + Math.PI;
+          const legs = [
+            tint(cyl(0.09, 0.11, 2.6, 5, 'driftwood', { pos: [-0.9, 1.3, 0] }), new THREE.Color(0x6a5230)),
+            tint(cyl(0.09, 0.11, 2.6, 5, 'driftwood', { pos: [0.9, 1.3, 0] }), new THREE.Color(0x6a5230)),
+            tint(box(2.4, 0.12, 0.14, 'planks', { pos: [0, 2.5, 0] }), new THREE.Color(0x8a2018)),
+            tint(box(2.4, 0.12, 0.14, 'planks', { pos: [0, 1.45, 0] }), new THREE.Color(0x8a2018)),
+          ];
+          post.add(new THREE.Mesh(mergeGeos(legs), this.propMats.opaque));
+          const board = new THREE.Mesh(
+            new THREE.PlaneGeometry(2.3, 1.0),
+            new THREE.MeshLambertMaterial({
+              map: buildSignTexture(['THE LUCKY FLOPPER', 'NIGHTS ONLY'], '#3a1410', '#ffd24a'),
+            })
+          );
+          board.position.set(0, 1.98, 0.09);
+          post.add(board);
+          const back = board.clone();
+          back.position.z = -0.09;
+          back.rotation.y = Math.PI;
+          post.add(back);
+          scene.add(post);
+          this.colliders.push({ x: sx, z: sz, r: 0.6 });
+        }
         /* The deck is a platform: without one you walk out along the
            bridge and drop straight through the boat into the sea. */
         const byaw = boat.rotation.y;
-        this.platforms.push({
-          x: bx, z: bz, y: 0.90, hw: 2.9, hd: 7.2,
+        this.casinoPlat = {
+          x: bx, z: bz, y: 0.90, hw: 4.7, hd: 12.4,
           cos: Math.cos(byaw), sin: Math.sin(byaw),
-        });
+        };
+        this.platforms.push(this.casinoPlat);
         // the bridge, from the sand out to her
         const mx = (sx + bx) / 2, mz = (sz + bz) / 2;
         const byaw2 = Math.atan2(bx - sx, bz - sz);
@@ -931,7 +990,9 @@ export class Game {
        nobody can learn the map and walk straight to it. */
     this.hatches = [];
     BUNKER_SPOTS.forEach((spot, i) => {
-      const hg = findGround(spot.x, spot.z, { rng, radius: 16, minH: 2, maxH: 34, maxSlope: 0.16 });
+      /* Dead centre of its carved apron. There is no need to search for
+         flat ground when the ground was made flat on purpose. */
+      const hg = { x: spot.x, z: spot.z, y: heightAt(spot.x, spot.z) };
       const h = buildHatch(rng, this.propMats);
       h.position.set(hg.x, hg.y - 0.05, hg.z);
       h.visible = false;
@@ -2755,6 +2816,72 @@ I have snacks."`);
    * ramps either side. `night` is 0..1 and everything that emits light
    * reads off it.
    */
+  /**
+   * The Lucky Flopper keeps her own hours. She comes alongside as the light
+   * goes and pulls out again at dawn, under her own power, with a wake and
+   * a horn — so the night has an event in it that everybody can see from
+   * anywhere on the island.
+   */
+  _sailCasino(dt) {
+    if (!this.casino || !this.casinoDock) return;
+    const want = this.night > 0.34 ? 1 : 0;
+    const prev = this.casinoIn;
+    // she is slow: about twenty seconds either way, which is long enough
+    // to watch and short enough not to be a wait
+    this.casinoIn += (want - this.casinoIn) * Math.min(1, dt * 0.30);
+    if (Math.abs(want - this.casinoIn) < 0.002) this.casinoIn = want;
+
+    const k = this.casinoIn;
+    // ease-in-out, so she does not snap away from the pier
+    const e = k * k * (3 - 2 * k);
+    const D = this.casinoDock, O = this.casinoOffing;
+    const x = THREE.MathUtils.lerp(O.x, D.x, e);
+    const z = THREE.MathUtils.lerp(O.z, D.z, e);
+    const dx = x - this.casino.position.x, dz = z - this.casino.position.z;
+    this.casino.position.x = x;
+    this.casino.position.z = z;
+
+    /* Anyone standing on the deck rides with her for the first few
+       seconds, and is then put ashore. Without the ride the boat slides
+       out from under your feet; without the eviction you are carried past
+       the edge of the playable water, the bounds clamp hauls you back, and
+       you drop into the sea for the crime of playing a slot at dawn. */
+    const plat = this.casinoPlat;
+    if (plat && this.player) {
+      const p = this.player.pos;
+      const rx = p.x - plat.x, rz = p.z - plat.z;
+      const lx = rx * plat.cos - rz * plat.sin;
+      const lz = rx * plat.sin + rz * plat.cos;
+      const aboard = Math.abs(lx) <= plat.hw && Math.abs(lz) <= plat.hd && p.y > plat.y - 0.8;
+      if (aboard && want === 0 && k < 0.80) {
+        // over the side, onto the sand at the shore end of the bridge
+        const sh = this.casinoShore;
+        if (sh) {
+          this.player.teleport(sh.x, heightAt(sh.x, sh.z) + 1.0, sh.z, this.player.facing);
+          this.audio?.sfx?.('splat');
+          this.ui?.toast?.('PUT ASHORE. SHE SAILS WITHOUT YOU.', 'bad', 3000);
+        }
+      } else if (aboard && (dx || dz)) {
+        // move the position only — teleport() would zero the velocity and
+        // snap the camera back in every single frame of the crossing
+        p.x += dx; p.z += dz;
+      }
+    }
+    if (plat) { plat.x = x; plat.z = z; }
+    this.casinoPos.x = x; this.casinoPos.z = z;
+
+    /* Under way she heels and settles; alongside she just rolls. The tick
+       inside the boat handles the roll, so all this adds is the list. */
+    const moving = Math.abs(want - k) > 0.01;
+    this.casino.position.y = -0.55 - (moving ? 0.12 : 0);
+
+    // the horn, once, on each turn of the tide
+    if (prev !== undefined && ((prev < 0.02 && k >= 0.02) || (prev > 0.98 && k <= 0.98))) {
+      this.audio?.sfx?.('horn');
+      this.ui?.toast?.(want ? 'THE LUCKY FLOPPER IS COMING IN' : 'THE FLOPPER IS PUTTING OUT', 'gold', 3200);
+    }
+  }
+
   updateDayNight(dt) {
     this.clock24 = (this.clock24 + dt) % this.DAY_LEN;
     const p = this.clock24 / this.DAY_LEN;          // 0..1 through the cycle
@@ -2765,6 +2892,8 @@ I have snacks."`);
     else if (p < 0.92) n = 1;
     else n = 1 - (p - 0.92) / 0.08;
     this.night = n * n * (3 - 2 * n);                 // smooth the ramp
+
+    this._sailCasino(dt);
 
     const k = this.night;
     const storm = this.storm && this.storm.active ? 1 : 0;

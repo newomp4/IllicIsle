@@ -339,43 +339,96 @@ export function buildFerdiHut(rng, mats, flameFactory, groundAt = () => 0) {
       tint(post, WOOD_D); P.push(post);
     }
   }
-  for (const sx of [-2.9, 2.9]) {
-    const rail = cyl(0.09, 0.11, 1.3, 5, 'driftwood', { pos: [sx, 1.55, 3.6] });
-    tint(rail, WOOD_D); P.push(rail);
-    const rail2 = cyl(0.09, 0.11, 1.1, 5, 'driftwood', { pos: [sx, 0.5, 6.6] });
-    tint(rail2, WOOD_D); P.push(rail2);
-    // a rail that follows the pitch of the stairs
-    const bar = cyl(0.06, 0.06, 3.6, 4, 'driftwood', {
-      pos: [sx, 1.62, 5.1], rot: [Math.PI / 2 - 0.34, 0, 0],
+  /* Banisters down the steps. The rail has to FALL with the treads: a bar
+     pitched the other way reads as crooked, which is exactly what it was.
+     Newel posts sit on the tread they belong to, so nothing floats. */
+  {
+    const PITCH = Math.atan2(RISE, TREAD);          // 0.34 rad, the stair angle
+    for (const sx of [-2.85, 2.85]) {
+      // a post per step, each standing on its own tread
+      for (let i = 0; i <= STEPS; i++) {
+        const z = 3.0 + i * TREAD;
+        const treadY = deckY - i * RISE;
+        const h = 1.05;
+        const post = cyl(0.085, 0.105, h, 5, 'driftwood', { pos: [sx, treadY + h / 2, z] });
+        tint(post, WOOD_D); P.push(post);
+      }
+      // the handrail, running from the top post to the bottom one
+      const zTop = 3.0, zBot = 3.0 + STEPS * TREAD;
+      const yTop = deckY + 1.05, yBot = deckY - STEPS * RISE + 1.05;
+      const run = Math.hypot(zBot - zTop, yBot - yTop);
+      const bar = cyl(0.06, 0.06, run + 0.2, 5, 'driftwood', {
+        pos: [sx, (yTop + yBot) / 2, (zTop + zBot) / 2],
+        rot: [Math.PI / 2 + PITCH, 0, 0],
+      });
+      tint(bar, WOOD_D); P.push(bar);
+    }
+  }
+
+  /* The awning. It used to be a fan of slats that drooped at the ends and
+     pitched down through its own poles; you were looking at the underside of
+     a broken umbrella. Now it is a flat canvas with a gentle forward fall,
+     and the poles are cut to meet its leading edge exactly. */
+  {
+    const BACK_Y = 4.25, FRONT_Y = 3.78;            // a shallow, deliberate fall
+    const Z0 = 2.6, Z1 = 4.9;
+    const SPAN = Z1 - Z0;
+    const drop = BACK_Y - FRONT_Y;
+    const pitch = Math.atan2(drop, SPAN);
+    const midY = (BACK_Y + FRONT_Y) / 2, midZ = (Z0 + Z1) / 2;
+    const sheetLen = Math.hypot(SPAN, drop);
+    for (let i = 0; i < 8; i++) {
+      // even stripes, all in the same plane — no per-slat height wobble
+      const x = -3.06 + i * 0.875;
+      const aw = box(0.885, 0.09, sheetLen, 'sail', {
+        pos: [x, midY, midZ], rot: [-pitch, 0, 0],
+      });
+      tint(aw, i % 2 ? G(0xd6cbaa) : G(0xa8563c)); P.push(aw);
+    }
+    // a scalloped valance hanging off the front lip
+    for (let i = 0; i < 8; i++) {
+      const x = -3.06 + i * 0.875;
+      const v = box(0.885, 0.30, 0.07, 'sail', { pos: [x, FRONT_Y - 0.17, Z1 - 0.04] });
+      tint(v, i % 2 ? G(0xc6bb9a) : G(0x994d35)); P.push(v);
+    }
+    // the front bar, and poles that stop under it rather than through it
+    const barY = FRONT_Y - 0.06;
+    const bar = cyl(0.055, 0.055, 6.5, 5, 'driftwood', {
+      pos: [0, barY, Z1 - 0.04], rot: [0, 0, Math.PI / 2],
     });
     tint(bar, WOOD_D); P.push(bar);
-  }
-  // striped awning over the counter
-  for (let i = 0; i < 7; i++) {
-    const t = (i / 6 - 0.5);
-    const aw = box(0.95, 0.1, 2.6, 'sail', { pos: [t * 6.4, 4.05 - Math.abs(t) * 0.5, 3.1], rot: [-0.42, 0, 0] });
-    tint(aw, i % 2 ? G(0xcabfa0) : G(0xa8563c)); P.push(aw);
-  }
-  for (const sx of [-3.1, 3.1]) {
-    const pole = cyl(0.08, 0.1, 2.2, 5, 'driftwood', { pos: [sx, 3.0, 4.3] });
-    tint(pole, WOOD_D); P.push(pole);
+    for (const sx of [-3.15, 3.15]) {
+      const foot = deckY + 0.14;                    // stands on the deck
+      const h = barY - foot;
+      const pole = cyl(0.075, 0.095, h, 5, 'driftwood', { pos: [sx, foot + h / 2, Z1 - 0.04] });
+      tint(pole, WOOD_D); P.push(pole);
+      // a diagonal brace back to the wall, so it does not look propped up
+      const bh = Math.hypot(Z1 - 2.4, 0.9);
+      const br = cyl(0.04, 0.04, bh, 4, 'driftwood', {
+        pos: [sx, barY - 0.45, (Z1 + 2.4) / 2],
+        rot: [Math.PI / 2 - Math.atan2(0.9, Z1 - 2.4), 0, 0],
+      });
+      tint(br, WOOD_D); P.push(br);
+    }
+    group.userData.awningFront = { y: FRONT_Y, z: Z1 };
   }
   // wares hanging off the awning bar
   for (let i = 0; i < 8; i++) {
     const hx = -2.7 + i * 0.78;
-    const len = 0.4 + rng() * 0.5;
-    const str = cyl(0.02, 0.02, len, 4, 'rope', { pos: [hx, 3.5 - len / 2, 3.5] });
+    const len = 0.34 + rng() * 0.4;
+    const top = 3.66;                       // just under the awning bar
+    const str = cyl(0.02, 0.02, len, 4, 'rope', { pos: [hx, top - len / 2, 4.82] });
     tint(str, G(0x8a7a58)); P.push(str);
     const kind = rng();
     let item;
     if (kind < 0.4) {
-      item = ico(0.16, 0, 'coconut', { pos: [hx, 3.5 - len - 0.14, 3.5] });
+      item = ico(0.16, 0, 'coconut', { pos: [hx, top - len - 0.14, 4.82] });
       tint(item, G(0x9c7c50));
     } else if (kind < 0.7) {
-      item = box(0.14, 0.34, 0.14, 'driftwood', { pos: [hx, 3.5 - len - 0.18, 3.5] });
+      item = box(0.14, 0.34, 0.14, 'driftwood', { pos: [hx, top - len - 0.18, 4.82] });
       tint(item, G(0xc4b494));
     } else {
-      item = cyl(0.11, 0.09, 0.3, 6, 'glass', { pos: [hx, 3.5 - len - 0.16, 3.5] });
+      item = cyl(0.11, 0.09, 0.3, 6, 'glass', { pos: [hx, top - len - 0.16, 4.82] });
       tint(item, G(0x8ab0a0));
     }
     P.push(item);

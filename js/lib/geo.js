@@ -17,6 +17,14 @@ export function isStamped(geo) { return STAMPED.has(geo); }
 /** Merge non-indexed geometries carrying position/normal/uv/color. */
 export function mergeGeos(list) {
   const parts = [];
+  /* The tint has to be carried alongside the geometry, not read off it
+     later. toNonIndexed() returns a fresh BufferGeometry and does NOT copy
+     userData, so every tint on an indexed geometry — which is every box(),
+     cyl() and sphere() in the game — was being dropped on the floor and
+     the merged mesh came out uniformly white. Everything took its colour
+     from the atlas cell alone, which is why so much of the world read as
+     the same three browns. */
+  const tints = [];
   let total = 0;
 
   for (const g of list) {
@@ -33,6 +41,7 @@ export function mergeGeos(list) {
       ng.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(ng.attributes.position.count * 2), 2));
     }
     parts.push(ng);
+    tints.push(g.userData?.tint || null);
     total += ng.attributes.position.count;
   }
   if (!parts.length) return null;
@@ -44,10 +53,11 @@ export function mergeGeos(list) {
 
   let o = 0;
   const white = new THREE.Color(1, 1, 1);
-  for (const g of parts) {
+  for (let pi = 0; pi < parts.length; pi++) {
+    const g = parts[pi];
     const p = g.attributes.position, n = g.attributes.normal, t = g.attributes.uv;
     const c = g.attributes.color;
-    const tint = g.userData?.tint || white;
+    const tint = tints[pi] || g.userData?.tint || white;
     const count = p.count;
     position.set(p.array.subarray(0, count * 3), o * 3);
     normal.set(n.array.subarray(0, count * 3), o * 3);

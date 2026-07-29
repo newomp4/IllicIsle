@@ -1060,16 +1060,26 @@ export function buildBaseBandTexture() {
 
 /* Loose sign/plaque text, e.g. the cave door and Hector's throne. */
 export function buildSignTexture(lines, bg = '#3a2a14', fg = '#ffd24a') {
-  const W = 128, H = 64;
+  const W = 256, H = 128;
   const { c, x } = cv(W, H);
   x.fillStyle = bg; x.fillRect(0, 0, W, H);
-  x.strokeStyle = fg; x.lineWidth = 2; x.strokeRect(3, 3, W - 6, H - 6);
+  x.strokeStyle = fg; x.lineWidth = 4; x.strokeRect(6, 6, W - 12, H - 12);
   x.textAlign = 'center';
   x.fillStyle = fg;
   const n = lines.length;
+  /* Fit the type to the board rather than hoping. A fixed size meant any
+     line over about fourteen characters ran off both ends — "THE LUCKY
+     FLOPPER" arrived as "E LUCKY FLOPP". */
+  const base = n > 2 ? 24 : 30;
+  const lineH = n > 2 ? 28 : 34;
   lines.forEach((l, i) => {
-    x.font = `bold ${n > 2 ? 12 : 15}px "Courier New", monospace`;
-    x.fillText(l, W / 2, H / 2 + (i - (n - 1) / 2) * (n > 2 ? 14 : 17) + 5);
+    let size = base;
+    for (;;) {
+      x.font = `bold ${size}px "Courier New", monospace`;
+      if (size <= 10 || x.measureText(l).width <= W - 26) break;
+      size -= 1;
+    }
+    x.fillText(l, W / 2, H / 2 + (i - (n - 1) / 2) * lineH + size * 0.34);
   });
   const tex = new THREE.CanvasTexture(c);
   tex.magFilter = THREE.NearestFilter;

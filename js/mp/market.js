@@ -15,9 +15,9 @@
  * a flat rate, so a run of good luck can put something in reach early.
  * Agents get nothing; their lists are a cover.
  */
-export const STAGE_PAY_MIN = 2;
-export const STAGE_PAY_MAX = 10;
-export const STAGE_PAY = 6;          // the average, for anything that needs one
+export const STAGE_PAY_MIN = 1;
+export const STAGE_PAY_MAX = 6;
+export const STAGE_PAY = 3;          // the average, for anything that needs one
 
 /** Share of a victim's purse an Agent takes off the body. */
 export const LOOT_SHARE = 0.75;
@@ -72,10 +72,10 @@ export const STOCK = [
     tag: 'ONE USE',
   },
   {
-    id: 'chart', name: 'A SECOND CHART', cost: 6, side: 'open', icon: 'chart',
-    blurb: 'Marks the listening post on your chart for the rest of the round, wherever it '
-      + 'happens to be buried this time.',
-    tag: 'ONE USE',
+    id: 'chart', name: 'A SECOND CHART', cost: 8, side: 'open', icon: 'chart',
+    blurb: 'Marks the listening post on your chart and your compass for the rest of the '
+      + 'round, wherever it happens to be buried this time.',
+    tag: 'PASSIVE',
   },
   {
     id: 'flask', name: "THE FLOPPER'S FLASK", cost: 5, side: 'open', icon: 'flask',
@@ -104,6 +104,13 @@ export const STOCK = [
     tag: 'ONE SHOT',
   },
 ];
+
+/**
+ * What Ferdi's outlying machines hold. Not the whole shop — leftovers, the
+ * things nobody walks all the way to the clearing for. A machine is worth
+ * finding, but it is not a substitute for the counter.
+ */
+export const VENDOR_IDS = ['tonic', 'lantern', 'flask', 'whistle'];
 
 export const itemById = (id) => STOCK.find((i) => i.id === id);
 
