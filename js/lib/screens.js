@@ -528,213 +528,156 @@ export const SCREENS = {
 
   /* ---------------- COUNCIL + VOTE ---------------- */
   mpCouncil: {
-    init(s) {
-      s.sel = 0; s.typing = ''; s.talking = false; s.ready = false;
-      s.cast = null; s.stampT = 0;
-    },
+    init(s) { s.sel = 0; s.typing = ''; s.talking = false; s.cast = null; s.stampT = 0; },
     draw(x, W, H, s, g, t) {
-      const voting = g.mp.view.phase === 'vote';
       const players = [...g.mp.view.players.values()];
       const alive = players.filter((p) => p.alive !== false);
-      const total = Math.max(0.001, g.mp.view.phaseTotal || 45);
+      const total = Math.max(0.001, g.mp.view.phaseTotal || 60);
       const left = Math.max(0, (g.mp.view.phaseEndsAt || 0) - performance.now() / 1000);
-      if (!voting) s.cast = null;
 
-      /* ---- the fire everyone is sitting around ---- */
+      /* the fire everyone is sitting around */
       x.fillStyle = '#080604'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#080604', '#120c06', 0.5, 2);
       const flick = 0.82 + Math.sin(t * 11) * 0.09 + Math.sin(t * 6.3) * 0.09;
-      for (let i = 7; i >= 0; i--) {
-        const r = 40 + i * 15;
-        x.fillStyle = `rgba(${90 - i * 6},${44 - i * 3},10,${(0.05 * flick).toFixed(3)})`;
-        x.beginPath(); x.arc(W / 2, H - 6, r, 0, Math.PI * 2); x.fill();
+      for (let i = 6; i >= 0; i--) {
+        x.fillStyle = `rgba(${88 - i * 6},${42 - i * 3},10,${(0.045 * flick).toFixed(3)})`;
+        x.beginPath(); x.arc(W / 2, H - 4, 34 + i * 13, 0, Math.PI * 2); x.fill();
       }
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
-      /* ---- header ---- */
-      drawText(x, voting ? 'THE VOTE' : 'THE COUNCIL',
-        { x: W / 2, y: 8, scale: 2, align: 'center', color: voting ? RED : GOLD });
-      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: 26, scale: 1, align: 'center', color: GOLD_LT });
+      /* header */
+      drawText(x, 'THE COUNCIL', { x: W / 2, y: 6, scale: 2, align: 'center', color: GOLD });
+      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: 22, scale: 1, align: 'center', color: GOLD_LT });
 
-      const bw = W - 60, bx = 30, by = 38;
-      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 6);
-      x.fillStyle = '#1c1208'; x.fillRect(bx, by, bw, 4);
+      const bw = W - 52, bx = 26, by = 32;
+      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 5);
+      x.fillStyle = '#1c1208'; x.fillRect(bx, by, bw, 3);
       const n = Math.round((left / total) * bw);
-      const urgent = left < 8;
+      const urgent = left < 10;
       for (let i = 0; i < n; i += 3) {
         x.fillStyle = urgent ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : (i % 6 ? '#c39a2c' : GOLD);
-        x.fillRect(bx + i, by, 2, 4);
+        x.fillRect(bx + i, by, 2, 3);
       }
-      drawText(x, `${Math.ceil(left)}`, { x: W - 30, y: by - 10, scale: 1, align: 'right', color: urgent ? RED : DIM });
-      drawText(x, voting ? 'CHOOSE SOMEBODY' : 'TALK IT OUT', { x: 30, y: by - 10, scale: 1, color: DIM });
+      drawText(x, `${Math.ceil(left)}`, { x: W - 26, y: by - 9, scale: 1, align: 'right', color: urgent ? RED : DIM });
+      const voted = new Set(g.mp.view.votes?.voted || []);
+      drawText(x, `${voted.size}/${alive.length} VOTED`, { x: 26, y: by - 9, scale: 1, color: DIM });
 
-      /* ---- the list, which is the ballot during the vote ---- */
+      /* the ballot — every living name, votable from the moment you arrive */
       s.targets = alive.map((p) => p.id);
-      if (voting) s.targets.push('skip');
+      s.targets.push('skip');
       if (s.sel >= s.targets.length) s.sel = 0;
 
-      const LX = 12, LW = 132;
-      let y = 52;
+      const LX = 10, LW = 118, ROW = 10;
+      let y = 42;
       const rows = [];
-      const voted = new Set(g.mp.view.votes?.voted || []);
-      const canPick = voting && g.amAlive && !s.cast;
+      const canPick = g.amAlive && !s.cast;
 
       const line = (id, label, swatch, dead, tag, tagCol) => {
         const idx = s.targets.indexOf(id);
         const on = idx >= 0 && idx === s.sel && !s.talking;
         if (on && canPick) {
-          x.fillStyle = '#5a1810'; x.fillRect(LX, y - 2, LW, 11);
-          x.fillStyle = RED; x.fillRect(LX, y - 2, 2, 11);
-          // an arrow, so "this is the one Enter will pick" is unmissable
-          x.fillStyle = GOLD_LT;
-          x.fillRect(LX + LW - 8, y + 1, 4, 1);
-          x.fillRect(LX + LW - 6, y, 1, 3);
-          x.fillRect(LX + LW - 5, y + 1, 1, 1);
+          x.fillStyle = '#5a1810'; x.fillRect(LX, y - 1, LW, ROW);
+          x.fillStyle = RED; x.fillRect(LX, y - 1, 2, ROW);
         } else if (on) {
-          x.fillStyle = '#2e2210'; x.fillRect(LX, y - 2, LW, 11);
+          x.fillStyle = '#2e2210'; x.fillRect(LX, y - 1, LW, ROW);
         }
-        if (swatch) { x.fillStyle = dead ? '#4a4a4a' : swatch; x.fillRect(LX + 5, y, 7, 7); }
-        // the tag owns the right of the row; the name gets whatever is left
-        const tagW = tag ? textWidth(tag, 1) + 6 : 0;
+        if (swatch) { x.fillStyle = dead ? '#4a4a4a' : swatch; x.fillRect(LX + 4, y, 6, 6); }
+        const tagW = tag ? textWidth(tag, 1) + 5 : 0;
         let shown = label;
-        const room = LW - 20 - tagW - 6;
-        while (shown.length > 1 && textWidth(shown, 1) > room) shown = shown.slice(0, -1);
-        drawText(x, shown, {
-          x: LX + 17, y, scale: 1,
-          color: dead ? '#6a6a6a' : (on ? GOLD_LT : '#c9b98a'),
-        });
-        if (tag) drawText(x, tag, { x: LX + LW - 5, y, scale: 1, align: 'right', color: tagCol });
-        if (idx >= 0 && canPick) rows[idx] = { x: LX, y: y - 2, w: LW, h: 11 };
-        y += 11;
+        while (shown.length > 1 && textWidth(shown, 1) > LW - 16 - tagW) shown = shown.slice(0, -1);
+        drawText(x, shown, { x: LX + 14, y, scale: 1,
+          color: dead ? '#6a6a6a' : (on ? GOLD_LT : '#c9b98a') });
+        if (tag) drawText(x, tag, { x: LX + LW - 4, y, scale: 1, align: 'right', color: tagCol });
+        if (idx >= 0 && canPick) rows[idx] = { x: LX, y: y - 1, w: LW, h: ROW, pick: idx };
+        y += ROW;
       };
 
       for (const p of players) {
         const dead = p.alive === false;
         let tag = '', col = DIM;
-        if (dead) { tag = 'LOST'; col = '#5a4a3a'; }
-        else if (voting) {
+        if (dead) { tag = 'X'; col = '#5a4a3a'; }
+        else {
           const c = g.mp.view.votes?.counts?.[p.id] || 0;
           if (c) { tag = '*'.repeat(Math.min(c, 5)); col = GOLD; }
-          else if (voted.has(p.id)) { tag = 'VOTED'; col = '#5f7a4a'; }
-        } else if (p.ready) { tag = 'DONE'; col = JADE; }
-        line(p.id, (dead ? 'X ' : '') + (p.name || '?'), colourOf(p.colour), dead, tag, col);
-      }
-      if (voting) {
-        const c = g.mp.view.votes?.counts?.skip || 0;
-        line('skip', 'NOBODY - SKIP', null, false, c ? '*'.repeat(Math.min(c, 5)) : '', GOLD);
-      }
-
-      /* ---- one clear instruction under the list ---- */
-      y += 4;
-      /* Sized to its own label. A fixed-width box with a longer caption in
-         it spilled the words out of both ends. */
-      const box = (label, colour, hot) => {
-        const w = Math.max(LW, textWidth(label, 1) + 14);
-        const bx2 = LX;
-        x.fillStyle = hot ? colour : '#241708';
-        x.fillRect(bx2, y, w, 13);
-        x.fillStyle = colour;
-        x.fillRect(bx2, y, w, 1); x.fillRect(bx2, y + 12, w, 1);
-        x.fillRect(bx2, y, 1, 13); x.fillRect(bx2 + w - 1, y, 1, 13);
-        drawText(x, label, { x: bx2 + w / 2, y: y + 3, scale: 1, align: 'center',
-          color: hot ? '#160c04' : colour });
-        const r = { x: bx2, y, w, h: 13 };
-        y += 17;
-        return r;
-      };
-
-      if (voting) {
-        if (!g.amAlive) drawText(x, 'THE DEAD DO NOT VOTE', { x: LX, y, scale: 1, color: '#6a6a6a' });
-        else if (s.cast) {
-          const who = s.cast === 'skip' ? 'NOBODY'
-            : (players.find((p) => p.id === s.cast)?.name || '?');
-          /* Two lines in a fixed-width plate. One long line scaled about
-             its own centre punched straight out through the left margin. */
-          let shown = who;
-          while (shown.length > 1 && textWidth(shown, 1) > LW - 12) shown = shown.slice(0, -1);
-          const w = LW, hgt = 22;
-          s.stampT = (s.stampT || 0) + 0.016;
-          const k = Math.min(1, s.stampT / 0.22);
-          const over = 1 + (1 - k) * 0.35;
-          x.save();
-          const cx0 = LX + w / 2, cy0 = y + hgt / 2;
-          x.translate(cx0, cy0); x.scale(over, over); x.translate(-cx0, -cy0);
-          x.fillStyle = '#12301f'; x.fillRect(LX, y, w, hgt);
-          ditherRect(x, LX, y, w, hgt, '#12301f', '#173d28', 0.4, 2);
-          x.fillStyle = JADE;
-          x.fillRect(LX, y, w, 1); x.fillRect(LX, y + hgt - 1, w, 1);
-          x.fillRect(LX, y, 1, hgt); x.fillRect(LX + w - 1, y, 1, hgt);
-          drawText(x, 'YOUR VOTE IS IN', { x: LX + w / 2, y: y + 3, scale: 1,
-            align: 'center', color: k < 0.6 ? '#ffffff' : '#5f9a7a' });
-          drawText(x, shown, { x: LX + w / 2, y: y + 12, scale: 1,
-            align: 'center', color: k < 0.6 ? '#ffffff' : GOLD_LT });
-          x.restore();
-          y += 26;
-        } else {
-          const who = s.targets?.[s.sel] === 'skip' ? 'NOBODY'
-            : (players.find((p) => p.id === s.targets?.[s.sel])?.name || '?');
-          let lbl = `LOCK IN: ${who}`;
-          while (lbl.length > 4 && textWidth(lbl, 1) > LW - 12) lbl = lbl.slice(0, -1);
-          rows.push(box(lbl, RED, false));
-          rows[rows.length - 1].vote = true;
+          else if (voted.has(p.id)) { tag = 'IN'; col = '#5f7a4a'; }
         }
+        line(p.id, (p.name || '?'), colourOf(p.colour), dead, tag, col);
+      }
+      const skips = g.mp.view.votes?.counts?.skip || 0;
+      line('skip', 'NOBODY', null, false, skips ? '*'.repeat(Math.min(skips, 5)) : '', GOLD);
+
+      /* one button, and it says who it is for */
+      y += 3;
+      if (!g.amAlive) {
+        drawText(x, 'THE DEAD DO NOT VOTE', { x: LX, y, scale: 1, color: '#6a6a6a' });
+      } else if (s.cast) {
+        const who = s.cast === 'skip' ? 'NOBODY'
+          : (players.find((p) => p.id === s.cast)?.name || '?');
+        s.stampT += 0.016;
+        const k = Math.min(1, s.stampT / 0.2);
+        const over = 1 + (1 - k) * 0.3;
+        x.save();
+        x.translate(LX + LW / 2, y + 8); x.scale(over, over); x.translate(-(LX + LW / 2), -(y + 8));
+        x.fillStyle = '#12301f'; x.fillRect(LX, y, LW, 17);
+        x.fillStyle = JADE;
+        x.fillRect(LX, y, LW, 1); x.fillRect(LX, y + 16, LW, 1);
+        x.fillRect(LX, y, 1, 17); x.fillRect(LX + LW - 1, y, 1, 17);
+        let shown = who;
+        while (shown.length > 1 && textWidth(shown, 1) > LW - 40) shown = shown.slice(0, -1);
+        drawText(x, `VOTED  ${shown}`, { x: LX + LW / 2, y: y + 5, scale: 1,
+          align: 'center', color: k < 0.6 ? '#ffffff' : GOLD_LT });
+        x.restore();
       } else {
-        const r = box(s.ready ? 'WAITING FOR THE REST' : 'ENTER WHEN DONE',
-          s.ready ? JADE : GOLD, s.ready);
-        r.ready = true;
-        rows.push(r);
-        const done = alive.filter((p) => p.ready).length;
-        drawText(x, `${done} OF ${alive.length} READY TO VOTE`,
-          { x: LX, y, scale: 1, color: done === alive.length ? JADE : DIM });
+        const who = s.targets[s.sel] === 'skip' ? 'NOBODY'
+          : (players.find((p) => p.id === s.targets[s.sel])?.name || '?');
+        let lbl = `ENTER  VOTE ${who}`;
+        while (lbl.length > 8 && textWidth(lbl, 1) > LW - 10) lbl = lbl.slice(0, -1);
+        x.fillStyle = '#2a0a08'; x.fillRect(LX, y, LW, 13);
+        x.fillStyle = RED;
+        x.fillRect(LX, y, LW, 1); x.fillRect(LX, y + 12, LW, 1);
+        x.fillRect(LX, y, 1, 13); x.fillRect(LX + LW - 1, y, 1, 13);
+        drawText(x, lbl, { x: LX + LW / 2, y: y + 3, scale: 1, align: 'center', color: '#ffd8ce' });
+        rows.push({ x: LX, y, w: LW, h: 13, vote: true });
       }
 
-      /* ---- chat ---- */
-      const cx = LX + LW + 8;
-      const cw = W - cx - 12;
-      const ctop = 52, cbot = H - 36;
+      /* chat, alongside — not before */
+      const cx = LX + LW + 6;
+      const cw = W - cx - 10;
+      const ctop = 42, cbot = H - 33;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx, ctop, cw, cbot - ctop);
       x.fillStyle = s.talking ? JADE : '#3a2a10';
       x.fillRect(cx, ctop, cw, 1); x.fillRect(cx, cbot - 1, cw, 1);
       x.fillRect(cx, ctop, 1, cbot - ctop); x.fillRect(cx + cw - 1, ctop, 1, cbot - ctop);
 
       const lines = [];
-      for (const m of g.mp.chat.slice(-14)) {
-        const wrapped = wrapText(`${m.from}: ${m.text}`, cw - 8, 1, 1);
-        wrapped.forEach((ln, i) => lines.push({
+      for (const m of g.mp.chat.slice(-16)) {
+        wrapText(`${m.from}: ${m.text}`, cw - 7, 1, 1).forEach((ln, i) => lines.push({
           ln, kind: m.kind, from: i === 0 ? m.from : null, colour: m.colour,
         }));
       }
-      const fit = Math.floor((cbot - ctop - 6) / 9);
-      let cy = ctop + 4;
+      const fit = Math.floor((cbot - ctop - 5) / 8);
+      let cy = ctop + 3;
       for (const l of lines.slice(-fit)) {
-        drawText(x, l.ln, { x: cx + 4, y: cy, scale: 1, color: l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT });
-        if (l.from) drawText(x, l.from + ':', { x: cx + 4, y: cy, scale: 1, color: colourOf(l.colour) });
-        cy += 9;
+        drawText(x, l.ln, { x: cx + 3, y: cy, scale: 1, color: l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT });
+        if (l.from) drawText(x, l.from + ':', { x: cx + 3, y: cy, scale: 1, color: colourOf(l.colour) });
+        cy += 8;
       }
       if (!lines.length) {
-        drawText(x, 'NOBODY HAS SPOKEN YET', {
-          x: cx + cw / 2, y: ctop + 8, scale: 1, align: 'center', color: '#4a3f2a',
-        });
+        drawText(x, 'NOBODY HAS SPOKEN YET', { x: cx + cw / 2, y: ctop + 6, scale: 1, align: 'center', color: '#4a3f2a' });
       }
 
-      // the chat line only takes your keys when you say so
-      field(x, cx, H - 33, cw, 12, s.talking);
+      field(x, cx, H - 31, cw, 11, s.talking);
       if (s.talking) {
         drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
-          x: cx + 3, y: H - 30, scale: 1, color: g.amAlive ? JADE : '#8fb0c8',
-        });
+          x: cx + 3, y: H - 28, scale: 1, color: g.amAlive ? JADE : '#8fb0c8' });
       } else {
-        drawText(x, 'T  TO TALK', { x: cx + 3, y: H - 30, scale: 1, color: '#5a4a30' });
-        const r = { x: cx, y: H - 33, w: cw, h: 12, talk: true };
-        rows.push(r);
+        drawText(x, 'T  TO TALK', { x: cx + 3, y: H - 28, scale: 1, color: '#5a4a30' });
+        rows.push({ x: cx, y: H - 31, w: cw, h: 11, talk: true });
       }
 
-      footer(x, W, H, s.talking
-        ? 'ENTER SENDS   ESC STOPS TYPING'
-        : (voting
-          ? (s.cast ? 'YOUR VOTE IS IN   T TALKS'
-            : 'CLICK OR ARROW TO PICK   ENTER LOCKS IT IN   T TALKS')
-          : 'ENTER WHEN DONE TALKING   T TALKS'));
+      footer(x, W, H, s.talking ? 'ENTER SENDS   ESC STOPS TYPING'
+        : (s.cast ? 'YOUR VOTE IS IN   T TALKS'
+          : 'CLICK A NAME OR ARROW TO IT   ENTER VOTES   T TALKS'));
       return rows;
     },
 
@@ -745,11 +688,6 @@ export const SCREENS = {
     },
 
     key(code, s, g, st) {
-      const voting = g.mp.view.phase === 'vote';
-
-      /* Typing is a mode you enter deliberately. Before, every key was
-         ambiguous — Enter meant send, or ready, or vote, depending on
-         whether the line happened to be empty. */
       if (s.talking) {
         if (code === 'Escape') { s.talking = false; s.typing = ''; return true; }
         if (code === 'Enter' || code === 'NumpadEnter') {
@@ -764,47 +702,40 @@ export const SCREENS = {
         if (punct[code] && s.typing.length < 60) { s.typing += punct[code]; return true; }
         return true;
       }
-
       if (code === 'KeyT') { s.talking = true; return true; }
       if (code === 'ArrowUp' || code === 'ArrowDown' || code === 'KeyW' || code === 'KeyS') {
-        const n = s.targets?.length || 1;
-        const up = code === 'ArrowUp' || code === 'KeyW';
-        s.sel = (s.sel + (up ? n - 1 : 1)) % n;
+        const n2 = s.targets?.length || 1;
+        s.sel = (s.sel + ((code === 'ArrowUp' || code === 'KeyW') ? n2 - 1 : 1)) % n2;
         g.audio?.sfx('select');
         return true;
       }
       if (code === 'Enter' || code === 'NumpadEnter' || code === 'KeyE' || code === 'Space') {
-        if (voting) {
-          if (!g.amAlive || s.cast) return true;
-          s.cast = s.targets?.[s.sel] || 'skip';
-          s.stampT = 0;
-          g.sendVote(s.cast);
-        } else {
-          s.ready = !s.ready;
-          g.sendReady(s.ready);
-        }
+        if (!g.amAlive || s.cast) return true;
+        s.cast = s.targets?.[s.sel] || 'skip';
+        s.stampT = 0;
+        g.sendVote(s.cast);
         return true;
       }
       return true;
     },
 
-    /**
-     * Clicking a name PICKS it. Nothing is sent until you lock it in —
-     * casting on the same click you used to look at somebody was a good way
-     * to throw your vote away by accident.
-     */
+    /** Click a name to pick it, click it again (or the button) to send it. */
     click(row, i, s, g) {
       if (row?.talk) { s.talking = true; return true; }
-      if (row?.ready) { s.ready = !s.ready; g.sendReady(s.ready); return true; }
-      const voting = g.mp.view.phase === 'vote';
-      if (!voting || !g.amAlive || s.cast) return true;
+      if (!g.amAlive || s.cast) return true;
       if (row?.vote) {
         s.cast = s.targets?.[s.sel] || 'skip';
         s.stampT = 0;
         g.sendVote(s.cast);
         return true;
       }
-      if (i < (s.targets?.length || 0)) { s.sel = i; g.audio?.sfx('select'); }
+      if (row?.pick !== undefined) {
+        if (row.pick === s.sel) {
+          s.cast = s.targets[s.sel];
+          s.stampT = 0;
+          g.sendVote(s.cast);
+        } else { s.sel = row.pick; g.audio?.sfx('select'); }
+      }
       return true;
     },
   },

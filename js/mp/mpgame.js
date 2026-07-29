@@ -292,15 +292,18 @@ export class MPGame extends Game {
           from: over(camp, 16, 30, 2.4), to: over(camp, 4.5, 11, 2.9),
           look: at(camp, 1.4),
         },
-        { // the work: a pendulum, turning over
+        { /* The work: a Pendulum, turning over. Flown high and pulled back
+             — the old path started five metres off the ground twenty-two
+             out, which is exactly where the canopy is, and the camera spent
+             the shot inside a tree. */
           dur: 3.2, ease: 'smooth',
-          from: pend ? over(pend, 5, 22, 0.6) : over(hut, 6, 20, 0.6),
-          to: pend ? over(pend, 13, 11, 1.3) : over(hut, 8, 10, 1.3),
-          look: pend ? at(pend, 8) : at(hut, 4),
+          from: pend ? over(pend, 26, 30, 0.6) : over(hut, 24, 28, 0.6),
+          to: pend ? over(pend, 19, 17, 1.3) : over(hut, 18, 16, 1.3),
+          look: pend ? at(pend, 9) : at(hut, 5),
         },
         { // somewhere to be alone with somebody
           dur: 3.0, ease: 'smooth', shake: 0.05,
-          from: over(hut, 3.2, 17, 3.6), to: over(hut, 2.4, 7.5, 4.2),
+          from: over(hut, 9, 21, 3.6), to: over(hut, 5.0, 11, 4.2),
           look: at(hut, 2.6),
         },
         { // and the temple watching all of it
@@ -1353,7 +1356,6 @@ export class MPGame extends Game {
       phase: M.view.phase,
     };
     this.ui.setHearts(this.amAlive ? 1 : 0, 1);
-    this.ui.setTimer(this.runTime);
     this.ui.updateCompass(this.player.yaw, this.player.pos.x, this.player.pos.z);
     this.ui.setStamina(this.player.stamina);
   }

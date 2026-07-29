@@ -119,22 +119,7 @@ export class HostSession {
         p.x = msg.x; p.y = msg.y; p.z = msg.z; p.yaw = msg.yaw; p.anim = msg.anim;
         break;
       }
-      case C.READY: {
-        if (!p || !p.alive) break;
-        p.ready = !!msg.ready;
-        this._roster();
-        /* Nobody should have to sit out a timer everyone has finished with.
-           Once every living player says they are done talking, open the
-           ballot immediately. */
-        if (this.phase === PHASE.COUNCIL) {
-          const alive = [...this.players.values()].filter((x) => x.alive);
-          if (alive.length && alive.every((x) => x.ready)) {
-            this.votes.clear();
-            this._setPhase(PHASE.VOTE, this.settings.voteSeconds);
-          }
-        }
-        break;
-      }
+      case C.READY: { if (p && p.alive) { p.ready = !!msg.ready; this._roster(); } break; }
       case C.DO_TASK: { this._tryTask(from, msg.taskId); break; }
       case C.KILL: { this._tryKill(from, msg.targetId); break; }
       case C.REPORT: { this._tryReport(from, msg.bodyId); break; }
@@ -302,13 +287,18 @@ export class HostSession {
     for (const p of this.players.values()) p.ready = false;
     this.council = { calledBy: byId, bodyOf };
     this.net.broadcast({ t: S.COUNCIL, calledBy: byId, bodyOf });
-    this._setPhase(PHASE.COUNCIL, this.settings.councilSeconds, { calledBy: byId, bodyOf });
+    this._setPhase(PHASE.COUNCIL, this.settings.councilSeconds + this.settings.voteSeconds,
+      { calledBy: byId, bodyOf });
     this.hooks.onCouncil?.(byId, bodyOf);
   }
 
   _tryVote(id, targetId) {
     const p = this.players.get(id);
-    if (!p || !p.alive || this.phase !== PHASE.VOTE) return;
+    /* One room. You can talk and vote in it at the same time, and the
+       meeting ends when everyone has voted or the clock runs out — being
+       made to declare you had stopped talking before you were allowed to
+       choose anybody was two gates where none were needed. */
+    if (!p || !p.alive || this.phase !== PHASE.COUNCIL) return;
     if (this.votes.has(id)) return;
     if (targetId !== 'skip') {
       const t = this.players.get(targetId);
@@ -463,11 +453,7 @@ export class HostSession {
     // phase timers
     if (this.phaseEnds && now() >= this.phaseEnds) {
       if (this.phase === PHASE.REVEAL) this._setPhase(PHASE.ROAM, 0);
-      else if (this.phase === PHASE.COUNCIL) {
-        this.votes.clear();
-        for (const p of this.players.values()) p.ready = false;
-        this._setPhase(PHASE.VOTE, this.settings.voteSeconds);
-      } else if (this.phase === PHASE.VOTE) this._resolveVote();
+      else if (this.phase === PHASE.COUNCIL) this._resolveVote();
     }
 
     // a fatal sabotage that runs out ends the game

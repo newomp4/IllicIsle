@@ -104,16 +104,17 @@ export class Hud {
     const wob = Math.round(Math.sin(time * 1.7) * 0.5 + Math.sin(time * 0.9) * 0.5);
 
     if (d.mp) {
-      // Castaways draws its own left and right columns; hearts and a
-      // coconut count mean nothing when you are alive or you are not.
+      /* Castaways draws its own columns. Everything is deliberately tight —
+         this HUD is up for the whole round and it should sit at the edges
+         of the picture, not across it. */
       this._mpTags(d.mp);
-      this._mpLeft(4, 4 + wob, d.mp);
-      this._mpRight(W - 4, 4 + wob, d.mp, W, H);
-      this._compass(W / 2, 3, d.compass);
+      this._mpLeft(3, 3 + wob, d.mp);
+      this._mpRight(W - 3, 3 + wob, d.mp);
+      this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
-      this._timer(W - 4, H - 4);
-      if (d.prompt) this._prompt(W / 2, H - 44, d.prompt);
-      this._toasts(W / 2, Math.round(H * 0.30));
+      if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
+      if (d.prompt) this._prompt(W / 2, H - 34, d.prompt);
+      this._toasts(W / 2, Math.round(H * 0.26));
       if (d.popup) this._popup(W, H, d.popup);
       return this.c;
     }
@@ -173,14 +174,14 @@ export class Hud {
     const x = this.x;
     for (const t of (mp.tags || [])) {
       const hex = '#' + (t.colour >>> 0).toString(16).padStart(6, '0');
-      const w = textWidth(t.name, 1) + 4;
-      const bx = Math.round(t.x - w / 2), by = t.y - 9;
+      const w = textWidth(t.name, 1) + 3;
+      const bx = Math.round(t.x - w / 2), by = t.y - 8;
       if (t.fade < 0.35) continue;
       // a dark plate so a pale name never vanishes into the sky
       x.fillStyle = 'rgba(8,6,4,.62)';
-      x.fillRect(bx, by, w, 9);
+      x.fillRect(bx, by, w, 8);
       x.fillStyle = t.dead ? '#7a2018' : hex;
-      x.fillRect(bx, by + 8, w, 1);
+      x.fillRect(bx, by + 7, w, 1);
       drawText(x, t.name, {
         x: Math.round(t.x), y: by + 2, scale: 1, align: 'center',
         color: t.dead ? '#e0453a' : (t.fade > 0.7 ? '#fff3c4' : '#c9b98a'),
@@ -192,148 +193,136 @@ export class Hud {
   _mpLeft(ox, oy, mp) {
     const x = this.x;
     const agent = mp.role === 'agent';
+    const tasks = mp.myTasks || [];
     const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY',
-      ...(mp.myTasks || []).map((t) => (t.steps > 1 ? `${t.name}  1/${t.steps}` : t.name))];
-    if (agent) lines.push('THESE ARE FOR SHOW', 'KNIFE COLD  00', 'Q  SABOTAGE');
-    else lines.push('TAB  CHART');
-    const pw = Math.max(agent ? 118 : 74,
-      lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
-    const ph = 18 + (mp.myTasks?.length || 0) * 10
-      + (agent ? 74 + Math.min(3, (mp.cools || []).length) * 8 : 10);
-    plate(x, ox - 3, oy - 3, pw, ph);
+      ...tasks.map((t) => (t.steps > 1 ? `${t.name} ${t.step + 1}/${t.steps}` : t.name))];
+    const CAP = 136;   // the list is a reminder, not a document
+    const pw = Math.min(CAP, Math.max(64, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 15));
+    const ph = 12 + tasks.length * 8 + (agent ? 8 : 0);
+    plate(x, ox - 2, oy - 2, pw, ph);
+
     drawText(x, agent ? 'ROGUE AGENT' : 'CASTAWAY', {
       x: ox, y: oy, scale: 1, color: agent ? '#ff6a5a' : '#8fe8c8',
     });
-    let y = oy + 11;
+    let y = oy + 9;
     const beat = Math.floor(performance.now() / 110) % 2 === 0;
-    for (const t of (mp.myTasks || [])) {
+    for (const t of tasks) {
       const done = t.done;
       const hot = mp.flash === t.id;
-      if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 2, 118, 10); }
-      // a hard pixel checkbox rather than a glyph
-      x.fillStyle = INK; x.fillRect(ox, y, 7, 7);
+      if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 1, pw, 8); }
+      x.fillStyle = INK; x.fillRect(ox, y, 5, 5);
       x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : (t.half ? '#5a4a12' : '#2a1c0c');
-      x.fillRect(ox + 1, y + 1, 5, 5);
-      // half a chore reads as half a box filled
-      if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 4, 5, 2); }
-      if (done) {
-        x.fillStyle = '#7ec850';
-        x.fillRect(ox + 2, y + 4, 1, 1);
-        x.fillRect(ox + 3, y + 5, 1, 1);
-        x.fillRect(ox + 4, y + 3, 1, 1);
-        x.fillRect(ox + 5, y + 2, 1, 1);
-      }
-      const label = (!done && t.steps > 1) ? `${t.name}  ${t.step + 1}/${t.steps}` : t.name;
+      x.fillRect(ox + 1, y + 1, 3, 3);
+      if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 3, 3, 1); }
+      let label = (!done && t.steps > 1) ? `${t.name} ${t.step + 1}/${t.steps}` : t.name;
+      while (label.length > 4 && textWidth(label, 1) > pw - 11) label = label.slice(0, -1);
       drawText(x, label, {
-        x: ox + 11, y: y + 1, scale: 1,
+        x: ox + 8, y, scale: 1,
         color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4'))),
       });
-      y += 10;
+      y += 8;
     }
-    if (agent) {
-      drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 2, scale: 1, color: '#b06a5c' });
-      y += 14;
+    if (agent) drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 1, scale: 1, color: '#a05c50' });
+    else drawText(x, 'TAB  CHART', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
+  }
 
-      /* The knife's own panel. Two states — a grace period at the start of
-         the round that nobody can kill through, and the cooldown after a
-         kill — drawn the same way so the shape means "wait". */
-      const grace = mp.graceIn || 0;
-      const cd = mp.killIn || 0;
-      const total = grace > 0 ? Math.max(grace, 1) : Math.max(mp.killTotal || 1, 1);
-      const left = grace > 0 ? grace : cd;
-      const ready = left <= 0;
-      const pw2 = 116;
+  /**
+   * The Agent's own panel, in the corner where a weapon readout belongs
+   * rather than buried under the shopping list.
+   */
+  _mpAgent(rx, by, mp) {
+    const x = this.x;
+    const cools = mp.cools || [];
+    const PW = 112;
+    const PH = 30 + Math.min(3, cools.length) * 7;
+    const ox = rx - PW, oy = by - PH;
+    plate(x, ox, oy, PW, PH);
 
-      x.fillStyle = ready ? 'rgba(70,10,6,.85)' : 'rgba(30,14,10,.85)';
-      x.fillRect(ox - 2, y, pw2, 24);
-      x.fillStyle = ready ? '#ff6a5a' : '#7a3a32';
-      x.fillRect(ox - 2, y, pw2, 1); x.fillRect(ox - 2, y + 23, pw2, 1);
+    const grace = mp.graceIn || 0;
+    const cd = mp.killIn || 0;
+    const left = grace > 0 ? grace : cd;
+    const ready = left <= 0;
+    const total = grace > 0 ? Math.max(grace, 1) : Math.max(mp.killTotal || 1, 1);
 
-      drawKnife(x, ox + 2, y + 3, ready);
-      drawText(x, ready ? 'READY' : (grace > 0 ? 'TRUCE' : 'COLD'), {
-        x: ox + 16, y: y + 3, scale: 1, color: ready ? '#ff8a7a' : '#a87a70',
-      });
-      if (!ready) {
-        drawText(x, `${Math.ceil(left)}`, {
-          x: ox + pw2 - 8, y: y + 3, scale: 1, align: 'right', color: '#a87a70',
-        });
+    drawKnife(x, ox + 3, oy + 3, ready);
+    drawText(x, ready ? 'KNIFE READY' : 'KILL COOLDOWN', {
+      x: ox + 14, y: oy + 3, scale: 1, color: ready ? '#ff8a7a' : '#a87a70',
+    });
+    const bw = PW - 6, bx = ox + 3, by2 = oy + 12;
+    x.fillStyle = INK; x.fillRect(bx - 1, by2 - 1, bw + 2, 6);
+    x.fillStyle = '#20100c'; x.fillRect(bx, by2, bw, 4);
+    const k = ready ? 1 : 1 - Math.min(1, left / total);
+    for (let i = 0; i < Math.round(k * bw); i += 3) {
+      x.fillStyle = ready
+        ? (Math.floor(performance.now() / 220) % 2 ? '#ff6a5a' : '#c03a2c')
+        : (i % 6 ? '#8a2018' : '#c03a2c');
+      x.fillRect(bx + i, by2, 2, 4);
+    }
+    // the seconds sit on the bar, not on top of the label
+    drawText(x, ready ? 'F' : `${Math.ceil(left)}`, {
+      x: ox + PW - 4, y: by2 - 1, scale: 1, align: 'right',
+      color: ready ? '#ffd8ce' : '#e2b0a4',
+    });
+
+    // the sabotage key, as an actual key
+    const sabReady = !cools.length && !mp.sabotage;
+    const ky = oy + 20;
+    x.fillStyle = sabReady ? '#c39a2c' : '#3a2a18';
+    x.fillRect(ox + 3, ky, 9, 9);
+    x.fillStyle = sabReady ? '#ffe9a8' : '#5a4a30';
+    x.fillRect(ox + 3, ky, 9, 1); x.fillRect(ox + 3, ky, 1, 9);
+    drawText(x, 'Q', { x: ox + 7, y: ky + 2, scale: 1, align: 'center',
+      color: sabReady ? '#160c04' : '#8a7a52' });
+    drawText(x, sabReady ? 'SABOTAGE' : 'COOLING', {
+      x: ox + 15, y: ky + 2, scale: 1, color: sabReady ? GOLD_LT : '#7a6a4a' });
+
+    let cy = oy + 31;
+    for (const c of cools.slice(0, 3)) {
+      const cbw = PW - 36;
+      drawText(x, (c.kind || '').toUpperCase().slice(0, 6), { x: ox + 3, y: cy, scale: 1, color: '#7a5a54' });
+      x.fillStyle = INK; x.fillRect(ox + 30, cy, cbw + 2, 5);
+      x.fillStyle = '#20100c'; x.fillRect(ox + 31, cy + 1, cbw, 3);
+      const nn = Math.round((1 - Math.min(1, c.left / Math.max(1, c.total))) * cbw);
+      for (let i = 0; i < nn; i += 3) {
+        x.fillStyle = i % 6 ? '#6a4a24' : '#c39a2c';
+        x.fillRect(ox + 31 + i, cy + 1, 2, 3);
       }
-      // the bar fills as the wait runs out
-      const bw2 = pw2 - 8, bx2 = ox + 2, by2 = y + 14;
-      x.fillStyle = INK; x.fillRect(bx2 - 1, by2 - 1, bw2 + 2, 7);
-      x.fillStyle = '#20100c'; x.fillRect(bx2, by2, bw2, 5);
-      const k2 = ready ? 1 : 1 - Math.min(1, left / total);
-      const n2 = Math.round(k2 * bw2);
-      for (let i = 0; i < n2; i += 3) {
-        x.fillStyle = ready
-          ? (Math.floor(performance.now() / 220) % 2 ? '#ff6a5a' : '#c03a2c')
-          : (i % 6 ? '#8a2018' : '#c03a2c');
-        x.fillRect(bx2 + i, by2, 2, 5);
-      }
-      y += 28;
-
-      // sabotage: the key, made to stand apart from the chore list
-      const sabReady = !(mp.cools || []).length && !mp.sabotage;
-      x.fillStyle = sabReady ? 'rgba(60,20,6,.85)' : 'rgba(26,16,10,.85)';
-      x.fillRect(ox - 2, y, pw2, 13);
-      x.fillStyle = sabReady ? GOLD : '#6a4a30';
-      x.fillRect(ox - 2, y, pw2, 1); x.fillRect(ox - 2, y + 12, pw2, 1);
-      x.fillStyle = sabReady ? GOLD : '#3a2a18';
-      x.fillRect(ox - 1, y + 2, 9, 9);
-      drawText(x, 'Q', { x: ox + 3, y: y + 3, scale: 1, align: 'center', color: sabReady ? '#160c04' : '#8a7a52' });
-      drawText(x, 'SABOTAGE', { x: ox + 12, y: y + 3, scale: 1, color: sabReady ? GOLD_LT : '#7a6a4a' });
-      y += 17;
-
-      // and a small bar per sabotage that is still cooling
-      for (const c of (mp.cools || []).slice(0, 3)) {
-        const cbw = pw2 - 40;
-        drawText(x, (c.kind || '').toUpperCase().slice(0, 7), { x: ox, y: y + 1, scale: 1, color: '#7a5a54' });
-        x.fillStyle = INK; x.fillRect(ox + 34, y, cbw + 2, 6);
-        x.fillStyle = '#20100c'; x.fillRect(ox + 35, y + 1, cbw, 4);
-        const nn = Math.round((1 - Math.min(1, c.left / Math.max(1, c.total))) * cbw);
-        for (let i = 0; i < nn; i += 3) {
-          x.fillStyle = i % 6 ? '#6a4a24' : '#c39a2c';
-          x.fillRect(ox + 35 + i, y + 1, 2, 4);
-        }
-        y += 8;
-      }
-      drawText(x, 'TAB  CHART', { x: ox, y: y + 2, scale: 1, color: '#8a7a52' });
-    } else {
-      drawText(x, 'TAB  CHART', { x: ox, y: y + 2, scale: 1, color: '#8a7a52' });
+      cy += 7;
     }
   }
 
   /** Right column: the shared work bar and who is still ashore. */
-  _mpRight(ox, oy, mp, W, H) {
+  _mpRight(ox, oy, mp) {
     const x = this.x;
-    plate(x, ox - 62, oy - 3, 65, 22 + (mp.players?.length || 0) * 10);
+    const players = mp.players || [];
+    const PW = 52;
+    plate(x, ox - PW, oy - 2, PW, 16 + players.length * 8);
+
     const total = mp.tasksTotal || 0;
     const frac = total ? Math.min(1, (mp.tasksDone || 0) / total) : 0;
-    drawText(x, 'WORK', { x: ox, y: oy, scale: 1, align: 'right', color: '#c9b98a' });
-    const bw = 56, bh = 5, bx = ox - bw;
-    x.fillStyle = INK; x.fillRect(bx - 1, oy + 9, bw + 2, bh + 2);
-    x.fillStyle = '#231708'; x.fillRect(bx, oy + 10, bw, bh);
-    const n = Math.round(frac * bw);
-    for (let i = 0; i < n; i += 3) {
+    drawText(x, 'WORK', { x: ox - 3, y: oy, scale: 1, align: 'right', color: '#c9b98a' });
+    const bw = PW - 8, bx = ox - PW + 4;
+    x.fillStyle = INK; x.fillRect(bx - 1, oy + 8, bw + 2, 6);
+    x.fillStyle = '#231708'; x.fillRect(bx, oy + 9, bw, 4);
+    for (let i = 0; i < Math.round(frac * bw); i += 3) {
       x.fillStyle = i % 6 ? '#c39a2c' : GOLD;
-      x.fillRect(bx + i, oy + 10, 2, bh);
+      x.fillRect(bx + i, oy + 9, 2, 4);
     }
 
-    // roster pips: one square per player, dark when they are gone
-    let py = oy + 20;
-    for (const p of (mp.players || [])) {
+    let py = oy + 17;
+    for (const p of players) {
       const hex = '#' + (COLOUR_HEX[p.colour] || '888888');
       const dead = p.alive === false;
-      const px = ox - 7;
-      x.fillStyle = INK; x.fillRect(px - 1, py - 1, 9, 9);
+      const px = ox - 9;
+      x.fillStyle = INK; x.fillRect(px - 1, py - 1, 8, 8);
       x.fillStyle = dead ? '#241a16' : hex;
-      x.fillRect(px, py, 7, 7);
+      x.fillRect(px, py, 6, 6);
       if (dead) {
         x.fillStyle = '#6a2a22';
-        for (let i = 0; i < 7; i++) { x.fillRect(px + i, py + i, 1, 1); x.fillRect(px + 6 - i, py + i, 1, 1); }
+        for (let i = 0; i < 6; i++) { x.fillRect(px + i, py + i, 1, 1); x.fillRect(px + 5 - i, py + i, 1, 1); }
       }
-      if (p.id === mp.selfId) { x.fillStyle = GOLD; x.fillRect(px - 2, py + 3, 1, 1); }
-      py += 10;
+      if (p.id === mp.selfId) { x.fillStyle = GOLD; x.fillRect(px - 3, py + 2, 2, 2); }
+      py += 8;
     }
   }
 
@@ -345,26 +334,26 @@ export class Hud {
     // an interaction prompt fighting it below
     if (mp.task) {
       const t2 = mp.task;
-      const pw = Math.max(120, textWidth(t2.name || '', 1) + 20);
-      const px = Math.round((W - pw) / 2), py = H - 68;
-      plate(x, px, py, pw, 34);
+      const pw = Math.max(96, textWidth(t2.name || '', 1) + 14);
+      const px = Math.round((W - pw) / 2), py = H - 56;
+      plate(x, px, py, pw, 27);
       x.fillStyle = JADE;
-      x.fillRect(px, py, pw, 1); x.fillRect(px, py + 33, pw, 1);
-      drawText(x, t2.name || '', { x: W / 2, y: py + 4, scale: 1, align: 'center', color: GOLD_LT });
+      x.fillRect(px, py, pw, 1); x.fillRect(px, py + 26, pw, 1);
+      drawText(x, t2.name || '', { x: W / 2, y: py + 3, scale: 1, align: 'center', color: GOLD_LT });
 
-      const bw = pw - 16, bx = px + 8, by = py + 15;
-      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 9);
-      x.fillStyle = '#231708'; x.fillRect(bx, by, bw, 7);
+      const bw = pw - 12, bx = px + 6, by = py + 12;
+      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 7);
+      x.fillStyle = '#231708'; x.fillRect(bx, by, bw, 5);
       const n = Math.round(Math.max(0, Math.min(1, t2.k)) * bw);
       for (let i = 0; i < n; i += 3) {
         x.fillStyle = i % 6 ? '#3f8f6a' : JADE;
-        x.fillRect(bx + i, by, 2, 7);
+        x.fillRect(bx + i, by, 2, 5);
       }
       // a chaser so it never looks frozen when progress is slow
       const cx2 = bx + ((performance.now() / 9) % bw | 0);
-      x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 7);
-      drawText(x, t2.holding ? `${t2.verb}   HOLD STILL` : 'HOLD E',
-        { x: W / 2, y: py + 25, scale: 1, align: 'center',
+      x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 5);
+      drawText(x, t2.holding ? `${t2.verb}  HOLD STILL` : 'HOLD E',
+        { x: W / 2, y: py + 19, scale: 1, align: 'center',
           color: t2.holding ? '#9fd8c4' : (Math.floor(performance.now() / 200) % 2 ? GOLD : '#8a7a52') });
     }
 
@@ -373,21 +362,21 @@ export class Hud {
       const s = mp.sabotage;
       const flash = s.fatal && Math.floor(performance.now() / 220) % 2 === 0;
       const label = `${s.name}  ${Math.ceil(s.left)}`;
-      const w = textWidth(label, 1) + 12;
-      const bx = Math.round((W - w) / 2), by = H - 26;
+      const w = textWidth(label, 1) + 10;
+      const bx = Math.round((W - w) / 2), by = H - 21;
       x.fillStyle = s.fatal ? 'rgba(60,8,6,.82)' : 'rgba(30,20,6,.8)';
-      x.fillRect(bx, by, w, 12);
+      x.fillRect(bx, by, w, 11);
       x.fillStyle = s.fatal ? (flash ? '#e0453a' : '#8a2018') : '#a8761c';
-      x.fillRect(bx, by, w, 1); x.fillRect(bx, by + 11, w, 1);
+      x.fillRect(bx, by, w, 1); x.fillRect(bx, by + 10, w, 1);
       drawText(x, label, {
-        x: W / 2, y: by + 3, scale: 1, align: 'center',
+        x: W / 2, y: by + 2, scale: 1, align: 'center',
         color: s.fatal ? (flash ? '#fff3c4' : '#ffb0a4') : GOLD_LT,
       });
     }
 
     if (!mp.alive) {
       drawText(x, 'YOU ARE A GHOST - WATCH, AND WAIT', {
-        x: W / 2, y: mp.sabotage ? H - 38 : H - 26, scale: 1, align: 'center', color: '#8fb0c8',
+        x: W / 2, y: mp.sabotage ? H - 32 : H - 21, scale: 1, align: 'center', color: '#8fb0c8',
       });
     }
   }
@@ -454,7 +443,7 @@ export class Hud {
   _compass(cx, oy, c) {
     if (!c) return;
     const x = this.x;
-    const W = 150, H = 17;
+    const W = 132, H = 17;
     const left = Math.round(cx - W / 2);
     x.fillStyle = INK; x.fillRect(left - 1, oy - 1, W + 2, H + 2);
     ditherRect(x, left, oy, W, H, '#140d06', '#241708', 0.5, 1);
@@ -489,14 +478,13 @@ export class Hud {
             : m.kind === 'fix' ? (Math.floor(performance.now() / 180) % 2 ? '#ff5a4a' : '#ffd0c0')
               : '#8fd8ff';
       if (near < 0.10) continue;
-      if (m.kind === 'job') {
-        // a small diamond, low in the strip, clear of the lettering
+      if (m.kind === 'job' || m.kind === 'fix') {
+        // a small diamond, below the lettering rather than through it
         x.fillStyle = col;
-        x.fillRect(px, oy + 8, 1, 1);
-        x.fillRect(px - 1, oy + 9, 3, 1);
-        x.fillRect(px - 2, oy + 10, 5, 1);
-        x.fillRect(px - 1, oy + 11, 3, 1);
-        x.fillRect(px, oy + 12, 1, 1);
+        x.fillRect(px, oy + 11, 1, 1);
+        x.fillRect(px - 1, oy + 12, 3, 1);
+        x.fillRect(px - 2, oy + 13, 5, 1);
+        x.fillRect(px - 1, oy + 14, 3, 1);
         continue;
       }
       /* Cardinals on the top line, places on the bottom. They used to share
@@ -597,7 +585,7 @@ export class Hud {
      =========================================================== */
   _popup(W, H, p) {
     const x = this.x;
-    const CW = 158, CH = 66;
+    const CW = 122, CH = 52;
     // slide in, hold, slide out
     const inT = Math.min(1, p.t / 0.28);
     const outT = p.t > p.dur - 0.5 ? (p.dur - p.t) / 0.5 : 1;
@@ -609,34 +597,34 @@ export class Hud {
     panel(x, left, top, CW, CH, { border: 2, dither: 0.45, hi: GOLD, lo: '#3a2610' });
 
     // icon plate
-    const ix = left + 5, iy = top + 10;
-    x.fillStyle = '#0d0906'; x.fillRect(ix, iy, 36, 36);
-    x.fillStyle = '#2a1c0e'; x.fillRect(ix + 1, iy + 1, 34, 34);
-    drawRelicIcon(x, p.icon, ix + 2, iy + 2, 32, Math.sin(p.t * 3) * 0.5);
+    const ix = left + 4, iy = top + 9;
+    x.fillStyle = '#0d0906'; x.fillRect(ix, iy, 28, 28);
+    x.fillStyle = '#2a1c0e'; x.fillRect(ix + 1, iy + 1, 26, 26);
+    drawRelicIcon(x, p.icon, ix + 2, iy + 2, 24, Math.sin(p.t * 3) * 0.5);
 
     // sparkle corners
     if (p.t % 0.6 < 0.3) {
       x.fillStyle = GOLD_LT;
       x.fillRect(ix - 2, iy - 2, 2, 2);
-      x.fillRect(ix + 36, iy + 36, 2, 2);
+      x.fillRect(ix + 28, iy + 28, 2, 2);
     }
 
-    const tx = left + 46;
+    const tx = left + 36;
     // the header is whatever the caller says it is; it used to always claim
     // a relic had been found, including when you had just stoked a fire
     drawText(x, p.head || 'RELIC FOUND', { x: tx, y: top + 6, scale: 1, color: GOLD });
-    x.fillStyle = '#5c3f1c'; x.fillRect(tx, top + 15, CW - 52, 1);
-    const lines = wrapText(p.title, CW - 52, 1, 1).slice(0, 2);
-    let ty = top + 20;
-    for (const ln of lines) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 9; }
+    x.fillStyle = '#5c3f1c'; x.fillRect(tx, top + 13, CW - 42, 1);
+    const lines = wrapText(p.title, CW - 42, 1, 1).slice(0, 2);
+    let ty = top + 17;
+    for (const ln of lines) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 8; }
     if (p.sub) {
       ty += 2;
       // laid out in sequence; clamping each line to the bottom edge stacked
       // them all on the same row
-      for (const ln of wrapText(p.sub, CW - 52, 1, 1).slice(0, 2)) {
+      for (const ln of wrapText(p.sub, CW - 42, 1, 1).slice(0, 2)) {
         if (ty > top + CH - 9) break;
         drawText(x, ln, { x: tx, y: ty, scale: 1, color: '#9fd8c4' });
-        ty += 9;
+        ty += 8;
       }
     }
   }

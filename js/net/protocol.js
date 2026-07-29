@@ -84,8 +84,10 @@ export const DEFAULT_SETTINGS = {
      being worth lying about — and it gives the Agents time to be seen
      somewhere innocent. */
   graceSeconds: 120,
-  councilSeconds: 45,
-  voteSeconds: 30,
+  /* One meeting, not two. The old split made you declare you had finished
+     talking before the game would let you choose anybody. */
+  councilSeconds: 50,
+  voteSeconds: 25,        // folded onto the council; kept for the total
   revealOnExile: true,
   tasksPerPlayer: 5,
   emergencyPerPlayer: 1,

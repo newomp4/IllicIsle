@@ -397,7 +397,14 @@ export class Game {
          height of the threshold, rising behind at the same pitch as the
          terraces so the hillside meets the top course. */
       const THRESH = dg.y + 0.10;          // top of the doorway's threshold slab
+      /* Ferdi's clearing is levelled, so the shack can stand in the middle
+         of it instead of being pushed up onto the shoulder of the hill
+         looking for somewhere flat enough. */
+      const FX = -30, FZ = 46;
+      const FY = heightAt(FX, FZ);
       setCarves([{
+        x: FX, z: FZ, rx: 21, rz: 21, yaw: 0, y: FY,
+      }, {
         x: dg.x, z: dg.z, rx: 25, rz: 27, yaw,
         h: (lx, lz) => {
           const into = Math.max(0, -lz);   // 0 at the doorway, grows into the hill
@@ -634,8 +641,10 @@ export class Game {
        decided before the site, because "is this ground flat" depends on
        which way the building is pointing. */
     const hutYaw = Math.atan2(this.spawn.x - (-30), this.spawn.z - 46);
+    /* The clearing is carved flat, so search a small radius right in the
+       middle of it rather than ranging out over the hillside. */
     const fh = findFlatGround(-30, 46, HUT_FOOT, {
-      rng, radius: 26, minH: 5, maxH: 22, yaw: hutYaw, maxRise: 1.2,
+      rng, radius: 7, minH: 3, maxH: 30, yaw: hutYaw, maxRise: 0.8,
     });
     // terrain height in the hut's own space, relative to its origin
     const hutGround = (lx, lz) => {
@@ -1209,7 +1218,7 @@ export class Game {
 
     if (this.state === 'cutscene') { this.skipCutscene(); return; }
 
-    if (k === 'KeyE') { this.interact(); return; }
+    if (k === 'KeyE') { if (!e.repeat) this.interact(); return; }
 
     if (k === 'KeyC' && this.playing) {
       const third = this.player.toggleView();
@@ -2621,7 +2630,7 @@ I have snacks."`);
     const storm = this.storm && this.storm.active ? 1 : 0;
     /* A sabotaged storm is far darker than the scripted one — the point of
        calling it is that nobody can see. */
-    const dark = Math.max(k, storm * (this.stormOn ? 0.92 : 0.55));
+    const dark = Math.max(k, storm * (this.stormOn ? 0.86 : 0.55));
 
     // sky and fog
     const f = this.islandScene.fog;
@@ -2647,6 +2656,15 @@ I have snacks."`);
     if (this.hemi) this.hemi.intensity = THREE.MathUtils.lerp(0.75, 0.20, dark);
     this.sky.material.opacity = 1 - dark * 0.92;
     this.sky.material.transparent = dark > 0.02;
+    /* The scene background is what shows THROUGH the sky dome, so it has to
+       darken too — otherwise the horizon stays a bright blue band during a
+       storm and none of the rest of it convinces. */
+    if (this.islandScene.background?.setRGB) {
+      this.islandScene.background.setRGB(
+        THREE.MathUtils.lerp(0.561, 0.035, dark),
+        THREE.MathUtils.lerp(0.769, 0.045, dark),
+        THREE.MathUtils.lerp(0.867, 0.070, dark));
+    }
 
     /* Everything that burns. `doused` is the Castaways sabotage: without
        this guard the day/night pass would relight every torch on the next
