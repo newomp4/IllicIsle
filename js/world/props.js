@@ -151,7 +151,8 @@ function buildPalm(rng, tierName) {
     const wid = T.crown * (0.62 + rng() * 0.20);
 
     const f = buildFrond(len, wid, 0.55 + rng() * 0.5, rng);
-    place(f, { rot: [pitch, a, 0], pos: [cx, H - T.crown * 0.15, cz] });
+    // tip it out from the trunk, THEN spin it round: see place()
+    place(f, { rot: [pitch, a, 0], order: 'YXZ', pos: [cx, H - T.crown * 0.15, cz] });
     tint(f, G(0xffffff).multiplyScalar(0.62 + rng() * 0.55));
     cutoutParts.push(f);
   }
@@ -161,7 +162,7 @@ function buildPalm(rng, tierName) {
     for (let i = 0; i < 3; i++) {
       const a = rng() * Math.PI * 2;
       const f = buildFrond(frondLen * 0.55, T.crown * 0.5, 1.9, rng);
-      place(f, { rot: [2.5 + rng() * 0.35, a, 0], pos: [cx, H - T.crown * 0.25, cz] });
+      place(f, { order: 'YXZ', rot: [2.5 + rng() * 0.35, a, 0], pos: [cx, H - T.crown * 0.25, cz] });
       tint(f, G(0xa79052).multiplyScalar(0.62 + rng() * 0.3));
       cutoutParts.push(f);
     }
@@ -169,7 +170,7 @@ function buildPalm(rng, tierName) {
     for (let i = 0; i < 2; i++) {
       const a = rng() * Math.PI * 2;
       const f = buildFrond(frondLen * 0.5, T.crown * 0.42, 0.25, rng);
-      place(f, { rot: [0.12 + rng() * 0.14, a, 0], pos: [cx, H - T.crown * 0.05, cz] });
+      place(f, { order: 'YXZ', rot: [0.12 + rng() * 0.14, a, 0], pos: [cx, H - T.crown * 0.05, cz] });
       tint(f, G(0xffffff).multiplyScalar(0.75 + rng() * 0.35));
       cutoutParts.push(f);
     }
@@ -309,7 +310,7 @@ function buildFern(rng) {
       p.setY(v, p.getY(v) - Math.pow(t, 2) * len * 0.55);
     }
     p.needsUpdate = true;
-    place(f, { rot: [0.8 + rng() * 0.3, a, 0] });
+    place(f, { order: 'YXZ', rot: [0.8 + rng() * 0.3, a, 0] });
     tint(f, G(0xffffff).multiplyScalar(0.6 + rng() * 0.5));
     parts.push(f);
   }
@@ -348,7 +349,7 @@ function buildBigLeaf(rng) {
     const len = 0.9 + rng() * 0.5;
     const l = plane(0.75, len, 'jungleLeaf');
     l.translate(0, len / 2, 0);
-    place(l, { rot: [0.95 + rng() * 0.3, a, 0], pos: [0, 0.18, 0] });
+    place(l, { order: 'YXZ', rot: [0.95 + rng() * 0.3, a, 0], pos: [0, 0.18, 0] });
     tint(l, G(0xffffff).multiplyScalar(0.6 + rng() * 0.45));
     parts.push(l);
   }
@@ -378,7 +379,7 @@ function buildTreeFern(rng) {
     }
     p.needsUpdate = true;
     f.computeVertexNormals();
-    place(f, { rot: [0.62 + rng() * 0.3, a, 0], pos: [0, H, 0] });
+    place(f, { order: 'YXZ', rot: [0.62 + rng() * 0.3, a, 0], pos: [0, H, 0] });
     tint(f, G(0xffffff).multiplyScalar(0.6 + rng() * 0.5));
     cutout.push(f);
   }
@@ -401,7 +402,7 @@ function buildBroadLeaf(rng) {
     }
     p.needsUpdate = true;
     l.computeVertexNormals();
-    place(l, { rot: [0.72 + rng() * 0.35, a, 0], pos: [(rng() - .5) * 0.3, 0.12, (rng() - .5) * 0.3] });
+    place(l, { order: 'YXZ', rot: [0.72 + rng() * 0.35, a, 0], pos: [(rng() - .5) * 0.3, 0.12, (rng() - .5) * 0.3] });
     tint(l, G(0xffffff).multiplyScalar(0.55 + rng() * 0.5));
     parts.push(l);
     // stalk
@@ -420,7 +421,7 @@ function buildReeds(rng) {
   for (let i = 0; i < 4; i++) {
     const q = plane(0.9 * s, 1.5 * s, 'tuft');
     q.translate(0, 0.75 * s, 0);
-    place(q, { rot: [(rng() - .5) * 0.2, (i / 4) * Math.PI * 2 + rng(), 0],
+    place(q, { order: 'YXZ', rot: [(rng() - .5) * 0.2, (i / 4) * Math.PI * 2 + rng(), 0],
       pos: [(rng() - .5) * 0.4, 0, (rng() - .5) * 0.4] });
     tint(q, G(0xffffff).multiplyScalar(0.55 + rng() * 0.45));
     parts.push(q);

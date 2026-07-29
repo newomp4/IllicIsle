@@ -13,6 +13,20 @@ import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './b
 import { drawRelicIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
+import { MINIGAMES, bindText } from '../mp/minigames.js';
+
+// the minigames borrow the one font everything else is set in
+bindText(drawText);
+
+/** A small deterministic RNG, so a chore looks the same to whoever opens it. */
+function mulberryLocal(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 /** Hex string for a player colour id, for the lobby and council lists. */
 function colourOf(id) {
@@ -109,7 +123,15 @@ export class ScreenStack {
   get name() { return this.top ? this.top.name : null; }
 
   push(name, data = {}) {
-    const s = { name, sel: 0, scroll: 0, t: 0, ...data };
+    /* `name` identifies the screen. A caller that puts its own `name` in
+       the data renames the screen out of existence and the stack stops
+       being able to find it — it has happened twice, so it is guarded now. */
+    if (data && data.name !== undefined) {
+      console.warn(`[screens] "${name}" was passed a name in its data; ignoring it`);
+      data = { ...data };
+      delete data.name;
+    }
+    const s = { name, sel: 0, scroll: 0, t: 0, ...data, name };
     if (SCREENS[name]?.init) SCREENS[name].init(s, this.game);
     this.stack.push(s);
     this.game.audio?.sfx('page');
@@ -618,7 +640,11 @@ export const SCREENS = {
           x.restore();
           y += 26;
         } else {
-          rows.push(box('ENTER TO VOTE', RED, false));
+          const who = s.targets?.[s.sel] === 'skip' ? 'NOBODY'
+            : (players.find((p) => p.id === s.targets?.[s.sel])?.name || '?');
+          let lbl = `LOCK IN: ${who}`;
+          while (lbl.length > 4 && textWidth(lbl, 1) > LW - 12) lbl = lbl.slice(0, -1);
+          rows.push(box(lbl, RED, false));
           rows[rows.length - 1].vote = true;
         }
       } else {
@@ -674,7 +700,9 @@ export const SCREENS = {
 
       footer(x, W, H, s.talking
         ? 'ENTER SENDS   ESC STOPS TYPING'
-        : (voting ? 'UP DOWN CHOOSE   ENTER VOTES   T TALKS'
+        : (voting
+          ? (s.cast ? 'YOUR VOTE IS IN   T TALKS'
+            : 'CLICK OR ARROW TO PICK   ENTER LOCKS IT IN   T TALKS')
           : 'ENTER WHEN DONE TALKING   T TALKS'));
       return rows;
     },
@@ -723,18 +751,93 @@ export const SCREENS = {
       return true;
     },
 
-    /** Clicking a name chooses it and casts in one go. */
+    /**
+     * Clicking a name PICKS it. Nothing is sent until you lock it in —
+     * casting on the same click you used to look at somebody was a good way
+     * to throw your vote away by accident.
+     */
     click(row, i, s, g) {
       if (row?.talk) { s.talking = true; return true; }
       if (row?.ready) { s.ready = !s.ready; g.sendReady(s.ready); return true; }
       const voting = g.mp.view.phase === 'vote';
       if (!voting || !g.amAlive || s.cast) return true;
-      // a row that is not the confirm button is a name; i indexes targets
-      if (!row?.vote && i < (s.targets?.length || 0)) s.sel = i;
-      s.cast = s.targets?.[s.sel] || 'skip';
-      s.stampT = 0;
-      g.sendVote(s.cast);
+      if (row?.vote) {
+        s.cast = s.targets?.[s.sel] || 'skip';
+        s.stampT = 0;
+        g.sendVote(s.cast);
+        return true;
+      }
+      if (i < (s.targets?.length || 0)) { s.sel = i; g.audio?.sfx('select'); }
       return true;
+    },
+  },
+
+  /* ---------------- A CHORE THAT IS ACTUALLY A TASK ---------------- */
+  mpMinigame: {
+    init(s, g) {
+      const G = MINIGAMES[s.game];
+      s.rng = mulberryLocal((s.seed || 1) * 2654435761);
+      s.done = false;
+      s.doneT = 0;
+      G?.init?.(s, s.rng);
+    },
+    draw(x, W, H, s, g, t) {
+      const G = MINIGAMES[s.game];
+      const dt = Math.min(0.05, s.t - (s._last ?? s.t));
+      s._last = s.t;
+
+      const b = frame(x, W, H, s.title || G?.name || 'WORK');
+      if (!G) { footer(x, W, H, 'ESC'); return []; }
+
+      let rows = [];
+      if (!s.done) {
+        rows = G.draw.call(G, x, W, H, s, t, dt) || [];
+        footer(x, W, H, `${G.hint}   ESC WALK AWAY`);
+      } else {
+        // it lands, rather than the window simply closing
+        s.doneT += dt;
+        const k = Math.min(1, s.doneT / 0.45);
+        const r = Math.round(6 + k * 90);
+        x.strokeStyle = `rgba(126,200,80,${(1 - k).toFixed(2)})`;
+        x.lineWidth = 2;
+        x.beginPath(); x.arc(W / 2, H / 2, r, 0, Math.PI * 2); x.stroke();
+        drawText(x, 'DONE', {
+          x: W / 2, y: H / 2 - 10, scale: k < 0.4 ? 3 : 2, align: 'center',
+          color: k < 0.4 ? '#ffffff' : JADE,
+        });
+        footer(x, W, H, '');
+      }
+      // a strip showing this is one step of possibly several
+      if (s.step && s.steps > 1) {
+        for (let i = 0; i < s.steps; i++) {
+          const mx = W - 22 - (s.steps - 1 - i) * 10;
+          x.fillStyle = i < s.step ? JADE : '#3a2a10';
+          x.fillRect(mx, 13, 7, 4);
+        }
+      }
+      return rows;
+    },
+    key(code, s, g, st) {
+      if (s.done) return true;
+      if (code === 'Escape') { st.pop(); g.afterOverlayClose(); g.cancelMinigame?.(); return true; }
+      const G = MINIGAMES[s.game];
+      if (G?.key && G.key.call(G, code, s)) this._win(s, g, st);
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (s.done) return true;
+      const G = MINIGAMES[s.game];
+      if (G?.click && G.click.call(G, row, i, s)) this._win(s, g, st);
+      return true;
+    },
+    _win(s, g, st) {
+      s.done = true;
+      s.doneT = 0;
+      g.audio?.sfx('confirm');
+      setTimeout(() => {
+        if (st.name === 'mpMinigame') { st.pop(); g.afterOverlayClose(); }
+        g.finishMinigame?.(s.taskId);
+      }, 620);
     },
   },
 
@@ -901,51 +1004,187 @@ export const SCREENS = {
     },
   },
 
-  /* ---------------- EXILE CARD ---------------- */
-  mpExile: {
+  /* ---------------- BODY FOUND ---------------- */
+  mpBodyFound: {
     draw(x, W, H, s, g, t) {
-      // night sky above, banded down to the waterline
-      const sea = Math.round(H * 0.70);
+      /* A hard cut to red, a shape on the ground and a name. It runs for a
+         couple of seconds before the council, so the meeting starts with
+         everyone having seen the same thing. */
+      const k = Math.min(1, s.t / 0.14);
+      const beat = s.t;
+
+      x.fillStyle = '#120403'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#120403', '#1e0605', 0.5, 2);
+      // a pulse of red from the middle
+      const pr = 30 + Math.sin(beat * 4) * 8;
+      for (let i = 6; i >= 0; i--) {
+        x.fillStyle = `rgba(150,20,14,${(0.05 * k).toFixed(3)})`;
+        x.beginPath(); x.arc(W / 2, H / 2 + 8, pr + i * 16, 0, Math.PI * 2); x.fill();
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.36)'; x.fillRect(0, y, W, 1); }
+
+      // the body, in silhouette, in its own mess
+      const cx = W / 2, cy = H / 2 + 16;
+      x.fillStyle = '#5a0d07';
+      for (let i = 0; i < 11; i++) {
+        const a = (i / 11) * Math.PI * 2;
+        const r = 16 + ((i * 7) % 13);
+        x.fillRect(Math.round(cx + Math.cos(a) * r) - 2, Math.round(cy + Math.sin(a) * r * 0.4) - 1, 5, 3);
+      }
+      x.fillStyle = '#7d1109';
+      x.fillRect(cx - 26, cy - 5, 52, 11);
+      x.fillStyle = '#0b0f14';
+      x.fillRect(cx - 18, cy - 4, 30, 8);            // torso
+      x.fillRect(cx + 12, cy - 7, 8, 8);             // head
+      x.fillRect(cx - 24, cy - 1, 8, 3);             // legs
+      x.fillRect(cx - 8, cy + 4, 12, 3);             // an arm thrown out
+
+      // the words, arriving hard
+      if (beat > 0.10) {
+        const kk = Math.min(1, (beat - 0.10) / 0.16);
+        drawText(x, 'BODY FOUND', {
+          x: W / 2, y: 40, scale: kk < 0.5 ? 3 : 2, align: 'center',
+          color: kk < 0.5 ? '#ffffff' : RED,
+        });
+      }
+      if (beat > 0.45) {
+        drawText(x, (s.who || '?').toUpperCase(), {
+          x: W / 2, y: 62, scale: 1, align: 'center', color: GOLD_LT,
+        });
+      }
+      if (beat > 0.85) {
+        drawText(x, `${(s.by || '?').toUpperCase()} RAISED THE ALARM`, {
+          x: W / 2, y: H - 40, scale: 1, align: 'center', color: DIM,
+        });
+      }
+      if (beat > 1.4 && Math.floor(beat * 2) % 2 === 0) {
+        drawText(x, 'EVERYONE TO THE FIRE', {
+          x: W / 2, y: H - 26, scale: 1, align: 'center', color: '#8a5a52',
+        });
+      }
+      return [];
+    },
+    key() { return true; },
+  },
+
+  /* ---------------- EXILE ---------------- */
+  mpExile: {
+    init(s, g) { s.beat = -1; },
+    draw(x, W, H, s, g, t) {
+      /* Five beats. The verdict, the walk, the water closing, a held
+         silence, and only then what they actually were. The silence is the
+         part that does the work — an instant reveal has no stakes in it. */
+      const T = { verdict: 0.0, walk: 1.1, splash: 2.7, hold: 3.3, reveal: 5.0 };
+      const at = (k) => s.t >= T[k];
+      const since = (k) => s.t - T[k];
+
+      const sea = Math.round(H * 0.62);
+      // sky: bruise-dark, lifting a little at the horizon
       for (let yy = 0; yy < sea; yy++) {
         const k = yy / sea;
-        const v = Math.round(6 + k * k * 54);
-        x.fillStyle = `rgb(${Math.round(v * 0.5)},${Math.round(v * 0.7)},${v})`;
+        const v = Math.round(5 + k * k * 46);
+        x.fillStyle = `rgb(${Math.round(v * 0.55)},${Math.round(v * 0.7)},${v})`;
         x.fillRect(0, yy, W, 1);
       }
       ditherRect(x, 0, 0, W, sea, 'rgba(0,0,0,0)', 'rgba(0,0,0,.30)', 0.5, 2);
+
+      // sea
       for (let yy = sea; yy < H; yy++) {
         const k = (yy - sea) / (H - sea);
-        const r = Math.round(20 - k * 14), gr = Math.round(46 - k * 34), bl = Math.round(84 - k * 62);
-        x.fillStyle = `rgb(${r},${gr},${bl})`;
+        const r = Math.round(18 - k * 13), gg = Math.round(42 - k * 32), bl = Math.round(78 - k * 58);
+        x.fillStyle = `rgb(${r},${gg},${bl})`;
         x.fillRect(0, yy, W, 1);
       }
       x.fillStyle = '#7fa8c4'; x.fillRect(0, sea, W, 1);
-      x.fillStyle = 'rgba(140,180,210,.35)'; x.fillRect(0, sea - 1, W, 1);
-      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
       for (let i = 0; i < 9; i++) {
         const yy = sea + 4 + i * 7;
         if (yy > H - 3) break;
         const off = Math.round(Math.sin(t * 1.1 + i * 1.7) * (10 + i * 3));
         const w = 26 - i * 2;
-        x.fillStyle = `rgba(150,190,215,${(0.34 - i * 0.03).toFixed(2)})`;
+        x.fillStyle = `rgba(150,190,215,${(0.32 - i * 0.03).toFixed(2)})`;
         x.fillRect((((i * 71 + off) % W) + W) % W, yy, w, 1);
-        x.fillRect((((i * 71 + off + 150) % W) + W) % W, yy, w, 1);
       }
 
-      drawText(x, s.targetId ? 'THROWN TO THE SEA' : 'THE COUNCIL COULD NOT AGREE', {
-        x: W / 2, y: 34, scale: 1, align: 'center', color: DIM,
-      });
-      x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, 48, 140, 1);
+      // the figure, walked to the edge and dropped
+      if (s.targetId && at('walk')) {
+        const k = Math.min(1, since('walk') / (T.splash - T.walk));
+        const fx = Math.round(W * 0.22 + k * W * 0.28);
+        const fy = sea - 16 + Math.round(k * 4);
+        const drop = at('splash') ? Math.min(1, since('splash') / 0.5) : 0;
+        const dy = Math.round(drop * drop * 34);
+        if (drop < 1) {
+          x.fillStyle = '#0b0f14';
+          x.fillRect(fx - 2, fy + dy, 5, 11);          // body
+          x.fillRect(fx - 1, fy - 4 + dy, 3, 4);       // head
+          const sw = Math.sin(k * 22) * 2;
+          x.fillRect(fx - 4 + sw, fy + 3 + dy, 2, 5);  // arms
+          x.fillRect(fx + 3 - sw, fy + 3 + dy, 2, 5);
+        }
+      }
+      // the splash, and the rings going out
+      if (at('splash')) {
+        const k = Math.min(1, since('splash') / 1.4);
+        const cx2 = Math.round(W * 0.5), cy2 = sea + 8;
+        for (let i = 0; i < 3; i++) {
+          const rk = Math.max(0, k - i * 0.16);
+          if (rk <= 0 || rk >= 1) continue;
+          const rr = Math.round(4 + rk * 40);
+          x.fillStyle = `rgba(190,225,240,${(0.5 * (1 - rk)).toFixed(2)})`;
+          x.fillRect(cx2 - rr, cy2, rr * 2, 1);
+          x.fillRect(cx2 - Math.round(rr * 0.5), cy2 - 1, rr, 1);
+        }
+      }
 
-      let y = 60;
-      const col = s.targetId ? (s.wasAgent ? JADE : RED) : GOLD_LT;
-      for (const ln of wrapText(s.line || '', W - 60, 2, 1)) {
-        drawText(x, ln, { x: W / 2, y, scale: 2, align: 'center', color: col });
-        y += 18;
+      /* ---- the words ---- */
+      drawText(x, s.targetId ? 'THE COUNCIL HAS DECIDED' : 'THE COUNCIL COULD NOT AGREE', {
+        x: W / 2, y: 22, scale: 1, align: 'center', color: DIM,
+      });
+      if (!s.targetId) {
+        drawText(x, 'NOBODY GOES IN THE WATER', {
+          x: W / 2, y: 40, scale: 2, align: 'center', color: GOLD_LT,
+        });
+      } else {
+        drawText(x, (s.who || '?').toUpperCase(), {
+          x: W / 2, y: 36, scale: 2, align: 'center', color: GOLD_LT,
+        });
+        drawText(x, 'THROWN TO THE SEA', {
+          x: W / 2, y: 56, scale: 1, align: 'center', color: '#8a7a52',
+        });
+      }
+
+      // the held silence, then the verdict
+      if (s.targetId) {
+        if (at('hold') && !at('reveal')) {
+          const dots = 1 + (Math.floor((s.t - T.hold) * 2.2) % 3);
+          drawText(x, '.'.repeat(dots), {
+            x: W / 2, y: 76, scale: 2, align: 'center', color: '#5a4a34',
+          });
+        }
+        if (at('reveal')) {
+          const k = Math.min(1, since('reveal') / 0.3);
+          const good = s.wasAgent;
+          const col = good ? JADE : RED;
+          const label = good ? 'THEY WERE A ROGUE AGENT' : 'THEY WERE NOT A ROGUE AGENT';
+          // a plate slams down behind the verdict
+          const w = Math.min(W - 24, textWidth(label, 1) + 24);
+          const hh = Math.round(20 * (0.4 + k * 0.6));
+          const bx = Math.round((W - w) / 2), by = Math.round(70 + (20 - hh) / 2);
+          x.fillStyle = good ? '#0d2a20' : '#2a0a08';
+          x.fillRect(bx, by, w, hh);
+          x.fillStyle = col;
+          x.fillRect(bx, by, w, 1); x.fillRect(bx, by + hh - 1, w, 1);
+          if (k > 0.5) {
+            drawText(x, label, { x: W / 2, y: by + 6, scale: 1, align: 'center',
+              color: k < 0.7 ? '#ffffff' : col });
+          }
+          if (s.beat !== 1) { s.beat = 1; g.audio?.sfx(good ? 'victory' : 'deny'); }
+        } else if (at('splash') && s.beat !== 0) {
+          s.beat = 0; g.audio?.sfx('splat');
+        }
       }
 
       const left = [...g.mp.view.players.values()].filter((p) => p.alive !== false).length;
-      drawText(x, `${left} STILL ASHORE`, { x: W / 2, y: sea - 18, scale: 1, align: 'center', color: DIM });
+      drawText(x, `${left} STILL ASHORE`, { x: W / 2, y: sea - 12, scale: 1, align: 'center', color: DIM });
       return [];
     },
     key() { return true; },
@@ -1198,45 +1437,64 @@ export const SCREENS = {
   /* ---------------- CHART ---------------- */
   chart: {
     draw(x, W, H, s, g, t) {
-      /* It unfolds. A map that simply appears reads as a menu; a map that
-         opens in two beats — creased in half, then flat — reads as paper
-         you are pulling out of a pocket. */
-      const k = Math.min(1, s.t / 0.26);
+      /* It unrolls. Two rods part and the paper comes out between them,
+         with the roll still visible at each edge until it is fully open —
+         a panel that simply grows reads as a dialog box, not a chart
+         somebody has been carrying in their shirt. */
+      const k = Math.min(1, s.t / 0.40);
       const ease = 1 - Math.pow(1 - k, 3);
 
-      x.fillStyle = `rgba(6,4,2,${(0.86 * ease).toFixed(3)})`;
+      x.fillStyle = `rgba(6,4,2,${(0.86 * Math.min(1, k * 2)).toFixed(3)})`;
       x.fillRect(0, 0, W, H);
       x.fillStyle = 'rgba(0,0,0,.35)';
       for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
 
       const m = 10;
       const fullH = H - m * 2;
-      const openH = Math.max(4, Math.round(fullH * ease));
+      const openH = Math.max(2, Math.round(fullH * ease));
       const top = Math.round(m + (fullH - openH) / 2);
-      panel(x, m, top, W - m * 2, openH, { border: 2, dither: 0.45, hi: GOLD_DK, lo: '#241708' });
+      const PW = W - m * 2;
 
-      if (k < 0.7) {
-        // the crease, still visible while it is coming open
-        x.fillStyle = GOLD_DK;
-        x.fillRect(m + 6, top + Math.round(openH / 2), W - m * 2 - 12, 1);
-        return [];
+      // the paper
+      ditherRect(x, m, top, PW, openH, '#d8c69a', PAPER, 0.5, 1);
+      // a soft curl of shadow at each rolled edge
+      for (let i = 0; i < 5; i++) {
+        const a2 = (0.16 - i * 0.03).toFixed(3);
+        x.fillStyle = `rgba(90,64,28,${a2})`;
+        x.fillRect(m, top + i, PW, 1);
+        x.fillRect(m, top + openH - 1 - i, PW, 1);
       }
+      // the rods
+      const rod = (ry) => {
+        x.fillStyle = '#4a3418'; x.fillRect(m - 3, ry - 2, PW + 6, 5);
+        x.fillStyle = '#6b4c22'; x.fillRect(m - 3, ry - 2, PW + 6, 1);
+        x.fillStyle = '#2a1c0c'; x.fillRect(m - 5, ry - 3, 3, 7);
+        x.fillRect(m + PW + 2, ry - 3, 3, 7);
+      };
+      rod(top - 1);
+      rod(top + openH);
 
-      drawText(x, "ROGUE AGENTS' CHART", { x: W / 2, y: m + 7, scale: 1, align: 'center', color: GOLD });
-      x.fillStyle = GOLD_DK;
-      x.fillRect(m + 8, m + 18, W - m * 2 - 16, 1);
-      const b = { top: m + 24, bottom: H - m - 12 };
+      if (k < 0.82) return [];
 
-      const size = Math.min(W - 30, b.bottom - b.top - 14);
-      const ox = Math.round((W - size) / 2), oy = b.top + 2;
+      // and the chart itself, once there is room for it
+      const alpha = Math.min(1, (k - 0.82) / 0.18);
+      x.save();
+      x.globalAlpha = alpha;
+      drawText(x, "ROGUE AGENTS' CHART", { x: W / 2, y: top + 5, scale: 1, align: 'center', color: '#3f2f14' });
+      x.fillStyle = '#8a6a34';
+      x.fillRect(m + 10, top + 15, PW - 20, 1);
+      const b = { top: top + 21, bottom: top + openH - 12 };
+      const size = Math.min(W - 34, b.bottom - b.top - 12);
+      const ox = Math.round((W - size) / 2), oy = b.top + 1;
       drawChart(x, ox, oy, size, s.data, t);
       if (s.data.marks.length) {
         const left = s.data.marks.filter((mk) => !mk.found).length;
         drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
-          { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: left ? GOLD : JADE });
+          { x: W / 2, y: b.bottom - 1, scale: 1, align: 'center', color: left ? '#7a2418' : '#2f6a4a' });
       } else if (s.subtitle) {
-        drawText(x, s.subtitle, { x: W / 2, y: b.bottom - 2, scale: 1, align: 'center', color: JADE });
+        drawText(x, s.subtitle, { x: W / 2, y: b.bottom - 1, scale: 1, align: 'center', color: '#2f6a4a' });
       }
+      x.restore();
       footer(x, W, H, 'M OR TAB CLOSE');
       return [];
     },

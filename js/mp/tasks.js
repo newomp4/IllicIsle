@@ -36,26 +36,27 @@ export const TASK_FX = {
  * with it. `at` is resolved at session start.
  */
 export const TASK_DEFS = [
-  { id: 'wind1', at: 'pend1', name: 'WIND THE WEST PENDULUM', verb: 'WINDING', secs: 3.5, fx: 'wind' },
-  { id: 'wind2', at: 'pend2', name: 'WIND THE RIDGE PENDULUM', verb: 'WINDING', secs: 3.5, fx: 'wind' },
-  { id: 'wind3', at: 'pend3', name: 'WIND THE EAST PENDULUM', verb: 'WINDING', secs: 3.5, fx: 'wind' },
-  { id: 'wind4', at: 'pend4', name: 'WIND THE NORTH PENDULUM', verb: 'WINDING', secs: 3.5, fx: 'wind' },
-
+  /* Straight holds. Quick, and the bulk of anyone's list. */
   { id: 'fire',  at: 'camp',  name: 'STOKE THE CAMPFIRE',      verb: 'STOKING',  secs: 3.0, fx: 'fire' },
-  { id: 'bail',  at: 'wreck', name: 'BAIL OUT THE HULL',       verb: 'BAILING',  secs: 4.0, fx: 'water' },
-  { id: 'sail',  at: 'wreck', name: 'PATCH THE SAIL',          verb: 'STITCHING', secs: 4.0, fx: 'cloth' },
   { id: 'coco',  at: 'grove', name: 'GATHER COCONUTS',         verb: 'GATHERING', secs: 3.0, fx: 'food' },
   { id: 'net',   at: 'lagoon', name: 'HAUL IN THE FISHING NET', verb: 'HAULING',  secs: 4.0, fx: 'water' },
   { id: 'door',  at: 'temple', name: 'CLEAR THE TEMPLE STEPS',  verb: 'CLEARING', secs: 3.5, fx: 'metal' },
   { id: 'sand',  at: 'rogueSand', name: 'READ THE WORD IN THE SAND', verb: 'READING', secs: 2.5, fx: 'paper' },
-  { id: 'sweep', at: 'temple', name: 'SCRUB THE TEMPLE DOORS',      verb: 'SCRUBBING', secs: 4.0, fx: 'paper' },
+  { id: 'sweep', at: 'temple', name: 'SCRUB THE TEMPLE DOORS',  verb: 'SCRUBBING', secs: 4.0, fx: 'paper' },
   { id: 'brazier', at: 'temple', name: 'LIGHT THE TEMPLE BRAZIERS', verb: 'LIGHTING', secs: 3.0, fx: 'fire' },
-  { id: 'torches', at: 'camp',  name: 'TRIM THE TIKI WICKS',        verb: 'TRIMMING', secs: 3.0, fx: 'fire' },
-  { id: 'lookout', at: 'pend3', name: 'STAND THE LOOKOUT WATCH',    verb: 'WATCHING', secs: 4.5, fx: 'wind' },
+  { id: 'torches', at: 'camp',  name: 'TRIM THE TIKI WICKS',    verb: 'TRIMMING', secs: 3.0, fx: 'fire' },
 
-  /* Two-part chores. You do something here, then you have to walk it over
-     there — which is the whole point: it puts people on paths, in front of
-     each other, with something to account for. */
+  /* Puzzles. Roughly a third of the list, and the reason you cannot clear
+     it in ninety seconds — each one takes your eyes off the world. */
+  { id: 'wind1', at: 'pend1', name: 'WIND THE WEST PENDULUM',  verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind2', at: 'pend2', name: 'WIND THE RIDGE PENDULUM', verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind3', at: 'pend3', name: 'WIND THE EAST PENDULUM',  verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'wind4', at: 'pend4', name: 'WIND THE NORTH PENDULUM', verb: 'WINDING', game: 'wind', fx: 'wind' },
+  { id: 'bail',  at: 'wreck', name: 'BAIL OUT THE HULL',       verb: 'BAILING', game: 'bail', fx: 'water' },
+  { id: 'sail',  at: 'wreck', name: 'PATCH THE SAIL',          verb: 'STITCHING', game: 'stitch', fx: 'cloth' },
+  { id: 'lookout', at: 'pend3', name: 'SET THE LOOKOUT GLASS', verb: 'SETTING', game: 'dials', fx: 'wind' },
+
+  /* Two-part: do something here, carry it there. */
   {
     id: 'crate', at: 'hut', name: 'COLLECT A CRATE FROM FERDI', verb: 'LOADING', secs: 2.5, fx: 'crate',
     then: { at: 'camp', name: 'CARRY THE CRATE TO CAMP', verb: 'UNLOADING', secs: 2.5, fx: 'crate' },
@@ -64,18 +65,41 @@ export const TASK_DEFS = [
     id: 'jars', at: 'wreck', name: 'FETCH JARS FROM THE HULL', verb: 'RUMMAGING', secs: 3.0, fx: 'cloth',
     then: { at: 'hut', name: "RESTOCK FERDI'S SHELVES", verb: 'STACKING', secs: 3.0, fx: 'crate' },
   },
+
+  /* Three-part: across the island and back, with a puzzle in the middle.
+     These are the ones that put people on long walks past each other. */
   {
-    id: 'tasha', at: 'tasha', name: "RESTART TASHA'S OPTIC", verb: 'SPLICING', secs: 4.5, fx: 'spark',
-    then: { at: 'pend2', name: 'REPORT TASHA TO THE RIDGE PENDULUM', verb: 'UPLOADING', secs: 3.0, fx: 'wind' },
+    id: 'tasha', at: 'tasha', name: "OPEN TASHA'S HOUSING", verb: 'PRISING', secs: 3.0, fx: 'metal',
+    then: {
+      at: 'tasha', name: "SPLICE TASHA'S OPTIC", verb: 'SPLICING', game: 'splice', fx: 'spark',
+      then: { at: 'pend2', name: 'REPORT TASHA TO THE RIDGE', verb: 'UPLOADING', secs: 3.0, fx: 'wind' },
+    },
   },
   {
     id: 'plane', at: 'aerlingus', name: 'SALVAGE THE FUSELAGE', verb: 'SALVAGING', secs: 4.0, fx: 'metal',
-    then: { at: 'camp', name: 'HAUL THE SCRAP BACK TO CAMP', verb: 'DUMPING', secs: 3.0, fx: 'metal' },
+    then: {
+      at: 'aerlingus', name: 'SET THE BEACON DIALS', verb: 'SETTING', game: 'dials', fx: 'spark',
+      then: { at: 'camp', name: 'HAUL THE SCRAP BACK TO CAMP', verb: 'DUMPING', secs: 3.0, fx: 'metal' },
+    },
   },
 ];
 
-/** Steps make up the shared work bar, so a two-part chore is worth two. */
-export function taskSteps(id) { return taskById(id)?.then ? 2 : 1; }
+/** How many stages a chore has, following the `then` chain. */
+export function taskStageCount(id) {
+  let d = taskById(id), n = 0;
+  while (d) { n++; d = d.then; }
+  return Math.max(1, n);
+}
+
+/** The nth stage of a chore, 0-based. */
+export function taskStage(id, step) {
+  let d = taskById(id);
+  for (let i = 0; i < step && d?.then; i++) d = d.then;
+  return d;
+}
+
+/** Steps make up the shared work bar, so a three-part chore is worth three. */
+export function taskSteps(id) { return taskStageCount(id); }
 
 /**
  * Sabotages the Agents can call.

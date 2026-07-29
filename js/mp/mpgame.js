@@ -14,14 +14,22 @@ import { Net, Ticker, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
 import { Avatar, Body, colourHex } from './avatar.js';
-import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById } from './tasks.js';
+import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
+import { Gore } from './gore.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
 
 const now = () => performance.now() / 1000;
+
+/** A stable 32-bit seed from a string, so a puzzle looks the same if reopened. */
+function hashSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) || 1;
+}
 
 export class MPGame extends Game {
   constructor(canvas) {
@@ -37,6 +45,7 @@ export class MPGame extends Game {
       bodies: new Map(),   // id -> Body
       sites: {},           // taskId -> {x,y,z}
       chat: [],
+      marked: null,      // whoever your knife is currently on
       cool: {},          // kind -> when it may be pulled again
       finished: false,   // the match is over; stop putting screens back
       taskProgress: null,  // { taskId, t, secs }
@@ -366,15 +375,29 @@ export class MPGame extends Game {
   _onKilled(id, x, y, z) {
     const M = this.mp;
     const rec = M.view.players.get(id) || { id, colour: 'red', name: '?' };
+    const gy = Math.max(y, heightAt(x, z));
+
     if (!M.bodies.has(id) && this.islandScene) {
-      M.bodies.set(id, new Body(this.islandScene, this.propMats, rec, x, y, z));
+      const body = new Body(this.islandScene, this.propMats, rec, x, gy, z);
+      body.fall = 0;                       // they drop, they do not appear
+      M.bodies.set(id, body);
     }
     const av = M.avatars.get(id);
-    if (av) av.setVisible(false);
+    if (av) { av.setShell(null); av.setVisible(false); }
+
+    // blood, on the ground, where it happened
+    this.gore?.splat(x, gy, z, colourHex(rec.colour));
+
     if (id === M.view.selfId) {
       this._notice('YOU WERE KILLED');
       this.audio.sfx('hurt');
+      this.audio.sfx('splat');
+      this.player.punch?.(1);
+      this.pipeline.tint.setHex(0xb00c06);
+      this.pipeline.tintAmt = 0.95;
       this.ui.hud.data.hp = 0;
+      // the world tips as you go down
+      this.deathTilt = 1.4;
     } else {
       this.audio.sfx('splat');
     }
@@ -383,6 +406,7 @@ export class MPGame extends Game {
   _clearBodies() {
     for (const b of this.mp.bodies.values()) b.dispose();
     this.mp.bodies.clear();
+    this.gore?.clear();
     for (const av of this.mp.avatars.values()) {
       const rec = this.mp.view.players.get(av.id);
       av.setVisible(!rec || rec.alive !== false ? true : false);
@@ -390,15 +414,29 @@ export class MPGame extends Game {
   }
 
   _onCouncil(byId, bodyOf) {
-    this._clearBodies();
-    this.mp.chat.length = 0;
     const M = this.mp;
     const by = M.view.players.get(byId);
     const of = bodyOf ? M.view.players.get(bodyOf) : null;
-    this.mp.councilHeader = of
+    M.councilHeader = of
       ? `${(by?.name) || '?'} FOUND ${(of?.name) || '?'}`
       : `${(by?.name) || '?'} CALLED A COUNCIL`;
-    this.audio.sfx('door');
+    M.chat.length = 0;
+
+    if (of) {
+      /* Everybody sees the body before anybody talks. The bodies are left
+         standing for the length of the card, then cleared with the blood. */
+      this.screens.replace('mpBodyFound', { who: of.name, by: by?.name });
+      this.audio.sfx('stinger');
+      this.audio.sfx('hurt');
+      this.player.punch?.(0.8);
+      this.pipeline.tint.setHex(0x8c0f08);
+      this.pipeline.tintAmt = 0.7;
+      M.bodyCardUntil = now() + 2.6;
+      setTimeout(() => { this._clearBodies(); }, 2600);
+    } else {
+      this._clearBodies();
+      this.audio.sfx('door');
+    }
     this.audio.playMusic('temple');
   }
 
@@ -415,8 +453,12 @@ export class MPGame extends Game {
     if (!msg.targetId) line = 'NOBODY WAS EXILED';
     else if (!msg.reveal) line = `${p?.name || '?'} WAS THROWN TO THE SEA`;
     else line = `${p?.name || '?'} WAS ${msg.wasAgent ? '' : 'NOT '}A ROGUE AGENT`;
-    this.screens.replace('mpExile', { line, wasAgent: msg.wasAgent, targetId: msg.targetId });
-    this.audio.sfx(msg.wasAgent ? 'gemHit' : 'deny');
+    /* `name` is the screen stack's own identity field — passing the exiled
+       player's name in it renamed the screen to them. */
+    this.screens.replace('mpExile', {
+      line, wasAgent: msg.wasAgent, targetId: msg.targetId, who: p?.name || msg.name || '?',
+    });
+    this.audio.sfx('descend');
     if (msg.targetId === M.view.selfId) this.ui.hud.data.hp = 0;
   }
 
@@ -451,10 +493,13 @@ export class MPGame extends Game {
       this.blinded = on;
       const f = this.islandScene.fog;
       if (on) {
-        this._fogWas = { near: f.near, far: f.far, col: f.color.getHex() };
+        this._fogWas = { near: f.near, far: f.far };
         this.audio.sfx('descend');
+        this.audio.sfx('rumble');
       } else if (this._fogWas) {
         f.near = this._fogWas.near; f.far = this._fogWas.far;
+        if (this.sky) this.sky.material.opacity = 1;
+        for (const av of this.mp.avatars.values()) av.setShell(null);
         this.audio.sfx('confirm');
       }
     }
@@ -589,12 +634,11 @@ export class MPGame extends Game {
     }
   }
 
-  /** Which half of a chore you are on, and what it is called right now. */
+  /** Which stage of a chore you are on, and what it is called right now. */
   _taskStage(id) {
-    const def = taskById(id);
-    if (!def) return { name: 'THE TASK', verb: 'WORKING', secs: 3, at: null, fx: 'spark' };
     const step = this.mp.view.taskStep.get(id) || 0;
-    return (def.then && step >= 1) ? { ...def.then, id } : def;
+    return taskStage(id, step)
+      || { name: 'THE TASK', verb: 'WORKING', secs: 3, at: null, fx: 'spark' };
   }
 
   /** Where the current half of a chore happens. */
@@ -632,6 +676,7 @@ export class MPGame extends Game {
     this.coconutCount = 0;
 
     this.taskFx = new TaskFx(this.islandScene);
+    this.gore = new Gore(this.islandScene, heightAt);
     this._resolveTaskSites();
     this.ui.show();
     this.ui.setObjective('');
@@ -768,6 +813,20 @@ export class MPGame extends Game {
     switch (it.kind) {
       case 'mpTask': {
         const stage = this._taskStage(it.taskId);
+        /* Some stages are a puzzle rather than a hold. They take longer,
+           and — the point — they take your eyes off the world while you
+           are doing them. */
+        if (stage.game) {
+          const step = M.view.taskStep.get(it.taskId) || 0;
+          this.screens.push('mpMinigame', {
+            game: stage.game, taskId: it.taskId, title: stage.name,
+            seed: hashSeed(it.taskId + ':' + step + ':' + (M.view.selfId || '')),
+            step: step + 1, steps: taskSteps(it.taskId),
+          });
+          document.exitPointerLock?.();
+          this.audio.sfx('page');
+          return;
+        }
         M.taskProgress = {
           taskId: it.taskId, t: 0, secs: stage.secs || 3, verb: stage.verb || 'WORKING',
           name: stage.name, fx: stage.fx,
@@ -814,12 +873,26 @@ export class MPGame extends Game {
     else M.net.sendHost(msg);
   }
 
-  /* The base game hangs a coconut throw off the left button. In Castaways
-     that same button is the knife, so the hook is taken over rather than
-     the event plumbing duplicated. */
+  /* Left click does nothing in Castaways. Killing somebody because you
+     happened to click while looking around is not a mistake anyone should
+     be able to make; it is on its own key. */
   throwCoconut() {
     if (!this.mp.active) return super.throwCoconut();
-    this.tryKill();
+  }
+
+  /** Outline whoever is close enough to take. */
+  _markTarget() {
+    const M = this.mp;
+    if (!M.active) return;
+    const ready = this.amAgent && this.amAlive
+      && M.view.phase === PHASE.ROAM
+      && !(M.myKillReady && now() < M.myKillReady);
+    const target = ready ? this._nearestVictim() : null;
+    if (this.blinded) return;            // thermal owns the shells while it runs
+    for (const av of M.avatars.values()) {
+      av.setShell(av === target ? 'mark' : null);
+    }
+    M.marked = target;
   }
 
   /**
@@ -875,6 +948,7 @@ export class MPGame extends Game {
       return;
     }
     if (M.active && down && !this.screens.open && this.playing) {
+      if (e.code === 'KeyF') { this.tryKill(); return; }
       if (e.code === 'KeyQ') {
         /* Push first, release the pointer second. pointerlockchange fires on
            its own task and the auto-pause it triggers checks whether an
@@ -895,6 +969,14 @@ export class MPGame extends Game {
     }
     return super._key(e, down);
   }
+
+  /** A puzzle stage was solved; it counts exactly like a hold would. */
+  finishMinigame(taskId) {
+    if (!taskId) return;
+    this._send({ t: C.DO_TASK, taskId });
+  }
+
+  cancelMinigame() { this.audio.sfx('deny'); }
 
   sendChat(text) { this._send({ t: C.CHAT, text }); }
   sendVote(targetId) { this._send({ t: C.VOTE, targetId }); this.audio.sfx('confirm'); }
@@ -953,8 +1035,12 @@ export class MPGame extends Game {
        results screen and the "the host left" screen both sit on a phase
        that never advances, and the watchdog would put the council straight
        back over them. */
-    const FINAL = ['mpEnd', 'mpExile', 'mpRole', 'pause'];
+    const FINAL = ['mpEnd', 'mpExile', 'mpRole', 'pause', 'mpBodyFound'];
     const held = FINAL.includes(this.screens.name);
+    // the body card gets its moment, then the council takes over
+    if (this.screens.name === 'mpBodyFound' && M.bodyCardUntil && now() > M.bodyCardUntil) {
+      this.screens.replace('mpCouncil', {});
+    }
     if (meeting && !M.finished && !held && this.screens.name !== 'mpCouncil') {
       this.paused = false;
       this.screens.replace('mpCouncil', {});
@@ -1002,6 +1088,20 @@ export class MPGame extends Game {
 
     if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
     this.taskFx?.update(dt);
+    this.gore?.update(dt);
+    // a body drops rather than appearing already laid out
+    for (const b of M.bodies.values()) {
+      if (b.fall === undefined || b.fall >= 1) continue;
+      b.fall = Math.min(1, b.fall + dt * 2.6);
+      const k = 1 - Math.pow(1 - b.fall, 3);
+      b.mesh.rotation.z = Math.PI * 0.46 * k;
+      b.mesh.position.y = b.restY + (1 - k) * 0.9;
+    }
+    // and the world tips as you go down with them
+    if (this.deathTilt > 0) {
+      this.deathTilt = Math.max(0, this.deathTilt - dt);
+      this.camera.rotateZ(Math.min(0.5, (1.4 - this.deathTilt) * 0.4));
+    }
 
     // world + avatars
     this.tickIslandWorld(dt);
@@ -1013,12 +1113,22 @@ export class MPGame extends Game {
     /* updateDayNight rewrites the fog every frame, so the mist has to be
        re-imposed after it rather than set once. */
     if (this.blinded) {
+      /* Not a white sheet laid over things. A cold, dark murk that takes
+         the sky with it, so you cannot navigate by the horizon either. */
       const f = this.islandScene.fog;
-      const reach = this.amAgent ? 26 : 11;
-      f.near = reach * 0.25;
-      f.far = reach;
-      f.color.setRGB(0.62, 0.64, 0.66);
-      this.islandScene.background?.setRGB?.(0.62, 0.64, 0.66);
+      f.near = 1.5;
+      f.far = 8.5;
+      f.color.setRGB(0.055, 0.065, 0.085);
+      this.islandScene.background?.setRGB?.(0.045, 0.055, 0.075);
+      if (this.sky) { this.sky.material.transparent = true; this.sky.material.opacity = 0.03; }
+      if (this.ambient) this.ambient.intensity = 0.22;
+      if (this.hemi) this.hemi.intensity = 0.10;
+      // an Agent does not see further; an Agent sees HEAT
+      const thermal = this.amAgent || !this.amAlive;
+      for (const av of this.mp.avatars.values()) {
+        const rec = this.mp.view.players.get(av.id);
+        av.setShell(thermal && rec && rec.alive !== false ? 'thermal' : null);
+      }
     }
     for (const m of (this.pendulumMeshes || [])) {
       if (m.userData.setNight) m.userData.setNight(this.night || 0);
@@ -1034,6 +1144,7 @@ export class MPGame extends Game {
 
     // HUD
     this._mpHud();
+    this._markTarget();
     if (M.taskProgress) {
       this.ui.setPrompt(null);
     } else {
@@ -1047,7 +1158,7 @@ export class MPGame extends Game {
     if (this.mp.view.phase !== PHASE.ROAM) return null;
     const ready = !this.mp.myKillReady || now() >= this.mp.myKillReady;
     if (!ready) return null;
-    return this._nearestVictim() ? 'CLICK TO STRIKE' : null;
+    return this._nearestVictim() ? 'F  TAKE THEM' : null;
   }
 
   /**
@@ -1117,6 +1228,7 @@ export class MPGame extends Game {
       myTasks: M.view.tasks.map((id) => ({
         id, name: this._taskStage(id).name, done: M.view.doneTasks.has(id),
         half: !M.view.doneTasks.has(id) && (M.view.taskStep.get(id) || 0) >= 1,
+        step: (M.view.taskStep.get(id) || 0), steps: taskSteps(id),
       })),
       killIn: this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0,
       sabotage: M.view.sabotage

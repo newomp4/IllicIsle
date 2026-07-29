@@ -63,6 +63,8 @@ export class Avatar {
     scene.add(this.mesh);
     this._recolour(this.colour);
 
+    this.shell = null;           // outline / thermal silhouette
+    this.shellKind = null;
     this.buf = [];               // { t, x, y, z, yaw, anim }
     this.pos = new THREE.Vector3();
     this.yaw = 0;
@@ -120,6 +122,19 @@ export class Avatar {
     this.mesh.position.copy(this.pos);
     this.mesh.rotation.y = this.yaw;
     this._animate(dt);
+
+    if (this.shell) {
+      for (let i = 1; i < this.shellPairs.length; i++) {
+        const [src, dst] = this.shellPairs[i];
+        dst.position.copy(src.position);
+        dst.quaternion.copy(src.quaternion);
+      }
+      this.shell.position.copy(this.mesh.position);
+      this.shell.rotation.y = this.mesh.rotation.y;
+      if (this.shellKind === 'thermal' && this.shellMat) {
+        this.shellMat.opacity = 0.7 + Math.sin(performance.now() / 260) * 0.15;
+      }
+    }
   }
 
   _animate(dt) {
@@ -137,14 +152,58 @@ export class Avatar {
     p.hips.position.y = 0.90 + bob;
   }
 
+  /**
+   * A silhouette over the body.
+   *
+   * 'mark'    a cell-shaded outline, for a target you are close enough to
+   *           take. It sits behind the body and is scaled up a touch, which
+   *           is the cheapest outline there is and the only one that reads
+   *           at this resolution.
+   * 'thermal' a heat shape that ignores depth entirely, so an Agent can see
+   *           people through the mist and through the hill they are behind.
+   */
+  setShell(kind) {
+    if (this.shellKind === kind) return;
+    this.shellKind = kind;
+    if (this.shell) { this.shell.removeFromParent(); this.shell = null; }
+    if (!kind) return;
+
+    const hot = kind === 'thermal';
+    const mat = new THREE.MeshBasicMaterial({
+      color: hot ? 0xff5a2a : 0xffe08a,
+      side: THREE.BackSide,
+      fog: false,
+      transparent: true,
+      opacity: hot ? 0.85 : 0.9,
+      depthTest: !hot,
+      depthWrite: false,
+    });
+    const shell = this.mesh.clone(true);
+    shell.traverse((o) => { if (o.isMesh) { o.material = mat; o.renderOrder = hot ? 9 : 3; } });
+    shell.scale.setScalar(hot ? 1.10 : 1.07);
+    this.scene.add(shell);
+    this.shell = shell;
+    this.shellMat = mat;
+
+    /* clone() shallow-copies userData, so the copy's `parts` still points at
+       the original rig. Pair the hierarchies up by traversal order instead
+       — they are identical by construction. */
+    const a = [], b = [];
+    this.mesh.traverse((o) => a.push(o));
+    shell.traverse((o) => b.push(o));
+    this.shellPairs = a.map((o, i) => [o, b[i]]).filter(([, d]) => d);
+  }
+
   setVisible(v) {
     if (this.visible === v) return;
     this.visible = v;
     this.mesh.visible = v;
+    if (this.shell) this.shell.visible = v;
   }
 
   dispose() {
     this.mesh.removeFromParent();
+    this.shell?.removeFromParent();
   }
 }
 
@@ -161,6 +220,7 @@ export class Body {
 
     // slumped: rolled onto one side, limbs loose
     this.mesh.position.set(x, y, z);
+    this.restY = y;
     this.mesh.rotation.set(0, Math.random() * Math.PI * 2, Math.PI * 0.46);
     const p = this.parts;
     p.hips.position.y = 0.55;

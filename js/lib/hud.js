@@ -192,7 +192,8 @@ export class Hud {
   _mpLeft(ox, oy, mp) {
     const x = this.x;
     const agent = mp.role === 'agent';
-    const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY', ...(mp.myTasks || []).map((t) => t.name)];
+    const lines = [agent ? 'ROGUE AGENT' : 'CASTAWAY',
+      ...(mp.myTasks || []).map((t) => (t.steps > 1 ? `${t.name}  1/${t.steps}` : t.name))];
     if (agent) lines.push('THESE ARE FOR SHOW', 'KNIFE COLD  00', 'Q  SABOTAGE');
     else lines.push('TAB  CHART');
     const pw = Math.max(74, lines.reduce((w, l) => Math.max(w, textWidth(l, 1)), 0) + 24);
@@ -220,7 +221,8 @@ export class Hud {
         x.fillRect(ox + 4, y + 3, 1, 1);
         x.fillRect(ox + 5, y + 2, 1, 1);
       }
-      drawText(x, t.name, {
+      const label = (!done && t.steps > 1) ? `${t.name}  ${t.step + 1}/${t.steps}` : t.name;
+      drawText(x, label, {
         x: ox + 11, y: y + 1, scale: 1,
         color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4'))),
       });

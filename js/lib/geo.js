@@ -80,10 +80,18 @@ const _q = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _v = new THREE.Vector3();
 
-/** Position / rotate / scale a geometry in place. */
-export function place(geo, { pos, rot, scale } = {}) {
+/**
+ * Position / rotate / scale a geometry in place.
+ *
+ * `order` matters more than it looks. With the default XYZ, the X rotation
+ * is applied LAST, so a shape built pointing along +Y gets tipped over
+ * AFTER it has been spun — and the spin, which does nothing to a vector on
+ * its own axis, is thrown away. Anything meant to radiate outward (palm
+ * fronds, fern crowns) has to tip first and spin second, which is 'YXZ'.
+ */
+export function place(geo, { pos, rot, scale, order = 'XYZ' } = {}) {
   const p = pos ? _v.set(pos[0], pos[1], pos[2]) : _v.set(0, 0, 0);
-  const q = rot ? _q.setFromEuler(_e.set(rot[0], rot[1], rot[2])) : _q.identity();
+  const q = rot ? _q.setFromEuler(_e.set(rot[0], rot[1], rot[2], order)) : _q.identity();
   const s = scale
     ? (Array.isArray(scale) ? new THREE.Vector3(...scale) : new THREE.Vector3(scale, scale, scale))
     : new THREE.Vector3(1, 1, 1);

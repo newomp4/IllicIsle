@@ -234,14 +234,13 @@ export class HostSession {
     if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
     if (!p.tasks.includes(taskId) || p.doneTasks.has(taskId)) return;
 
-    const def = taskById(taskId);
     p.step = p.step || {};
     const at = p.step[taskId] || 0;
-    const twoPart = !!def?.then;
-    const finished = !twoPart || at >= 1;
+    const stages = taskSteps(taskId);
+    const finished = at >= stages - 1;
 
     if (finished) p.doneTasks.add(taskId);
-    else p.step[taskId] = 1;
+    else p.step[taskId] = at + 1;
 
     // Agents get a decoy list so they can be seen "doing tasks"; it just
     // never counts toward the bar.
@@ -352,7 +351,7 @@ export class HostSession {
       this.hooks.onExile?.(null, false);
     }
     this._roster();
-    this._setPhase(PHASE.RESULT, 5.5);
+    this._setPhase(PHASE.RESULT, 8.5);
     /* The win check waits out the reveal. Resolving it immediately would
        replace the "X WAS A ROGUE AGENT" card with the results screen in
        the same frame, and the exile is the payoff people came for. */
@@ -365,7 +364,7 @@ export class HostSession {
         this._sendCooldown(p);
       }
       this._setPhase(PHASE.ROAM, 0);
-    }, 5500);
+    }, 8500);
   }
 
   _chat(id, text) {
