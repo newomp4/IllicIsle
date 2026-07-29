@@ -1,7 +1,9 @@
 # Illic Isle
 
+### ▶ Play it: **https://newomp4.github.io/IllicIsle/**
+
 A PS1-style castaway game that runs in a browser tab. Two ways to play, one
-island.
+island. Nothing to install — send the link and a four-letter room code.
 
 **Single player — The Idol of Illic Isle.** You wash ashore alone. Wake the
 four Rogue Pendulums the Agents left behind, read the glyph on each one, set
@@ -17,37 +19,45 @@ and throw somebody to the sea. Runs peer to peer — no server, no accounts,
 just a four-letter room code.
 
 **Controls:** `WASD` move · mouse look · `Shift` sprint · `Space` jump ·
-`E` interact · `Left click` throw a coconut (single player) or strike
-(Castaways) · `Q` sabotage wheel (Agents) · `Tab` journal · `M` chart ·
-`C` swap first/third person · `Esc` pause.
+`E` interact (hold it for a chore) · `F` eliminate, or fire the flare
+pistol · `G` draw the pistol · `Q` sabotage console (Agents) · `T` talk in
+a council · `Tab` or `M` chart · `C` swap first/third person · `Esc` pause.
 
 ---
 
-## Deploying to GitHub Pages
+## Playing with other people
 
-The whole game is static files with no build step, so this is three commands:
+1. Everyone opens **https://newomp4.github.io/IllicIsle/**
+2. One of you picks **PLAY → CASTAWAYS**, types a name, leaves the room code
+   blank, and takes the four letters it gives you.
+3. Everyone else types that code in the box (you can paste it) and joins.
+4. Three ashore minimum, ten maximum. The host presses **PUT TO SEA**.
+
+The host's tab owns the rules, so it has to stay open — if it closes, the
+round ends for everyone. It can sit in the background; the clock keeps
+running.
+
+## Deploying your own copy
+
+The whole game is static files with no build step:
 
 ```bash
+git clone https://github.com/newomp4/IllicIsle
 cd IllicIsle
-git init && git add -A && git commit -m "IllicIsle"
 gh repo create IllicIsle --public --source=. --push
-```
-
-Then turn Pages on — either in **Settings → Pages → Source: Deploy from a
-branch → `main` / `(root)`**, or:
-
-```bash
 gh api -X POST repos/:owner/IllicIsle/pages -f source[branch]=main -f source[path]=/
 ```
 
-It'll be live at `https://<your-username>.github.io/IllicIsle/` in a minute
-or two. Send that link to anyone; nothing needs installing.
-
-To test locally first (ES modules need a real server, `file://` won't work):
+To work on it locally (ES modules need a real server, `file://` won't work):
 
 ```bash
-python3 -m http.server 8000    # then open http://localhost:8000
+node serve.mjs                 # then open http://localhost:8000
 ```
+
+`serve.mjs` sends `no-store`, which matters: modules are cached per URL, so
+a half-updated module graph shows up as a loading bar that never finishes
+rather than an error. If you use `python3 -m http.server` instead and the
+page hangs, reload with Shift held.
 
 ---
 
