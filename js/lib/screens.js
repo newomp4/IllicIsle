@@ -1277,6 +1277,169 @@ export const SCREENS = {
   },
 
   /* ===========================================================
+     ONE OF FERDI'S MACHINES
+
+     Not a shop. You put six Syncoin in the slot, the drum turns, and it
+     gives you whichever of his leftovers it feels like. It has one thing
+     in it and once you have taken it, it has nothing.
+     =========================================================== */
+  mpVend: {
+    init(s) {
+      s.phase = 'idle';       // idle | turning | out | empty
+      s.t0 = 0;
+      s.got = null;
+      s.reel = 0;
+    },
+    draw(x, W, H, s, g, t) {
+      const COST = 6;
+      const coins = g.coins || 0;
+      const pool = VENDOR_IDS.map((id) => STOCK.find((i) => i.id === id)).filter(Boolean);
+
+      x.fillStyle = '#08120f'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#08120f', '#0e1c18', 0.5, 2);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+
+      /* the cabinet, seen straight on */
+      const CW = 150, CH = 168;
+      const cx0 = Math.round((W - CW) / 2), cy0 = 26;
+      x.fillStyle = '#1c4034'; x.fillRect(cx0 - 3, cy0 - 3, CW + 6, CH + 6);
+      x.fillStyle = '#2a5a4a'; x.fillRect(cx0, cy0, CW, CH);
+      x.fillStyle = '#c39a2c';
+      x.fillRect(cx0 - 3, cy0 - 3, CW + 6, 3); x.fillRect(cx0 - 3, cy0 + CH, CW + 6, 3);
+
+      // the header
+      x.fillStyle = '#8a2018'; x.fillRect(cx0 + 6, cy0 + 5, CW - 12, 16);
+      drawText(x, 'FERDI STEINMAN', {
+        x: W / 2, y: cy0 + 9, scale: 1, align: 'center', color: '#ffd24a',
+      });
+
+      /* the window, and the drum turning behind it */
+      const GX = cx0 + 12, GY = cy0 + 27, GW = CW - 24, GH = 92;
+      x.fillStyle = '#071410'; x.fillRect(GX - 2, GY - 2, GW + 4, GH + 4);
+      x.fillStyle = '#12302a'; x.fillRect(GX, GY, GW, GH);
+      // the lit interior
+      for (let i = 5; i >= 0; i--) {
+        x.fillStyle = `rgba(159,232,216,${(0.020 + i * 0.004).toFixed(3)})`;
+        x.fillRect(GX + i * 3, GY + i * 3, GW - i * 6, GH - i * 6);
+      }
+
+      if (s.phase === 'turning' || s.phase === 'idle') {
+        /* Three of his leftovers going past on the coil. Spinning while it
+           decides, still while it waits for your coin. */
+        const spin = s.phase === 'turning';
+        const off = spin ? (s.t - s.t0) * 260 : 0;
+        for (let k = -1; k <= 2; k++) {
+          const it = pool[(((s.reel + k) % pool.length) + pool.length) % pool.length];
+          const iy = GY + GH / 2 - 16 + k * 34 - (off % 34);
+          if (iy < GY - 20 || iy > GY + GH) continue;
+          x.save();
+          x.beginPath(); x.rect(GX, GY, GW, GH); x.clip();
+          drawShopIcon(x, it.icon, GX + GW / 2 - 14, iy, 28, !spin, t);
+          if (!spin) {
+            drawText(x, it.name, {
+              x: GX + GW / 2, y: iy + 31, scale: 1, align: 'center', color: '#8fd8c0',
+            });
+          }
+          x.restore();
+        }
+        if (spin) {
+          // a blur of motion across the glass
+          for (let i = 0; i < 5; i++) {
+            x.fillStyle = 'rgba(159,232,216,.07)';
+            x.fillRect(GX, GY + ((off * 1.7 + i * 21) % GH), GW, 2);
+          }
+        }
+      } else if (s.got) {
+        // what you got, sitting in the tray with a light on it
+        const puls = 0.6 + Math.abs(Math.sin(t * 4)) * 0.4;
+        for (let i = 7; i >= 0; i--) {
+          x.fillStyle = `rgba(255,210,74,${(0.03 * puls).toFixed(3)})`;
+          x.beginPath(); x.arc(GX + GW / 2, GY + GH / 2, 10 + i * 6, 0, 6.283); x.fill();
+        }
+        drawShopIcon(x, s.got.icon, GX + GW / 2 - 18, GY + GH / 2 - 24, 36, true, t);
+        drawText(x, s.got.name, {
+          x: GX + GW / 2, y: GY + GH / 2 + 16, scale: 1, align: 'center', color: GOLD_LT,
+        });
+        drawText(x, s.got.tag, {
+          x: GX + GW / 2, y: GY + GH / 2 + 26, scale: 1, align: 'center', color: '#8a7a52',
+        });
+      } else {
+        drawText(x, 'EMPTY', {
+          x: GX + GW / 2, y: GY + GH / 2 - 4, scale: 2, align: 'center', color: '#3f5a52',
+        });
+      }
+
+      /* the slot and the knob */
+      const KY = cy0 + CH - 34;
+      x.fillStyle = '#3a3a42'; x.fillRect(cx0 + CW - 44, KY, 34, 26);
+      x.fillStyle = '#e8eef2'; x.fillRect(cx0 + CW - 38, KY + 5, 16, 3);
+      const knobA = s.phase === 'turning' ? (s.t - s.t0) * 9 : 0;
+      const kx = cx0 + CW - 27, ky = KY + 17;
+      x.fillStyle = '#c39a2c';
+      x.fillRect(kx - 6, ky - 6, 12, 12);
+      x.fillStyle = '#24242a';
+      x.fillRect(Math.round(kx + Math.cos(knobA) * 4) - 1, Math.round(ky + Math.sin(knobA) * 4) - 1, 3, 3);
+
+      // the hopper
+      x.fillStyle = '#14141a'; x.fillRect(cx0 + 12, cy0 + CH - 32, 78, 22);
+      x.fillStyle = '#8a9096'; x.fillRect(cx0 + 12, cy0 + CH - 34, 78, 2);
+      if (s.phase === 'out' && s.got) {
+        const bob = Math.round(Math.sin(t * 5) * 1);
+        drawShopIcon(x, s.got.icon, cx0 + 42, cy0 + CH - 28 + bob, 14, true, t);
+      }
+
+      /* the strip along the top and the prompt along the bottom */
+      drawText(x, `PURSE ${coins}`, {
+        x: 14, y: 12, scale: 1, color: coins >= COST ? GOLD : RED,
+      });
+      drawText(x, `${COST} SYNCOIN A PULL`, {
+        x: W - 14, y: 12, scale: 1, align: 'right', color: '#8fd8c0',
+      });
+
+      let msg, mcol;
+      if (s.phase === 'turning') { msg = 'THINKING ABOUT IT'; mcol = '#8fd8c0'; }
+      else if (s.phase === 'out') { msg = 'TAKE IT'; mcol = GOLD_LT; }
+      else if (s.phase === 'empty') { msg = 'NOTHING LEFT IN IT'; mcol = '#7a6a52'; }
+      else if (coins < COST) { msg = 'NOT ENOUGH SYNCOIN'; mcol = RED; }
+      else { msg = 'PUT SIX IN'; mcol = GOLD_LT; }
+      drawText(x, msg, {
+        x: W / 2, y: cy0 + CH + 8, scale: 2, align: 'center', color: mcol,
+      });
+
+      footer(x, W, H, s.phase === 'turning' ? ''
+        : (s.phase === 'out' ? 'E  TAKE IT' : 'E  PAY      ESC  WALK AWAY'));
+      return [];
+    },
+    tick(s, g, dt) {
+      if (s.phase === 'turning') {
+        // keep the drum index moving so the icons cycle
+        s.reel = (s.reel + (dt > 0 ? 1 : 0)) % 64;
+        if (s.t - s.t0 > 1.5) {
+          s.phase = 'out';
+          g.audio?.sfx('coin');
+          g.vendDeliver?.(s.got);
+        }
+      }
+    },
+    key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      if (code !== 'KeyE' && code !== 'Enter' && code !== 'Space') return true;
+      if (s.phase === 'turning') return true;
+      if (s.phase === 'out') { st.pop(); g.afterOverlayClose(); return true; }
+      if (s.phase === 'empty') { g.audio?.sfx('deny'); return true; }
+      const out = g.vendPay?.(s.vendor);
+      if (!out) { g.audio?.sfx('deny'); return true; }
+      s.got = out;
+      s.phase = 'turning';
+      s.t0 = s.t;
+      g.audio?.sfx('lever');
+      return true;
+    },
+  },
+
+  /* ===========================================================
      THE LUCKY FLOPPER — a slot machine you can actually read.
 
      The cabinet on the deck turns its drums, but from standing height

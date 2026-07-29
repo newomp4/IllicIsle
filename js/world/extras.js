@@ -33,32 +33,94 @@ export function buildSyncoin(mats, big = false) {
 
   /* A glow, not a light.
 
-     Every one of the thirty-eight coins on the island used to carry its
-     own PointLight. Two things wrong with that. Thirty-eight extra lights
-     is thirty-eight more iterations of the lighting loop for every lit
-     fragment in the world, forever. And far worse: the number of lights in
-     a scene is baked into the cache key of every shader, so hiding a coin
-     when you picked it up made three recompile EVERY material in the
-     scene. Fifteen programs, in one frame, every time you pocketed a coin
-     — which is precisely the freeze that kept arriving every ten or twenty
-     seconds while you walked around collecting them.
+     Every one of the thirty-eight coins on the island used to carry its own
+     PointLight. Thirty-eight extra iterations of the lighting loop for
+     every lit fragment, and — far worse — the number of lights in a scene
+     is baked into the cache key of every shader, so hiding a coin when you
+     picked it up made three recompile EVERY material in the scene. That was
+     the freeze that arrived every ten or twenty seconds.
 
-     An additive shell reads as a glow from any angle and costs nothing. */
-  const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.42 * s, 8, 6),
-    new THREE.MeshBasicMaterial({
-      color: 0xffd88a, transparent: true, opacity: 0.22,
+     The first replacement was an additive sphere, which read as exactly
+     what it was: a ball around the coin. What a coin lying in the grass
+     actually does is put a small pool of light on the ground under itself
+     and catch the sun on its rim. So: a flat pool below, a soft upright
+     gleam that always faces the camera, and four sparkle pips that blink in
+     turn. No sphere, and no light. */
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: 0xffd88a, transparent: true, opacity: 0.20,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+    side: THREE.DoubleSide,
+  });
+
+  // the pool on the ground
+  const poolGeo = new THREE.CircleGeometry(0.62 * s, 14);
+  poolGeo.rotateX(-Math.PI / 2);
+  {
+    // fades to nothing at the rim, so it has no edge
+    const pc = poolGeo.attributes.position;
+    const cols = new Float32Array(pc.count * 4);
+    for (let i = 0; i < pc.count; i++) {
+      const d = Math.hypot(pc.getX(i), pc.getZ(i)) / (0.62 * s);
+      cols[i * 4] = 1; cols[i * 4 + 1] = 0.86; cols[i * 4 + 2] = 0.55;
+      cols[i * 4 + 3] = Math.pow(1 - d, 1.5);
+    }
+    poolGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
+  }
+  const pool = new THREE.Mesh(poolGeo, new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+  }));
+  pool.renderOrder = 1;
+  g.add(pool);
+
+  // a soft upright gleam, billboarded so it is never seen edge-on
+  const gleam = new THREE.Mesh(new THREE.PlaneGeometry(0.72 * s, 0.72 * s), glowMat);
+  gleam.renderOrder = 2;
+  g.add(gleam);
+
+  // four sparkle pips on the rim
+  const pipGeo = new THREE.PlaneGeometry(0.075 * s, 0.075 * s);
+  const pips = [];
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({
+      color: 0xfff6d0, transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
-    })
-  );
-  g.add(halo);
-  g.userData.tick = (t) => {
+    }));
+    g.add(m);
+    pips.push({ m, a: (i / 4) * Math.PI * 2 });
+  }
+
+  const _up = new THREE.Vector3();
+  g.userData.tick = (t, dt = 0.016, camPos = null) => {
     if (g.userData.flourish) return;      // the pickup animation owns it
     g.rotation.y = t * 1.9;
-    g.position.y = (g.userData.baseY ?? 0) + 0.42 + Math.sin(t * 2.4) * 0.13;
-    const b = 0.18 + Math.sin(t * 4) * 0.09;
-    halo.material.opacity = b;
-    halo.scale.setScalar(1 + Math.sin(t * 4) * 0.08);
+    const baseY = g.userData.baseY ?? 0;
+    const bob = 0.42 + Math.sin(t * 2.4) * 0.13;
+    g.position.y = baseY + bob;
+
+    // the pool stays on the ground however high the coin is bobbing
+    pool.position.y = -bob + 0.05;
+    pool.material.opacity = 0.34 + Math.sin(t * 2.4) * 0.10;
+
+    /* The gleam faces the camera. The group spins, so the billboard has to
+       cancel the group's own rotation as well as aim at the eye. */
+    if (camPos) {
+      _up.set(camPos.x - g.position.x, 0, camPos.z - g.position.z);
+      gleam.rotation.y = Math.atan2(_up.x, _up.z) - g.rotation.y;
+      for (const p of pips) gleam.rotation.x = 0;
+    }
+    glowMat.opacity = 0.14 + Math.sin(t * 4) * 0.06;
+
+    // the pips wink round the rim, one at a time
+    const lead = (t * 1.9) % (Math.PI * 2);
+    for (const p of pips) {
+      const a2 = p.a;
+      p.m.position.set(Math.cos(a2) * 0.30 * s, Math.sin(a2 * 1.3 + t) * 0.10, Math.sin(a2) * 0.30 * s);
+      if (camPos) p.m.rotation.y = Math.atan2(_up.x, _up.z) - g.rotation.y;
+      // brightest when this pip is on the side the light is coming from
+      const d = Math.abs(((a2 - lead + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+      p.m.material.opacity = Math.max(0, 0.9 - d * 0.9);
+    }
   };
   return g;
 }

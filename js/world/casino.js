@@ -463,6 +463,17 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
      WHOLE sheet — you get rainbow stripes of jungle green and glass blue
      running away from you. Keep every face roughly square and it cannot
      happen. */
+  /* A sole under the whole length, and a hull bottom below it.
+
+     The sea is one plane at y = 0 and the boat floats with her deck at
+     0.90, so anywhere there is no boat geometry between the camera and that
+     plane you see the water — and the deck only covered the middle 25 of
+     her 26 metres, leaving the bow and the stern open. From on deck it
+     looked like she was flooded. */
+  P.push(tint(box(WID - 0.2, 0.24, LEN - 0.3, 'planks', { pos: [0, 0.72, 0] }), HULL_D));
+  // and a closed bottom, so nothing shows under her either
+  P.push(tint(box(WID - 0.4, 0.3, LEN - 1.2, 'planks', { pos: [0, -0.28, 0] }), HULL_D));
+
   const BAYS = 12, BAY = (LEN - 0.8) / BAYS;
   for (let i = 0; i < BAYS; i++) {
     const bz = -(LEN - 0.8) / 2 + BAY / 2 + i * BAY;
@@ -471,6 +482,11 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     // caulked seams between the bays, which is what reads as planking
     P.push(tint(box(WID - 0.5, 0.05, 0.06, 'planks', { pos: [0, 1.46, bz + BAY / 2] }), G(0x3f3018)));
   }
+  // the fore and aft decks, so the planking runs the whole way
+  for (const [dz, dd] of [[-(LEN - 0.8) / 2 - 0.9, 1.0], [(LEN - 0.8) / 2 + 0.9, 1.0]]) {
+    P.push(tint(box(WID - 2.2, 0.3, dd * 2, 'planks', { pos: [0, 1.3, dz] }), DECK));
+  }
+
   // a red carpet up the middle, in runners rather than one long strip
   const CARPET = LEN - 5, CBAYS = 9, CB = CARPET / CBAYS;
   for (let i = 0; i < CBAYS; i++) {
@@ -678,34 +694,130 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
 export function buildVendingMachine(rng, mats) {
   const g = new THREE.Group();
   const P = [];
-  const CASE = G(0x2a5a4a), TRIM = G(0xc39a2c);
+  const CASE = G(0x2a5a4a), CASE_D = G(0x1c4034), TRIM = G(0xc39a2c);
 
-  P.push(tint(box(1.3, 2.3, 0.9, 'planks', { pos: [0, 1.15, 0] }), CASE));
-  P.push(tint(box(1.4, 0.14, 1.0, 'planks', { pos: [0, 2.36, 0] }), TRIM));
-  P.push(tint(box(1.4, 0.14, 1.0, 'planks', { pos: [0, 0.07, 0] }), TRIM));
-  // the glass front, and the shelves behind it
-  P.push(tint(box(1.0, 1.3, 0.06, 'glass', { pos: [0, 1.45, 0.47] }), G(0x9fd8e8)));
-  for (let i = 0; i < 3; i++) {
-    P.push(tint(box(0.95, 0.05, 0.3, 'planks', { pos: [0, 0.95 + i * 0.4, 0.32] }), G(0x1a3a30)));
-    for (let k = 0; k < 3; k++) {
-      P.push(tint(box(0.2, 0.28, 0.2, 'planks', {
-        pos: [-0.3 + k * 0.3, 1.14 + i * 0.4, 0.32],
-      }), G([0xd8c69a, 0xc02a1a, 0xffd24a][(i + k) % 3])));
+  /* A proper cabinet: a plinth it stands on, a body, a glass front with a
+     lit interior, a hopper you take things out of, and Ferdi's name across
+     the top. It used to be a green box with three shelves in it. */
+
+  // the plinth, wider than the body so it reads as standing on something
+  P.push(tint(box(1.55, 0.22, 1.10, 'metal', { pos: [0, 0.11, 0] }), G(0x3a3a40)));
+  for (const sx of [-0.62, 0.62]) {
+    for (const sz of [-0.4, 0.4]) {
+      P.push(tint(box(0.14, 0.16, 0.14, 'metal', { pos: [sx, 0.05, sz] }), G(0x24242a)));
     }
   }
-  // coin slot and the tray at the bottom
-  P.push(tint(box(0.16, 0.05, 0.06, 'metal', { pos: [0.42, 1.0, 0.47] }), G(0xd8d8e0)));
-  P.push(tint(box(0.9, 0.3, 0.14, 'metal', { pos: [0, 0.45, 0.44] }), G(0x1a1a1e)));
+
+  // the body
+  P.push(tint(box(1.36, 2.30, 0.92, 'planks', { pos: [0, 1.37, 0] }), CASE));
+  // a darker recess round the glass, so the front is not one flat plane
+  P.push(tint(box(1.10, 1.66, 0.06, 'planks', { pos: [0, 1.60, 0.44] }), CASE_D));
+  // brass trim top and bottom
+  P.push(tint(box(1.46, 0.16, 1.02, 'planks', { pos: [0, 2.56, 0] }), TRIM));
+  P.push(tint(box(1.46, 0.12, 1.02, 'planks', { pos: [0, 0.28, 0] }), TRIM));
+  // a header board
+  P.push(tint(box(1.30, 0.42, 0.10, 'planks', { pos: [0, 2.80, 0.10] }), G(0x8a2018)));
+
+  /* the glass, and the shelves behind it — bottles standing in rows rather
+     than three cubes on a rail */
+  P.push(tint(box(1.02, 1.56, 0.05, 'glass', { pos: [0, 1.60, 0.47] }), G(0xb8e4ee)));
+  for (let r = 0; r < 4; r++) {
+    const sy = 0.92 + r * 0.40;
+    P.push(tint(box(0.98, 0.05, 0.34, 'metal', { pos: [0, sy, 0.28] }), G(0x143028)));
+    // a coil, which is what actually makes a vending machine read as one
+    for (let k = 0; k < 7; k++) {
+      P.push(tint(cyl(0.035, 0.035, 0.06, 5, 'metal', {
+        pos: [-0.42 + k * 0.14, sy + 0.10, 0.28], rot: [Math.PI / 2, 0, 0],
+      }), G(0x8a9096)));
+    }
+    // the stock
+    for (let k = 0; k < 4; k++) {
+      const col = [0xd8c69a, 0xc02a1a, 0xffd24a, 0x6fd0e0][(r + k) % 4];
+      const tall = 0.24 + ((r + k) % 3) * 0.04;
+      P.push(tint(cyl(0.075, 0.075, tall, 7, 'glass', {
+        pos: [-0.36 + k * 0.24, sy + 0.06 + tall / 2, 0.26],
+      }), G(col)));
+      P.push(tint(cyl(0.045, 0.045, 0.05, 6, 'metal', {
+        pos: [-0.36 + k * 0.24, sy + 0.08 + tall, 0.26],
+      }), G(0x8a9096)));
+    }
+  }
+
+  // the coin mechanism: a slot, a knob and a printed price
+  P.push(tint(box(0.30, 0.44, 0.10, 'metal', { pos: [0.50, 1.05, 0.47] }), G(0x3a3a42)));
+  P.push(tint(box(0.14, 0.045, 0.06, 'metal', { pos: [0.50, 1.20, 0.52] }), G(0xe8eef2)));
+  P.push(tint(cyl(0.09, 0.09, 0.09, 8, 'metal', { pos: [0.50, 1.00, 0.50], rot: [Math.PI / 2, 0, 0] }), G(0xc39a2c)));
+  P.push(tint(box(0.05, 0.03, 0.05, 'metal', { pos: [0.50, 1.00, 0.55] }), G(0x24242a)));
+
+  // the hopper you take it out of
+  P.push(tint(box(0.86, 0.30, 0.14, 'metal', { pos: [-0.10, 0.62, 0.46] }), G(0x14141a)));
+  P.push(tint(box(0.90, 0.06, 0.10, 'metal', { pos: [-0.10, 0.78, 0.48] }), G(0x8a9096)));
+
+  // and the wear: it has stood out here for years
+  for (let i = 0; i < 9; i++) {
+    const a = rng() * 6.283;
+    P.push(tint(box(0.10 + rng() * 0.16, 0.06 + rng() * 0.12, 0.03, 'planks', {
+      pos: [Math.cos(a) * 0.6, 0.5 + rng() * 1.7, 0.47], rot: [0, 0, rng() * 3],
+    }), G(0x6a4a28)));
+  }
   g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
 
-  // a tired fluorescent tube inside
+  // the header, painted
+  const header = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.22, 0.34),
+    new THREE.MeshLambertMaterial({
+      map: buildSignTexture(['FERDI STEINMAN', 'ONE PULL'], '#3a1410', '#ffd24a'),
+    })
+  );
+  header.position.set(0, 2.80, 0.16);
+  g.add(header);
+
+  /* A tired fluorescent tube inside. Built once and left in the scene: this
+     never blinks out of existence, because a light appearing or vanishing
+     recompiles every shader in the world. */
   const lamp = new THREE.PointLight(0x9fe8d8, 1.4, 9, 1.8);
-  lamp.position.set(0, 1.7, 0.3);
+  lamp.position.set(0, 1.9, 0.3);
   g.add(lamp);
+  // the tube itself, so the light has a visible source
+  const tube = new THREE.Mesh(
+    new THREE.BoxGeometry(0.94, 0.05, 0.16),
+    new THREE.MeshBasicMaterial({ color: 0xdff6f0, fog: true })
+  );
+  tube.position.set(0, 2.40, 0.24);
+  g.add(tube);
+
+  /* The delivery: a bottle that drops down the front of the glass and lands
+     in the hopper. Built once, hidden, and played on demand. */
+  const drop = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.08, 0.26, 7),
+    new THREE.MeshLambertMaterial({ color: 0xffd24a })
+  );
+  drop.visible = false;
+  g.add(drop);
+  let dropT = -1;
+
+  g.userData.vend = (colour = 0xffd24a) => {
+    drop.material.color.setHex(colour);
+    dropT = 0;
+  };
+  g.userData.empty = false;
+
   let flick = 0;
-  g.userData.tick = (t) => {
+  g.userData.tick = (t, dt = 0.016) => {
     flick = (Math.sin(t * 27) > 0.86 || Math.sin(t * 3.1) > 0.99) ? 0.2 : 1;
-    lamp.intensity = 1.4 * flick;
+    const out = g.userData.empty ? 0.25 : 1;
+    lamp.intensity = 1.4 * flick * out;
+    tube.material.color.setScalar(0.3 + 0.7 * flick * out);
+
+    if (dropT >= 0) {
+      dropT += dt;
+      const k = Math.min(1, dropT / 0.55);
+      // it falls, then settles in the tray
+      drop.visible = true;
+      drop.position.set(-0.10 + Math.sin(k * 9) * 0.03, 2.3 - k * k * 1.55, 0.30);
+      drop.rotation.z = k * 6;
+      if (dropT > 1.7) { dropT = -1; drop.visible = false; }
+    }
   };
   return g;
 }

@@ -17,7 +17,10 @@ import { Avatar, Body, colourHex } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
-import { STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R, itemById, stockFor } from './market.js';
+import {
+  STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
+  itemById, stockFor, VENDOR_IDS,
+} from './market.js';
 
 /** Bought and immediately in force; nothing to press. */
 const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
@@ -1300,7 +1303,9 @@ export class MPGame extends Game {
         break;
       }
       case 'mpVendor': {
-        this.screens.push('mpShop', { sel: 0, side: 0, vendor: it.vendor || true });
+        /* Not a shop screen. A machine you put money into, which decides
+           what you get. Browsing a vending machine was never the idea. */
+        this.screens.push('mpVend', { vendor: it.vendor || null });
         document.exitPointerLock?.();
         this.audio.sfx('page');
         break;
@@ -1646,6 +1651,55 @@ export class MPGame extends Game {
     this.useItem(sl.id);
   }
 
+  /* =========================================================
+     ONE OF FERDI'S MACHINES
+     ========================================================= */
+
+  /**
+   * Take the money and decide what comes out. Returns the item, or null if
+   * it cannot be paid for — the screen turns the drum, then calls
+   * vendDeliver when the drum stops.
+   */
+  vendPay(vendor) {
+    const COST = 6;
+    if (vendor && vendor.spent) return null;
+    if ((this.coins || 0) < COST) {
+      this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
+      return null;
+    }
+    this.coins -= COST;
+    this._send({ t: C.PURSE, coins: this.coins });
+    const pool = VENDOR_IDS.map((id) => itemById(id)).filter(Boolean);
+    return pool[(Math.random() * pool.length) | 0] || null;
+  }
+
+  /** The drum has stopped: hand it over and empty the machine. */
+  vendDeliver(item) {
+    if (!item) return;
+    const it = itemById(item.id) || item;
+    if (it.tag === 'PASSIVE') {
+      this.owned = this.owned || new Set();
+      this.owned.add(it.id);
+      this.applyItem(it.id);
+    } else {
+      this.carry = [...(this.carry || []), it.id];
+    }
+    const near = this.nearestInteractable?.();
+    const v = near && near.kind === 'mpVendor' ? near.vendor : null;
+    for (const vd of (this.vendors || [])) {
+      if (v && vd !== v) continue;
+      if (Math.hypot(this.player.pos.x - vd.x, this.player.pos.z - vd.z) < 4.5) {
+        vd.spent = true;
+        vd.node?.userData?.vend?.(0xffd24a);
+        if (vd.node) vd.node.userData.empty = true;
+      }
+    }
+    const belt = BELT_IDS.includes(it.id);
+    const slot = belt ? this.beltSlots().findIndex((sl) => sl.id === it.id) + 1 : 0;
+    this.ui.showPopup(it.name, belt ? `PRESS ${slot} TO USE IT` : 'IN FORCE NOW',
+      'coin', 'THE MACHINE GAVE YOU');
+  }
+
   /** Spend one carried item. */
   useItem(id) {
     if (!this.useCarried(id)) { this.audio.sfx('deny'); return false; }
@@ -1885,7 +1939,10 @@ export class MPGame extends Game {
     this.scene = this.bunkerScene;
     this.player.mesh.removeFromParent();
     this.bunkerScene.add(this.player.mesh);
-    this.player.setColliders([]);
+    /* The room's own furniture. This said setColliders([]) for far too
+       long, which is why the command table, the crate stack and the whole
+       bank of lockers were scenery you strolled straight through. */
+    this.player.setColliders(BUNKER_COLLIDERS);
     /* Facing into the room. Arriving with your back to the ladder wall put
        the camera through the concrete before its collision could pull it
        in, and the first thing you saw was the outside of the world. */
@@ -2584,6 +2641,7 @@ export class MPGame extends Game {
     d.tasksDone = M.view.tasksDone;
     d.tasksTotal = M.view.tasksTotal;
     d.coins = this.coins || 0;
+    d.stamina = this.player?.stamina ?? 1;
     d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;

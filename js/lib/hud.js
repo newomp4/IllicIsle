@@ -112,7 +112,7 @@ export class Hud {
       this._mpRight(W - 3, 3 + wob, d.mp);
       this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
-      this._mpBelt(4, H - 48, d.mp);
+      this._mpBelt(4, H - 52, d.mp);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       if (d.prompt) this._prompt(W / 2, H - 34, d.prompt);
       this._toasts(W / 2, Math.round(H * 0.26));
@@ -384,40 +384,36 @@ export class Hud {
       x.fillRect(bx + i, y + 12, 2, 4);
     }
 
-    /* --- the crew, in rows that fit inside their own plate --- */
+    /* --- your wind, where you can actually see it ---
+       The crew strip lived here and told you nothing you could not read
+       from the tags over people's heads; stamina is the number you need
+       while you are running away from somebody. */
     y += WH + 1;
-    const PER = 6;                                  // chips across
-    const rows = Math.max(1, Math.ceil(players.length / PER));
-    const CH = 11 + rows * 9;
-    plate(x, px0, y, PW, CH);
-    const aliveN = players.filter((p) => p.alive !== false).length;
-    drawText(x, 'CREW', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
-    drawText(x, `${aliveN}/${players.length}`, {
+    const SH = 18;
+    plate(x, px0, y, PW, SH);
+    const st = Math.max(0, Math.min(1, mp.stamina ?? 1));
+    const spent = st < 0.999;
+    drawText(x, 'WIND', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
+    drawText(x, `${Math.round(st * 100)}`, {
       x: ox - 4, y: y + 2, scale: 1, align: 'right',
-      color: aliveN <= 2 ? RED : '#c9b98a',
+      color: st < 0.25 ? RED : (spent ? '#c9b98a' : JADE),
     });
-    players.forEach((p, i) => {
-      const col = i % PER, row = (i / PER) | 0;
-      const cx2 = px0 + 4 + col * 9;
-      const cy2 = y + 12 + row * 9;
-      const hex = '#' + (COLOUR_HEX[p.colour] || '888888');
-      const dead = p.alive === false;
-      x.fillStyle = INK; x.fillRect(cx2 - 1, cy2 - 1, 9, 9);
-      x.fillStyle = dead ? '#241a16' : hex;
-      x.fillRect(cx2, cy2, 7, 7);
-      if (dead) {
-        x.fillStyle = '#6a2a22';
-        for (let k = 0; k < 7; k++) { x.fillRect(cx2 + k, cy2 + k, 1, 1); x.fillRect(cx2 + 6 - k, cy2 + k, 1, 1); }
-      } else {
-        // a light on the top-left corner so live chips are not flat
-        x.fillStyle = 'rgba(255,255,255,.28)';
-        x.fillRect(cx2, cy2, 7, 1); x.fillRect(cx2, cy2, 1, 7);
-      }
-      if (p.id === mp.selfId) {
-        x.fillStyle = GOLD;
-        x.fillRect(cx2 - 1, cy2 + 8, 9, 1);
-      }
-    });
+    const sw = PW - 8, sx = px0 + 4;
+    x.fillStyle = INK; x.fillRect(sx - 1, y + 11, sw + 2, 6);
+    x.fillStyle = '#0a1a14'; x.fillRect(sx, y + 12, sw, 4);
+    const sn = Math.round(st * sw);
+    for (let i = 0; i < sn; i += 3) {
+      // green with wind, amber when it is going, red when it is gone
+      x.fillStyle = st < 0.25 ? (i % 6 ? '#8a2018' : RED)
+        : st < 0.6 ? (i % 6 ? '#a8761c' : GOLD)
+          : (i % 6 ? '#3f8f6a' : JADE);
+      x.fillRect(sx + i, y + 12, 2, 4);
+    }
+    // a flash on the bar the moment it bottoms out
+    if (st <= 0.001 && Math.floor(this._wobble * 8) % 2 === 0) {
+      x.fillStyle = 'rgba(224,69,58,.35)';
+      x.fillRect(sx, y + 12, sw, 4);
+    }
   }
 
   /**
@@ -436,8 +432,9 @@ export class Hud {
 
     const SLOT = 18;
     if (belt.length) {
-      const w = belt.length * SLOT + 4;
-      plate(x, ox, oy, w, SLOT + 6);
+      const w = Math.max(belt.length * SLOT + 4, textWidth('BELT', 1) + 10);
+      plate(x, ox, oy - 10, w, SLOT + 16);
+      drawText(x, 'BELT', { x: ox + 3, y: oy - 8, scale: 1, color: '#8a7a52' });
       belt.forEach((sl, i) => {
         const sx = ox + 2 + i * SLOT;
         // the well
@@ -468,12 +465,17 @@ export class Hud {
       });
     }
 
-    /* Passives are not keys, they are facts about you. A small row of
-       badges under the belt, with no numbers. */
+    /* Passives are facts about you rather than keys you press. They used to
+       be a bare row of nine-pixel icons floating on the world with no panel
+       and no label — from a distance that reads as one small brown button
+       nobody can identify. Labelled and plated now. */
     if (passives.length) {
-      const py = oy + (belt.length ? SLOT + 8 : 0);
+      const py = oy + (belt.length ? SLOT + 10 : 0);
+      const pw = Math.max(passives.length * 11 + 6, textWidth('ON YOU', 1) + 10);
+      plate(x, ox, py - 10, pw, 21);
+      drawText(x, 'ON YOU', { x: ox + 3, y: py - 8, scale: 1, color: '#8a7a52' });
       passives.forEach((icon, i) => {
-        drawShopIcon(x, icon, ox + 3 + i * 11, py, 9, false, t);
+        drawShopIcon(x, icon, ox + 3 + i * 11, py + 1, 9, false, t);
       });
     }
   }

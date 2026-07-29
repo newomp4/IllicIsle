@@ -296,6 +296,11 @@ export function makeGroundWith(platforms, base) {
   };
 }
 
+/** The footprint one of Ferdi's machines needs to stand on. */
+const VENDOR_FOOT = [
+  [-0.75, -0.5], [0.75, -0.5], [-0.75, 0.5], [0.75, 0.5], [0, 0],
+];
+
 /** The footprint Ferdi's hut actually occupies, in its own space. */
 const HUT_FOOT = [
   [-3.2, -2.8], [3.2, -2.8], [-3.2, 2.6], [3.2, 2.6],
@@ -552,6 +557,11 @@ export class Game {
       shrine.scale.setScalar(1.35);
       st.userData.idolSet.add(shrine);
       st.userData.idol = shrine;
+    });
+
+    await step('MEASURING THE DECKS', 0.94, () => {
+      // everything walkable that the height function does not know about
+      this.groundOf = makeGroundWith(this.platforms, heightAt);
     });
 
     await step('WARMING THE PIPES', 0.96, () => {
@@ -811,7 +821,51 @@ export class Game {
       const c2 = Math.cos(hutYaw), s2 = Math.sin(hutYaw);
       this.cratePos = { x: fh.x + (-4.5) * c2 + 0.5 * s2, z: fh.z - (-4.5) * s2 + 0.5 * c2 };
     }
-    this.colliders.push({ x: fh.x, z: fh.z, r: 3.4 });
+    /* ---- what you can stand on, and what stops you ----
+       There was one 3.4-metre circle at the middle of the building. It was
+       wrong in both directions: it left the corners and the whole stair run
+       open so you could walk in through the back wall, and it reached far
+       enough forward to shove you off the bottom step so you could never
+       get up onto the deck properly.
+
+       Now the deck and every tread are platforms you walk up, and the three
+       walls plus the counter are what stop you. */
+    {
+      const c2 = Math.cos(hutYaw), s2 = Math.sin(hutYaw);
+      const toWorld = (lx, lz) => ({
+        x: fh.x + lx * c2 + lz * s2,
+        z: fh.z - lx * s2 + lz * c2,
+      });
+      this.platforms = this.platforms || [];
+      const plat = (lx, lz, hw, hd, ly) => {
+        const w = toWorld(lx, lz);
+        this.platforms.push({ x: w.x, z: w.z, y: fh.y + ly, hw, hd, cos: c2, sin: s2 });
+      };
+      // the deck itself
+      plat(0, 0, 3.1, 2.6, 1.64);
+      // five treads down the front, then the landing
+      const STEPS = 5, RISE = 0.30, TREAD = 0.85;
+      for (let i = 0; i < STEPS; i++) {
+        plat(0, 3.0 + i * TREAD, 2.7, TREAD / 2 + 0.06, 1.5 - (i + 1) * RISE + 0.08);
+      }
+      {
+        const z0 = 3.0 + STEPS * TREAD;
+        const g0 = hutGround(0, z0 + 0.9);
+        plat(0, z0 + 0.9, 2.7, 1.0, Math.max(g0 + 0.12, 1.5 - (STEPS + 1) * RISE) + 0.08);
+      }
+      // the three walls, and the counter across the front
+      const wall = (lx, lz, r) => {
+        const w = toWorld(lx, lz);
+        this.colliders.push({ x: w.x, z: w.z, r });
+      };
+      for (const lx of [-2.8, -1.4, 0, 1.4, 2.8]) wall(lx, -2.55, 0.85);
+      for (const lz of [-2.2, -0.8, 0.6, 2.0]) { wall(-3.05, lz, 0.85); wall(3.05, lz, 0.85); }
+      // you come up the steps and you stop at the counter, which is correct
+      for (const lx of [-2.4, -0.8, 0.8, 2.4]) wall(lx, 2.35, 0.7);
+      // the awning poles and the stair newels, so they read as solid
+      for (const lx of [-3.15, 3.15]) wall(lx, 4.86, 0.35);
+      for (const lx of [-2.85, 2.85]) { wall(lx, 3.0, 0.3); wall(lx, 7.25, 0.3); }
+    }
 
     const fwdX = Math.sin(hut.rotation.y), fwdZ = Math.cos(hut.rotation.y);
     this.interactables.push({
@@ -883,13 +937,29 @@ export class Game {
       }
     }
 
-    /* ---- syncoins scattered as currency ---- */
+    /* ---- syncoins scattered as currency ----
+       Placed against the colliders, not just against the terrain. findGround
+       only asks whether the ground is flat enough; it has no idea there is a
+       boulder standing on it, which is how one of these ended up embedded in
+       a rock near the camp. */
     this.syncoins = [];
+    const clearOfProps = (x, z, need = 1.4) => {
+      for (const c of this.colliders) {
+        const rr = c.r + need;
+        if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
+      }
+      return true;
+    };
     for (let i = 0; i < 38; i++) {
-      const a = rng() * Math.PI * 2;
-      const r = 26 + rng() * 132;
-      const g = findGround(Math.cos(a) * r, Math.sin(a) * r,
-        { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
+      let g = null;
+      for (let attempt = 0; attempt < 14; attempt++) {
+        const a = rng() * Math.PI * 2;
+        const r = 26 + rng() * 132;
+        const cand = findGround(Math.cos(a) * r, Math.sin(a) * r,
+          { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
+        if (clearOfProps(cand.x, cand.z)) { g = cand; break; }
+      }
+      if (!g) continue;                       // rather no coin than one in a rock
       const coin = buildSyncoin(this.propMats);
       coin.position.set(g.x, g.y, g.z);
       coin.userData.baseY = g.y;
@@ -1071,17 +1141,31 @@ export class Game {
       this.hatches.push({ x: hg.x, z: hg.z, y: hg.y, node: h, index: i, name: spot.name });
     });
 
-    /* ---- two of Ferdi's machines, tucked away from the shop ---- */
+    /* ---- two of Ferdi's machines, tucked away from the shop ----
+       On a proper flat footing, and sunk to the lowest ground under it. A
+       cabinet a metre and a half wide, set at the height under its own
+       middle, stands with one corner in the air and the other in the hill —
+       which is what both of these were doing. */
     this.vendors = [];
     for (const [hx, hz] of [[92, -74], [-118, 8]]) {
-      const vg = findGround(hx, hz, { rng, radius: 22, minH: 2, maxH: 30, maxSlope: 0.18 });
+      const vg = findFlatGround(hx, hz, VENDOR_FOOT, {
+        rng, radius: 20, minH: 2, maxH: 30, maxRise: 0.45, yaw: 0,
+      });
+      let lo = vg.y;
+      for (let k = 0; k < 8; k++) {
+        const a2 = (k / 8) * Math.PI * 2;
+        const hh = heightAt(vg.x + Math.cos(a2) * 1.15, vg.z + Math.sin(a2) * 1.15);
+        if (hh < lo) lo = hh;
+      }
       const vm = buildVendingMachine(rng, this.propMats);
-      vm.position.set(vg.x, vg.y - 0.1, vg.z);
-      vm.rotation.y = rng() * Math.PI * 2;
+      vm.position.set(vg.x, lo - 0.06, vg.z);
+      /* Facing outward from the island so you come on it front-first rather
+         than walking into its back panel. */
+      vm.rotation.y = Math.atan2(vg.x, vg.z);
       scene.add(vm);
       this.tickers.push(vm);
-      this.colliders.push({ x: vg.x, z: vg.z, r: 1.1 });
-      this.vendors.push({ x: vg.x, z: vg.z, node: vm });
+      this.colliders.push({ x: vg.x, z: vg.z, r: 0.95 });
+      this.vendors.push({ x: vg.x, z: vg.z, y: lo, node: vm });
     }
 
     /* ---- the storm, dormant until the Pendulums are read ---- */
@@ -2806,7 +2890,11 @@ I have snacks."`);
 
     if (!frozen) {
       this.player.update(dt, this.input, {
-        groundOf: inTemple ? templeHeight : heightAt,
+        /* Not raw terrain: the shop's deck and steps, the casino's deck and
+           her bridge are all platforms the terrain knows nothing about.
+           Single player used heightAt directly, so Ferdi's steps were a
+           picture of steps. */
+        groundOf: inTemple ? templeHeight : (this.groundOf || heightAt),
         water: !inTemple,
         bounds: !inTemple,
         insideBox: inTemple
@@ -2843,7 +2931,11 @@ I have snacks."`);
     this.birds.userData.tick(t, dt);
     this.critters.userData.tick(t, dt, this.player?.pos);
     this.sky.position.copy(this.camera.position);
-    for (const g of this.tickers) g.userData?.tick?.(t, dt);
+    /* The camera goes to every ticker: anything that billboards needs to
+       know where the eye is, and passing it here is cheaper than every
+       prop reaching back into the game for it. */
+    const eye = this.camera.position;
+    for (const g of this.tickers) g.userData?.tick?.(t, dt, eye);
     if (this.campfire && !this.doused) {
       this.campfire.userData.light.intensity = 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
     }
