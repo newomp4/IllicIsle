@@ -579,8 +579,21 @@ export function findFlatGround(x, z, foot, opts = {}) {
  * rather than a fixed brown, and the outer ribbons fade to nothing through
  * vertex alpha so there is no line anywhere.
  */
+/**
+ * A trodden path.
+ *
+ * Three rules it has to obey to stop reading as a line drawn on the map.
+ * It is not a different material from the ground — it is the same ground
+ * worn barer, so its colour comes from what it crosses. It has no edge,
+ * it thins out. And it stops before it arrives: a path leads TO the wreck
+ * and to Ferdi's, it does not run through them, so both ends taper away
+ * over the last dozen metres.
+ */
 export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
-  const { width = 5.0, wobble = 7, rng = Math.random } = opts;
+  const {
+    width = 6.4, wobble = 8, rng = Math.random,
+    fadeStart = 13, fadeEnd = 13,       // metres of taper at each end
+  } = opts;
   const dx = bx - ax, dz = bz - az;
   const len = Math.hypot(dx, dz) || 1;
   // a vertex every two metres, so the strip lies on the ground rather than
@@ -593,59 +606,67 @@ export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
     const sway = Math.sin(t * 3.1 + phase) * wobble * Math.sin(t * Math.PI);
-    pts.push({ x: ax + dx * t + nx * sway, z: az + dz * t + nz * sway });
+    pts.push({ x: ax + dx * t + nx * sway, z: az + dz * t + nz * sway, t });
   }
 
-  /* The colour of worn ground, sampled where the path actually is. On the
-     sand it is the beach a few shades down and damp; inland it is the
-     earth under the grass, bleached by feet rather than dyed brown. */
-  const SAND_WORN = new THREE.Color(0xb09b6c);
-  const EARTH_WORN = new THREE.Color(0x7e7350);
-  const EARTH_PALE = new THREE.Color(0x958a63);
+  /* How present the path is at a given point along it: nothing at either
+     end, full in the middle, smoothed so there is no step. */
+  const along = (t) => {
+    const d0 = t * len, d1 = (1 - t) * len;
+    const k = Math.min(
+      fadeStart > 0 ? Math.min(1, d0 / fadeStart) : 1,
+      fadeEnd > 0 ? Math.min(1, d1 / fadeEnd) : 1
+    );
+    return k * k * (3 - 2 * k);
+  };
+
+  /* The colour of worn ground, sampled where the path actually is: packed
+     damp sand on the beach, bare earth inland. Both are only a shade or
+     two off what they sit on — a beaten path is a change of tone, not a
+     change of material. */
+  const SAND_WORN = new THREE.Color(0xc0ab7c);
+  const EARTH_WORN = new THREE.Color(0x6e6748);
+  const EARTH_PALE = new THREE.Color(0x847a58);
   const c = new THREE.Color();
   const wornAt = (px, pz, out) => {
     const h = heightAt(px, pz);
-    if (h < 2.6) {
-      // beach: the same sand, packed down and damp
-      out.copy(SAND_WORN);
-    } else {
-      // inland: bare earth, lighter in the middle where it is most walked
-      out.copy(EARTH_WORN).lerp(EARTH_PALE, 0.35 + Math.sin(px * 0.21 + pz * 0.17) * 0.25);
-    }
+    if (h < 2.8) out.copy(SAND_WORN);
+    else out.copy(EARTH_WORN).lerp(EARTH_PALE, 0.4 + Math.sin(px * 0.21 + pz * 0.17) * 0.3);
     return out;
   };
 
   const pos = [], uv = [], col = [];
-  /* Five ribbons: a bare centre, a thinning band either side, and an outer
-     band that reaches zero alpha. RIB is the half-width of each boundary
-     as a fraction of the strip, ALPHA the opacity at that boundary. */
-  const RIB = [-0.5, -0.34, -0.13, 0.13, 0.34, 0.5];
-  const ALPHA = [0.0, 0.20, 0.80, 0.80, 0.20, 0.0];
+  /* Seven ribbons: a bare middle and a long, gentle shoulder either side.
+     The wider the taper, the less it reads as an outline. */
+  const RIB = [-0.5, -0.38, -0.26, -0.10, 0.10, 0.26, 0.38, 0.5];
+  const ALPHA = [0.0, 0.08, 0.24, 0.52, 0.52, 0.24, 0.08, 0.0];
 
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[i], p1 = pts[i + 1];
+    const a0 = along(p0.t), a1 = along(p1.t);
+    if (a0 <= 0.002 && a1 <= 0.002) continue;
     const sx = p1.x - p0.x, sz = p1.z - p0.z;
     const sl = Math.hypot(sx, sz) || 1;
     const ox = -sz / sl, oz = sx / sl;
-    // the strip breathes along its length so it is not a ruler
-    const w0 = width * (0.80 + Math.sin(i * 0.62) * 0.20);
-    const w1 = width * (0.80 + Math.sin((i + 1) * 0.62) * 0.20);
+    // the strip breathes along its length so it is not a ruler, and it
+    // narrows as it fades out
+    const w0 = width * (0.78 + Math.sin(i * 0.62) * 0.22) * (0.45 + a0 * 0.55);
+    const w1 = width * (0.78 + Math.sin((i + 1) * 0.62) * 0.22) * (0.45 + a1 * 0.55);
 
     for (let r = 0; r < RIB.length - 1; r++) {
       const uA = RIB[r], uB = RIB[r + 1];
-      const aA = ALPHA[r], aB = ALPHA[r + 1];
+      const fA = ALPHA[r], fB = ALPHA[r + 1];
       const quad = [
-        [p0.x + ox * w0 * uA, p0.z + oz * w0 * uA, aA, 0, 0],
-        [p0.x + ox * w0 * uB, p0.z + oz * w0 * uB, aB, 1, 0],
-        [p1.x + ox * w1 * uB, p1.z + oz * w1 * uB, aB, 1, 1],
-        [p1.x + ox * w1 * uA, p1.z + oz * w1 * uA, aA, 0, 1],
+        [p0.x + ox * w0 * uA, p0.z + oz * w0 * uA, fA * a0, 0, 0],
+        [p0.x + ox * w0 * uB, p0.z + oz * w0 * uB, fB * a0, 1, 0],
+        [p1.x + ox * w1 * uB, p1.z + oz * w1 * uB, fB * a1, 1, 1],
+        [p1.x + ox * w1 * uA, p1.z + oz * w1 * uA, fA * a1, 0, 1],
       ];
       for (const k of [0, 1, 2, 0, 2, 3]) {
         const [qx, qz, alpha, u, v] = quad[k];
         pos.push(qx, heightAt(qx, qz) + 0.04, qz);
         uv.push(u, v);
         wornAt(qx, qz, c);
-        // a little grain, but nothing you could call a stripe
         const n = 0.94 + rng() * 0.12;
         col.push(c.r * n, c.g * n, c.b * n, alpha);
       }
@@ -660,9 +681,6 @@ export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
   g.computeVertexNormals();
   applyCell(g, 'sand');
 
-  /* Lit and blended. An unlit strip glows at night; a hard-edged one has a
-     visible outline. Polygon offset keeps it ON the ground rather than
-     fighting the terrain for the same depth. */
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true, map: atlas,
     transparent: true, depthWrite: false,
@@ -670,6 +688,70 @@ export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
   });
   const mesh = new THREE.Mesh(g, mat);
   mesh.renderOrder = 1;
+
+  /* ---- and what is lying on it ----
+     A wash of colour with no objects in it is a stripe. Small stones
+     trodden into the surface, and a few tufts that have survived along the
+     margins, give the eye something to land on. Everything here is small,
+     dark and mostly buried: a boulder sitting proud on a footpath reads as
+     a mistake, not as detail. */
+  const litter = [];
+  const LC = new THREE.Color();
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p = pts[i], q = pts[i + 1];
+    const a = along(p.t);
+    if (a < 0.4) continue;
+    const sx = q.x - p.x, sz = q.z - p.z;
+    const sl = Math.hypot(sx, sz) || 1;
+    const ox = -sz / sl, oz = sx / sl;
+    const halfW = width * 0.42 * (0.45 + a * 0.55);
+
+    const n = 2 + ((rng() * 3) | 0);
+    for (let k = 0; k < n; k++) {
+      const u = (rng() * 2 - 1);                 // -1..1 across the strip
+      const v = rng();                           // along this segment
+      const px = p.x + sx * v + ox * u * halfW;
+      const pz = p.z + sz * v + oz * u * halfW;
+      const py = heightAt(px, pz);
+      const roll = rng();
+
+      if (roll < 0.70) {
+        /* A stone, sunk so only its crown shows, and coloured off the
+           ground rather than off a quarry. */
+        const r = 0.05 + rng() * 0.075;
+        const st = ico(r, 0, 'stone', {
+          pos: [px, py + r * 0.20, pz],
+          rot: [rng() * 3, rng() * 3, rng() * 3],
+          scale: [1, 0.42 + rng() * 0.2, 1],
+        });
+        const g0 = 0.30 + rng() * 0.10;
+        LC.setRGB(g0 + 0.03, g0, g0 - 0.03);
+        litter.push(tint(st, LC.clone()));
+      } else if (roll < 0.92 && Math.abs(u) > 0.55) {
+        // a tuft that has held on at the margin
+        const h = 0.09 + rng() * 0.11;
+        const tf = box(0.06, h, 0.06, 'jungleLeaf', {
+          pos: [px, py + h / 2, pz], rot: [0, rng() * 3, (rng() - 0.5) * 0.6],
+        });
+        LC.setRGB(0.14 + rng() * 0.06, 0.22 + rng() * 0.08, 0.10);
+        litter.push(tint(tf, LC.clone()));
+      } else {
+        // a twig, lying flat
+        const l = 0.16 + rng() * 0.2;
+        const tw = cyl(0.016, 0.016, l, 4, 'bark', {
+          pos: [px, py + 0.02, pz], rot: [Math.PI / 2, rng() * 3, 0],
+        });
+        LC.setRGB(0.24, 0.19, 0.12);
+        litter.push(tint(tw, LC.clone()));
+      }
+    }
+  }
+  if (litter.length) {
+    const lm = new THREE.Mesh(mergeGeos(litter), mats.opaque);
+    lm.renderOrder = 2;
+    mesh.add(lm);
+  }
+
   mesh.userData.line = pts;
   return mesh;
 }
@@ -733,8 +815,32 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
   const v = new THREE.Vector3();
   const one = new THREE.Vector3(1, 1, 1);
 
-  const put = (key, x, y, z, yaw, s, tilt = false) => {
-    v.set(x, y, z);
+  /**
+   * Place a prop, sunk to the LOWEST ground under its footprint.
+   *
+   * Everything used to sit at the height sampled dead under its centre.
+   * On any slope that leaves the uphill side buried and the downhill side
+   * hanging in the air — which is exactly the floating trunks and the
+   * half-sunk monoliths. Sampling a ring at the prop's own radius and
+   * taking the minimum means the downhill edge always meets the ground and
+   * the uphill edge is simply buried, which nobody ever notices.
+   *
+   * @param {number} foot  radius of the thing's base, in metres. 0 skips
+   *   the extra sampling for scatter that has no base worth speaking of.
+   */
+  const put = (key, x, y, z, yaw, s, tilt = false, foot = 0) => {
+    let yy = y;
+    if (foot > 0) {
+      const r = foot * s;
+      let lo = heightAt(x, z);
+      for (let i = 0; i < 6; i++) {
+        const a2 = (i / 6) * Math.PI * 2 + 0.4;
+        const hh = heightAt(x + Math.cos(a2) * r, z + Math.sin(a2) * r);
+        if (hh < lo) lo = hh;
+      }
+      yy = y - Math.max(0, heightAt(x, z) - lo);
+    }
+    v.set(x, yy, z);
     e.set(tilt ? (rng() - .5) * 0.12 : 0, yaw, tilt ? (rng() - .5) * 0.12 : 0);
     q.setFromEuler(e);
     m.compose(v, q, one.clone().multiplyScalar(s));
@@ -773,18 +879,18 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
       if (roll < 0.055) {
         const k = pick('palmSub', POOL.palmSub);
         const s = 0.9 + rng() * 0.3;
-        put(k, x, h - 0.25, z, yaw, s, true);
+        put(k, x, h - 0.25, z, yaw, s, true, 0.55);
         addCollider(x, z, 0.6 * s);
       } else if (roll < 0.075) {
         const k = pick('palmCan', POOL.palmCan);
-        put(k, x, h - 0.25, z, yaw, 0.9 + rng() * 0.25, true);
+        put(k, x, h - 0.25, z, yaw, 0.9 + rng() * 0.25, true, 0.8);
         addCollider(x, z, 0.9);
       } else if (roll < 0.12) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
       else if (roll < 0.145) put(pick('drift', POOL.drift), x, h, z, yaw, 0.9 + rng() * 0.5);
       else if (roll < 0.175) put('shell0', x, h, z, yaw, 1);
       else if (roll < 0.20) {
         const s2 = 0.7 + rng() * 0.6;
-        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2);
+        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2, false, 0.5);
         if (s2 > 1.05) addCollider(x, z, 0.5 * s2);
       }
 
@@ -796,24 +902,24 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
          ones that are there are worth looking at. */
       if (roll < 0.030) {                                   // emergent giants
         const k = rng() < 0.5 ? pick('treeEmg', POOL.treeEmg) : pick('palmEmg', POOL.palmEmg);
-        put(k, x, h - 0.5, z, yaw, 1.05 + rng() * 0.30, true);
+        put(k, x, h - 0.5, z, yaw, 1.05 + rng() * 0.30, true, 1.25);
         addCollider(x, z, 2.0);
       } else if (roll < 0.105) {                            // canopy layer
         const k = rng() < 0.55 ? pick('treeCan', POOL.treeCan) : pick('palmCan', POOL.palmCan);
-        put(k, x, h - 0.4, z, yaw, 0.95 + rng() * 0.40, true);
+        put(k, x, h - 0.4, z, yaw, 0.95 + rng() * 0.40, true, 1.0);
         addCollider(x, z, 1.3);
       } else if (roll < 0.205) {                            // sub-canopy, sparser
         const k = rng() < 0.6 ? pick('treeSub', POOL.treeSub) : pick('palmSub', POOL.palmSub);
-        put(k, x, h - 0.35, z, yaw, 0.95 + rng() * 0.5, true);
+        put(k, x, h - 0.35, z, yaw, 0.95 + rng() * 0.5, true, 0.75);
         addCollider(x, z, 0.95);
       } else if (roll < 0.255) {                            // saplings
         const k = rng() < 0.5 ? pick('treeSap', POOL.treeSap) : pick('palmSap', POOL.palmSap);
-        put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true);
+        put(k, x, h - 0.2, z, yaw, 0.85 + rng() * 0.5, true, 0.45);
       } else if (roll < 0.320) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.8 + rng() * 0.5);
       else if (roll < 0.360) put(pick('fern', POOL.fern), x, h - 0.05, z, yaw, 0.85 + rng() * 0.4);
       else if (roll < 0.392) {
         const s2 = 0.85 + rng() * 0.4;
-        put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, s2, true);
+        put(pick('treefern', POOL.treefern), x, h - 0.2, z, yaw, s2, true, 0.5);
         addCollider(x, z, 0.42 * s2);
       }
       else if (roll < 0.420) put(pick('broad', POOL.broad), x, h - 0.05, z, yaw, 0.85 + rng() * 0.45);
@@ -824,27 +930,27 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
       else if (roll < 0.514) put(pick('flowers', POOL.flowers), x, h, z, yaw, 0.9 + rng() * 0.4);
       else if (roll < 0.530) {
         const s2 = 0.7 + rng() * 0.7;
-        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2);
+        put(pick('rock', POOL.rock), x, h - 0.1, z, yaw, s2, false, 0.5);
         if (s2 > 1.05) addCollider(x, z, 0.5 * s2);
       }
 
     } else if (biome === 'rock') {
       if (roll < 0.045) {
         const s = 0.7 + rng() * 0.7;
-        put(pick('bigrock', POOL.bigrock), x, h - 0.3, z, yaw, s, true);
+        put(pick('bigrock', POOL.bigrock), x, h - 0.3, z, yaw, s, true, 1.2);
         addCollider(x, z, 1.6 * s);
       } else if (roll < 0.115) {
         /* These reach 1.8x and stand chest high. Without a collider you walk
            straight through them, which was the single most obvious way the
            island gave itself away. Small ones stay steppable. */
         const s2 = 0.8 + rng() * 1.0;
-        put(pick('rock', POOL.rock), x, h - 0.15, z, yaw, s2, true);
+        put(pick('rock', POOL.rock), x, h - 0.15, z, yaw, s2, true, 0.5);
         if (s2 > 1.0) addCollider(x, z, 0.52 * s2);
       }
       else if (roll < 0.165) put(pick('tuft', POOL.tuft), x, h - 0.05, z, yaw, 0.6 + rng() * 0.4);
       else if (roll < 0.205) {
         const k = pick('treeSap', POOL.treeSap);
-        put(k, x, h - 0.2, z, yaw, 0.8 + rng() * 0.3, true);
+        put(k, x, h - 0.2, z, yaw, 0.8 + rng() * 0.3, true, 0.7);
       }
     }
   }
@@ -1017,7 +1123,14 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   const opaque = [], cutout = [];
   const H = 13 + rng() * 3;
 
-  // stepped plinth
+  /* A stepped plinth on a buried footing. The footing runs three metres
+     below the plinth so that however the ground falls away around it,
+     there is stone under the base rather than sky. */
+  {
+    const foot = box(4.6, 3.2, 4.6, 'templeStone', { pos: [0, -1.5, 0] });
+    tint(foot, G(0x5a5648));
+    opaque.push(foot);
+  }
   for (let i = 0; i < 3; i++) {
     const w = 4.4 - i * 0.7;
     const s = box(w, 0.5, w, 'templeStone', { pos: [0, 0.25 + i * 0.5, 0] });
@@ -1088,24 +1201,74 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   glow.position.set(0, slotY - 1.4, 0);
   group.add(glow);
 
-  /* ---- activation: the tower wakes up when you read the plate ---- */
-  const shockGeo = new THREE.RingGeometry(0.9, 1.25, 26);
-  shockGeo.rotateX(-Math.PI / 2);
+  /* ---- activation ----
+     The shockwave used to be a flat ring scaled up to nearly thirty metres
+     across, lying at a fixed height. On any slope — and these all stand on
+     slopes — a disc that size cuts straight through the hillside and comes
+     apart as it grows, which is what made the whole thing look broken.
+
+     A dome does not have that problem: it expands away from the base in
+     every direction and the ground simply occludes its lower half, which
+     is what a shockwave should do anyway. */
   const shockMat = new THREE.MeshBasicMaterial({
-    color: 0x9ff0dc, transparent: true, opacity: 0, side: THREE.DoubleSide,
-    depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
+    color: 0x9ff0dc, transparent: true, opacity: 0, side: THREE.BackSide,
+    depthWrite: false, blending: THREE.AdditiveBlending,
   });
-  const shock = new THREE.Mesh(shockGeo, shockMat);
-  shock.position.y = 0.4;
+  const shock = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    shockMat
+  );
+  shock.position.y = 0.6;
   group.add(shock);
 
+  // a second, tighter one a beat behind it
+  const shock2 = new THREE.Mesh(shock.geometry, shockMat.clone());
+  shock2.position.y = 0.6;
+  group.add(shock2);
+
+  /* The beam. Faded out along its length with vertex alpha rather than
+     running at full strength for a hundred and twenty metres, and it obeys
+     the fog like everything else. */
+  const beamGeo = new THREE.CylinderGeometry(0.9, 2.2, 90, 12, 6, true);
+  {
+    const pos2 = beamGeo.attributes.position;
+    const cols = new Float32Array(pos2.count * 4);
+    for (let i = 0; i < pos2.count; i++) {
+      const k = THREE.MathUtils.clamp((pos2.getY(i) + 45) / 90, 0, 1);
+      const a2 = Math.pow(1 - k, 1.6);
+      cols[i * 4] = 0.62; cols[i * 4 + 1] = 0.94; cols[i * 4 + 2] = 0.86;
+      cols[i * 4 + 3] = a2;
+    }
+    beamGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
+  }
   const beamMat = new THREE.MeshBasicMaterial({
-    color: 0x9ff0dc, transparent: true, opacity: 0, side: THREE.DoubleSide,
-    depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
+    transparent: true, opacity: 0, side: THREE.DoubleSide, vertexColors: true,
+    depthWrite: false, blending: THREE.AdditiveBlending,
   });
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.9, 120, 10, 1, true), beamMat);
-  beam.position.y = 60;
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  beam.position.y = 45;
   group.add(beam);
+
+  /* Motes: specks of light drawn up the shaft once it is awake. Built once
+     as a single Points cloud and animated in place — nothing is created
+     while the game is running. */
+  const MOTES = 48;
+  const moteGeo = new THREE.BufferGeometry();
+  const motePos = new Float32Array(MOTES * 3);
+  const moteSeed = new Float32Array(MOTES * 3);       // radius, phase, speed
+  for (let i = 0; i < MOTES; i++) {
+    moteSeed[i * 3] = 0.9 + Math.random() * 2.6;
+    moteSeed[i * 3 + 1] = Math.random() * 6.283;
+    moteSeed[i * 3 + 2] = 0.55 + Math.random() * 0.9;
+    motePos[i * 3 + 1] = Math.random() * 14;
+  }
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+  const moteMat = new THREE.PointsMaterial({
+    color: 0xbdfff0, size: 0.22, transparent: true, opacity: 0,
+    depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  });
+  const motes = new THREE.Points(moteGeo, moteMat);
+  group.add(motes);
 
   const phase = index * 1.3;
   let nightK = 0;
@@ -1131,7 +1294,6 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
 
     // the whole tower shudders during the wake
     const shudder = wake > 0 && wake < 1 ? (1 - Math.abs(wake - 0.5) * 2) * 0.10 : 0;
-    group.position.x = (group.userData.homeX ?? group.position.x);
     group.rotation.z = Math.sin(t * 34) * (shudder + jam * 0.012);
 
     // a lantern in daylight, a lighthouse after dark, a flare when woken
@@ -1141,16 +1303,44 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
     glow.distance = 16 + nightK * 22 + wake * 20;
     glow.color.setHex(jam ? 0xff3020 : (wake > 0.1 ? 0xbdfff0 : 0x8fe6d0));
 
-    // shockwave on the beat it comes alive
-    if (wakeT >= 0 && wakeT < 2.4) {
-      const k = wakeT / 2.4;
-      shock.scale.setScalar(1 + k * 22);
-      shockMat.opacity = 0.55 * (1 - k);
-    } else shockMat.opacity = 0;
+    /* Two domes, one chasing the other, both fading as they go. */
+    if (wakeT >= 0 && wakeT < 2.8) {
+      const k = Math.min(1, wakeT / 2.4);
+      shock.scale.set(1 + k * 26, 1 + k * 15, 1 + k * 26);
+      shockMat.opacity = 0.42 * Math.pow(1 - k, 1.4);
+      const k2 = Math.max(0, Math.min(1, (wakeT - 0.35) / 2.4));
+      shock2.scale.set(1 + k2 * 20, 1 + k2 * 11, 1 + k2 * 20);
+      shock2.material.opacity = 0.26 * Math.pow(1 - k2, 1.4);
+      shock2.visible = k2 > 0;
+    } else {
+      shockMat.opacity = 0;
+      shock2.material.opacity = 0;
+    }
 
-    // and the beam it throws once awake
-    beamMat.opacity = wake * (0.16 + Math.sin(t * 2.4) * 0.05);
+    // the beam, breathing rather than blinking
+    beamMat.opacity = wake * (0.30 + Math.sin(t * 2.4) * 0.07);
     beam.rotation.y = t * 0.4;
+
+    /* The motes climb, spiral, and wrap round to the bottom. They only
+       exist visually while the tower is awake, and the whole cloud is one
+       buffer rewritten in place. */
+    if (wake > 0.02) {
+      moteMat.opacity = wake * (0.65 + Math.sin(t * 3.1) * 0.2);
+      const arr = moteGeo.attributes.position.array;
+      for (let i = 0; i < MOTES; i++) {
+        const rr = moteSeed[i * 3], ph = moteSeed[i * 3 + 1], sp = moteSeed[i * 3 + 2];
+        let y = (arr[i * 3 + 1] + dt * sp * (1.4 + wake * 2.6));
+        if (y > 16) y -= 16;
+        const a2 = ph + t * (0.5 + sp * 0.4) + y * 0.22;
+        const shrink = 1 - Math.min(0.7, y / 22);
+        arr[i * 3] = Math.cos(a2) * rr * shrink;
+        arr[i * 3 + 1] = y;
+        arr[i * 3 + 2] = Math.sin(a2) * rr * shrink;
+      }
+      moteGeo.attributes.position.needsUpdate = true;
+    } else if (moteMat.opacity !== 0) {
+      moteMat.opacity = 0;
+    }
   };
   group.userData.glyph = glyph;
   group.userData.order = order;

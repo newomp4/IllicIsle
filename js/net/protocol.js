@@ -56,6 +56,7 @@ export const S = {
   EXILE:      's.exile',      // { targetId | null, wasAgent, reveal }
   SABOTAGE:   's.sabotage',   // { kind, endsAt, half }  half = where it came from
   LEDGER:     's.ledger',     // { rows: [[id, coins]] }  PRIVATE, the command table
+  BLACKOUT:   's.blackout',   // { secs }        every fire on the island goes out
   FIXPROGRESS: 's.fixprog',   // { kind, done, need }
   FIXED:      's.fixed',      // { kind }
   OVER:       's.over',       // { winner, agents, reason }

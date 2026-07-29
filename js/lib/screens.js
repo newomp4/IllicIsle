@@ -14,7 +14,7 @@ import { drawRelicIcon, drawShopIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
-import { STOCK, stockFor, SANCTUARY_R, VENDOR_IDS } from '../mp/market.js';
+import { STOCK, stockFor, shelf, SANCTUARY_R, VENDOR_IDS } from '../mp/market.js';
 
 // the minigames borrow the one font everything else is set in
 bindText(drawText);
@@ -77,6 +77,85 @@ function field(x, ox, oy, w, h, active) {
 
 function footer(x, W, H, text) {
   drawText(x, text, { x: W / 2, y: H - 17, scale: 1, align: 'center', color: DIM });
+}
+
+/**
+ * Ferdi, framed, for the single-player shop counter.
+ *
+ * This went missing when drawShopIcon was moved out to hud.js — the two
+ * were adjacent and the extraction took one brace too many, which is why
+ * opening the shop in single player threw.
+ */
+function drawFerdiPortrait(x, ox, oy, t) {
+  const u = 2;
+  const px = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx * u, oy + gy * u, w * u, h * u); };
+  const blink = Math.sin(t * 0.9) > 0.93;
+  px(0, 0, 18, 18, '#0d0906');
+  px(1, 1, 16, 16, '#231708');
+  // hat
+  px(3, 2, 12, 2, '#54492f');
+  px(5, 0, 8, 2, '#54492f');
+  // face
+  px(5, 4, 8, 5, '#c79a72');
+  px(6, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
+  px(10, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
+  px(8, 6, 2, 1, '#c4614a');          // nose
+  // beard
+  px(4, 8, 10, 6, '#9a9388');
+  px(5, 9, 8, 4, '#8a8378');
+  px(7, 10, 4, 1, '#3a2f22');         // mouth
+  // shoulders
+  px(2, 14, 14, 4, '#6b5f48');
+}
+
+/**
+ * Ferdi, drawn in the corner of his own shop.
+ *
+ * In the back room he is not there at all — a lantern hangs where he
+ * would be and a shadow of him falls on the block work, which is the
+ * whole conceit of the place.
+ */
+function drawFerdi(x, ox, oy, black, t) {
+  const p = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx, oy + gy, w, h); };
+  const sway = Math.round(Math.sin(t * 0.9) * 1.5);
+  const blink = Math.sin(t * 0.7) > 0.965;
+
+  if (black) {
+    // only his shadow, thrown up the wall and swaying with the bulb
+    const sh = 'rgba(0,0,0,.55)';
+    p(sway * 2 - 4, 0, 26, 4, sh);
+    p(sway * 2 - 1, 4, 20, 30, sh);
+    p(sway * 2 + 2, -8, 14, 9, sh);
+    return;
+  }
+
+  // coat
+  p(2 + sway, 12, 20, 34, '#5f5540');
+  p(2 + sway, 12, 20, 2, '#7a6e52');
+  p(0 + sway, 16, 3, 22, '#4a4132');
+  p(21 + sway, 16, 3, 22, '#4a4132');
+  // an arm leaning on the counter
+  p(20 + sway, 30, 12, 4, '#5f5540');
+  p(30 + sway, 30, 5, 5, '#c79a72');
+  // head
+  p(6 + sway, 0, 12, 12, '#c79a72');
+  // the beard, most of him
+  p(4 + sway, 8, 16, 10, '#9a9388');
+  p(6 + sway, 16, 12, 5, '#8a8378');
+  // sunburnt nose
+  p(11 + sway, 6, 3, 3, '#c4614a');
+  // eyes
+  if (!blink) {
+    p(8 + sway, 4, 2, 2, '#1a1208');
+    p(14 + sway, 4, 2, 2, '#1a1208');
+  } else {
+    p(8 + sway, 5, 2, 1, '#1a1208');
+    p(14 + sway, 5, 2, 1, '#1a1208');
+  }
+  // the hat
+  p(3 + sway, -3, 18, 3, '#54492f');
+  p(6 + sway, -8, 12, 5, '#54492f');
+  p(6 + sway, -5, 12, 1, '#3a3220');
 }
 
 /** A vertical list of choices with a blinking selector. */
@@ -1622,10 +1701,10 @@ export const SCREENS = {
       /* One of Ferdi's machines in the trees is not Ferdi's shop. It holds
          whatever did not sell, it has no back room, and once it has taken
          your coin it is empty for the rest of the round. */
+      const isNight = (g.night || 0) > 0.5;
       const list = s.vendor
-        ? STOCK.filter((i) => i.side === 'open' && VENDOR_IDS.includes(i.id))
-        : STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
-          : (i.side === 'open' || i.side === 'both')));
+        ? STOCK.filter((i) => VENDOR_IDS.includes(i.id) && (!i.night || isNight))
+        : shelf(black ? 'black' : 'open', isNight);
       if (s.sel >= list.length) s.sel = 0;
       const d = list[s.sel];
       if (s.flash > 0) s.flash -= 0.016;
@@ -1703,6 +1782,11 @@ export const SCREENS = {
       }
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
+      /* The man himself, leaning on the end of his own counter. A shop with
+         nobody in it is a menu; a shop with a shopkeeper watching you pick
+         things up is a shop. */
+      if (!s.vendor) drawFerdi(x, W - 34, H - 74, black, t);
+
       const accent = black ? RED : GOLD;
       x.fillStyle = accent;
       x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
@@ -1759,7 +1843,11 @@ export const SCREENS = {
         /* Trim against the width of the label that is actually going to sit
            on the right. "HELD" is wider than a two-digit price, and the
            names used to run straight into it. */
-        const right = held ? 'HELD' : (carrying ? `x1  ${it.cost}` : String(it.cost));
+        /* A dot means "you have one already"; a count only appears when it
+           is worth knowing. "x1 13" next to every line was noise. */
+        const n = (g.carry || []).filter((q) => q === it.id).length;
+        const right = held ? 'HELD'
+          : (n > 1 ? `x${n}  ${it.cost}` : (n === 1 ? `. ${it.cost}` : String(it.cost)));
         const room = LW - 26 - textWidth(right, 1) - 6;
         let nm = it.name;
         while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
@@ -1777,7 +1865,10 @@ export const SCREENS = {
       });
 
       /* what it is, and what it does */
-      const RX = LX + LW + 8, RW = W - RX - 12;
+      const RX = LX + LW + 8;
+      // a strip on the right for the shopkeeper, so he is not half off the edge
+      const MAN = s.vendor ? 0 : 34;
+      const RW = W - RX - 12 - MAN;
       const RB = H - 30;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 36, RW, RB - 36);
       x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
@@ -1785,19 +1876,65 @@ export const SCREENS = {
       x.fillRect(RX, 36, 1, RB - 36); x.fillRect(RX + RW - 1, 36, 1, RB - 36);
 
       if (d) {
-        drawShopIcon(x, d.icon, RX + RW / 2 - 14, 42, 28, true, t);
-        let by = 76;
+        /* The thing itself, stood on the counter with a light on it and a
+           price tag tied round it — not an icon floating in a box. */
+        const ICX = RX + RW / 2;
+        // the pool of lamplight it stands in
+        for (let i = 6; i >= 0; i--) {
+          x.fillStyle = black ? `rgba(180,60,44,.03)` : `rgba(255,200,110,.035)`;
+          x.beginPath(); x.arc(ICX, 58, 12 + i * 6, 0, 6.283); x.fill();
+        }
+        drawShopIcon(x, d.icon, ICX - 16, 40, 32, true, t);
+        // the counter it stands on
+        x.fillStyle = black ? '#2a1a16' : '#4a3418';
+        x.fillRect(RX + 8, 73, RW - 16, 3);
+        x.fillStyle = 'rgba(0,0,0,.45)';
+        x.fillRect(ICX - 15, 71, 30, 2);
+
+        // a tag, hand-lettered, tilted
+        {
+          const tagW = textWidth(String(d.cost), 1) + 16;
+          const tx0 = ICX + 18, ty0 = 52;
+          x.fillStyle = '#3a2a12'; x.fillRect(tx0 - 1, ty0 - 1, tagW + 2, 13);
+          x.fillStyle = '#d8c69a'; x.fillRect(tx0, ty0, tagW, 11);
+          x.fillStyle = '#3a2a12'; x.fillRect(tx0 + 2, ty0 + 4, 3, 3);
+          drawText(x, String(d.cost), {
+            x: tx0 + 8, y: ty0 + 2, scale: 1, color: '#2a1c08', shadow: false,
+          });
+        }
+
+        let by = 80;
         for (const ln of wrapText(d.name, RW - 10, 1, 1)) {
-          drawText(x, ln, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: GOLD_LT });
+          drawText(x, ln, { x: ICX, y: by, scale: 1, align: 'center', color: GOLD_LT });
           by += 9;
         }
-        drawText(x, d.tag, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: black ? '#c08078' : '#8a7a52' });
-        by += 12;
+        // tag line, plus a badge if it is only out after dark
+        drawText(x, d.tag, {
+          x: ICX, y: by, scale: 1, align: 'center',
+          color: black ? '#c08078' : '#8a7a52',
+        });
+        by += 11;
+        if (d.night) {
+          const nw = textWidth('AFTER DARK ONLY', 1) + 12;
+          x.fillStyle = 'rgba(30,44,78,.85)';
+          x.fillRect(ICX - nw / 2, by - 2, nw, 11);
+          x.fillStyle = '#6fa8e0'; x.fillRect(ICX - nw / 2, by - 2, nw, 1);
+          // a little moon
+          x.fillStyle = '#cfe4ff';
+          x.fillRect(ICX - nw / 2 + 3, by + 1, 4, 4);
+          x.fillStyle = 'rgba(30,44,78,.95)';
+          x.fillRect(ICX - nw / 2 + 5, by, 4, 4);
+          drawText(x, 'AFTER DARK ONLY', {
+            x: ICX + 5, y: by, scale: 1, align: 'center', color: '#9fc8ff',
+          });
+          by += 13;
+        }
         x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
-        x.fillRect(RX + 8, by - 4, RW - 16, 1);
-        for (const ln of wrapText(d.blurb.toUpperCase(), RW - 10, 1, 1)) {
-          if (by > RB - 28) break;
-          drawText(x, ln, { x: RX + 5, y: by, scale: 1, color: '#c9b98a' });
+        x.fillRect(RX + 8, by - 3, RW - 16, 1);
+        by += 3;
+        for (const ln of wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1)) {
+          if (by > RB - 26) break;
+          drawText(x, ln, { x: RX + 6, y: by, scale: 1, color: '#c9b98a' });
           by += 9;
         }
       }
@@ -1825,10 +1962,10 @@ export const SCREENS = {
     key(code, s, g, st) {
       const agent = g.amAgent;
       const black = agent && s.side === 1 && !s.vendor;
+      const isNight = (g.night || 0) > 0.5;
       const list = s.vendor
-        ? STOCK.filter((i) => i.side === 'open' && VENDOR_IDS.includes(i.id))
-        : STOCK.filter((i) => (black ? (i.side === 'black' || i.side === 'both')
-          : (i.side === 'open' || i.side === 'both')));
+        ? STOCK.filter((i) => VENDOR_IDS.includes(i.id) && (!i.night || isNight))
+        : shelf(black ? 'black' : 'open', isNight);
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true; }
       if (code === 'Tab' && agent && !s.vendor) { s.side = 1 - s.side; s.sel = 0; g.audio?.sfx('page'); return true; }
@@ -2396,7 +2533,7 @@ export const SCREENS = {
       const rows = [
         ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
         ['SPACE', 'JUMP'], ['E', 'INTERACT'], ['CLICK', 'THROW COCONUT'],
-        ['M', 'CHART'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
+        ['M', 'MAP'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
       ];
       let y = b.top + 2;
       for (const [k, v] of rows) {
@@ -2458,7 +2595,7 @@ export const SCREENS = {
   pause: {
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'PAUSED');
-      const rows = menuList(x, ['RESUME', 'JOURNAL', 'CHART', 'CONTROLS', 'OPTIONS', 'QUIT TO TITLE'],
+      const rows = menuList(x, ['RESUME', 'JOURNAL', 'MAP', 'CONTROLS', 'OPTIONS', 'QUIT TO TITLE'],
         s.sel, W / 2, b.top + 10, t, { width: 140 });
       const mm = String(Math.floor(g.runTime / 60)).padStart(2, '0');
       const ss = String(Math.floor(g.runTime % 60)).padStart(2, '0');
@@ -2523,7 +2660,7 @@ export const SCREENS = {
     },
   },
 
-  /* ---------------- CHART ---------------- */
+  /* ---------------- THE MAP ---------------- */
   chart: {
     draw(x, W, H, s, g, t) {
       /* It unrolls. Two rods part and the paper comes out between them,
@@ -2569,32 +2706,97 @@ export const SCREENS = {
       const alpha = Math.min(1, (k - 0.82) / 0.18);
       x.save();
       x.globalAlpha = alpha;
-      drawText(x, "ROGUE AGENTS' CHART", { x: W / 2, y: top + 5, scale: 1, align: 'center', color: '#3f2f14' });
+      const title = s.data?.agentSide ? "MAP  -  ROGUE AGENTS' COPY" : 'MAP OF ILLIC ISLE';
+      drawText(x, title, { x: W / 2, y: top + 5, scale: 1, align: 'center', color: '#3f2f14' });
       x.fillStyle = '#8a6a34';
       x.fillRect(m + 10, top + 15, PW - 20, 1);
       const b = { top: top + 21, bottom: top + openH - 12 };
       const size = Math.min(W - 34, b.bottom - b.top - 12);
       const ox = Math.round((W - size) / 2), oy = b.top + 1;
+
+      /* Zoom and pan live on the screen, not the data, so opening the map
+         again puts you back where you were looking. Panning is clamped to
+         the island so you cannot lose it off the edge. */
+      s.zoom = s.zoom || 1;
+      if (s.cx === undefined) {
+        // first open: centred on you, not on the origin
+        s.cx = s.data?.player?.x || 0;
+        s.cz = s.data?.player?.z || 0;
+      }
+      const R = s.data?.radius || 200;
+      const reach = R * (1 - 1 / s.zoom);
+      s.cx = Math.max(-reach, Math.min(reach, s.cx));
+      s.cz = Math.max(-reach, Math.min(reach, s.cz));
+      if (s.zoom <= 1) { s.cx = 0; s.cz = 0; }
+      s.data.zoom = s.zoom;
+      s.data.cx = s.cx;
+      s.data.cz = s.cz;
+      s.data._size = size;
       drawChart(x, ox, oy, size, s.data, t);
       /* The pendulum tally belongs to the single-player hunt. Castaways
          puts its own marks on this chart — the listening post — and used
          to inherit "ALL FOUR READ" underneath them. */
+      /* On the paper, above its bottom rod — printed at b.bottom it landed
+         squarely on the key hints underneath. */
+      const subY = oy + size + 3;
       if (s.data.marks.length && !s.subtitle) {
         const left = s.data.marks.filter((mk) => !mk.found).length;
         drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
-          { x: W / 2, y: b.bottom - 1, scale: 1, align: 'center', color: left ? '#7a2418' : '#2f6a4a' });
+          { x: W / 2, y: subY, scale: 1, align: 'center', color: left ? '#7a2418' : '#2f6a4a' });
       } else if (s.subtitle) {
-        drawText(x, s.subtitle, { x: W / 2, y: b.bottom - 1, scale: 1, align: 'center', color: '#2f6a4a' });
+        drawText(x, s.subtitle, { x: W / 2, y: subY, scale: 1, align: 'center', color: '#2f6a4a' });
       }
       x.restore();
-      footer(x, W, H, 'M OR TAB CLOSE');
+      footer(x, W, H, s.zoom > 1
+        ? '+ -  ZOOM     ARROWS  PAN     C  CENTRE ON YOU     M  CLOSE'
+        : '+  ZOOM IN     M OR TAB  CLOSE');
       return [];
     },
     key(code, s, g, st) {
+      const R = s.data?.radius || 200;
+      const step = () => (R / (s.zoom || 1)) * 0.22;
+      if (code === 'Equal' || code === 'NumpadAdd' || code === 'KeyZ') {
+        if (s.zoom < 5) {
+          // zooming in from the wide view starts on you
+          if (s.zoom === 1) { s.cx = s.data?.player?.x || 0; s.cz = s.data?.player?.z || 0; }
+          s.zoom = Math.min(5, (s.zoom || 1) + 1);
+          g.audio?.sfx('select');
+        }
+        return true;
+      }
+      if (code === 'Minus' || code === 'NumpadSubtract' || code === 'KeyX') {
+        s.zoom = Math.max(1, (s.zoom || 1) - 1);
+        g.audio?.sfx('select');
+        return true;
+      }
+      if (code === 'KeyC') {
+        s.cx = s.data?.player?.x || 0; s.cz = s.data?.player?.z || 0;
+        g.audio?.sfx('confirm');
+        return true;
+      }
+      if (code === 'ArrowLeft' || code === 'KeyA') { s.cx -= step(); return true; }
+      if (code === 'ArrowRight' || code === 'KeyD') { s.cx += step(); return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') { s.cz -= step(); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.cz += step(); return true; }
       if (code === 'KeyM' || code === 'Escape' || code === 'Tab' || code === 'KeyF') {
         st.pop(); g.afterOverlayClose(); return true;
       }
       return true;
+    },
+    /** Drag to pan, and the wheel is handled by the game's own listener. */
+    pointer(kind, cx, cy, s) {
+      if (kind === 'down') { s._drag = [cx, cy]; return true; }
+      if (kind === 'move' && s._drag) {
+        const R = s.data?.radius || 200;
+        const size = Math.min((s.data?._size || 180), 400);
+        const perPx = (R / (s.zoom || 1)) / (size / 2);
+        s.cx -= (cx - s._drag[0]) * perPx;
+        s.cz -= (cy - s._drag[1]) * perPx;
+        s._drag = [cx, cy];
+        return true;
+      }
+      if (kind === 'up') { s._drag = null; return true; }
+      return false;
     },
   },
 
@@ -2972,78 +3174,161 @@ export function drawGlyphPixels(x, name, ox, oy, size, color) {
 }
 
 /* ===========================================================
-   THE CHART — drawn from the real height function
+   THE MAP — drawn from the real height function
    =========================================================== */
+/**
+ * The island, drawn on paper.
+ *
+ * Three things it has to do that it did not. Zoom, because at one fixed
+ * scale everything within thirty metres of anything else prints on top of
+ * it. Place its labels against each other rather than blindly. And show
+ * enough — contours, a scale, the shoreline, every place worth knowing —
+ * to be worth opening.
+ *
+ * @param {object} data  needs heightAt and radius; everything else optional.
+ *   `zoom` (1..4) and `cx`/`cz` (the world point at the centre) pan it.
+ */
 export function drawChart(x, ox, oy, S, data, t) {
   if (!data) return;
   const R = data.radius;
-  const toPx = (wx, wz) => [ox + S / 2 + (wx / R) * (S / 2 - 6), oy + S / 2 + (wz / R) * (S / 2 - 6)];
+  const zoom = Math.max(1, Math.min(5, data.zoom || 1));
+  const cx = data.cx || 0, cz = data.cz || 0;
+  const span = R / zoom;                       // world half-extent on screen
+  const half = S / 2 - 6;
+  const toPx = (wx, wz) => [
+    ox + S / 2 + ((wx - cx) / span) * half,
+    oy + S / 2 + ((wz - cz) / span) * half,
+  ];
+  const onMap = (sx, sy) => sx > ox + 2 && sx < ox + S - 2 && sy > oy + 2 && sy < oy + S - 2;
 
   // parchment with a dithered grain
   ditherRect(x, ox, oy, S, S, '#d8c69a', PAPER, 0.5, 1);
 
-  // land, sampled coarsely so it reads as a drawn map
-  const STEP = 2;
+  /* Land. Sampled coarsely so it reads as something drawn, with a finer
+     step as you zoom in — there is no point sampling every two pixels of a
+     view that only covers forty metres. */
+  const STEP = zoom >= 3 ? 1 : 2;
   for (let py = 0; py < S; py += STEP) {
     for (let pxx = 0; pxx < S; pxx += STEP) {
-      const wx = ((pxx - S / 2) / (S / 2 - 6)) * R;
-      const wz = ((py - S / 2) / (S / 2 - 6)) * R;
+      const wx = cx + ((pxx - S / 2) / half) * span;
+      const wz = cz + ((py - S / 2) / half) * span;
       const h = data.heightAt(wx, wz);
       if (h < 0) continue;
-      x.fillStyle = h < 2.6 ? '#c9b078' : h < 12 ? '#8b9c62' : h < 28 ? '#6d8450' : '#8a8468';
+      /* Seven bands, not four. With four the whole interior came out as
+         one flat grey-green mass and the island had no shape on paper. */
+      x.fillStyle = h < 1.2 ? '#d5c08a'
+        : h < 3.0 ? '#c9b078'
+        : h < 8 ? '#a8b070'
+        : h < 16 ? '#8b9c62'
+        : h < 24 ? '#758a54'
+        : h < 33 ? '#647a4a'
+        : h < 42 ? '#7e7a5e'
+        : '#95907a';
       x.fillRect(ox + pxx, oy + py, STEP, STEP);
     }
   }
-  // coast stipple
-  x.fillStyle = 'rgba(70,52,26,.55)';
-  for (let a = 0; a < Math.PI * 2; a += 0.012) {
-    let rr = R;
-    for (let r = R; r > 20; r -= 2) {
-      if (data.heightAt(Math.cos(a) * r, Math.sin(a) * r) > 0) { rr = r; break; }
+
+  /* Contours, so the interior has shape instead of being three flat
+     greens. Drawn by testing whether a sample crosses a height band. */
+  const BANDS = zoom >= 2 ? [4, 10, 18, 26, 34] : [10, 24];
+  x.fillStyle = 'rgba(70,56,26,.20)';
+  for (let py = 0; py < S; py += 1) {
+    for (let pxx = 0; pxx < S; pxx += 1) {
+      const wx = cx + ((pxx - S / 2) / half) * span;
+      const wz = cz + ((py - S / 2) / half) * span;
+      const h = data.heightAt(wx, wz);
+      if (h < 0) continue;
+      const wx2 = cx + ((pxx + 1 - S / 2) / half) * span;
+      const h2 = data.heightAt(wx2, wz);
+      for (const bnd of BANDS) {
+        if ((h < bnd) !== (h2 < bnd)) { x.fillRect(ox + pxx, oy + py, 1, 1); break; }
+      }
     }
-    const [sx, sy] = toPx(Math.cos(a) * rr, Math.sin(a) * rr);
-    x.fillRect(Math.round(sx), Math.round(sy), 1, 1);
   }
 
-  const label = (txt, sx, sy, col) => drawText(x, txt, {
-    x: sx, y: sy, scale: 1, align: 'center', color: col || '#3f2f14', shadowColor: PAPER,
-  });
+  // coast stipple, only worth drawing when the coast is in view
+  if (zoom < 3) {
+    x.fillStyle = 'rgba(70,52,26,.55)';
+    for (let a = 0; a < Math.PI * 2; a += 0.012) {
+      let rr = R;
+      for (let r = R; r > 20; r -= 2) {
+        if (data.heightAt(Math.cos(a) * r, Math.sin(a) * r) > 0) { rr = r; break; }
+      }
+      const [sx, sy] = toPx(Math.cos(a) * rr, Math.sin(a) * rr);
+      if (onMap(sx, sy)) x.fillRect(Math.round(sx), Math.round(sy), 1, 1);
+    }
+  }
+
+  /* A grid, faint, in hundred-metre squares. Gives the eye something to
+     measure against and makes the zoom legible. */
+  x.fillStyle = 'rgba(90,64,28,.12)';
+  const GRID = zoom >= 3 ? 25 : 50;
+  for (let g0 = -Math.ceil(R / GRID) * GRID; g0 <= R; g0 += GRID) {
+    const [gx] = toPx(g0, 0);
+    const [, gy] = toPx(0, g0);
+    if (gx > ox + 2 && gx < ox + S - 2) x.fillRect(Math.round(gx), oy + 2, 1, S - 4);
+    if (gy > oy + 2 && gy < oy + S - 2) x.fillRect(ox + 2, Math.round(gy), S - 4, 1);
+  }
+
+  /* ---- labels are collected and placed at the end ---- */
+  const labels = [];
+  const label = (txt, sx, sy, col) => {
+    if (!txt) return;
+    labels.push({ txt, x: sx, y: sy, col: col || '#3f2f14' });
+  };
 
   if (data.wreck) {
     const [sx, sy] = toPx(data.wreck.x, data.wreck.z);
-    x.fillStyle = '#5a3a18';
-    x.fillRect(sx - 4, sy, 9, 2); x.fillRect(sx + 1, sy - 4, 2, 5);
-    label('WRECK', sx, sy + 5);
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#5a3a18';
+      x.fillRect(sx - 4, sy, 9, 2); x.fillRect(sx + 1, sy - 4, 2, 5);
+      label('WRECK', sx, sy + 5);
+    }
   }
   // Ferdi's, marked as a shop rather than a place name
   if (data.shop) {
     const [sx, sy] = toPx(data.shop.x, data.shop.z);
-    x.fillStyle = '#5a3a18';
-    x.fillRect(sx - 6, sy - 2, 13, 7);
-    x.fillStyle = '#8a5a24';
-    x.fillRect(sx - 7, sy - 5, 15, 3);
-    x.fillStyle = '#ffd24a';
-    x.fillRect(sx - 2, sy, 5, 5);
-    x.fillStyle = '#3a2410';
-    x.fillRect(sx - 1, sy + 1, 3, 3);
-    label("FERDI'S", sx, sy + 8, '#5a3a18');
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#5a3a18';
+      x.fillRect(sx - 6, sy - 2, 13, 7);
+      x.fillStyle = '#8a5a24';
+      x.fillRect(sx - 7, sy - 5, 15, 3);
+      x.fillStyle = '#ffd24a';
+      x.fillRect(sx - 2, sy, 5, 5);
+      x.fillStyle = '#3a2410';
+      x.fillRect(sx - 1, sy + 1, 3, 3);
+      label("FERDI'S", sx, sy + 8, '#5a3a18');
+    }
   }
   if (data.hut && !data.shop) {
-    // shut, but you still want to know where it is
     const [sx, sy] = toPx(data.hut.x, data.hut.z);
-    x.fillStyle = '#6a5a48';
-    x.fillRect(sx - 6, sy - 2, 13, 7); x.fillRect(sx - 7, sy - 5, 15, 3);
-    x.fillStyle = '#3a2f22';
-    for (let i = -6; i < 7; i += 3) x.fillRect(sx + i, sy - 2, 2, 7);
-    label('SHUT', sx, sy + 8, '#6a5a48');
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#6a5a48';
+      x.fillRect(sx - 6, sy - 2, 13, 7); x.fillRect(sx - 7, sy - 5, 15, 3);
+      x.fillStyle = '#3a2f22';
+      for (let i = -6; i < 7; i += 3) x.fillRect(sx + i, sy - 2, 2, 7);
+      label('SHUT', sx, sy + 8, '#6a5a48');
+    }
   }
-
+  // the Lucky Flopper, and her pier
+  if (data.casino) {
+    const [sx, sy] = toPx(data.casino.x, data.casino.z);
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#5a2a44';
+      x.fillRect(sx - 6, sy - 1, 13, 4);
+      x.fillRect(sx - 3, sy - 5, 7, 4);
+      x.fillStyle = Math.floor(t * 3) % 2 ? '#ff5aa8' : '#8a3a68';
+      x.fillRect(sx - 2, sy - 7, 5, 2);
+      label('FLOPPER', sx, sy + 6, '#7a2a54');
+    }
+  }
   if (data.rogue) {
     const [sx, sy] = toPx(data.rogue.x, data.rogue.z);
-    label('"ROGUE"', sx, sy, '#7a2418');
+    if (onMap(sx, sy)) label('"ROGUE"', sx, sy, '#7a2418');
   }
   for (const m of data.marks) {
     const [sx, sy] = toPx(m.x, m.z);
+    if (!onMap(sx, sy)) continue;
     const col = m.found ? '#2f6a4a' : '#8a2418';
     x.fillStyle = col;
     for (let i = -4; i <= 4; i++) { x.fillRect(sx + i, sy + i, 2, 2); x.fillRect(sx + i, sy - i, 2, 2); }
@@ -3057,6 +3342,7 @@ export function drawChart(x, ox, oy, S, data, t) {
   }
   for (const r of (data.relics || [])) {
     const [sx, sy] = toPx(r.x, r.z);
+    if (!onMap(sx, sy)) continue;
     if (r.found) {
       drawRelicIcon(x, r.kind, sx - 6, sy - 6, 13);
     } else {
@@ -3067,16 +3353,18 @@ export function drawChart(x, ox, oy, S, data, t) {
   }
   if (data.temple) {
     const [sx, sy] = toPx(data.temple.x, data.temple.z);
-    x.fillStyle = '#4a3a1a';
-    x.fillRect(sx - 6, sy - 1, 13, 6); x.fillRect(sx - 4, sy - 4, 9, 3); x.fillRect(sx - 2, sy - 6, 5, 2);
-    x.fillStyle = '#1a1206'; x.fillRect(sx - 1, sy + 1, 3, 4);
-    label('TEMPLE', sx, sy + 8);
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#4a3a1a';
+      x.fillRect(sx - 6, sy - 1, 13, 6); x.fillRect(sx - 4, sy - 4, 9, 3); x.fillRect(sx - 2, sy - 6, 5, 2);
+      x.fillStyle = '#1a1206'; x.fillRect(sx - 1, sy + 1, 3, 4);
+      label('TEMPLE', sx, sy + 8);
+    }
   }
-  /* Castaways: your own chores, ticked as you go. Nobody else's list is
-     drawn — knowing where everyone is supposed to be would hand the game
-     away. */
+  /* Castaways: your own chores, ticked as you go, and named once you are
+     zoomed in far enough for the name to fit. */
   for (const j of (data.jobs || [])) {
     const [sx, sy] = toPx(j.x, j.z);
+    if (!onMap(sx, sy)) continue;
     if (j.done) {
       x.fillStyle = '#2f6a4a';
       x.fillRect(sx - 3, sy, 2, 2); x.fillRect(sx - 1, sy + 2, 2, 2);
@@ -3091,10 +3379,12 @@ export function drawChart(x, ox, oy, S, data, t) {
         x.fillRect(sx - 6, sy - 6, 1, 12); x.fillRect(sx + 6, sy - 6, 1, 12);
       }
     }
+    if (j.name && zoom >= 2) label(j.name, sx, sy + 7, j.done ? '#2f6a4a' : '#7a2418');
   }
   // where the current sabotage has to be put right
   for (const f of (data.fixes || [])) {
     const [sx, sy] = toPx(f.x, f.z);
+    if (!onMap(sx, sy)) continue;
     const on = Math.floor(t * 3) % 2 === 0;
     x.fillStyle = on ? '#c02a1a' : '#7a2418';
     x.fillRect(sx - 5, sy - 1, 11, 3);
@@ -3104,49 +3394,77 @@ export function drawChart(x, ox, oy, S, data, t) {
       x.fillRect(sx - 8, sy - 8, 17, 1); x.fillRect(sx - 8, sy + 7, 17, 1);
       x.fillRect(sx - 8, sy - 8, 1, 16); x.fillRect(sx + 8, sy - 8, 1, 16);
     }
+    label('REPAIR', sx, sy + 8, '#7a2418');
   }
   // ghosts get to watch the living move about
   for (const o of (data.others || [])) {
     const [sx, sy] = toPx(o.x, o.z);
+    if (!onMap(sx, sy)) continue;
     x.fillStyle = '#000'; x.fillRect(sx - 3, sy - 3, 6, 6);
     x.fillStyle = '#' + (o.colour >>> 0).toString(16).padStart(6, '0');
     x.fillRect(sx - 2, sy - 2, 4, 4);
   }
   if (data.player) {
     const [sx, sy] = toPx(data.player.x, data.player.z);
-    x.fillStyle = '#c02a1a'; x.fillRect(sx - 2, sy - 2, 5, 5);
-    x.fillStyle = '#fff'; x.fillRect(sx - 1, sy - 1, 3, 3);
+    if (onMap(sx, sy)) {
+      // a proper "you are here", with a heading pip
+      x.fillStyle = '#c02a1a'; x.fillRect(sx - 3, sy - 3, 7, 7);
+      x.fillStyle = '#fff'; x.fillRect(sx - 1, sy - 1, 3, 3);
+      if (data.facing !== undefined) {
+        const fx = sx + Math.sin(data.facing) * 7, fy = sy + Math.cos(data.facing) * 7;
+        x.fillStyle = '#c02a1a'; x.fillRect(Math.round(fx) - 1, Math.round(fy) - 1, 3, 3);
+      }
+    }
   }
 
-  // compass rose + border
+  /* ---- and now the labels, none of them on top of each other ----
+     Each is nudged down a row at a time until it has clear space. If it
+     cannot find any within a few rows it is dropped rather than printed
+     over something else. */
+  const placed = [];
+  for (const L of labels) {
+    const w = textWidth(L.txt, 1);
+    let lx = Math.round(Math.max(ox + 3, Math.min(ox + S - w - 3, L.x - w / 2)));
+    let ly = Math.round(L.y);
+    let ok = false;
+    for (let tries = 0; tries < 7; tries++) {
+      const clash = placed.some((r) => ly < r.y + 9 && r.y < ly + 9 && lx < r.x + r.w + 2 && r.x < lx + w + 2);
+      if (!clash) { ok = true; break; }
+      ly += 9;
+      if (ly > oy + S - 10) { ly = Math.round(L.y) - 9 * (tries + 1); }
+    }
+    if (!ok || ly < oy + 2 || ly > oy + S - 9) continue;
+    placed.push({ x: lx, y: ly, w });
+    drawText(x, L.txt, { x: lx, y: ly, scale: 1, color: L.col, shadowColor: PAPER });
+  }
+
+  /* ---- furniture: compass rose, scale bar, the zoom you are at ---- */
   x.fillStyle = '#3f2f14';
   drawText(x, 'N', { x: ox + S - 12, y: oy + 5, scale: 1, align: 'center', color: '#3f2f14', shadowColor: PAPER });
   x.fillRect(ox + S - 13, oy + 14, 3, 8);
   x.fillRect(ox + S - 15, oy + 16, 7, 2);
+
+  // a scale bar, so the zoom means something
+  {
+    const metres = zoom >= 3 ? 20 : (zoom >= 2 ? 50 : 100);
+    const px = Math.round((metres / span) * half);
+    const bx = ox + 8, by = oy + S - 10;
+    x.fillStyle = '#3f2f14';
+    x.fillRect(bx, by, px, 2);
+    x.fillRect(bx, by - 3, 2, 8); x.fillRect(bx + Math.max(4, px) - 2, by - 3, 2, 8);
+    drawText(x, `${metres}M`, {
+      x: bx + Math.max(4, px) / 2, y: by - 12, scale: 1, align: 'center',
+      color: '#3f2f14', shadowColor: PAPER,
+    });
+  }
+  if (zoom > 1) {
+    drawText(x, `x${zoom}`, {
+      x: ox + S - 8, y: oy + S - 12, scale: 1, align: 'right',
+      color: '#5a3a18', shadowColor: PAPER,
+    });
+  }
+
   x.fillStyle = '#5c3f1c';
   x.fillRect(ox, oy, S, 2); x.fillRect(ox, oy + S - 2, S, 2);
   x.fillRect(ox, oy, 2, S); x.fillRect(ox + S - 2, oy, 2, S);
-}
-
-/* ---------- Ferdi, in pixels ---------- */
-function drawFerdiPortrait(x, ox, oy, t) {
-  const u = 2;
-  const px = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx * u, oy + gy * u, w * u, h * u); };
-  const blink = Math.sin(t * 0.9) > 0.93;
-  px(0, 0, 18, 18, '#0d0906');
-  px(1, 1, 16, 16, '#231708');
-  // hat
-  px(3, 2, 12, 2, '#54492f');
-  px(5, 0, 8, 2, '#54492f');
-  // face
-  px(5, 4, 8, 5, '#c79a72');
-  px(6, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
-  px(10, 5, 2, 1, blink ? '#c79a72' : '#2a1a10');
-  px(8, 6, 2, 1, '#c4614a');          // nose
-  // beard
-  px(4, 8, 10, 6, '#9a9388');
-  px(5, 9, 8, 4, '#8a8378');
-  px(7, 10, 4, 1, '#3a2f22');         // mouth
-  // shoulders
-  px(2, 14, 14, 4, '#6b5f48');
 }

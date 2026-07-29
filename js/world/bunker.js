@@ -512,6 +512,34 @@ export function buildBunkerRoom(mats) {
   return scene;
 }
 
+/**
+ * What you cannot walk through down here.
+ *
+ * The room had no colliders at all, so the command table and the whole
+ * bank of crates were scenery you strolled straight through. The table is
+ * rectangular and these are circles, so it takes four of them down its
+ * length; the crates and lockers take one each.
+ */
+export const BUNKER_COLLIDERS = (() => {
+  const out = [];
+  const W = 18, D = 14;
+  // the command table, at (0, 1.5), 4.6 x 3.0
+  for (let i = 0; i < 4; i++) {
+    out.push({ x: -1.7 + i * 1.13, z: 1.5, r: 1.5 });
+  }
+  // the crate stack
+  for (let i = 0; i < 6; i++) {
+    out.push({ x: 4 + (i % 3) * 1.3, z: -5 + Math.floor(i / 3) * 1.4, r: 0.72 });
+  }
+  // the lockers down the west wall
+  for (let i = 0; i < 5; i++) {
+    out.push({ x: -W / 2 + 0.9, z: -4 + i * 2.1, r: 0.72 });
+  }
+  // the ladder itself, so you cannot stand inside it
+  out.push({ x: 0, z: -D / 2 + 1.0, r: 0.55 });
+  return out;
+})();
+
 /** Where you stand when you climb down. */
 export const BUNKER_ENTRY = { x: 0, y: 1.0, z: -5.2 };
 export const BUNKER_TABLE = { x: 0, z: 1.5 };

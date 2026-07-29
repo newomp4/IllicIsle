@@ -20,13 +20,15 @@ import { Gore } from './gore.js';
 import { STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R, itemById, stockFor } from './market.js';
 
 /** Bought and immediately in force; nothing to press. */
-const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest']);
+const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
+  'spyglass', 'rounds', 'nightglass']);
 /** Bought and carried until you choose the moment. These fill the belt. */
-const BELT_IDS = ['gun', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton', 'chaff'];
+const BELT_IDS = ['gun', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton', 'chaff',
+  'shroud', 'blackout', 'ticket'];
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
-import { BUNKER_SPOTS, BUNKER_BOX, bunkerHeight } from '../world/bunker.js';
+import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
@@ -115,6 +117,7 @@ export class MPGame extends Game {
       onChaff: (secs) => { M.chaffUntil = now() + secs; },
       onPurse: (c, gained) => this._onPurse(c, gained),
       onLedger: (rows) => this._onLedger(rows),
+      onBlackout: (secs) => this._onBlackout(secs),
       onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
       onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
@@ -232,6 +235,7 @@ export class MPGame extends Game {
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
       case S.LEDGER: this._onLedger(msg.rows); break;
+      case S.BLACKOUT: this._onBlackout(msg.secs); break;
       case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
@@ -1051,6 +1055,13 @@ export class MPGame extends Game {
     if ((this.knowsBunker || this.state === 'bunker') && M.bunker) {
       pois.push({ label: 'POST', x: M.bunker.x, z: M.bunker.z, kind: 'poi' });
     }
+    // Ferdi's delivery notes: his two outlying machines
+    if (this.hasItem('rounds')) {
+      for (const v of (this.vendors || [])) {
+        if (v.spent) continue;
+        pois.push({ label: 'MACHINE', x: v.x, z: v.z, kind: 'poi' });
+      }
+    }
     const sab = M.view.sabotage;
     if (sab) {
       const def = SABOTAGE_DEFS[sab.kind];
@@ -1387,6 +1398,7 @@ export class MPGame extends Game {
     const left = jobs.filter((j) => !j.done).length;
     this.audio.sfx('page');
     this.screens.push('chart', {
+      agentSide: this.amAgent,
       subtitle: this.scattered ? 'THE MARKERS ARE GONE. FROM MEMORY, THEN.'
         : (this.amAgent
           ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
@@ -1397,12 +1409,24 @@ export class MPGame extends Game {
            it. This was the bug: knowsBunker fed the compass and nothing
            else, so the one item you bought specifically to put a cross on
            the chart never put one there. */
-        marks: (this.knowsBunker && M.bunker)
-          ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true }]
-          : [],
-        jobs: jobs.map((j) => ({ x: j.site.x, z: j.site.z, done: j.done })),
+        marks: [
+          ...((this.knowsBunker && M.bunker)
+            ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true }]
+            : []),
+          ...(this.hasItem('rounds')
+            ? (this.vendors || []).filter((v) => !v.spent)
+              .map((v) => ({ x: v.x, z: v.z, label: 'MACHINE', found: true }))
+            : []),
+        ],
+        // named, so zooming in tells you which job is which
+        jobs: jobs.map((j) => ({
+          x: j.site.x, z: j.site.z, done: j.done,
+          name: this._taskStage(j.id).name,
+        })),
         temple: this.templeDoorPos,
+        casino: this.casinoIn > 0.5 ? this.casinoPos : null,
         player: this.player.pos,
+        facing: this.player.facing,
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
@@ -1570,12 +1594,19 @@ export class MPGame extends Game {
       // time something else happens to rebuild it
       this._compassForTasks();
       const b = this.mp.bunker;
-      this.ui.toast(b ? `THE POST: ${b.name}` : 'THE POST IS ON YOUR CHART', 'jade', 3200);
+      this.ui.toast(b ? `THE POST: ${b.name}` : 'THE POST IS ON YOUR MAP', 'jade', 3200);
     }
     if (id === 'whetstone' && this.mp.myKillReady) {
       this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
     }
     if (id === 'lantern') this.ui.toast('THE LANTERN IS LIT', 'jade', 2000);
+    if (id === 'spyglass') this.ui.toast('YOU CAN READ THEM FROM 68 METRES', 'jade', 2600);
+    if (id === 'nightglass') this.ui.toast('THE DARK STOPS MATTERING', 'jade', 2600);
+    if (id === 'rounds') {
+      // his delivery notes: both outlying machines, on the map and compass
+      this._compassForTasks();
+      this.ui.toast(`${(this.vendors || []).length} MACHINES MARKED`, 'jade', 3000);
+    }
   }
 
   /* =========================================================
@@ -1638,6 +1669,21 @@ export class MPGame extends Game {
       this._send({ t: C.PERK, perk: 'whistle', on: true });
       this.audio.sfx('stinger');
       this.ui.toast('EVERY EYE ON THE ISLAND', 'jade', 2600);
+    } else if (id === 'shroud') {
+      /* Forty-five seconds of simply not being on the table. Different from
+         chaff: chaff moves everybody, this removes one person. */
+      this._send({ t: C.PERK, perk: 'shroud', on: true });
+      this.audio.sfx('descend');
+      this.ui.toast('YOU ARE OFF THE TABLE FOR 45 SECONDS', 'jade', 3000);
+    } else if (id === 'blackout') {
+      this._send({ t: C.PERK, perk: 'blackout', on: true });
+      this.audio.sfx('slam');
+      this.ui.toast('EVERY FIRE ON THE ISLAND IS OUT', 'jade', 3000);
+    } else if (id === 'ticket') {
+      // a book of three, so using one leaves two on the belt
+      this.freePulls = (this.freePulls || 0) + 3;
+      this.audio.sfx('coin');
+      this.ui.toast(`${this.freePulls} FREE PULLS ON THE FLOPPER`, 'jade', 2600);
     } else if (id === 'alibi') {
       /* A decoy on everybody else's chart and on the command table, for
          twenty seconds. It has to be somewhere plausible — a place people
@@ -1897,6 +1943,23 @@ export class MPGame extends Game {
     return out;
   }
 
+  /** Somebody set off a blackout charge. Every fire on the island, out. */
+  _onBlackout(secs) {
+    this.doused = true;
+    this.blackoutUntil = now() + (secs || 45);
+    this.audio.sfx('slam');
+    this.audio.sfx('rumble');
+    this.pipeline.tint.setHex(0x000000);
+    this.pipeline.tintAmt = 0.7;
+    this._notice('THE LIGHTS ARE OUT');
+    clearTimeout(this._blackoutT);
+    this._blackoutT = setTimeout(() => {
+      // only lift it if a douse sabotage is not also running
+      if (!this.mp.view.sabotage || this.mp.view.sabotage.kind !== 'douse') this.doused = false;
+      this.audio.sfx('confirm');
+    }, (secs || 45) * 1000);
+  }
+
   /** The host's answer to a ledger request, cached until the next one. */
   _onLedger(rows) {
     const M = this.mp;
@@ -1918,7 +1981,7 @@ export class MPGame extends Game {
   bunkerReadout() {
     const M = this.mp;
     const jam = this.jammed, chaff = M.chaffUntil && now() < M.chaffUntil;
-    const roster = [...M.view.players.values()].map((p) => {
+    const roster = [...M.view.players.values()].filter((p) => !p.shroud).map((p) => {
       const av = M.avatars.get(p.id);
       /* A false alibi shows the buyer somewhere else on everybody's plot —
          but never on their own, or they could not use it deliberately. */
@@ -1985,9 +2048,16 @@ export class MPGame extends Game {
    */
   pullSlot(slot) {
     const STAKE = 3;
-    if ((this.coins || 0) < STAKE) return null;
-    this.coins -= STAKE;
-    this._send({ t: C.PURSE, coins: this.coins });
+    // a book of tickets covers the stake; the odds are untouched
+    const free = (this.freePulls || 0) > 0;
+    if (!free && (this.coins || 0) < STAKE) return null;
+    if (free) {
+      this.freePulls--;
+      this.ui.toast(`TICKET USED - ${this.freePulls} LEFT`, 'gold', 1600);
+    } else {
+      this.coins -= STAKE;
+      this._send({ t: C.PURSE, coins: this.coins });
+    }
     this.audio.sfx('lever');
 
     /* Six symbols, three drums, honestly rolled. The table pays 480 coins
@@ -2435,6 +2505,8 @@ export class MPGame extends Game {
     let reach = 34;
     if (this.storm?.active) reach = 9;
     if (this.blinded) reach = this.amAgent ? 12 : 5;
+    // a spyglass doubles whatever the weather has left you
+    if (this.hasItem('spyglass')) reach *= 2;
 
     /** A tag that ignores range entirely — the whistle, and nothing else. */
     const addFar = (obj, name, colour) => {

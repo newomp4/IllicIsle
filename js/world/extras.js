@@ -30,13 +30,35 @@ export function buildSyncoin(mats, big = false) {
 
   const g = new THREE.Group();
   g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
-  const light = new THREE.PointLight(0xffd88a, 0.7, 5, 2);
-  g.add(light);
+
+  /* A glow, not a light.
+
+     Every one of the thirty-eight coins on the island used to carry its
+     own PointLight. Two things wrong with that. Thirty-eight extra lights
+     is thirty-eight more iterations of the lighting loop for every lit
+     fragment in the world, forever. And far worse: the number of lights in
+     a scene is baked into the cache key of every shader, so hiding a coin
+     when you picked it up made three recompile EVERY material in the
+     scene. Fifteen programs, in one frame, every time you pocketed a coin
+     — which is precisely the freeze that kept arriving every ten or twenty
+     seconds while you walked around collecting them.
+
+     An additive shell reads as a glow from any angle and costs nothing. */
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.42 * s, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: 0xffd88a, transparent: true, opacity: 0.22,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+    })
+  );
+  g.add(halo);
   g.userData.tick = (t) => {
     if (g.userData.flourish) return;      // the pickup animation owns it
     g.rotation.y = t * 1.9;
     g.position.y = (g.userData.baseY ?? 0) + 0.42 + Math.sin(t * 2.4) * 0.13;
-    light.intensity = 0.5 + Math.sin(t * 4) * 0.25;
+    const b = 0.18 + Math.sin(t * 4) * 0.09;
+    halo.material.opacity = b;
+    halo.scale.setScalar(1 + Math.sin(t * 4) * 0.08);
   };
   return g;
 }

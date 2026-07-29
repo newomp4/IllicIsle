@@ -230,7 +230,7 @@ export class Hud {
       y += 8;
     }
     if (agent) drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 1, scale: 1, color: '#a05c50' });
-    else drawText(x, 'TAB  CHART', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
+    else drawText(x, 'TAB  MAP', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
   }
 
   /**

@@ -526,7 +526,7 @@ export class Game {
       for (const [a, b] of routes) {
         if (!a || !b) continue;
         const path = buildDirtPath(a.x, a.z, b.x, b.z, this.propMats, this.atlas,
-          { rng: makeRng(7717 + this.paths.length * 13), width: 3.0, wobble: 7 });
+          { rng: makeRng(7717 + this.paths.length * 13), width: 6.4, wobble: 8 });
         this.islandScene.add(path);
         this.paths.push(path);
         for (const p of path.userData.line) clearZones.push({ x: p.x, z: p.z, r: 3.4 });
@@ -746,7 +746,17 @@ export class Game {
       const L = LANDMARKS[p.place];
       const g = findGround(L.x, L.z, { rng, ...L });
       const tower = buildRoguePendulum(rng, this.propMats, i, p.glyph, p.order);
-      tower.position.set(g.x, g.y - 0.3, g.z);
+      /* Sunk to the lowest ground under its plinth. A four-metre stone base
+         set at the height under its own centre buries its uphill corner and
+         leaves the downhill one standing in mid-air — which is what these
+         have been doing on every slope they landed on. */
+      let lo = g.y;
+      for (let k = 0; k < 8; k++) {
+        const a2 = (k / 8) * Math.PI * 2;
+        const hh = heightAt(g.x + Math.cos(a2) * 2.4, g.z + Math.sin(a2) * 2.4);
+        if (hh < lo) lo = hh;
+      }
+      tower.position.set(g.x, lo - 0.3, g.z);
       tower.rotation.y = Math.atan2(-g.x, -g.z) + (rng() - 0.5) * 0.5;
       scene.add(tower);
       this.tickers.push(tower);
@@ -997,9 +1007,14 @@ export class Game {
            empty water, and without this it reads as something broken
            rather than as a boat that keeps her own hours. */
         {
+          /* Beside the pier head, not across it. Planted on the centre line
+             it was a gate you had to walk round to get aboard. */
+          const ang = Math.atan2(bx - sx, bz - sz);
+          const offX = Math.cos(ang) * 3.4, offZ = -Math.sin(ang) * 3.4;
+          const px2 = sx + offX, pz2 = sz + offZ;
           const post = new THREE.Group();
-          post.position.set(sx, heightAt(sx, sz), sz);
-          post.rotation.y = Math.atan2(bx - sx, bz - sz) + Math.PI;
+          post.position.set(px2, heightAt(px2, pz2), pz2);
+          post.rotation.y = ang + Math.PI - 0.35;
           const legs = [
             tint(cyl(0.09, 0.11, 2.6, 5, 'driftwood', { pos: [-0.9, 1.3, 0] }), new THREE.Color(0x6a5230)),
             tint(cyl(0.09, 0.11, 2.6, 5, 'driftwood', { pos: [0.9, 1.3, 0] }), new THREE.Color(0x6a5230)),
@@ -1020,7 +1035,7 @@ export class Game {
           back.rotation.y = Math.PI;
           post.add(back);
           scene.add(post);
-          this.colliders.push({ x: sx, z: sz, r: 0.6 });
+          this.colliders.push({ x: px2, z: pz2, r: 0.7 });
         }
         /* The deck is a platform: without one you walk out along the
            bridge and drop straight through the boat into the sea. */
@@ -1425,6 +1440,12 @@ export class Game {
       const [hx, hy] = toHud(e);
       this.screens.pointer('up', hx, hy);
     });
+    // the wheel zooms the map
+    this.canvas.addEventListener('wheel', (e) => {
+      if (!this.screens.open) return;
+      e.preventDefault();
+      this.screens.key(e.deltaY < 0 ? 'Equal' : 'Minus');
+    }, { passive: false });
 
     this.canvas.addEventListener('mousedown', (e) => {
       if (this.screens.open) {
@@ -1911,66 +1932,6 @@ export class Game {
   }
 
   /** Each Pendulum wakes up when you read its plate. */
-  playPendulumCutscene(index, p) {
-    const tower = this.pendulumMeshes[index];
-    const base = tower.position.clone();
-    const top = base.clone().add(new THREE.Vector3(0, 12, 0));
-    const glyphY = base.clone().add(new THREE.Vector3(0, 4.6, 0));
-
-    tower.userData.activate();
-    this._pendBoost = null;
-
-    this.playCutscene({
-      shots: [
-        { // up the shaft to the glyph plate
-          dur: 3.0, ease: 'easeOut',
-          from: base.clone().add(new THREE.Vector3(7, 2.0, 9)),
-          to: base.clone().add(new THREE.Vector3(2.6, 4.4, 4.4)),
-          look: glyphY,
-        },
-        { // climb to the slot; the bob is swinging hard now
-          dur: 3.4, ease: 'smooth', shake: 0.06,
-          from: base.clone().add(new THREE.Vector3(3.0, 6, 6)),
-          to: base.clone().add(new THREE.Vector3(-1.4, 13, 7.5)),
-          lookFrom: glyphY,
-          lookTo: base.clone().add(new THREE.Vector3(0, 12.5, 0)),
-        },
-        { // wide, as the beam goes up
-          dur: 3.0, ease: 'smooth',
-          from: base.clone().add(new THREE.Vector3(-6, 14, 14)),
-          to: base.clone().add(new THREE.Vector3(-12, 22, 22)),
-          look: top,
-        },
-      ],
-      text: [
-        { at: 0.5, until: 3.0, text: `ROGUE PENDULUM ${['I', 'II', 'III', 'IV'][p.order - 1]}` },
-        { at: 4.0, until: 6.6, text: `GLYPH RECORDED - THE ${p.glyph}` },
-        { at: 7.2, until: 9.4, text: `${this.found.size} OF 4` },
-      ],
-      events: [
-        { at: 0.2, fn: () => this.audio.sfx('cast') },
-        { at: 2.9, fn: () => this.audio.sfx('rumble') },
-        { at: 6.2, fn: () => this.audio.sfx('pickup') },
-        { at: 6.4, fn: () => this.audio.sfx('door') },
-      ],
-      onDone: () => {
-        this._pendBoost = null;
-        if (tower.userData.setNight) tower.userData.setNight(this.night);
-        setCinemaBars(false);
-        this.state = 'island';
-        this.ui.show();
-        this.ui.setMarks(this.found.size, 4);
-        this._refreshCompass();
-        if (this.found.size >= 4) {
-          this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
-          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
-        } else {
-          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
-        }
-        this.showReader(p.title, p.text);
-      },
-    }, this.islandScene);
-  }
 
   /* ---------- Hector goes down ---------- */
   /** Each Pendulum wakes up when you read its plate. */
@@ -2239,6 +2200,8 @@ I have snacks."`);
         })),
         temple: this.templeDoorPos,
         player: this.player.pos,
+        facing: this.player.facing,
+        casino: this.casinoIn > 0.5 ? this.casinoPos : null,
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
@@ -2974,7 +2937,11 @@ I have snacks."`);
     const storm = this.storm && this.storm.active ? 1 : 0;
     /* A sabotaged storm is far darker than the scripted one — the point of
        calling it is that nobody can see. */
-    const dark = Math.max(k, storm * (this.stormOn ? 0.86 : 0.55));
+    let dark = Math.max(k, storm * (this.stormOn ? 0.86 : 0.55));
+    /* Night glass. Bought at Ferdi's after dark, it stops the night from
+       dimming anything for the person carrying it — the sky still turns,
+       the torches still burn, but they can see. */
+    if (this.hasItem?.('nightglass')) dark *= 0.15;
 
     // sky and fog
     const f = this.islandScene.fog;

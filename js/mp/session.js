@@ -96,6 +96,7 @@ export class HostSession {
       quiet: !!p.quiet,
       whistle: p.whistleUntil && t < p.whistleUntil ? +(p.whistleUntil - t).toFixed(1) : 0,
       decoy: p.decoy && t < p.decoy.until ? { x: p.decoy.x, z: p.decoy.z } : null,
+      shroud: !!(p.shroudUntil && t < p.shroudUntil),
     }));
     this.net.broadcast({ t: S.ROSTER, players: list });
     this.hooks.onRoster?.(list);
@@ -159,6 +160,14 @@ export class HostSession {
            chart and on the command table, and clears itself. */
         if (msg.perk === 'alibi') {
           p.decoy = { x: +msg.x || 0, z: +msg.z || 0, until: now() + 20 };
+        }
+        /* A lead shroud: forty-five seconds off the command table entirely.
+           Carried on the roster like the others so every client agrees. */
+        if (msg.perk === 'shroud') p.shroudUntil = now() + 45;
+        /* A blackout charge. Everybody has to see it, so it is broadcast. */
+        if (msg.perk === 'blackout') {
+          this.net.broadcast({ t: S.BLACKOUT, secs: 45 });
+          this.hooks.onBlackout?.(45);
         }
         this._roster();
         break;
@@ -633,6 +642,7 @@ export class HostSession {
       for (const p of this.players.values()) {
         if (p.whistleUntil && t >= p.whistleUntil) { p.whistleUntil = 0; stale = true; }
         if (p.decoy && t >= p.decoy.until) { p.decoy = null; stale = true; }
+        if (p.shroudUntil && t >= p.shroudUntil) { p.shroudUntil = 0; stale = true; }
       }
       if (stale) this._roster();
     }
@@ -761,6 +771,7 @@ export class MirrorSession {
         break;
       case S.PURSE: this.hooks.onPurse?.(msg.coins, msg.gained); break;
       case S.LEDGER: this.hooks.onLedger?.(msg.rows); break;
+      case S.BLACKOUT: this.hooks.onBlackout?.(msg.secs); break;
       case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;
