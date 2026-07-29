@@ -112,6 +112,7 @@ export class Hud {
       this._mpRight(W - 3, 3 + wob, d.mp);
       this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
+      this._mpBelt(4, H - 48, d.mp);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       if (d.prompt) this._prompt(W / 2, H - 34, d.prompt);
       this._toasts(W / 2, Math.round(H * 0.26));
@@ -341,13 +342,21 @@ export class Hud {
     drawText(x, String(coins), {
       x: ox - 4, y: oy + 8 - Math.round(kick * 2), scale: 2, align: 'right', color: numCol,
     });
-    // and what just happened to it, rising out of the plate
+    /* What just happened to it, floating clear of the plate rather than
+       printing on top of the figure — over it you got "9090/919". */
     if (kick > 0 && this._purseDelta) {
-      const rise = Math.round((1 - kick) * 7);
-      drawText(x, (this._purseDelta > 0 ? '+' : '') + this._purseDelta, {
-        x: ox - 4, y: oy + 6 - rise, scale: 1, align: 'right',
-        color: gain ? '#8fe8a0' : '#ff8a7a',
-      });
+      const rise = Math.round((1 - kick) * 8);
+      const label = (this._purseDelta > 0 ? '+' : '') + this._purseDelta;
+      const lw = textWidth(label, 1);
+      const lx = ox - 4 - lw;
+      const ly = oy - 4 - rise;
+      if (ly > 0) {
+        x.fillStyle = 'rgba(8,6,3,.85)';
+        x.fillRect(lx - 2, ly - 1, lw + 4, 9);
+        drawText(x, label, {
+          x: lx, y: ly, scale: 1, color: gain ? '#8fe8a0' : '#ff8a7a',
+        });
+      }
     }
 
     /* --- the island's work --- */
@@ -409,6 +418,64 @@ export class Hud {
         x.fillRect(cx2 - 1, cy2 + 8, 9, 1);
       }
     });
+  }
+
+  /**
+   * The belt: everything you are carrying, on the number keys.
+   *
+   * Buying something used to fire it at the counter, so a flare pistol was
+   * a thing you owned and could not use. Now the consumables sit here and
+   * wait, and the row tells you which key spends which one.
+   */
+  _mpBelt(ox, oy, mp) {
+    const x = this.x;
+    const belt = mp.belt || [];
+    const passives = mp.passives || [];
+    if (!belt.length && !passives.length) return;
+    const t = this._wobble;
+
+    const SLOT = 18;
+    if (belt.length) {
+      const w = belt.length * SLOT + 4;
+      plate(x, ox, oy, w, SLOT + 6);
+      belt.forEach((sl, i) => {
+        const sx = ox + 2 + i * SLOT;
+        // the well
+        x.fillStyle = sl.active ? '#3a2a10' : '#140e06';
+        x.fillRect(sx, oy + 2, SLOT - 2, SLOT - 2);
+        x.fillStyle = sl.active ? GOLD : '#4a3a1c';
+        x.fillRect(sx, oy + 2, SLOT - 2, 1);
+        x.fillRect(sx, oy + SLOT - 1, SLOT - 2, 1);
+        x.fillRect(sx, oy + 2, 1, SLOT - 3);
+        x.fillRect(sx + SLOT - 3, oy + 2, 1, SLOT - 3);
+        drawShopIcon(x, sl.icon, sx + 2, oy + 4, 12, true, t);
+        // the key that spends it, bottom-left of the well
+        drawText(x, String(i + 1), {
+          x: sx + 1, y: oy + SLOT - 8, scale: 1,
+          color: sl.active ? GOLD_LT : '#9a8a62', shadow: true,
+        });
+        // how many you have, if more than one
+        if (sl.count > 1) {
+          drawText(x, `x${sl.count}`, {
+            x: sx + SLOT - 4, y: oy + SLOT - 8, scale: 1, align: 'right', color: GOLD_LT,
+          });
+        }
+        // a drawn weapon pulses so you know it is in your hands
+        if (sl.active && Math.floor(t * 5) % 2 === 0) {
+          x.fillStyle = 'rgba(255,210,74,.28)';
+          x.fillRect(sx, oy + 2, SLOT - 2, SLOT - 2);
+        }
+      });
+    }
+
+    /* Passives are not keys, they are facts about you. A small row of
+       badges under the belt, with no numbers. */
+    if (passives.length) {
+      const py = oy + (belt.length ? SLOT + 8 : 0);
+      passives.forEach((icon, i) => {
+        drawShopIcon(x, icon, ox + 3 + i * 11, py, 9, false, t);
+      });
+    }
   }
 
   /** Centre-bottom: whatever is currently urgent. */
@@ -633,18 +700,16 @@ export class Hud {
   }
 
   /* ---------- interaction prompt ---------- */
-  _prompt(cx, cy, text) {
+  _prompt(cx, cy, text, key = 'E') {
     const x = this.x;
     const label = String(text).toUpperCase();
-    const w = textWidth(label, 1, 1) + 34;
-    const h = 15;
+    const capW = keycapWidth(key);
+    const w = textWidth(label, 1, 1) + capW + 20;
+    const h = 17;
     const left = Math.round(cx - w / 2);
     panel(x, left, cy, w, h, { border: 2, dither: 0.55 });
-    // [E] key cap
-    x.fillStyle = '#f6e3a4'; x.fillRect(left + 5, cy + 4, 8, 8);
-    x.fillStyle = '#6b4a18'; x.fillRect(left + 5, cy + 11, 8, 1);
-    drawText(x, 'E', { x: left + 7, y: cy + 5, scale: 1, color: '#1a1006', shadow: false });
-    drawText(x, label, { x: left + 18, y: cy + 5, scale: 1, color: GOLD_LT });
+    keycap(x, left + 5, cy + 3, key);
+    drawText(x, label, { x: left + 10 + capW, y: cy + 6, scale: 1, color: GOLD_LT });
   }
 
   /* ---------- toasts ---------- */
@@ -731,6 +796,158 @@ function plate(x, ox, oy, w, h) {
   ditherRect(x, ox, oy, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox, oy + h - 2, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
   ditherRect(x, ox + w - 2, oy, 2, h, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+}
+
+/* ===========================================================
+   KEYCAPS
+
+   The old one was an eight-pixel pale square with a dark line ruled along
+   its bottom row — and the glyph, seven rows tall, put its last row on
+   exactly that line. Dark ink on a dark line is nothing, so the bottom bar
+   of the E disappeared and every prompt in the game read PRESS F.
+
+   The cap is sized from the glyph now, and the shadow sits below it.
+   =========================================================== */
+export function keycapWidth(key = 'E') {
+  return textWidth(String(key).toUpperCase(), 1, 1) + 6;
+}
+
+export function keycap(x, ox, oy, key = 'E') {
+  const label = String(key).toUpperCase();
+  const w = keycapWidth(label);
+  const h = 11;
+  // the shadow it sits on, clear of the glyph
+  x.fillStyle = '#5a3d13';
+  x.fillRect(ox, oy + 1, w, h);
+  // the cap face
+  x.fillStyle = '#f6e3a4';
+  x.fillRect(ox, oy, w, h - 1);
+  // a lit top edge and a shaded bottom edge, inside the face
+  x.fillStyle = '#fff8d8'; x.fillRect(ox, oy, w, 1);
+  x.fillStyle = '#d8bf80'; x.fillRect(ox, oy + h - 2, w, 1);
+  // and the letter, with a clear row under it
+  drawText(x, label, {
+    x: ox + 3, y: oy + 2, scale: 1, color: '#241505', shadow: false,
+  });
+  return w;
+}
+
+/** Hand-drawn marks for the shop stock, animated where it helps. */
+export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
+  const u = size / 12;
+  const p = (gx, gy, w, h, col) => {
+    x.fillStyle = col;
+    x.fillRect(Math.round(ox + gx * u), Math.round(oy + gy * u), Math.ceil(w * u), Math.ceil(h * u));
+  };
+  const C = (a, b) => (lit ? a : b);
+  const beat = lit ? Math.sin(t * 6) * 0.5 + 0.5 : 0;
+
+  if (kind === 'lantern') {
+    p(4, 0, 4, 1, C('#8a7a52', '#4a4230'));
+    p(5, 1, 2, 1, C('#8a7a52', '#4a4230'));
+    p(3, 2, 6, 8, C('#6a5a3a', '#3a332a'));
+    p(4, 3, 4, 6, C('#1a1408', '#141008'));
+    if (beat > 0.4 || !lit) {
+      p(5, 4, 2, 4, C('#ffd88a', '#5a4a24'));
+      p(4, 5, 4, 2, C('#ffb04a', '#4a3a1c'));
+    }
+    p(3, 10, 6, 1, C('#8a7a52', '#4a4230'));
+  } else if (kind === 'vest') {
+    p(3, 1, 6, 9, C('#b8894a', '#4a3c26'));
+    p(2, 2, 2, 6, C('#a07a40', '#40341f'));
+    p(8, 2, 2, 6, C('#a07a40', '#40341f'));
+    p(5, 1, 2, 9, C('#2a1c0c', '#1c1409'));
+    for (let i = 0; i < 3; i++) p(4, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
+    for (let i = 0; i < 3; i++) p(7, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
+  } else if (kind === 'whistle') {
+    p(2, 4, 7, 4, C('#c8c8d0', '#4a4a52'));
+    p(9, 5, 2, 2, C('#a0a0a8', '#3a3a42'));
+    p(3, 5, 2, 2, C('#2a2a30', '#1c1c22'));
+    if (beat > 0.5) {
+      p(11, 3, 1, 1, C('#ffffff', '#555'));
+      p(11, 6, 1, 1, C('#ffffff', '#555'));
+      p(12, 4, 1, 2, C('#dfefff', '#555'));
+    }
+  } else if (kind === 'tonic') {
+    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
+    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
+    p(3, 4, 6, 7, C('#3a6a4a', '#22332a'));
+    const lvl = 4 + Math.round(beat * 1);
+    p(4, lvl + 1, 4, 9 - lvl, C('#7ec850', '#3a5a2c'));
+    p(4, lvl, 4, 1, C('#bfffa0', '#4a6a3a'));
+  } else if (kind === 'soles') {
+    p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
+    p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
+    p(7, 3, 3, 5, C('#4a4a52', '#2a2a32'));
+    if (beat > 0.5) { p(9, 1, 1, 1, C('#6a6a72', '#333')); p(10, 3, 1, 1, C('#6a6a72', '#333')); }
+  } else if (kind === 'alibi') {
+    p(2, 2, 8, 8, C('#d8c69a', '#4a4436'));
+    p(3, 3, 6, 1, C('#7a6a48', '#332e24'));
+    p(3, 5, 6, 1, C('#7a6a48', '#332e24'));
+    p(3, 7, 4, 1, C('#7a6a48', '#332e24'));
+    const w = Math.round(beat * 2);
+    p(7 + w, 8, 3, 3, C('#c02a1a', '#4a1a12'));
+  } else if (kind === 'knife') {
+    p(5, 0, 2, 6, C('#e8eef2', '#4a5258'));
+    p(4, 1, 1, 5, C('#b8c2c8', '#3a4248'));
+    p(3, 6, 6, 1, C('#8a2018', '#3a1810'));
+    p(5, 7, 2, 4, C('#6a4a28', '#332618'));
+    if (beat > 0.6) { p(8, 1, 1, 1, '#ffffff'); p(9, 3, 1, 1, '#ffffff'); }
+  } else if (kind === 'gun') {
+    // a stubby flare pistol, muzzle up-right
+    p(2, 5, 6, 3, C('#8a4a2a', '#3a2418'));
+    p(8, 4, 3, 3, C('#b0b6bc', '#42474c'));
+    p(11, 4, 1, 3, C('#e8eef2', '#4a5258'));
+    p(3, 8, 3, 4, C('#6a3a20', '#2e1c12'));
+    p(6, 7, 2, 2, C('#c8c8d0', '#4a4a52'));
+    if (beat > 0.55) {
+      p(12, 3, 1, 1, '#ffd24a'); p(12, 6, 1, 1, '#ffd24a');
+      p(13, 4, 1, 2, '#fff3c4');
+    }
+  } else if (kind === 'speaker') {
+    p(2, 1, 8, 10, C('#3a3a42', '#22222a'));
+    p(2, 1, 8, 1, C('#5a5a66', '#2e2e36'));
+    // two cones, pulsing
+    for (const cy of [3, 7]) {
+      const r = 2 + (lit ? Math.round(beat) : 0);
+      p(6 - r / 2, cy - r / 2 + 1, r, r, C('#8a8a96', '#3a3a44'));
+      p(5, cy, 2, 2, C('#1a1a20', '#141418'));
+    }
+    if (lit && beat > 0.6) {
+      p(0, 2, 1, 1, '#ffd24a'); p(11, 4, 1, 1, '#ffd24a');
+      p(1, 8, 1, 1, '#9ff0dc'); p(10, 1, 1, 1, '#9ff0dc');
+    }
+  } else if (kind === 'chart') {
+    p(1, 2, 10, 8, C('#d8c69a', '#4a4436'));
+    p(2, 3, 8, 6, C('#b09062', '#3e3a2c'));
+    p(4, 5, 3, 2, C('#8b9c62', '#333c26'));
+    const bl = lit && beat > 0.5;
+    p(8, 3, 1, 1, bl ? '#c02a1a' : '#6a3a30');
+    p(7, 4, 3, 1, bl ? '#c02a1a' : '#6a3a30');
+  } else if (kind === 'flask') {
+    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
+    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
+    p(3, 4, 6, 7, C('#5a3a6a', '#2c2032'));
+    p(4, 6, 4, 4, C('#a05ac0', '#4a2a5a'));
+    if (lit && beat > 0.5) p(5, 5, 2, 1, '#e0b0ff');
+  } else if (kind === 'key') {
+    p(2, 4, 3, 3, C('#c39a2c', '#4a3c18'));
+    p(3, 5, 1, 1, C('#1a1408', '#0e0c06'));
+    p(5, 5, 6, 1, C('#c39a2c', '#4a3c18'));
+    p(9, 6, 1, 2, C('#c39a2c', '#4a3c18'));
+    p(7, 6, 1, 2, C('#c39a2c', '#4a3c18'));
+  } else if (kind === 'chaff') {
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * 6.283 + (lit ? t * 2 : 0);
+      p(5 + Math.round(Math.cos(a) * 4), 5 + Math.round(Math.sin(a) * 4), 1, 1,
+        C(i % 2 ? '#9fd8e8' : '#6a8a9a', '#33424a'));
+    }
+    p(5, 5, 2, 2, C('#d8e8f0', '#4a5a64'));
+  } else if (kind === 'coin') {
+    p(3, 2, 6, 8, C('#ffd24a', '#6a5a24'));
+    p(4, 3, 4, 6, C('#c39a2c', '#4a3c18'));
+    p(5, 4, 2, 4, C('#fff3c4', '#7a6a34'));
+  }
 }
 
 /** A Syncoin, eight pixels across. */

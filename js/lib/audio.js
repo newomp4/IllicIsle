@@ -358,7 +358,82 @@ export class GameAudio {
     this.verbGain.connect(this.master);
 
     this.noiseBuf = this._noise(2);
+    this._buildVoices();
     this.ready = true;
+  }
+
+  /* ===========================================================
+     THE VOICE POOL
+
+     Every note used to build its own oscillator, gain and filter,
+     connect them, start them and abandon them. Those wrappers live for
+     the length of the note — long enough that V8 promotes them out of
+     the nursery into old space, where clearing them costs a major
+     collection. At forty notes a second that is a second-and-a-half
+     freeze every ten to twenty seconds, which is exactly what it was.
+
+     So: a fixed set of voices, built once. The oscillators run forever
+     and are silent because their gain is zero; playing a note is a
+     handful of scheduled parameter changes on nodes that already exist.
+     After warm-up the music allocates nothing at all.
+     =========================================================== */
+  _buildVoices() {
+    const ctx = this.ctx;
+    const mk = (kind) => {
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = 20000;
+      f.Q.value = 1;
+      f.connect(g);
+
+      /* Both destinations are wired permanently and chosen by gain, so a
+         note never has to connect() or disconnect() anything. */
+      const toMusic = ctx.createGain(); toMusic.gain.value = 0;
+      const toSfx = ctx.createGain(); toSfx.gain.value = 0;
+      const toVerb = ctx.createGain(); toVerb.gain.value = 0;
+      g.connect(toMusic); toMusic.connect(this.musicBus);
+      g.connect(toSfx); toSfx.connect(this.sfxBus);
+      g.connect(toVerb); toVerb.connect(this.verb);
+
+      let src;
+      if (kind === 'noise') {
+        src = ctx.createBufferSource();
+        src.buffer = this.noiseBuf;
+        src.loop = true;
+      } else {
+        src = ctx.createOscillator();
+        src.type = 'square';
+        src.frequency.value = 220;
+      }
+      src.connect(f);
+      src.start();
+      return { src, f, g, toMusic, toSfx, toVerb, until: 0, type: kind === 'noise' ? 'noise' : 'square' };
+    };
+
+    /* Twenty-four tonal voices covers bass, a three-note pad, a lead, a
+       bell and any sound effect that lands on top of them; eight noise
+       voices covers the drums and the weather. */
+    this.voices = [];
+    for (let i = 0; i < 24; i++) this.voices.push(mk('tone'));
+    this.noises = [];
+    for (let i = 0; i < 8; i++) this.noises.push(mk('noise'));
+  }
+
+  /**
+   * The voice that will interfere least: one that has finished, preferring
+   * one already set to the waveform we want so the type change cannot be
+   * heard on a note still sounding.
+   */
+  _take(pool, time, type) {
+    let best = null, bestScore = -Infinity;
+    for (const v of pool) {
+      const freeFor = time - v.until;              // >0 means idle already
+      const score = (freeFor >= 0 ? 1000 : freeFor * 10) + (v.type === type ? 5 : 0);
+      if (score > bestScore) { bestScore = score; best = v; }
+    }
+    return best;
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
@@ -397,35 +472,50 @@ export class GameAudio {
   }
 
   /* ---------- primitives ---------- */
+
+  /**
+   * One note. Nothing is created here: a voice is borrowed from the pool
+   * and its parameters are scheduled.
+   */
   _tone(freq, time, dur, {
     type = 'square', gain = 0.2, bus = null, attack = 0.005, release = 0.12,
     filter = 0, q = 1, detune = 0, sweep = 0, send = 0,
   } = {}) {
-    const ctx = this.ctx;
-    const osc = ctx.createOscillator();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, time);
-    if (sweep) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq * sweep), time + dur);
-    if (detune) osc.detune.value = detune;
+    if (!this.voices) return null;
+    const v = this._take(this.voices, time, type);
+    const osc = v.src;
 
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0, time);
-    g.gain.linearRampToValueAtTime(gain, time + attack);
-    g.gain.setTargetAtTime(0, time + Math.max(attack, dur - release), release * 0.4 + 0.01);
+    /* type and detune apply the moment they are set rather than at `time`,
+       so they are the one thing that can be heard on a stolen voice. _take
+       prefers voices that are already idle and already this shape. */
+    if (v.type !== type) { osc.type = type; v.type = type; }
+    osc.detune.value = detune;
 
-    let node = osc;
-    if (filter) {
-      const f = ctx.createBiquadFilter();
-      f.type = 'lowpass';
-      f.frequency.setValueAtTime(filter, time);
-      f.Q.value = q;
-      node.connect(f); node = f;
-    }
-    node.connect(g);
-    g.connect(bus || this.sfxBus);
-    if (send) { const s = ctx.createGain(); s.gain.value = send; g.connect(s); s.connect(this.verb); }
-    osc.start(time);
-    osc.stop(time + dur + 0.3);
+    const f0 = osc.frequency;
+    f0.cancelScheduledValues(time);
+    f0.setValueAtTime(freq, time);
+    if (sweep) f0.exponentialRampToValueAtTime(Math.max(20, freq * sweep), time + dur);
+
+    const fq = v.f.frequency;
+    fq.cancelScheduledValues(time);
+    fq.setValueAtTime(filter || 20000, time);
+    v.f.Q.value = filter ? q : 1;
+
+    const g = v.g.gain;
+    g.cancelScheduledValues(time);
+    g.setValueAtTime(0, time);
+    g.linearRampToValueAtTime(gain, time + attack);
+    g.setTargetAtTime(0, time + Math.max(attack, dur - release), release * 0.4 + 0.01);
+    // a hard zero at the end, so a borrowed voice can never leak a tail
+    const end = time + dur + 0.3;
+    g.setValueAtTime(0, end);
+
+    const music = (bus || this.sfxBus) === this.musicBus;
+    v.toMusic.gain.setValueAtTime(music ? 1 : 0, time);
+    v.toSfx.gain.setValueAtTime(music ? 0 : 1, time);
+    v.toVerb.gain.setValueAtTime(send, time);
+
+    v.until = end;
     return osc;
   }
 
@@ -443,28 +533,33 @@ export class GameAudio {
     });
   }
 
+  /** A burst of filtered noise, from the same kind of pool. */
   _noiseHit(time, dur, {
     gain = 0.2, filter = 2000, type = 'lowpass', q = 1, bus = null, sweep = 0, send = 0,
   } = {}) {
-    const ctx = this.ctx;
-    const src = ctx.createBufferSource();
-    src.buffer = this.noiseBuf;
-    src.loop = true;
+    if (!this.noises) return;
+    const v = this._take(this.noises, time, type);
+    if (v.type !== type) { v.f.type = type; v.type = type; }
 
-    const f = ctx.createBiquadFilter();
-    f.type = type;
-    f.frequency.setValueAtTime(filter, time);
-    if (sweep) f.frequency.exponentialRampToValueAtTime(Math.max(60, filter * sweep), time + dur);
-    f.Q.value = q;
+    const fq = v.f.frequency;
+    fq.cancelScheduledValues(time);
+    fq.setValueAtTime(filter, time);
+    if (sweep) fq.exponentialRampToValueAtTime(Math.max(60, filter * sweep), time + dur);
+    v.f.Q.value = q;
 
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(gain, time);
-    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    const g = v.g.gain;
+    g.cancelScheduledValues(time);
+    g.setValueAtTime(gain, time);
+    g.exponentialRampToValueAtTime(0.0001, time + dur);
+    const end = time + dur + 0.05;
+    g.setValueAtTime(0, end);
 
-    src.connect(f); f.connect(g); g.connect(bus || this.sfxBus);
-    if (send) { const s = ctx.createGain(); s.gain.value = send; g.connect(s); s.connect(this.verb); }
-    src.start(time);
-    src.stop(time + dur + 0.05);
+    const music = (bus || this.sfxBus) === this.musicBus;
+    v.toMusic.gain.setValueAtTime(music ? 1 : 0, time);
+    v.toSfx.gain.setValueAtTime(music ? 0 : 1, time);
+    v.toVerb.gain.setValueAtTime(send, time);
+
+    v.until = end;
   }
 
   /* ===========================================================

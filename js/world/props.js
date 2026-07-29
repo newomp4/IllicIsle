@@ -565,13 +565,26 @@ export function findFlatGround(x, z, foot, opts = {}) {
  * Returns the mesh and the centre-line, so the jungle can be cleared along
  * it — a path with trees standing in it is not a path.
  */
+/**
+ * A trodden path.
+ *
+ * The first version was three ribbons of chocolate brown with a hard edge,
+ * and it read as string laid across the hill rather than ground people had
+ * walked on. A real path is not a different material from what is around
+ * it — it is the SAME ground, worn paler and barer, and it has no edge at
+ * all, it just thins out.
+ *
+ * So: five ribbons wide, the colour taken from the ground it crosses
+ * (bleached earth through the jungle, damp packed sand on the beach)
+ * rather than a fixed brown, and the outer ribbons fade to nothing through
+ * vertex alpha so there is no line anywhere.
+ */
 export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
-  const { width = 4.2, wobble = 6, rng = Math.random } = opts;
+  const { width = 5.0, wobble = 7, rng = Math.random } = opts;
   const dx = bx - ax, dz = bz - az;
   const len = Math.hypot(dx, dz) || 1;
-  /* One segment every two metres, so the strip follows the ground closely
-     instead of spanning humps and cutting into them. A path that is a few
-     long quads will always clip through a slope somewhere along it. */
+  // a vertex every two metres, so the strip lies on the ground rather than
+  // spanning its humps
   const segs = Math.max(8, Math.round(len / 2));
   const nx = -dz / len, nz = dx / len;
   const phase = rng() * 6.283;
@@ -583,58 +596,76 @@ export function buildDirtPath(ax, az, bx, bz, mats, atlas, opts = {}) {
     pts.push({ x: ax + dx * t + nx * sway, z: az + dz * t + nz * sway });
   }
 
-  /* Three ribbons: a packed middle and a scuffed edge either side, so it
-     has an edge rather than stopping dead in a straight line. */
-  const pos = [], uv = [], col = [];
+  /* The colour of worn ground, sampled where the path actually is. On the
+     sand it is the beach a few shades down and damp; inland it is the
+     earth under the grass, bleached by feet rather than dyed brown. */
+  const SAND_WORN = new THREE.Color(0xb09b6c);
+  const EARTH_WORN = new THREE.Color(0x7e7350);
+  const EARTH_PALE = new THREE.Color(0x958a63);
   const c = new THREE.Color();
-  const MID = new THREE.Color(0x8a7048), EDGE = new THREE.Color(0x6f5c3c);
-
-  const emit = (px, pz, lift, shade, u, v) => {
-    pos.push(px, heightAt(px, pz) + lift, pz);
-    uv.push(u, v);
-    c.copy(shade < 0.5 ? EDGE : MID).multiplyScalar(0.82 + rng() * 0.3);
-    col.push(c.r, c.g, c.b);
+  const wornAt = (px, pz, out) => {
+    const h = heightAt(px, pz);
+    if (h < 2.6) {
+      // beach: the same sand, packed down and damp
+      out.copy(SAND_WORN);
+    } else {
+      // inland: bare earth, lighter in the middle where it is most walked
+      out.copy(EARTH_WORN).lerp(EARTH_PALE, 0.35 + Math.sin(px * 0.21 + pz * 0.17) * 0.25);
+    }
+    return out;
   };
+
+  const pos = [], uv = [], col = [];
+  /* Five ribbons: a bare centre, a thinning band either side, and an outer
+     band that reaches zero alpha. RIB is the half-width of each boundary
+     as a fraction of the strip, ALPHA the opacity at that boundary. */
+  const RIB = [-0.5, -0.34, -0.13, 0.13, 0.34, 0.5];
+  const ALPHA = [0.0, 0.20, 0.80, 0.80, 0.20, 0.0];
 
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[i], p1 = pts[i + 1];
     const sx = p1.x - p0.x, sz = p1.z - p0.z;
     const sl = Math.hypot(sx, sz) || 1;
-    const ox = (-sz / sl), oz = (sx / sl);
-    // the strip breathes a little along its length so it is not a ruler
-    const w0 = width * (0.82 + Math.sin(i * 0.7) * 0.18);
-    const w1 = width * (0.82 + Math.sin((i + 1) * 0.7) * 0.18);
+    const ox = -sz / sl, oz = sx / sl;
+    // the strip breathes along its length so it is not a ruler
+    const w0 = width * (0.80 + Math.sin(i * 0.62) * 0.20);
+    const w1 = width * (0.80 + Math.sin((i + 1) * 0.62) * 0.20);
 
-    const band = (fromA, toA, fromB, toB, shadeA, shadeB) => {
-      // two triangles per band, draped vertex by vertex
-      const q = [
-        [p0.x + ox * w0 * fromA, p0.z + oz * w0 * fromA, shadeA, 0, 0],
-        [p0.x + ox * w0 * toA, p0.z + oz * w0 * toA, shadeB, 1, 0],
-        [p1.x + ox * w1 * toB, p1.z + oz * w1 * toB, shadeB, 1, 1],
-        [p1.x + ox * w1 * fromB, p1.z + oz * w1 * fromB, shadeA, 0, 1],
+    for (let r = 0; r < RIB.length - 1; r++) {
+      const uA = RIB[r], uB = RIB[r + 1];
+      const aA = ALPHA[r], aB = ALPHA[r + 1];
+      const quad = [
+        [p0.x + ox * w0 * uA, p0.z + oz * w0 * uA, aA, 0, 0],
+        [p0.x + ox * w0 * uB, p0.z + oz * w0 * uB, aB, 1, 0],
+        [p1.x + ox * w1 * uB, p1.z + oz * w1 * uB, aB, 1, 1],
+        [p1.x + ox * w1 * uA, p1.z + oz * w1 * uA, aA, 0, 1],
       ];
       for (const k of [0, 1, 2, 0, 2, 3]) {
-        const [qx, qz, sh, u, v] = q[k];
-        emit(qx, qz, 0.05, sh, u, v);
+        const [qx, qz, alpha, u, v] = quad[k];
+        pos.push(qx, heightAt(qx, qz) + 0.04, qz);
+        uv.push(u, v);
+        wornAt(qx, qz, c);
+        // a little grain, but nothing you could call a stripe
+        const n = 0.94 + rng() * 0.12;
+        col.push(c.r * n, c.g * n, c.b * n, alpha);
       }
-    };
-    band(-0.5, -0.25, -0.5, -0.25, 0.2, 0.8);   // left scuff
-    band(-0.25, 0.25, -0.25, 0.25, 0.9, 0.9);   // the tread
-    band(0.25, 0.5, 0.25, 0.5, 0.8, 0.2);       // right scuff
+    }
   }
 
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  // four components: three does read the alpha, and the alpha is the point
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
   g.computeVertexNormals();
-  applyCell(g, 'dirt');
+  applyCell(g, 'sand');
 
-  /* Lit, not unlit: an unlit strip reads as a painted stripe and glows in
-     the dark. It is lifted five centimetres and drawn with a polygon
-     offset so it sits ON the ground rather than fighting it. */
+  /* Lit and blended. An unlit strip glows at night; a hard-edged one has a
+     visible outline. Polygon offset keeps it ON the ground rather than
+     fighting the terrain for the same depth. */
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true, map: atlas,
+    transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   const mesh = new THREE.Mesh(g, mat);

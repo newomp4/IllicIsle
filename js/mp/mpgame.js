@@ -9,7 +9,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { Game, makeGroundWith } from '../game.js';
+import { Game, makeGroundWith, setHidden } from '../game.js';
 import { Net, Ticker, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
@@ -18,6 +18,11 @@ import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } fro
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import { STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R, itemById, stockFor } from './market.js';
+
+/** Bought and immediately in force; nothing to press. */
+const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest']);
+/** Bought and carried until you choose the moment. These fill the belt. */
+const BELT_IDS = ['gun', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton', 'chaff'];
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
@@ -644,7 +649,7 @@ export class MPGame extends Game {
         this.audio.sfx('rumble');
       } else if (this._fogWas) {
         f.near = this._fogWas.near; f.far = this._fogWas.far;
-        if (this._lanternLight) this._lanternLight.visible = false;
+        if (this._lanternLight) this._lanternLight.intensity = 0;
         if (this.sky) this.sky.material.opacity = 1;
         for (const av of this.mp.avatars.values()) av.setShell(null);
         this.audio.sfx('confirm');
@@ -858,7 +863,12 @@ export class MPGame extends Game {
   _placeBunker(index) {
     const M = this.mp;
     M.bunkerIndex = index;
-    (this.hatches || []).forEach((h, i) => { h.node.visible = i === index; });
+    /* Three of the four are dressed and dark. setHidden leaves their lamps
+       in the scene at zero intensity rather than hiding the whole group —
+       hiding a group hides the light inside it, the light count is part of
+       every shader's cache key, and revealing the real hatch would make
+       three recompile every material in the world. */
+    (this.hatches || []).forEach((h, i) => { setHidden(h.node, i !== index); });
     M.bunker = (this.hatches || [])[index] || null;
   }
 
@@ -906,8 +916,9 @@ export class MPGame extends Game {
     M2.drops = [];
     M2.chaffUntil = 0;
     M2.speaker = null;
-    if (M2.speakerNode) M2.speakerNode.visible = false;
+    if (M2.speakerNode) setHidden(M2.speakerNode, true);
     for (const v of (this.vendors || [])) v.spent = false;
+    this._buildSpeakerNode();
     this.knowsBunker = !!M2.dev;
     this.blinded = false;
     this.scattered = false;
@@ -919,6 +930,20 @@ export class MPGame extends Game {
     if (this.casinoDock) this.casinoIn = this.night > 0.34 ? 1 : 0;
 
     this._resolveTaskSites();
+
+    /* The effect pools, the beacons and the boombox are built here, after
+       the loading screen's warm-up has already run. Compile them now,
+       while the reveal card is still up, rather than the first time
+       somebody finishes a chore or somebody dies. */
+    try {
+      const hidden = [];
+      this.islandScene.traverse((o) => {
+        if (o.visible === false) { o.visible = true; hidden.push(o); }
+      });
+      this.renderer.compile(this.islandScene, this.camera);
+      for (const o of hidden) o.visible = false;
+    } catch (e) { /* never worth failing a round start over */ }
+
     this.ui.show();
     this.ui.setObjective('');
     this._requestLock();
@@ -1116,7 +1141,7 @@ export class MPGame extends Game {
       const dt2 = Math.hypot(p.x - 0, p.z - 1.5);
       if (dt2 < 3.6) return { kind: 'mpTable', prompt: 'THE COMMAND TABLE' };
       const dl = Math.hypot(p.x - 0, p.z - (-6.0));
-      if (dl < 3.0) return { kind: 'mpLadder', prompt: 'CLIMB OUT' };
+      if (dl < 2.4) return { kind: 'mpLadder', prompt: 'CLIMB OUT' };
       return null;
     }
 
@@ -1412,6 +1437,9 @@ export class MPGame extends Game {
       return;
     }
     if (M.active && down && !this.screens.open && this.playing) {
+      /* The belt. 1-9 uses what you are carrying — the one thing the game
+         had no way of doing at all. */
+      if (/^Digit[1-9]$/.test(e.code)) { this.useBeltSlot(+e.code.slice(5)); return; }
       if (e.code === 'KeyG') { this.togglePistol(); return; }
       if (e.code === 'KeyF') {
         if (this.pistolOut) this.fireFlare(); else this.tryKill();
@@ -1509,44 +1537,108 @@ export class MPGame extends Game {
     if (it.tag === 'PASSIVE') this.owned.add(id);
     else this.carry = [...(this.carry || []), id];
 
+    /* Passives take effect the moment they are bought. Everything else goes
+       on your belt and waits for you.
+
+       It used to all fire at the counter — you bought the boombox and it
+       was already on the sand, you bought the whistle and it had already
+       blown. That is why there was no way to use the flare pistol: there
+       was no concept of using anything. */
+    if (PASSIVE_AT_BUY.has(id)) this.applyItem(id);
+
+    /* One card, not a card AND a toast. Buying three things in a row used
+       to stack four toasts under a popup that covered their right-hand
+       ends, so every message was cut off mid-word. */
+    const belt = BELT_IDS.includes(id);
+    const slot = belt ? this.beltSlots().findIndex((sl) => sl.id === id) + 1 : 0;
+    this.ui.showPopup(
+      it.name,
+      belt ? `PRESS ${slot} TO USE IT` : (it.side === 'black' ? 'NOTHING WAS SOLD HERE' : 'IN FORCE NOW'),
+      'coin', 'FERDI SAYS'
+    );
+    return true;
+  }
+
+  /** What an item actually does. Called at the counter, or off the belt. */
+  applyItem(id) {
     if (id === 'tonic') { this.player.staminaDrain = 0.06; this.player.staminaRegen = 0.5; }
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
+    if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
     if (id === 'chart') {
       this.knowsBunker = true;
-      // and the compass has to be told, or the marker only appears the
-      // next time something else happens to rebuild it
+      // the compass has to be told, or the marker only appears the next
+      // time something else happens to rebuild it
       this._compassForTasks();
       const b = this.mp.bunker;
       this.ui.toast(b ? `THE POST: ${b.name}` : 'THE POST IS ON YOUR CHART', 'jade', 3200);
     }
+    if (id === 'whetstone' && this.mp.myKillReady) {
+      this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
+    }
+    if (id === 'lantern') this.ui.toast('THE LANTERN IS LIT', 'jade', 2000);
+  }
+
+  /* =========================================================
+     THE BELT
+
+     Everything you are carrying, in the order you bought it, on the
+     number keys. Consumables sit here until you decide the moment.
+     ========================================================= */
+
+  /** What is on the belt right now, grouped, in a stable order. */
+  beltSlots(out = (this._belt = this._belt || [])) {
+    out.length = 0;
+    const seen = new Map();
+    for (const id of (this.carry || [])) {
+      const at = seen.get(id);
+      if (at !== undefined) { out[at].count++; continue; }
+      const it = itemById(id);
+      if (!it) continue;
+      seen.set(id, out.length);
+      out.push({ id, icon: it.icon, name: it.name, count: 1, active: false });
+    }
+    // the pistol shows whether it is drawn
+    for (const sl of out) if (sl.id === 'gun') sl.active = !!this.pistolOut;
+    return out;
+  }
+
+  /**
+   * Use slot n (1-based). The pistol draws and holsters rather than firing,
+   * because firing it is a shot you have to aim.
+   */
+  useBeltSlot(n) {
+    if (!this.amAlive || this.screens.open) return;
+    const slots = this.beltSlots();
+    const sl = slots[n - 1];
+    if (!sl) { this.audio.sfx('deny'); return; }
+    if (sl.id === 'gun') { this.togglePistol(); return; }
+    this.useItem(sl.id);
+  }
+
+  /** Spend one carried item. */
+  useItem(id) {
+    if (!this.useCarried(id)) { this.audio.sfx('deny'); return false; }
+    const it = itemById(id);
+
     if (id === 'skeleton') {
-      // straight down, from wherever you are standing
       this.enterBunker();
-      this.useCarried('skeleton');
-    }
-    if (id === 'chaff') {
-      this.useCarried('chaff');
+    } else if (id === 'chaff') {
       this._send({ t: C.PERK, perk: 'chaff', on: true });
+      this.audio.sfx('cast');
       this.ui.toast('THE TABLE IS LYING NOW', 'jade', 2600);
-    }
-    if (id === 'flask') {
+    } else if (id === 'flask') {
       this.flask = true;
+      this.audio.sfx('heal');
       this.ui.toast('YOUR NEXT JOB IS DONE ON SIGHT', 'jade', 2600);
-    }
-    if (id === 'speaker') {
+    } else if (id === 'speaker') {
       this.dropSpeaker();
-      this.useCarried('speaker');
-    }
-    if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
-    if (id === 'whistle') {
+    } else if (id === 'whistle') {
       /* Twelve seconds of everybody, anywhere, seeing your name over your
          head. An alibi you can prove, and a thing you can only do once. */
       this._send({ t: C.PERK, perk: 'whistle', on: true });
-      this.useCarried('whistle');
       this.audio.sfx('stinger');
       this.ui.toast('EVERY EYE ON THE ISLAND', 'jade', 2600);
-    }
-    if (id === 'alibi') {
+    } else if (id === 'alibi') {
       /* A decoy on everybody else's chart and on the command table, for
          twenty seconds. It has to be somewhere plausible — a place people
          go — or the lie tells itself. */
@@ -1556,15 +1648,14 @@ export class MPGame extends Game {
       const jx = pick.x + (Math.random() - 0.5) * 22;
       const jz = pick.z + (Math.random() - 0.5) * 22;
       this._send({ t: C.PERK, perk: 'alibi', on: true, x: +jx.toFixed(1), z: +jz.toFixed(1) });
-      this.useCarried('alibi');
       this.audio.sfx('cast');
       this.ui.toast('THEY WILL SWEAR YOU WERE ELSEWHERE', 'jade', 2800);
+    } else {
+      // anything without its own moment just takes effect
+      this.applyItem(id);
+      this.audio.sfx('confirm');
+      if (it) this.ui.toast(it.name, 'jade', 1800);
     }
-    if (id === 'whetstone' && this.mp.myKillReady) {
-      this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
-    }
-    this.ui.showPopup(it.name, it.side === 'black' ? 'NOTHING WAS SOLD HERE' : 'NO REFUNDS', 'coin', 'FERDI SAYS');
-    this.ui.toast(`BOUGHT ${it.name}`, 'jade', 2200);
     return true;
   }
 
@@ -1576,6 +1667,18 @@ export class MPGame extends Game {
     return true;
   }
 
+  /**
+   * In Castaways there are no coconuts to throw, so the left button is
+   * free: with the pistol drawn it fires, otherwise it is the same reach
+   * as E. That, plus the belt, is how a flare pistol becomes a thing you
+   * can use rather than a thing you own.
+   */
+  throwCoconut() {
+    if (!this.mp.active) return super.throwCoconut();
+    if (this.pistolOut) { this.fireFlare(); return; }
+    this.interact();
+  }
+
   /* =========================================================
      THE FLARE PISTOL
      ========================================================= */
@@ -1585,12 +1688,26 @@ export class MPGame extends Game {
     this.pistolOut = !this.pistolOut;
     if (!this.pistolModel) {
       this.pistolModel = buildPistol();
-      this.camera.add(this.pistolModel);
-      if (!this.camera.parent) this.islandScene.add(this.camera);
+      /* In the player's hand, not on the camera. Bolted to the camera it
+         sits ten centimetres from the near plane and, in the third-person
+         view this game actually uses, it filled the screen with a white
+         slab. In the hand it reads correctly from behind and it is still
+         roughly where your eye expects it in first person. */
+      const hand = this.player?.parts?.arms?.r;
+      if (hand) {
+        this.pistolModel.position.set(0, -0.42, 0.06);
+        this.pistolModel.rotation.set(-Math.PI / 2 + 0.25, 0, 0);
+        this.pistolModel.scale.setScalar(1.15);
+        hand.add(this.pistolModel);
+      } else {
+        this.pistolModel.position.set(0.16, -0.14, -0.34);
+        this.camera.add(this.pistolModel);
+        if (!this.camera.parent) this.islandScene.add(this.camera);
+      }
     }
     this.pistolModel.visible = this.pistolOut;
     this.audio.sfx(this.pistolOut ? 'charge' : 'select');
-    this.ui.toast(this.pistolOut ? 'FLARE PISTOL  -  F TO FIRE' : 'HOLSTERED', 'gold', 1600);
+    this.ui.toast(this.pistolOut ? 'FLARE PISTOL  -  CLICK OR F TO FIRE' : 'HOLSTERED', 'gold', 2200);
   }
 
   /** Whoever is nearest the middle of the screen, within range. */
@@ -1723,7 +1840,12 @@ export class MPGame extends Game {
     this.player.mesh.removeFromParent();
     this.bunkerScene.add(this.player.mesh);
     this.player.setColliders([]);
-    this.player.teleport(0, 1.0, -5.2, 0);
+    /* Facing into the room. Arriving with your back to the ladder wall put
+       the camera through the concrete before its collision could pull it
+       in, and the first thing you saw was the outside of the world. */
+    this.player.insideBox = BUNKER_BOX;
+    this.player.teleport(0, 1.0, -3.4, Math.PI);
+    this.player.pitch = -0.05;
     /* Going down should sound like going down: the lid comes off, the
        rungs go past under you, and the island stops. */
     this.audio.sfx('hatch');
@@ -1868,14 +1990,18 @@ export class MPGame extends Game {
     this._send({ t: C.PURSE, coins: this.coins });
     this.audio.sfx('lever');
 
-    // six symbols, three drums, honestly rolled
+    /* Six symbols, three drums, honestly rolled. The table pays 480 coins
+       across the 216 possible outcomes against a stake of three, so the
+       house keeps about a quarter of what crosses it — twenty per cent
+       tighter than it was — while the two jackpots are worth twice what
+       they were. You lose slowly and win loudly, which is the point. */
     const result = [0, 0, 0].map(() => (Math.random() * 6) | 0);
     const [a, b, c] = result;
     let win = 0;
     if (a === b && b === c) {
-      win = a === 5 ? 60 : (a === 3 ? 30 : 15);        // SEVEN, IDOL, anything
+      win = a === 5 ? 120 : (a === 3 ? 60 : 30);       // SEVEN, IDOL, anything
     } else if (a === b || b === c || a === c) {
-      win = 5;
+      win = 2;
     }
 
     slot?.userData.spin(result);
@@ -1897,7 +2023,7 @@ export class MPGame extends Game {
     this.coins += win;
     this._send({ t: C.PURSE, coins: this.coins });
     slot?.userData.payout(true);
-    if (win >= 30) {
+    if (win >= 60) {
       this.ui.showPopup(`${win} SYNCOIN`, 'TIM WILL BE FURIOUS', 'coin', 'THE FLOPPER PAYS');
     }
   }
@@ -1920,38 +2046,51 @@ export class MPGame extends Game {
     this.audio.sfx('confirm');
   }
 
+  /**
+   * The boombox, built once at the start of the round and parked out of
+   * sight. It used to be created the first time somebody dropped one —
+   * which meant adding a PointLight to a live scene, which changes
+   * numPointLights, which is part of every shader's cache key, which made
+   * three recompile every material in the world. One purchase, one
+   * second-and-a-half freeze, for everybody at once.
+   */
+  _buildSpeakerNode() {
+    const M = this.mp;
+    if (M.speakerNode || !this.islandScene) return;
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 1.0, 0.8),
+      new THREE.MeshLambertMaterial({ color: 0x2a2a32 })
+    );
+    body.position.y = 0.5;
+    g.add(body);
+    for (const sx of [-0.38, 0.38]) {
+      const cone = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.28, 0.34, 0.1, 10),
+        new THREE.MeshLambertMaterial({ color: 0x8a8a96 })
+      );
+      cone.rotation.x = Math.PI / 2;
+      cone.position.set(sx, 0.5, 0.42);
+      g.add(cone);
+    }
+    const glow = new THREE.PointLight(0xff5aa8, 0, 16, 1.8);
+    glow.position.set(0, 1.2, 0);
+    g.add(glow);
+    g.userData.glow = glow;
+    g.userData.body = body;
+    this.islandScene.add(g);
+    M.speakerNode = g;
+    setHidden(M.speakerNode, true);
+  }
+
   _onSpeaker(x, z, secs) {
     const M = this.mp;
     M.speaker = { x, z, until: now() + secs };
     this.audio.playMusic('title');
     this.ui.toast('SOMEBODY PUT A SPEAKER ON', 'gold', 3000);
     this._compassForTasks();
-    if (!M.speakerNode && this.islandScene) {
-      const g = new THREE.Group();
-      const body = new THREE.Mesh(
-        new THREE.BoxGeometry(1.5, 1.0, 0.8),
-        new THREE.MeshLambertMaterial({ color: 0x2a2a32 })
-      );
-      body.position.y = 0.5;
-      g.add(body);
-      for (const sx of [-0.38, 0.38]) {
-        const cone = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.28, 0.34, 0.1, 10),
-          new THREE.MeshLambertMaterial({ color: 0x8a8a96 })
-        );
-        cone.rotation.x = Math.PI / 2;
-        cone.position.set(sx, 0.5, 0.42);
-        g.add(cone);
-      }
-      const glow = new THREE.PointLight(0xff5aa8, 0, 16, 1.8);
-      glow.position.set(0, 1.2, 0);
-      g.add(glow);
-      g.userData.glow = glow;
-      g.userData.body = body;
-      this.islandScene.add(g);
-      M.speakerNode = g;
-    }
-    M.speakerNode.visible = true;
+    this._buildSpeakerNode();
+    setHidden(M.speakerNode, false);
     M.speakerNode.position.set(x, heightAt(x, z), z);
   }
 
@@ -2047,7 +2186,11 @@ export class MPGame extends Game {
           groundOf: bunkerHeight, water: false, bounds: false,
           insideBox: BUNKER_BOX,
         });
-      } else this.player.updateCamera(dt, bunkerHeight);
+      } else {
+        // frozen behind a screen, but the walls still apply
+        this.player.insideBox = BUNKER_BOX;
+        this.player.updateCamera(dt, bunkerHeight);
+      }
       /* The hologram wants positions, nothing else. bunkerReadout() builds
          the whole dossier and it is not cheap to do sixty times a second. */
       this.bunkerScene.userData.tick(
@@ -2133,13 +2276,15 @@ export class MPGame extends Game {
     if (M.speaker) {
       if (now() > M.speaker.until) {
         M.speaker = null;
-        if (M.speakerNode) M.speakerNode.visible = false;
+        if (M.speakerNode) setHidden(M.speakerNode, true);
         this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
         this._compassForTasks();
       } else if (M.speakerNode) {
         const beat = 1 + Math.abs(Math.sin(this.time * 4.2)) * 0.14;
         M.speakerNode.userData.body.scale.set(beat, 2 - beat, beat);
-        M.speakerNode.userData.glow.intensity = 3 + Math.sin(this.time * 8.4) * 2.4;
+        // its own animation must not undo setHidden's zeroed intensity
+        M.speakerNode.userData.glow.intensity =
+          M.speakerNode.userData.hidden ? 0 : 3 + Math.sin(this.time * 8.4) * 2.4;
         M.speakerNode.userData.glow.color.setHSL((this.time * 0.3) % 1, 0.8, 0.6);
       }
     }
@@ -2217,15 +2362,16 @@ export class MPGame extends Game {
       if (this.sky) { this.sky.material.transparent = true; this.sky.material.opacity = 0.03; }
       if (this.ambient) this.ambient.intensity = lit ? 0.42 : 0.22;
       if (this.hemi) this.hemi.intensity = lit ? 0.24 : 0.10;
-      if (lit && !this._lanternLight) {
-        this._lanternLight = new THREE.PointLight(0xffc070, 2.6, 20, 1.7);
-        this.islandScene.add(this._lanternLight);
-      }
+      /* The light itself is built once at load and left in the scene with
+         its intensity at zero. Adding a light to a scene changes
+         numPointLights, which is baked into every shader's cache key — so
+         one new PointLight makes three recompile EVERY material in the
+         scene, and you get a second and a half of nothing at the worst
+         possible moment. Lights are never added or removed during play. */
       if (this._lanternLight) {
-        this._lanternLight.visible = lit;
         const pp = this.player.pos;
         this._lanternLight.position.set(pp.x, pp.y + 1.4, pp.z);
-        this._lanternLight.intensity = 2.4 + Math.sin(this.time * 7.3) * 0.35;
+        this._lanternLight.intensity = lit ? 2.4 + Math.sin(this.time * 7.3) * 0.35 : 0;
       }
       // an Agent does not see further; an Agent sees HEAT
       const thermal = this.amAgent || !this.amAlive;
@@ -2357,6 +2503,7 @@ export class MPGame extends Game {
       role: null, alive: true, tasksDone: 0, tasksTotal: 0,
       myTasks: [], killIn: 0, killTotal: 1, graceIn: 0, cools: [],
       sabotage: null, task: null, players: [], coins: 0, selfId: null,
+      belt: [], passives: [],
       tags: [], phase: null, flash: null,
     });
 
@@ -2368,6 +2515,14 @@ export class MPGame extends Game {
     d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;
+
+    // what you are carrying, and what is simply true of you
+    d.belt = this.beltSlots(d.belt);
+    d.passives.length = 0;
+    for (const id of (this.owned || [])) {
+      const it = itemById(id);
+      if (it) d.passives.push(it.icon);
+    }
 
     // chores, written into the rows that are already there
     const ids = M.view.tasks;

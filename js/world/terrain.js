@@ -288,19 +288,29 @@ export function buildOcean() {
   mesh.frustumCulled = false;
   mesh.name = 'ocean';
 
+  /* The swell, rewritten every frame. Two things used to make this the
+     most expensive thing in the loop by a wide margin:
+
+     computeVertexNormals() walked all 8192 triangles and re-uploaded a
+     51KB normal buffer sixty times a second — for nothing, because the
+     material is flat-shaded and the GPU derives its own face normals from
+     the positions. The per-vertex normals were never read.
+
+     And setY() goes through the BufferAttribute accessor for every one of
+     4225 vertices. Writing the typed array directly is the same work
+     without the call. */
   const base = geo.attributes.position.array.slice();
+  const arr = geo.attributes.position.array;
+  const N = geo.attributes.position.count;
   mesh.userData.tick = (t) => {
-    const p = geo.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const x = base[i * 3], z = base[i * 3 + 2];
-      p.setY(i,
+    for (let i = 0, o = 0; i < N; i++, o += 3) {
+      const x = base[o], z = base[o + 2];
+      arr[o + 1] =
         Math.sin(x * 0.045 + t * 1.0) * 0.45 +
         Math.sin(z * 0.033 - t * 0.78) * 0.38 +
-        Math.sin((x + z) * 0.019 + t * 0.46) * 0.32
-      );
+        Math.sin((x + z) * 0.019 + t * 0.46) * 0.32;
     }
-    p.needsUpdate = true;
-    geo.computeVertexNormals();
+    geo.attributes.position.needsUpdate = true;
     tex.offset.x = t * 0.010;
     tex.offset.y = t * 0.007;
   };

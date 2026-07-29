@@ -366,7 +366,10 @@ export class Player {
       }
     }
 
-    // interior walls — an axis-aligned box you must stay inside
+    /* Interior walls — an axis-aligned box you must stay inside. Kept on
+       the player so updateCamera can honour it too; without that the
+       camera swings through the wall the moment your back is to one. */
+    this.insideBox = opts.insideBox || null;
     if (opts.insideBox) {
       const b = opts.insideBox;
       const r = this.RADIUS;
@@ -537,6 +540,27 @@ export class Player {
               dist = Math.max(2.1, t - 0.4);
               break;
             }
+          }
+        }
+      }
+
+      /* Indoors the camera has to respect the walls. The listening post is
+         a sealed box and the ladder is right against the far wall, so on
+         the way down the camera swung straight through the concrete and
+         you were looking at the room from inside the rock. */
+      const box = this.insideBox;
+      if (box) {
+        for (let s = 1; s <= 10; s++) {
+          const t = (s / 10) * dist;
+          const sx = this.pos.x + dirX * t + rightX * SHOULDER;
+          const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
+          const sy = targetY + dirY * t;
+          const M = 0.55;                  // keep this far off the surface
+          if (sx < box.minX + M || sx > box.maxX - M
+            || sz < box.minZ + M || sz > box.maxZ - M
+            || sy < 0.5 || sy > (box.maxY ?? 4.0)) {
+            dist = Math.max(1.15, t - 0.35);
+            break;
           }
         }
       }

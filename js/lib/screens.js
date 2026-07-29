@@ -10,7 +10,7 @@
    =========================================================== */
 
 import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
-import { drawRelicIcon } from './hud.js';
+import { drawRelicIcon, drawShopIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
@@ -172,6 +172,20 @@ export class ScreenStack {
     return false;
   }
 
+  /**
+   * Pointer press / drag / release, in canvas pixels.
+   *
+   * Screens are mostly lists, so a click is enough for them — but the slot
+   * machine has an arm, and an arm you cannot pull is a picture of an arm.
+   */
+  pointer(kind, cx, cy) {
+    const s = this.top;
+    if (!s) return false;
+    const def = SCREENS[s.name];
+    if (!def?.pointer) return false;
+    return !!def.pointer(kind, cx, cy, s, this.game, this);
+  }
+
   /** Clipboard text, handed to the top screen if it takes any. */
   paste(text) {
     const s = this.top;
@@ -204,6 +218,9 @@ export class ScreenStack {
 /* ===========================================================
    SCREENS
    =========================================================== */
+/** How long the command table takes to wake up. */
+const BOOT_LEN = 1.9;
+
 const nav = (code, s, len, onOk, onBack) => {
   if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + len - 1) % len; return true; }
   if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % len; return true; }
@@ -758,8 +775,17 @@ export const SCREENS = {
   mpTable: {
     init(s) {
       s.tab = s.tab || 0;
-      s.boot = 0;            // the terminal warming up
+      s.boot = 0;            // seconds since the terminal was woken
       s.asked = 0;
+      s.beeped = 0;
+    },
+    tick(s, g, dt) {
+      const was = s.boot;
+      s.boot = Math.min(BOOT_LEN + 1, s.boot + dt);
+      // one clack per line of the start-up log, and a chime when it lands
+      const lineNow = Math.floor(s.boot / 0.16);
+      if (s.boot < BOOT_LEN && lineNow !== Math.floor(was / 0.16)) g.audio?.sfx('reel');
+      if (was < BOOT_LEN && s.boot >= BOOT_LEN) g.audio?.sfx('ping');
     },
     draw(x, W, H, s, g, t) {
       const d = g.bunkerReadout ? g.bunkerReadout() : null;
@@ -770,6 +796,73 @@ export const SCREENS = {
          it fresh. The request is answered privately; nobody upstairs learns
          that anybody looked. */
       if (!s.asked || t - s.asked > 3) { s.asked = t; g.requestLedger?.(); }
+
+      /* ---- the terminal waking up ----
+         Thirty years on standby and it still runs its self-test. It is a
+         second and a bit of theatre, and it is the difference between a
+         menu and a machine. */
+      if (s.boot < BOOT_LEN) {
+        x.fillStyle = '#02100b'; x.fillRect(0, 0, W, H);
+        const k = s.boot / BOOT_LEN;
+
+        // the tube striking: a hairline that opens out into the picture
+        if (k < 0.18) {
+          const o = k / 0.18;
+          const hh = Math.max(1, Math.round(o * o * H));
+          x.fillStyle = `rgba(150,255,215,${(0.5 + o * 0.5).toFixed(2)})`;
+          x.fillRect(0, Math.round((H - hh) / 2), W, hh);
+          return [];
+        }
+
+        // the log, one line at a time
+        const LOG = [
+          'SCHWAB TECHNOLOGY LTD',
+          'FIELD TERMINAL  MK IV',
+          '',
+          'CORE ............ OK',
+          'AERIAL MAST ..... OK',
+          'PLOT TABLE ...... OK',
+          'VITALS LOOP ..... OK',
+          'LEDGER LINK ..... OK',
+          'ARCHIVE ......... DEGRADED',
+          '',
+          'WARMING PHOSPHOR',
+        ];
+        const shown = Math.min(LOG.length, Math.floor((s.boot - 0.2) / 0.16));
+        for (let i = 0; i < shown; i++) {
+          const ln = LOG[i];
+          if (!ln) continue;
+          const bad = ln.includes('DEGRADED');
+          drawText(x, ln, {
+            x: 16, y: 16 + i * 10, scale: 1,
+            color: bad ? '#ff6a5a' : (i < 2 ? '#c8ffe8' : '#6fe0b8'),
+          });
+        }
+        // a cursor on the line still arriving
+        if (shown < LOG.length && Math.floor(s.boot * 8) % 2 === 0) {
+          x.fillStyle = '#c8ffe8';
+          x.fillRect(16, 16 + shown * 10, 5, 7);
+        }
+        // and a bar that fills as it goes
+        const bw = W - 32;
+        x.fillStyle = '#0d3227'; x.fillRect(16, H - 26, bw, 6);
+        x.fillStyle = '#6fe0b8';
+        x.fillRect(16, H - 26, Math.round(bw * Math.min(1, k * 1.05)), 6);
+        drawText(x, `${Math.min(100, Math.round(k * 105))}%`, {
+          x: W - 16, y: H - 38, scale: 1, align: 'right', color: '#2f7a60',
+        });
+        // the picture rolling into sync
+        const roll = Math.round((1 - k) * 40);
+        for (let i = 0; i < 3; i++) {
+          x.fillStyle = 'rgba(150,255,215,.05)';
+          x.fillRect(0, ((s.boot * 260 + i * 90) % (H + roll)) - roll, W, 2 + roll / 8);
+        }
+        for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+        return [];
+      }
+
+      // and a beat of settling after it lands
+      const settle = Math.min(1, (s.boot - BOOT_LEN) * 4);
 
       /* A screen from a room nobody has been in for thirty years: phosphor
          green, a scanline crawl, and a bloom that never quite settles. */
@@ -791,6 +884,11 @@ export const SCREENS = {
       x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
 
       /* ---- the header, with the sponsor nobody asked for ---- */
+      if (settle < 1) {
+        // one last horizontal roll as the picture locks
+        x.fillStyle = `rgba(150,255,215,${(0.16 * (1 - settle)).toFixed(3)})`;
+        x.fillRect(0, Math.round((1 - settle) * H), W, 3);
+      }
       drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: 2, color: GRN });
       drawText(x, 'SCHWAB TECHNOLOGY', { x: 14, y: 25, scale: 1, color: GRN_D });
       drawText(x, d.bunker || '', { x: W - 14, y: 10, scale: 1, align: 'right', color: GRN_D });
@@ -873,12 +971,12 @@ export const SCREENS = {
           }
           x.closePath(); x.stroke();
         }
-        // compass
-        x.fillStyle = GRN_D;
-        drawText(x, 'N', { x: cx, y: py0 + 2, scale: 1, align: 'center', color: GRN_D });
-        drawText(x, 'S', { x: cx, y: py0 + PH - 9, scale: 1, align: 'center', color: GRN_D });
-        drawText(x, 'W', { x: px0 + 3, y: cy - 3, scale: 1, color: GRN_D });
-        drawText(x, 'E', { x: px0 + PW - 8, y: cy - 3, scale: 1, color: GRN_D });
+        /* Compass letters in the corners rather than on the axes. On the
+           axes the S sat exactly where the CAMP label lands. */
+        drawText(x, 'N', { x: px0 + 4, y: py0 + 3, scale: 1, color: GRN_D });
+        drawText(x, 'E', { x: px0 + PW - 9, y: py0 + 3, scale: 1, color: GRN_D });
+        drawText(x, 'W', { x: px0 + 4, y: py0 + PH - 10, scale: 1, color: GRN_D });
+        drawText(x, 'S', { x: px0 + PW - 9, y: py0 + PH - 10, scale: 1, color: GRN_D });
 
         // the sweep
         const a0 = t * 1.1;
@@ -890,22 +988,41 @@ export const SCREENS = {
           x.stroke();
         }
 
-        // the places worth knowing
+        /* The places worth knowing. Labels are placed by hand against
+           each other: two names printed on the same eight pixels is not a
+           map, it is a smear. */
+        const taken = [];
+        const freeRow = (lx, ly, lw) => {
+          for (let tries = 0; tries < 6; tries++) {
+            const clash = taken.some((r) => Math.abs(r.y - ly) < 9 && lx < r.x + r.w && r.x < lx + lw);
+            if (!clash) break;
+            ly += 9;
+          }
+          taken.push({ x: lx, y: ly, w: lw });
+          return ly;
+        };
         for (const m of (d.marks || [])) {
           const mx = Math.round(cx + m.x * K), my = Math.round(cy + m.z * K);
           x.fillStyle = m.kind === 'post' ? AMB : 'rgba(120,190,165,.75)';
           if (m.kind === 'post') {
+            const pulse = Math.floor(t * 3) % 2 === 0;
+            x.fillStyle = pulse ? '#ffe9a8' : AMB;
             x.fillRect(mx - 3, my - 3, 7, 1); x.fillRect(mx - 3, my + 3, 7, 1);
             x.fillRect(mx - 3, my - 3, 1, 7); x.fillRect(mx + 3, my - 3, 1, 7);
           } else {
             x.fillRect(mx - 1, my - 1, 3, 3);
           }
-          if (m.label) {
-            drawText(x, m.label, {
-              x: mx, y: my + 5, scale: 1, align: 'center',
-              color: m.kind === 'post' ? AMB : 'rgba(90,150,130,.9)', shadow: false,
-            });
-          }
+          if (!m.label) continue;
+          const lw = textWidth(m.label, 1);
+          const lx = Math.round(Math.min(px0 + PW - lw - 3, Math.max(px0 + 3, mx - lw / 2)));
+          const ly = freeRow(lx, my + 5, lw);
+          // a dark bed, so a name over the coastline is still readable
+          x.fillStyle = 'rgba(3,16,12,.78)';
+          x.fillRect(lx - 1, ly - 1, lw + 2, 9);
+          drawText(x, m.label, {
+            x: lx, y: ly, scale: 1,
+            color: m.kind === 'post' ? AMB : 'rgba(120,190,165,.95)', shadow: false,
+          });
         }
 
         // and everybody on it
@@ -1090,6 +1207,9 @@ export const SCREENS = {
   mpSlot: {
     init(s) {
       s.phase = 'idle';     // idle | spin | land | paid
+      s.drag = 0;
+      s.dragging = false;
+      s.pulled = false;
       s.t0 = 0;
       s.reels = [0, 0, 0];
       s.result = null;
@@ -1164,12 +1284,32 @@ export const SCREENS = {
         x.fillRect(wx, RY + RH / 2 - 1, RW, 1);
       }
 
-      /* --- the arm, on the right of the cabinet --- */
+      /* --- the arm: a handle you actually pull --- */
       {
-        const ax = cx0 + CW + 6;
-        const lean = Math.round(s.arm * 10);
-        x.fillStyle = '#b0b6bc'; x.fillRect(ax, cy0 + 44 + lean, 4, 30 - lean);
-        x.fillStyle = '#c02a1a'; x.fillRect(ax - 3, cy0 + 38 + lean, 10, 8);
+        const ax = cx0 + CW + 8;
+        const TOP = cy0 + 38, THROW = 46;          // how far it travels
+        const k = Math.max(s.arm || 0, s.drag || 0);
+        const kn = Math.round(TOP + k * THROW);
+        // the slot the arm runs in
+        x.fillStyle = '#2a1a14'; x.fillRect(ax - 1, TOP - 4, 6, THROW + 22);
+        // the shaft
+        x.fillStyle = '#b0b6bc'; x.fillRect(ax, kn + 8, 4, cy0 + CH - 14 - kn);
+        // the ball on top
+        const grabbed = s.dragging;
+        x.fillStyle = grabbed ? '#ff5a44' : '#c02a1a';
+        x.fillRect(ax - 5, kn, 14, 12);
+        x.fillStyle = grabbed ? '#ff9a88' : '#e06a58';
+        x.fillRect(ax - 5, kn, 14, 3);
+        x.fillStyle = '#7a1810'; x.fillRect(ax - 5, kn + 10, 14, 2);
+        s.armBox = { x: ax - 9, y: TOP - 6, w: 22, h: THROW + 24, top: TOP, throwLen: THROW };
+        // tell people it is draggable, until they have done it once
+        if (s.phase === 'idle' && !s.pulled) {
+          const puls = Math.floor(t * 3) % 2 === 0;
+          drawText(x, 'PULL', {
+            x: ax + 2, y: cy0 + CH + 4, scale: 1, align: 'center',
+            color: puls ? '#ffd24a' : '#8a7a52',
+          });
+        }
       }
 
       /* --- the paytable --- */
@@ -1178,7 +1318,7 @@ export const SCREENS = {
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx0 + 8, py0, CW - 16, PAY_H);
       x.fillStyle = 'rgba(195,154,44,.5)'; x.fillRect(cx0 + 8, py0, CW - 16, 1);
       const pay = [
-        ['3 SEVEN', '60'], ['3 IDOL', '30'], ['ANY 3 ALIKE', '15'], ['ANY 2 ALIKE', '5'],
+        ['3 SEVEN', '120'], ['3 IDOL', '60'], ['ANY 3 ALIKE', '30'], ['ANY 2 ALIKE', '2'],
       ];
       /* One column with the figures hard right. Two columns did not fit:
          "ANY 3 ALIKE" ran under its own payout. */
@@ -1211,9 +1351,52 @@ export const SCREENS = {
       }
       drawText(x, msg, { x: W / 2, y: cy0 + CH + 6, scale: 2, align: 'center', color: mcol });
 
-      footer(x, W, H, s.phase === 'spin' ? '' : 'E  PULL      ESC  WALK AWAY');
+      footer(x, W, H, s.phase === 'spin' ? '' : 'DRAG THE ARM  OR  E      ESC  WALK AWAY');
       return [];
     },
+    /**
+     * The arm. Grab the ball, drag it down, and it goes when you have
+     * pulled it far enough — released early it springs back and nothing
+     * happens, which is the whole pleasure of the thing.
+     */
+    pointer(kind, cx, cy, s, g, st) {
+      const box = s.armBox;
+      if (!box) return false;
+      if (kind === 'down') {
+        if (s.phase === 'spin') return true;
+        if (cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) return false;
+        s.dragging = true;
+        s.dragFrom = cy;
+        s.drag = 0;
+        return true;
+      }
+      if (!s.dragging) return false;
+      if (kind === 'move') {
+        s.drag = Math.max(0, Math.min(1, (cy - s.dragFrom) / box.throwLen));
+        return true;
+      }
+      // released
+      s.dragging = false;
+      const far = s.drag >= 0.75;
+      s.drag = 0;
+      if (far) { s.pulled = true; SCREENS.mpSlot._pull(s, g); }
+      else g.audio?.sfx('select');
+      return true;
+    },
+
+    /** Shared by the arm and the key. */
+    _pull(s, g) {
+      if (s.phase === 'spin') return;
+      const out = g.pullSlot?.(s.slot);
+      if (!out) { g.audio?.sfx('deny'); return; }
+      s.phase = 'spin';
+      s.t0 = s.t;
+      s.result = out.result;
+      s.win = out.win;
+      s.arm = 1;
+      s.pulled = true;
+    },
+
     tick(s, g, dt, t) {
       if (s.arm > 0) s.arm = Math.max(0, s.arm - dt * 3);
       if (s.phase === 'spin' && s.t - s.t0 > 1.9) {
@@ -1221,7 +1404,7 @@ export const SCREENS = {
         s.reels = s.result.slice();
         // the coins land exactly when the last drum does
         g.settleSlot?.(s.slot, s.win);
-        if (s.win > 0) g.audio?.sfx(s.win >= 30 ? 'jackpot' : 'coin');
+        if (s.win > 0) g.audio?.sfx(s.win >= 60 ? 'jackpot' : 'coin');
         else g.audio?.sfx('deny');
       }
     },
@@ -1230,14 +1413,7 @@ export const SCREENS = {
         st.pop(); g.afterOverlayClose(); return true;
       }
       if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
-        if (s.phase === 'spin') return true;
-        const out = g.pullSlot?.(s.slot);
-        if (!out) { g.audio?.sfx('deny'); return true; }
-        s.phase = 'spin';
-        s.t0 = s.t;
-        s.result = out.result;
-        s.win = out.win;
-        s.arm = 1;
+        SCREENS.mpSlot._pull(s, g);
         return true;
       }
       return true;
@@ -2686,123 +2862,6 @@ const OPTION_DEFS = [
 /* ===========================================================
    PIXEL GLYPHS (shared by dials and the chart)
    =========================================================== */
-/** Hand-drawn marks for the shop stock, animated where it helps. */
-function drawShopIcon(x, kind, ox, oy, size, lit, t) {
-  const u = size / 12;
-  const p = (gx, gy, w, h, col) => {
-    x.fillStyle = col;
-    x.fillRect(Math.round(ox + gx * u), Math.round(oy + gy * u), Math.ceil(w * u), Math.ceil(h * u));
-  };
-  const C = (a, b) => (lit ? a : b);
-  const beat = lit ? Math.sin(t * 6) * 0.5 + 0.5 : 0;
-
-  if (kind === 'lantern') {
-    p(4, 0, 4, 1, C('#8a7a52', '#4a4230'));
-    p(5, 1, 2, 1, C('#8a7a52', '#4a4230'));
-    p(3, 2, 6, 8, C('#6a5a3a', '#3a332a'));
-    p(4, 3, 4, 6, C('#1a1408', '#141008'));
-    if (beat > 0.4 || !lit) {
-      p(5, 4, 2, 4, C('#ffd88a', '#5a4a24'));
-      p(4, 5, 4, 2, C('#ffb04a', '#4a3a1c'));
-    }
-    p(3, 10, 6, 1, C('#8a7a52', '#4a4230'));
-  } else if (kind === 'vest') {
-    p(3, 1, 6, 9, C('#b8894a', '#4a3c26'));
-    p(2, 2, 2, 6, C('#a07a40', '#40341f'));
-    p(8, 2, 2, 6, C('#a07a40', '#40341f'));
-    p(5, 1, 2, 9, C('#2a1c0c', '#1c1409'));
-    for (let i = 0; i < 3; i++) p(4, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
-    for (let i = 0; i < 3; i++) p(7, 3 + i * 2, 1, 1, C('#ffe0a0', '#6a5a34'));
-  } else if (kind === 'whistle') {
-    p(2, 4, 7, 4, C('#c8c8d0', '#4a4a52'));
-    p(9, 5, 2, 2, C('#a0a0a8', '#3a3a42'));
-    p(3, 5, 2, 2, C('#2a2a30', '#1c1c22'));
-    if (beat > 0.5) {
-      p(11, 3, 1, 1, C('#ffffff', '#555'));
-      p(11, 6, 1, 1, C('#ffffff', '#555'));
-      p(12, 4, 1, 2, C('#dfefff', '#555'));
-    }
-  } else if (kind === 'tonic') {
-    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
-    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
-    p(3, 4, 6, 7, C('#3a6a4a', '#22332a'));
-    const lvl = 4 + Math.round(beat * 1);
-    p(4, lvl + 1, 4, 9 - lvl, C('#7ec850', '#3a5a2c'));
-    p(4, lvl, 4, 1, C('#bfffa0', '#4a6a3a'));
-  } else if (kind === 'soles') {
-    p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
-    p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
-    p(7, 3, 3, 5, C('#4a4a52', '#2a2a32'));
-    if (beat > 0.5) { p(9, 1, 1, 1, C('#6a6a72', '#333')); p(10, 3, 1, 1, C('#6a6a72', '#333')); }
-  } else if (kind === 'alibi') {
-    p(2, 2, 8, 8, C('#d8c69a', '#4a4436'));
-    p(3, 3, 6, 1, C('#7a6a48', '#332e24'));
-    p(3, 5, 6, 1, C('#7a6a48', '#332e24'));
-    p(3, 7, 4, 1, C('#7a6a48', '#332e24'));
-    const w = Math.round(beat * 2);
-    p(7 + w, 8, 3, 3, C('#c02a1a', '#4a1a12'));
-  } else if (kind === 'knife') {
-    p(5, 0, 2, 6, C('#e8eef2', '#4a5258'));
-    p(4, 1, 1, 5, C('#b8c2c8', '#3a4248'));
-    p(3, 6, 6, 1, C('#8a2018', '#3a1810'));
-    p(5, 7, 2, 4, C('#6a4a28', '#332618'));
-    if (beat > 0.6) { p(8, 1, 1, 1, '#ffffff'); p(9, 3, 1, 1, '#ffffff'); }
-  } else if (kind === 'gun') {
-    // a stubby flare pistol, muzzle up-right
-    p(2, 5, 6, 3, C('#8a4a2a', '#3a2418'));
-    p(8, 4, 3, 3, C('#b0b6bc', '#42474c'));
-    p(11, 4, 1, 3, C('#e8eef2', '#4a5258'));
-    p(3, 8, 3, 4, C('#6a3a20', '#2e1c12'));
-    p(6, 7, 2, 2, C('#c8c8d0', '#4a4a52'));
-    if (beat > 0.55) {
-      p(12, 3, 1, 1, '#ffd24a'); p(12, 6, 1, 1, '#ffd24a');
-      p(13, 4, 1, 2, '#fff3c4');
-    }
-  } else if (kind === 'speaker') {
-    p(2, 1, 8, 10, C('#3a3a42', '#22222a'));
-    p(2, 1, 8, 1, C('#5a5a66', '#2e2e36'));
-    // two cones, pulsing
-    for (const cy of [3, 7]) {
-      const r = 2 + (lit ? Math.round(beat) : 0);
-      p(6 - r / 2, cy - r / 2 + 1, r, r, C('#8a8a96', '#3a3a44'));
-      p(5, cy, 2, 2, C('#1a1a20', '#141418'));
-    }
-    if (lit && beat > 0.6) {
-      p(0, 2, 1, 1, '#ffd24a'); p(11, 4, 1, 1, '#ffd24a');
-      p(1, 8, 1, 1, '#9ff0dc'); p(10, 1, 1, 1, '#9ff0dc');
-    }
-  } else if (kind === 'chart') {
-    p(1, 2, 10, 8, C('#d8c69a', '#4a4436'));
-    p(2, 3, 8, 6, C('#b09062', '#3e3a2c'));
-    p(4, 5, 3, 2, C('#8b9c62', '#333c26'));
-    const bl = lit && beat > 0.5;
-    p(8, 3, 1, 1, bl ? '#c02a1a' : '#6a3a30');
-    p(7, 4, 3, 1, bl ? '#c02a1a' : '#6a3a30');
-  } else if (kind === 'flask') {
-    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
-    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
-    p(3, 4, 6, 7, C('#5a3a6a', '#2c2032'));
-    p(4, 6, 4, 4, C('#a05ac0', '#4a2a5a'));
-    if (lit && beat > 0.5) p(5, 5, 2, 1, '#e0b0ff');
-  } else if (kind === 'key') {
-    p(2, 4, 3, 3, C('#c39a2c', '#4a3c18'));
-    p(3, 5, 1, 1, C('#1a1408', '#0e0c06'));
-    p(5, 5, 6, 1, C('#c39a2c', '#4a3c18'));
-    p(9, 6, 1, 2, C('#c39a2c', '#4a3c18'));
-    p(7, 6, 1, 2, C('#c39a2c', '#4a3c18'));
-  } else if (kind === 'chaff') {
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * 6.283 + (lit ? t * 2 : 0);
-      p(5 + Math.round(Math.cos(a) * 4), 5 + Math.round(Math.sin(a) * 4), 1, 1,
-        C(i % 2 ? '#9fd8e8' : '#6a8a9a', '#33424a'));
-    }
-    p(5, 5, 2, 2, C('#d8e8f0', '#4a5a64'));
-  } else if (kind === 'coin') {
-    p(3, 2, 6, 8, C('#ffd24a', '#6a5a24'));
-    p(4, 3, 4, 6, C('#c39a2c', '#4a3c18'));
-    p(5, 4, 2, 4, C('#fff3c4', '#7a6a34'));
-  }
-}
 
 /** Hand-drawn 24px marks for the three sabotages. */
 function drawSabotageIcon(x, kind, ox, oy, size, lit, t) {

@@ -25,44 +25,113 @@ const G = (n) => new THREE.Color(n);
    =========================================================== */
 function flopperPortrait() {
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = 128;
   const x = c.getContext('2d');
 
-  // the tin
-  x.fillStyle = '#d8d4cc'; x.fillRect(0, 0, 64, 64);
-  x.fillStyle = '#b8b2a6';
-  x.beginPath(); x.arc(32, 34, 27, 0, Math.PI * 2); x.fill();
-  // the gravy it is sitting in
-  x.fillStyle = '#4a3320';
-  x.beginPath(); x.arc(32, 34, 24, 0, Math.PI * 2); x.fill();
+  /* The backing the tin is presented on, because it is a PORTRAIT */
+  x.fillStyle = '#3a2418'; x.fillRect(0, 0, 128, 128);
+  const vig = x.createRadialGradient(64, 56, 10, 64, 64, 78);
+  vig.addColorStop(0, '#6a4a30'); vig.addColorStop(1, '#241408');
+  x.fillStyle = vig; x.fillRect(0, 0, 128, 128);
 
-  /* the mass itself: overlapping lumps, lit from the upper left,
-     which is the only way to make a brown blob read as a brown blob */
-  const lump = (cx, cy, rx, ry, rot, base) => {
-    x.save();
-    x.translate(cx, cy); x.rotate(rot);
-    x.fillStyle = base;
-    x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); x.fill();
-    // highlight along the top-left of each lump
-    x.fillStyle = 'rgba(150,116,74,.55)';
-    x.beginPath(); x.ellipse(-rx * 0.22, -ry * 0.3, rx * 0.55, ry * 0.42, 0, 0, Math.PI * 2); x.fill();
-    x.fillStyle = 'rgba(30,18,8,.45)';
-    x.beginPath(); x.ellipse(rx * 0.3, ry * 0.35, rx * 0.42, ry * 0.3, 0, 0, Math.PI * 2); x.fill();
-    x.restore();
+  const CX = 64, CY = 66, R = 44;
+
+  // the shadow it casts
+  x.fillStyle = 'rgba(0,0,0,.45)';
+  x.beginPath(); x.ellipse(CX + 4, CY + R * 0.55, R * 0.98, R * 0.34, 0, 0, 6.29); x.fill();
+
+  /* ---- the tin ---- */
+  // the body, seen slightly from above: a squat cylinder
+  x.fillStyle = '#8a8f94';
+  x.fillRect(CX - R, CY - R * 0.30, R * 2, R * 0.62);
+  x.beginPath(); x.ellipse(CX, CY + R * 0.32, R, R * 0.34, 0, 0, 6.29); x.fill();
+  // a band of shade down the right of the can
+  x.fillStyle = 'rgba(30,36,42,.42)';
+  x.fillRect(CX + R * 0.34, CY - R * 0.30, R * 0.66, R * 0.62);
+  // and a highlight down the left
+  x.fillStyle = 'rgba(240,246,250,.42)';
+  x.fillRect(CX - R * 0.86, CY - R * 0.30, R * 0.22, R * 0.62);
+
+  // the rolled rim
+  x.fillStyle = '#c8ced4';
+  x.beginPath(); x.ellipse(CX, CY - R * 0.30, R, R * 0.36, 0, 0, 6.29); x.fill();
+  x.fillStyle = '#6f757b';
+  x.beginPath(); x.ellipse(CX, CY - R * 0.30, R * 0.90, R * 0.31, 0, 0, 6.29); x.fill();
+
+  /* ---- what is in it ---- */
+  // the gravy the loaf sits in
+  x.fillStyle = '#3e2a14';
+  x.beginPath(); x.ellipse(CX, CY - R * 0.28, R * 0.84, R * 0.29, 0, 0, 6.29); x.fill();
+
+  /* A single moulded loaf rather than a heap of lumps: it holds the shape
+     of the tin, it has a flat top with the ring of the mould pressed into
+     it, and it glistens. */
+  const loaf = (dy, fill) => {
+    x.fillStyle = fill;
+    x.beginPath(); x.ellipse(CX, CY - R * 0.42 + dy, R * 0.74, R * 0.26, 0, 0, 6.29); x.fill();
   };
-  lump(24, 26, 15, 7, -0.5, '#5b3f24');
-  lump(40, 30, 14, 7, 0.7, '#6a4a2b');
-  lump(30, 40, 17, 8, 0.15, '#553a21');
-  lump(38, 20, 11, 6, -0.2, '#63452a');
-  lump(20, 40, 11, 6, 0.9, '#4d351d');
-  lump(33, 31, 12, 6, -1.1, '#6f4d2e');
+  // the side of the loaf standing proud of the gravy
+  x.fillStyle = '#5c3f22';
+  x.fillRect(CX - R * 0.74, CY - R * 0.44, R * 1.48, R * 0.18);
+  x.beginPath(); x.ellipse(CX, CY - R * 0.26, R * 0.74, R * 0.26, 0, 0, 6.29); x.fill();
+  loaf(0, '#6d4c2b');
+  // the pressed ring on top
+  x.strokeStyle = 'rgba(40,24,10,.55)'; x.lineWidth = 2;
+  x.beginPath(); x.ellipse(CX, CY - R * 0.42, R * 0.52, R * 0.18, 0, 0, 6.29); x.stroke();
+  // grain: short strokes, all lying the same way, the way pressed meat does
+  for (let i = 0; i < 90; i++) {
+    const a = (i * 2.399) % 6.283;
+    const rr = Math.sqrt((i % 17) / 17);
+    const px = CX + Math.cos(a) * rr * R * 0.68;
+    const py = CY - R * 0.42 + Math.sin(a) * rr * R * 0.22;
+    x.fillStyle = i % 3 ? 'rgba(120,88,52,.5)' : 'rgba(52,34,16,.5)';
+    x.fillRect(px, py, 3, 1);
+  }
+  // fat, in little pale flecks
+  for (let i = 0; i < 26; i++) {
+    const a = (i * 1.77) % 6.283;
+    const rr = Math.sqrt((i % 11) / 11);
+    x.fillStyle = 'rgba(226,206,170,.62)';
+    x.fillRect(CX + Math.cos(a) * rr * R * 0.62, CY - R * 0.44 + Math.sin(a) * rr * R * 0.2, 2, 2);
+  }
+  // the jelly, catching the light
+  x.fillStyle = 'rgba(255,232,180,.30)';
+  x.beginPath(); x.ellipse(CX - R * 0.26, CY - R * 0.52, R * 0.26, R * 0.08, -0.25, 0, 6.29); x.fill();
+  x.fillStyle = 'rgba(255,246,214,.22)';
+  x.beginPath(); x.ellipse(CX + R * 0.28, CY - R * 0.36, R * 0.16, R * 0.05, 0.2, 0, 6.29); x.fill();
 
-  // a shine on the sauce
-  x.fillStyle = 'rgba(220,190,140,.20)';
-  x.beginPath(); x.ellipse(20, 48, 9, 3, -0.3, 0, Math.PI * 2); x.fill();
+  /* ---- the lid, peeled back on its ring ---- */
+  x.save();
+  x.translate(CX + R * 0.52, CY - R * 0.86);
+  x.rotate(-0.42);
+  x.fillStyle = '#dfe5ea';
+  x.beginPath(); x.ellipse(0, 0, R * 0.72, R * 0.24, 0, 0, 6.29); x.fill();
+  x.fillStyle = '#a8b0b6';
+  x.beginPath(); x.ellipse(0, 2, R * 0.72, R * 0.20, 0, 0, 6.29); x.fill();
+  // curl marks across it
+  x.strokeStyle = 'rgba(120,130,138,.7)'; x.lineWidth = 1;
+  for (let i = -2; i <= 2; i++) {
+    x.beginPath(); x.moveTo(i * 8, -R * 0.18); x.lineTo(i * 8, R * 0.18); x.stroke();
+  }
+  x.restore();
+  // the pull ring
+  x.strokeStyle = '#e8eef2'; x.lineWidth = 3;
+  x.beginPath(); x.ellipse(CX + R * 0.96, CY - R * 1.04, 7, 5, 0.3, 0, 6.29); x.stroke();
+
+  // a label band round the can with nothing legible on it
+  x.fillStyle = '#8a2018';
+  x.fillRect(CX - R, CY - R * 0.06, R * 2, R * 0.20);
+  x.fillStyle = 'rgba(0,0,0,.35)';
+  x.fillRect(CX + R * 0.34, CY - R * 0.06, R * 0.66, R * 0.20);
+  x.fillStyle = '#ffd88a';
+  for (let i = 0; i < 9; i++) x.fillRect(CX - R * 0.72 + i * 9, CY + R * 0.01, 5, 2);
+
+  // the gilt frame's inner shadow, so it sits IN a frame
+  x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 6;
+  x.strokeRect(3, 3, 122, 122);
 
   // quantise: this is a PS1 texture, not a photograph
-  const img = x.getImageData(0, 0, 64, 64);
+  const img = x.getImageData(0, 0, 128, 128);
   for (let i = 0; i < img.data.length; i += 4) {
     for (let k = 0; k < 3; k++) img.data[i + k] = (img.data[i + k] >> 4) << 4;
   }
@@ -510,6 +579,10 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     new THREE.MeshLambertMaterial({ map: flopperPortrait() })
   );
   portrait.position.set(0, 3.1, 3.94);
+  /* A PlaneGeometry faces +Z, and +Z here is INTO the cabin — he was
+     hanging with his back to the room, looking at a wall. The deck is
+     forward of the cabin, so he has to face -Z. */
+  portrait.rotation.y = Math.PI;
   g.add(portrait);
   const frameParts = [];
   for (const [fw, fh, fx, fy] of [[3.1, 0.24, 0, 4.52], [3.1, 0.24, 0, 1.68],
@@ -530,6 +603,7 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     })
   );
   plaque.position.set(0, 1.34, 3.95);
+  plaque.rotation.y = Math.PI;
   g.add(plaque);
   // two picture lights on the frame
   const picLight = new THREE.PointLight(0xffd8a0, 1.8, 9, 2);

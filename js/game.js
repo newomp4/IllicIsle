@@ -246,6 +246,38 @@ const RELIC_SPOTS = [
  * rectangle at a fixed height; the ground under you becomes the highest
  * platform you are inside and standing above, or the terrain.
  */
+/**
+ * Show or hide a group WITHOUT hiding any light inside it.
+ *
+ * three skips an invisible object's whole subtree, so a hidden group's
+ * lights stop counting — and the number of lights is baked into every
+ * shader's cache key. Revealing a group with a lamp in it therefore makes
+ * three recompile every material in the scene, which is a second or more
+ * of nothing at all. The lights stay visible and present for the whole
+ * session; only their intensity moves.
+ *
+ * @param {THREE.Object3D} node
+ * @param {boolean} hidden
+ */
+export function setHidden(node, hidden) {
+  if (!node) return;
+  node.visible = true;                       // the group itself never hides
+  for (const child of node.children) {
+    if (child.isLight) {
+      if (hidden) {
+        if (child.userData._lit === undefined) child.userData._lit = child.intensity;
+        child.intensity = 0;
+      } else if (child.userData._lit !== undefined) {
+        child.intensity = child.userData._lit;
+      }
+      continue;
+    }
+    if (child.children.length) setHidden(child, hidden);
+    else child.visible = !hidden;
+  }
+  node.userData.hidden = hidden;
+}
+
 export function makeGroundWith(platforms, base) {
   if (!platforms || !platforms.length) return base;
   return (x, z, y) => {
@@ -526,13 +558,36 @@ export class Game {
       /* Compile every shader the game will ever need, now, while the
          loading bar is up. The first draw of a material configuration
          compiles its program, and a compile mid-round is exactly the
-         one-second freeze that has no obvious cause. */
+         one-second freeze that has no obvious cause.
+
+         Two things this has to get right that the obvious version does
+         not. renderer.compile() walks the scene graph and SKIPS anything
+         with visible === false, so every pooled effect, every hidden
+         hatch and the boombox — all the things that appear for the first
+         time in the middle of a round — were missed by it. And the light
+         count is baked into every program's cache key, so the scene has
+         to be holding all of its lights before anything is compiled. */
+      const revealed = [];
+      const showAll = (root) => {
+        root.traverse((o) => {
+          if (o.visible === false) { o.visible = true; revealed.push(o); }
+        });
+      };
       try {
-        this.renderer.compile(this.islandScene, this.camera);
-        this.renderer.compile(this.templeScene, this.camera);
-        if (this.bunkerScene) this.renderer.compile(this.bunkerScene, this.camera);
-        if (this.titleScene) this.renderer.compile(this.titleScene, this.camera);
+        /* The one light that is created on demand. It lives here from now
+           on with its intensity at zero, so numPointLights never changes
+           and nothing ever has to be recompiled because of it. */
+        this._lanternLight = new THREE.PointLight(0xffc070, 0, 20, 1.7);
+        this._lanternLight.position.set(0, 4, 0);
+        this.islandScene.add(this._lanternLight);
+
+        for (const sc of [this.islandScene, this.templeScene, this.bunkerScene, this.titleScene]) {
+          if (!sc) continue;
+          showAll(sc);
+          this.renderer.compile(sc, this.camera);
+        }
       } catch (e) { /* a warm-up that fails is not worth failing the load over */ }
+      for (const o of revealed) o.visible = false;
     });
 
     await step('READY', 1.0, () => {
@@ -995,7 +1050,7 @@ export class Game {
       const hg = { x: spot.x, z: spot.z, y: heightAt(spot.x, spot.z) };
       const h = buildHatch(rng, this.propMats);
       h.position.set(hg.x, hg.y - 0.05, hg.z);
-      h.visible = false;
+      setHidden(h, true);
       scene.add(h);
       this.tickers.push(h);
       this.hatches.push({ x: hg.x, z: hg.z, y: hg.y, node: h, index: i, name: spot.name });
@@ -1350,12 +1405,32 @@ export class Game {
       this.player?.addPitchYaw(dx, dy);
     });
 
+    /* Screens get the pointer in the coordinates they are drawn in. Most
+       of them only want a click, but anything with a handle on it — the
+       slot machine's arm — needs the whole press-drag-release. */
+    const toHud = (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      return [
+        ((e.clientX - r.left) / r.width) * this.ui.hud.c.width,
+        ((e.clientY - r.top) / r.height) * this.ui.hud.c.height,
+      ];
+    };
+    window.addEventListener('mousemove', (e) => {
+      if (!this.screens.open) return;
+      const [hx, hy] = toHud(e);
+      this.screens.pointer('move', hx, hy);
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!this.screens.open) return;
+      const [hx, hy] = toHud(e);
+      this.screens.pointer('up', hx, hy);
+    });
+
     this.canvas.addEventListener('mousedown', (e) => {
       if (this.screens.open) {
-        // map the click into the low-res canvas the screens are drawn in
-        const r = this.canvas.getBoundingClientRect();
-        const hx = ((e.clientX - r.left) / r.width) * this.ui.hud.c.width;
-        const hy = ((e.clientY - r.top) / r.height) * this.ui.hud.c.height;
+        const [hx, hy] = toHud(e);
+        // a handle takes precedence over a list row underneath it
+        if (this.screens.pointer('down', hx, hy)) return;
         this.screens.click(hx, hy);
         return;
       }
