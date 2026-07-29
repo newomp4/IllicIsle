@@ -43,6 +43,9 @@ export const S = {
   SNAPOPEN:   's.snapopen',   // { victimId, byId, endsAt, voters }
   SNAPTALLY:  's.snaptally',  // { yes, no, need }
   SNAPDONE:   's.snapdone',   // { victimId, exiled, yes, no }
+  BUNKER:     's.bunker',     // { index }      which hatch is real this round
+  SPEAKER:    's.speaker',    // { x, z, secs }  somebody put a boombox down
+  CHAFF:      's.chaff',      // { secs }        the command table is lying
   SAVED:      's.saved',      // { victimId }   a cork vest took the strike
   KILLED:     's.killed',     // { victimId, x, y, z }
   BODY_GONE:  's.bodygone',   // { victimId }

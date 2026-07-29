@@ -27,6 +27,10 @@ import {
 } from './world/extras.js';
 import { buildIdolMaterials, buildIdol, buildIdolShrine } from './world/idol.js';
 import { buildTemple, templeHeight, TEMPLE } from './world/temple.js';
+import { buildCasinoBoat, buildBoatBridge, buildVendingMachine } from './world/casino.js';
+import {
+  BUNKER_SPOTS, buildHatch, buildBunkerRoom, BUNKER_ENTRY, BUNKER_BOX, bunkerHeight,
+} from './world/bunker.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
 
@@ -225,11 +229,40 @@ Do not eat anything he offers you.
  * Where the easter-egg relics live. Declared up here because the jungle is
  * scattered before they are placed, and it has to leave them room.
  */
+/** Where Ferdi's two outlying machines stand. */
+const VENDOR_SPOTS = [{ x: 92, z: -74 }, { x: -118, z: 8 }];
+
 const RELIC_SPOTS = [
   { x: -140, z: -20 },     // TASHA Unit 03
   { x: 108, z: 118 },      // the Aer Lingus fuselage
   { x: -86, z: 95 },       // the First Syncoin's cairn
 ];
+
+/**
+ * Standing on things the terrain knows nothing about.
+ *
+ * The ground function is analytic and only describes the island, so a boat
+ * deck or a bridge is scenery you fall through. A platform is a rotated
+ * rectangle at a fixed height; the ground under you becomes the highest
+ * platform you are inside and standing above, or the terrain.
+ */
+export function makeGroundWith(platforms, base) {
+  if (!platforms || !platforms.length) return base;
+  return (x, z, y) => {
+    let h = base(x, z);
+    for (let i = 0; i < platforms.length; i++) {
+      const p = platforms[i];
+      const dx = x - p.x, dz = z - p.z;
+      const lx = dx * p.cos - dz * p.sin;
+      const lz = dx * p.sin + dz * p.cos;
+      if (Math.abs(lx) > p.hw || Math.abs(lz) > p.hd) continue;
+      // only if you are at or above it; you cannot stand on the underside
+      if (y !== undefined && y < p.y - 0.6) continue;
+      if (p.y > h) h = p.y;
+    }
+    return h;
+  };
+}
 
 /** The footprint Ferdi's hut actually occupies, in its own space. */
 const HUT_FOOT = [
@@ -431,6 +464,8 @@ export class Game {
          thicket you could walk past three times without seeing her, which
          is not a puzzle, it is a bad map. */
       for (const z of RELIC_SPOTS) clearZones.push({ x: z.x, z: z.z, r: 17 });
+      for (const z of VENDOR_SPOTS) clearZones.push({ x: z.x, z: z.z, r: 12 });
+      for (const z of BUNKER_SPOTS) clearZones.push({ x: z.x, z: z.z, r: 13 });
 
       /* Trodden paths between the places people actually go, and the jungle
          is kept off them — a path with a tree standing in it is not a path.
@@ -465,6 +500,7 @@ export class Game {
     await step('OPENING THE TEMPLE', 0.78, () => {
       this.templeScene = buildTemple(this.idolMats, this.propMats);
       this._buildSanctum();
+      this.bunkerScene = buildBunkerRoom(this.propMats);
     });
 
     await step('CASTING THE IDOL', 0.90, () => {
@@ -837,6 +873,85 @@ export class Game {
     scene.add(tb);
     this.tickers.push(tb);
     this.templeBeacon = tb;
+
+    /* ---- THE LUCKY FLOPPER, moored off the west shore ----
+       Out past the surf on the far side of the island from the wreck, so
+       getting to her is a walk somebody can see you take. */
+    {
+      const shore = findBeach ? null : null;
+      // find a shallow spot: sand under the boat, deep enough to float
+      let bx = 0, bz = 0, best = -Infinity;
+      for (let a = Math.PI * 0.55; a < Math.PI * 1.15; a += 0.03) {
+        for (let r = ISLAND.shore - 6; r < ISLAND.shore + 22; r += 2) {
+          const x = Math.cos(a) * r, z = Math.sin(a) * r;
+          const h = heightAt(x, z);
+          if (h > -2.6 || h < -6.5) continue;
+          // want land within reach for the bridge
+          const inx = Math.cos(a) * (r - 26), inz = Math.sin(a) * (r - 26);
+          if (heightAt(inx, inz) < 0.7) continue;
+          const score = -Math.abs(h + 4.2) * 3 - Math.abs(a - Math.PI * 0.85) * 6;
+          if (score > best) { best = score; bx = x; bz = z; }
+        }
+      }
+      this.platforms = this.platforms || [];
+      if (best > -Infinity) {
+        const boat = buildCasinoBoat(rng, this.propMats, buildFlameCluster);
+        boat.position.set(bx, -0.55, bz);
+        boat.rotation.y = Math.atan2(bx, bz) + Math.PI / 2;
+        scene.add(boat);
+        this.tickers.push(boat);
+        this.casino = boat;
+        this.casinoPos = { x: bx, z: bz };
+
+        // and the bridge in from whatever sand is nearest
+        const d = Math.hypot(bx, bz) || 1;
+        const sx = (bx / d) * (d - 24), sz = (bz / d) * (d - 24);
+        const bridge = buildBoatBridge(rng, this.propMats, sx, sz, bx, bz, heightAt);
+        scene.add(bridge);
+        this.casinoShore = { x: sx, z: sz };
+        /* The deck is a platform: without one you walk out along the
+           bridge and drop straight through the boat into the sea. */
+        const byaw = boat.rotation.y;
+        this.platforms.push({
+          x: bx, z: bz, y: 0.90, hw: 2.9, hd: 7.2,
+          cos: Math.cos(byaw), sin: Math.sin(byaw),
+        });
+        // the bridge, from the sand out to her
+        const mx = (sx + bx) / 2, mz = (sz + bz) / 2;
+        const byaw2 = Math.atan2(bx - sx, bz - sz);
+        this.platforms.push({
+          x: mx, z: mz, y: 0.62, hw: 1.1, hd: Math.hypot(bx - sx, bz - sz) / 2,
+          cos: Math.cos(byaw2), sin: Math.sin(byaw2),
+        });
+      }
+    }
+
+    /* ---- the listening post: four hatches built, one of them real ----
+       Which one it is comes from the host at the start of the round, so
+       nobody can learn the map and walk straight to it. */
+    this.hatches = [];
+    BUNKER_SPOTS.forEach((spot, i) => {
+      const hg = findGround(spot.x, spot.z, { rng, radius: 16, minH: 2, maxH: 34, maxSlope: 0.16 });
+      const h = buildHatch(rng, this.propMats);
+      h.position.set(hg.x, hg.y - 0.05, hg.z);
+      h.visible = false;
+      scene.add(h);
+      this.tickers.push(h);
+      this.hatches.push({ x: hg.x, z: hg.z, y: hg.y, node: h, index: i, name: spot.name });
+    });
+
+    /* ---- two of Ferdi's machines, tucked away from the shop ---- */
+    this.vendors = [];
+    for (const [hx, hz] of [[92, -74], [-118, 8]]) {
+      const vg = findGround(hx, hz, { rng, radius: 22, minH: 2, maxH: 30, maxSlope: 0.18 });
+      const vm = buildVendingMachine(rng, this.propMats);
+      vm.position.set(vg.x, vg.y - 0.1, vg.z);
+      vm.rotation.y = rng() * Math.PI * 2;
+      scene.add(vm);
+      this.tickers.push(vm);
+      this.colliders.push({ x: vg.x, z: vg.z, r: 1.1 });
+      this.vendors.push({ x: vg.x, z: vg.z, node: vm });
+    }
 
     /* ---- the storm, dormant until the Pendulums are read ---- */
     this.storm = buildStorm(scene);

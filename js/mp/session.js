@@ -137,6 +137,14 @@ export class HostSession {
         if (!p) break;
         if (msg.perk === 'quiet') p.quiet = !!msg.on;
         if (msg.perk === 'vest') p.vest = !!msg.on;
+        if (msg.perk === 'speaker') {
+          this.net.broadcast({ t: S.SPEAKER, x: msg.x, z: msg.z, secs: 60 });
+          this.hooks.onSpeaker?.(msg.x, msg.z, 60);
+        }
+        if (msg.perk === 'chaff') {
+          this.net.broadcast({ t: S.CHAFF, secs: 30 });
+          this.hooks.onChaff?.(30);
+        }
         this._roster();
         break;
       }
@@ -184,6 +192,10 @@ export class HostSession {
     this.bodies = [];
     this.sabotage = null;
     this.over = null;
+    // which of the four hatches is real this round
+    this.bunkerIndex = (this.rng() * 4) | 0;
+    this.net.broadcast({ t: S.BUNKER, index: this.bunkerIndex });
+    this.hooks.onBunker?.(this.bunkerIndex);
 
     // private role cards
     const agentNames = [...agents].map((id) => this.players.get(id).name);
@@ -705,6 +717,9 @@ export class MirrorSession {
         if (msg.exiled) { const p2 = this.players.get(msg.victimId); if (p2) p2.alive = false; }
         this.hooks.onSnapDone?.(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no);
         break;
+      case S.BUNKER: this.hooks.onBunker?.(msg.index); break;
+      case S.SPEAKER: this.hooks.onSpeaker?.(msg.x, msg.z, msg.secs); break;
+      case S.CHAFF: this.hooks.onChaff?.(msg.secs); break;
       case S.SAVED: this.hooks.onSaved?.(msg.victimId); break;
       case S.FIXPROGRESS:
         if (this.sabotage) { this.sabotage.done = msg.done; this.sabotage.need = msg.need; }

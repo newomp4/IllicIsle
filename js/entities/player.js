@@ -378,7 +378,8 @@ export class Player {
     this.pos.y += this.vel.y * dt;
 
     /* ---------- ground ---------- */
-    const g = groundOf(this.pos.x, this.pos.z);
+    // the third argument lets a platform decide whether you are on top of it
+    const g = groundOf(this.pos.x, this.pos.z, this.pos.y);
     const floor = water ? Math.max(g, -1.35) : g;
 
     if (this.pos.y <= floor) {
@@ -518,7 +519,7 @@ export class Player {
         const sx = this.pos.x + dirX * t + rightX * SHOULDER;
         const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
         const sy = targetY + dirY * t;
-        if (sy < groundOf(sx, sz) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
+        if (sy < groundOf(sx, sz, sy) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
       }
 
       // tree trunks and rocks — without this the camera spends the whole

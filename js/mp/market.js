@@ -65,6 +65,37 @@ export const STOCK = [
     tag: 'PASSIVE',
   },
 
+  {
+    id: 'speaker', name: 'THE PARTY BOX', cost: 8, side: 'open', icon: 'speaker',
+    blurb: 'A boombox you drop on the ground. It plays, loudly, for a minute, and everybody '
+      + 'on the island sees where it is. Somewhere to be, or somewhere to send them.',
+    tag: 'ONE USE',
+  },
+  {
+    id: 'chart', name: 'A SECOND CHART', cost: 6, side: 'open', icon: 'chart',
+    blurb: 'Marks the listening post on your chart for the rest of the round, wherever it '
+      + 'happens to be buried this time.',
+    tag: 'ONE USE',
+  },
+  {
+    id: 'flask', name: "THE FLOPPER'S FLASK", cost: 5, side: 'open', icon: 'flask',
+    blurb: 'Whatever Tim puts in these. Your next chore finishes the moment you start it.',
+    tag: 'ONE USE',
+  },
+
+  /* ---------- the room behind it, continued ---------- */
+  {
+    id: 'skeleton', name: 'A SKELETON KEY', cost: 12, side: 'black', icon: 'key',
+    blurb: 'Opens the listening post from anywhere on the island. You arrive, they walk.',
+    tag: 'ONE USE',
+  },
+  {
+    id: 'chaff', name: 'A HANDFUL OF CHAFF', cost: 9, side: 'black', icon: 'chaff',
+    blurb: 'Every pip on the command table jumps somewhere else for thirty seconds. '
+      + 'Whoever is down there stops trusting it.',
+    tag: 'ONE USE',
+  },
+
   /* ---------- the thing under the counter ---------- */
   {
     id: 'gun', name: 'THE FLARE PISTOL', cost: 24, side: 'both', icon: 'gun',

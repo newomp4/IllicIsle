@@ -741,6 +741,136 @@ export const SCREENS = {
     },
   },
 
+  /* ---------------- THE COMMAND TABLE ---------------- */
+  mpTable: {
+    init(s) { s.tab = 0; },
+    draw(x, W, H, s, g, t) {
+      const d = g.bunkerReadout ? g.bunkerReadout() : null;
+      if (!d) return [];
+
+      /* A screen from a room nobody has been in for thirty years: phosphor
+         green, a scanline crawl, and a bloom that never quite settles. */
+      x.fillStyle = '#03100c'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#03100c', '#061a14', 0.5, 2);
+      const crawl = ((t * 24) % (H + 40)) - 20;
+      for (let i = 0; i < 18; i++) {
+        const yy = Math.round(crawl + i);
+        if (yy < 0 || yy >= H) continue;
+        x.fillStyle = `rgba(90,240,190,${(0.030 * (1 - i / 18)).toFixed(3)})`;
+        x.fillRect(0, yy, W, 1);
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+
+      const GRN = '#6fe0b8', GRN_D = '#2f7a60', GRN_L = '#c8ffe8';
+      x.fillStyle = GRN_D;
+      x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
+      x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
+
+      drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: 2, color: GRN });
+      drawText(x, d.bunker || '', { x: W - 14, y: 10, scale: 1, align: 'right', color: GRN_D });
+      drawText(x, d.chaff ? 'SIGNAL DEGRADED' : 'SIGNAL NOMINAL', {
+        x: W - 14, y: 20, scale: 1, align: 'right',
+        color: d.chaff ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : GRN_D,
+      });
+      x.fillStyle = GRN_D; x.fillRect(14, 28, W - 28, 1);
+
+      /* left: vitals */
+      const LX = 12, LW = 116;
+      let y = 36;
+      drawText(x, 'VITALS', { x: LX, y, scale: 1, color: GRN_D }); y += 11;
+      for (const p of d.roster) {
+        const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+        x.fillStyle = p.alive ? hex : '#2a3a34';
+        x.fillRect(LX, y, 6, 6);
+        let nm = p.name;
+        while (nm.length > 1 && textWidth(nm, 1) > LW - 44) nm = nm.slice(0, -1);
+        drawText(x, nm, { x: LX + 10, y, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
+        // a heartbeat, or a flat line
+        const bx = LX + LW - 30;
+        x.fillStyle = p.alive ? GRN : '#3f5a52';
+        if (p.alive) {
+          const ph = (t * 2.2 + p.name.length) % 1;
+          for (let i = 0; i < 26; i++) {
+            const u = i / 26;
+            let hgt = 0;
+            const dd = Math.abs(u - ph);
+            if (dd < 0.05) hgt = 4; else if (dd < 0.10) hgt = 2;
+            if (hgt) x.fillRect(bx + i, y + 3 - hgt, 1, hgt * 2);
+            else x.fillRect(bx + i, y + 3, 1, 1);
+          }
+        } else {
+          x.fillRect(bx, y + 3, 26, 1);
+        }
+        y += 10;
+      }
+      y += 3;
+      drawText(x, `${d.alive} OF ${d.total} BREATHING`, { x: LX, y, scale: 1, color: GRN });
+
+      /* right: the plot */
+      const RX = LX + LW + 8, RW = W - RX - 12, RT = 36, RB = H - 48;
+      x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(RX, RT, RW, RB - RT);
+      x.fillStyle = GRN_D;
+      x.fillRect(RX, RT, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
+      x.fillRect(RX, RT, 1, RB - RT); x.fillRect(RX + RW - 1, RT, 1, RB - RT);
+
+      const cx = RX + RW / 2, cy = RT + (RB - RT) / 2;
+      const R = Math.min(RW, RB - RT) / 2 - 6;
+      // the island, as rings and a sweep
+      for (let i = 1; i <= 3; i++) {
+        x.strokeStyle = `rgba(47,122,96,${0.7 - i * 0.15})`;
+        x.lineWidth = 1;
+        x.beginPath(); x.arc(cx, cy, (R * i) / 3, 0, Math.PI * 2); x.stroke();
+      }
+      x.strokeStyle = 'rgba(47,122,96,.5)';
+      x.beginPath(); x.moveTo(cx - R, cy); x.lineTo(cx + R, cy);
+      x.moveTo(cx, cy - R); x.lineTo(cx, cy + R); x.stroke();
+      // the sweep
+      const a0 = t * 1.1;
+      for (let i = 0; i < 22; i++) {
+        const a = a0 - i * 0.045;
+        x.strokeStyle = `rgba(111,224,184,${(0.30 * (1 - i / 22)).toFixed(3)})`;
+        x.beginPath(); x.moveTo(cx, cy);
+        x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+        x.stroke();
+      }
+      // and everybody on it
+      const K = R / 190;
+      for (const p of d.roster) {
+        const px = cx + p.x * K, py = cy + p.z * K;
+        const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+        if (p.alive) {
+          x.fillStyle = hex;
+          x.fillRect(Math.round(px) - 2, Math.round(py) - 2, 5, 5);
+          x.fillStyle = GRN_L;
+          x.fillRect(Math.round(px) - 1, Math.round(py) - 1, 3, 3);
+        } else {
+          x.fillStyle = '#8a2018';
+          x.fillRect(Math.round(px) - 3, Math.round(py), 7, 1);
+          x.fillRect(Math.round(px), Math.round(py) - 3, 1, 7);
+        }
+      }
+
+      /* the strip along the bottom */
+      const cell = (label, val, ox, colour) => {
+        drawText(x, label, { x: ox, y: H - 40, scale: 1, color: GRN_D });
+        drawText(x, val, { x: ox, y: H - 30, scale: 1, color: colour || GRN_L });
+      };
+      cell('WORK', d.work, 14);
+      cell('WEATHER', d.weather, 76, d.weather === 'CLEAR' ? GRN_L : '#ffd24a');
+      cell("FERDI'S", d.shop, 148, d.shop === 'TRADING' ? GRN_L : '#ff6a5a');
+      cell('ISLAND', d.sabotage || 'NOMINAL', 214, d.sabotage ? '#ff6a5a' : GRN_L);
+
+      footer(x, W, H, 'ESC  STEP BACK');
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace' || code === 'KeyE') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      return true;
+    },
+  },
+
   /* ---------------- THE SNAP VOTE ---------------- */
   mpSnap: {
     init(s) { s.sel = 0; },
@@ -2060,6 +2190,45 @@ function drawShopIcon(x, kind, ox, oy, size, lit, t) {
       p(12, 3, 1, 1, '#ffd24a'); p(12, 6, 1, 1, '#ffd24a');
       p(13, 4, 1, 2, '#fff3c4');
     }
+  } else if (kind === 'speaker') {
+    p(2, 1, 8, 10, C('#3a3a42', '#22222a'));
+    p(2, 1, 8, 1, C('#5a5a66', '#2e2e36'));
+    // two cones, pulsing
+    for (const cy of [3, 7]) {
+      const r = 2 + (lit ? Math.round(beat) : 0);
+      p(6 - r / 2, cy - r / 2 + 1, r, r, C('#8a8a96', '#3a3a44'));
+      p(5, cy, 2, 2, C('#1a1a20', '#141418'));
+    }
+    if (lit && beat > 0.6) {
+      p(0, 2, 1, 1, '#ffd24a'); p(11, 4, 1, 1, '#ffd24a');
+      p(1, 8, 1, 1, '#9ff0dc'); p(10, 1, 1, 1, '#9ff0dc');
+    }
+  } else if (kind === 'chart') {
+    p(1, 2, 10, 8, C('#d8c69a', '#4a4436'));
+    p(2, 3, 8, 6, C('#b09062', '#3e3a2c'));
+    p(4, 5, 3, 2, C('#8b9c62', '#333c26'));
+    const bl = lit && beat > 0.5;
+    p(8, 3, 1, 1, bl ? '#c02a1a' : '#6a3a30');
+    p(7, 4, 3, 1, bl ? '#c02a1a' : '#6a3a30');
+  } else if (kind === 'flask') {
+    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
+    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
+    p(3, 4, 6, 7, C('#5a3a6a', '#2c2032'));
+    p(4, 6, 4, 4, C('#a05ac0', '#4a2a5a'));
+    if (lit && beat > 0.5) p(5, 5, 2, 1, '#e0b0ff');
+  } else if (kind === 'key') {
+    p(2, 4, 3, 3, C('#c39a2c', '#4a3c18'));
+    p(3, 5, 1, 1, C('#1a1408', '#0e0c06'));
+    p(5, 5, 6, 1, C('#c39a2c', '#4a3c18'));
+    p(9, 6, 1, 2, C('#c39a2c', '#4a3c18'));
+    p(7, 6, 1, 2, C('#c39a2c', '#4a3c18'));
+  } else if (kind === 'chaff') {
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * 6.283 + (lit ? t * 2 : 0);
+      p(5 + Math.round(Math.cos(a) * 4), 5 + Math.round(Math.sin(a) * 4), 1, 1,
+        C(i % 2 ? '#9fd8e8' : '#6a8a9a', '#33424a'));
+    }
+    p(5, 5, 2, 2, C('#d8e8f0', '#4a5a64'));
   } else if (kind === 'coin') {
     p(3, 2, 6, 8, C('#ffd24a', '#6a5a24'));
     p(4, 3, 4, 6, C('#c39a2c', '#4a3c18'));

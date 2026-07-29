@@ -49,7 +49,9 @@ export const ISLAND = {
   beachWidth: 56,
   jungleFrom: 40,
   jungleTo: 104,
-  playRadius: 178,
+  /* Far enough out to reach the Lucky Flopper, which is moored past the
+     surf. The bounds used to shove you back to shore before you got there. */
+  playRadius: 206,
   worldRadius: 260,
 
   /* The high jungle ridge the temple is buried in. No volcano — this is

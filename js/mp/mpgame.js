@@ -9,7 +9,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { Game } from '../game.js';
+import { Game, makeGroundWith } from '../game.js';
 import { Net, Ticker, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
@@ -21,6 +21,7 @@ import { STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R, itemById,
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
+import { BUNKER_SPOTS, BUNKER_BOX, bunkerHeight } from '../world/bunker.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
@@ -99,6 +100,9 @@ export class MPGame extends Game {
       },
       onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
       onSaved: (id) => this._onSaved(id),
+      onBunker: (i) => { M.bunkerIndex = i; if (M.started) this._placeBunker(i); },
+      onSpeaker: (x, z, secs) => this._onSpeaker(x, z, secs),
+      onChaff: (secs) => { M.chaffUntil = now() + secs; },
       onPurse: (c, gained) => this._onPurse(c, gained),
       onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
@@ -206,6 +210,9 @@ export class MPGame extends Game {
       case S.PHASE: this._phase(msg.phase, msg.endsAt, msg.meta); break;
       case S.SNAPSHOT: this._applySnapshot(msg); break;
       case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z); break;
+      case S.BUNKER: M.bunkerIndex = msg.index; if (M.started) this._placeBunker(msg.index); break;
+      case S.SPEAKER: this._onSpeaker(msg.x, msg.z, msg.secs); break;
+      case S.CHAFF: M.chaffUntil = now() + msg.secs; break;
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
       case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
@@ -824,6 +831,14 @@ export class MPGame extends Game {
   /* ===========================================================
      START
      =========================================================== */
+  /** Which hatch is real this round, and open it up. */
+  _placeBunker(index) {
+    const M = this.mp;
+    M.bunkerIndex = index;
+    (this.hatches || []).forEach((h, i) => { h.node.visible = i === index; });
+    M.bunker = (this.hatches || [])[index] || null;
+  }
+
   startCastaways() {
     // Reuse the single-player world wholesale, minus the story.
     this.paused = false;
@@ -843,6 +858,10 @@ export class MPGame extends Game {
     this.doorSolved = false;
     this.coconutCount = 0;
 
+    // the host picks; everybody else is told
+    this._placeBunker(this.mp.bunkerIndex ?? 0);
+    // decks and bridges the terrain does not know about
+    this.groundOf = makeGroundWith(this.platforms, heightAt);
     this.taskFx = new TaskFx(this.islandScene);
     this.gore = new Gore(this.islandScene, heightAt);
     this._buildTaskBeacons();
@@ -952,6 +971,10 @@ export class MPGame extends Game {
     /* Wherever the current sabotage has to be repaired, marked in red and
        blinking. Being told the island is on fire without being told where
        the bucket is was not much of a callout. */
+    if (M.speaker) pois.push({ label: 'BOX', x: M.speaker.x, z: M.speaker.z, kind: 'poi' });
+    if ((this.knowsBunker || this.state === 'bunker') && M.bunker) {
+      pois.push({ label: 'POST', x: M.bunker.x, z: M.bunker.z, kind: 'poi' });
+    }
     const sab = M.view.sabotage;
     if (sab) {
       const def = SABOTAGE_DEFS[sab.kind];
@@ -1032,6 +1055,37 @@ export class MPGame extends Game {
       }
     }
 
+    // the listening post
+    const bunk = M.bunker;
+    if (bunk && this.state === 'island') {
+      const db = Math.hypot(p.x - bunk.x, p.z - bunk.z);
+      if (db < 4.6 && db < bestD) { bestD = db; best = { kind: 'mpHatch', prompt: 'GO DOWN' }; }
+    }
+    if (this.state === 'bunker') {
+      const dt2 = Math.hypot(p.x - 0, p.z - 1.5);
+      if (dt2 < 3.6) return { kind: 'mpTable', prompt: 'THE COMMAND TABLE' };
+      const dl = Math.hypot(p.x - 0, p.z - (-6.0));
+      if (dl < 3.0) return { kind: 'mpLadder', prompt: 'CLIMB OUT' };
+      return null;
+    }
+
+    // the slot machines on the Flopper
+    for (const s2 of (this.casino?.userData.slots || [])) {
+      const wp = new THREE.Vector3();
+      s2.getWorldPosition(wp);
+      const ds = Math.hypot(p.x - wp.x, p.z - wp.z);
+      if (ds < 3.2 && ds < bestD) {
+        bestD = ds;
+        best = { kind: 'mpSlot', slot: s2, prompt: (this.coins || 0) >= 3 ? 'PULL  (3 SYNCOIN)' : 'NEED 3 SYNCOIN' };
+      }
+    }
+
+    // Ferdi's outlying machines
+    for (const v of (this.vendors || [])) {
+      const dv = Math.hypot(p.x - v.x, p.z - v.z);
+      if (dv < 4.0 && dv < bestD) { bestD = dv; best = { kind: 'mpVendor', prompt: "FERDI'S MACHINE" }; }
+    }
+
     // Ferdi's counter
     if (this.amAlive && this.hutPos && !this.shopShut) {
       const dh = Math.hypot(p.x - this.hutPos.x, p.z - this.hutPos.z);
@@ -1088,6 +1142,13 @@ export class MPGame extends Game {
           this.audio.sfx('page');
           return;
         }
+        if (this.flask) {
+          this.flask = false;
+          this._send({ t: C.DO_TASK, taskId: it.taskId });
+          this.audio.sfx('victory');
+          this.ui.toast("THE FLOPPER'S FLASK", 'jade', 1800);
+          break;
+        }
         M.taskProgress = {
           taskId: it.taskId, t: 0, secs: stage.secs || 3, verb: stage.verb || 'WORKING',
           name: stage.name, fx: stage.fx,
@@ -1100,6 +1161,30 @@ export class MPGame extends Game {
       case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
       case 'mpBell': this._send({ t: C.REPORT, bodyId: null }); break;
       case 'mpFix': this._send({ t: C.FIX, kind: it.fix, at: it.at }); break;
+      case 'mpHatch': {
+        this.enterBunker();
+        break;
+      }
+      case 'mpTable': {
+        this.screens.push('mpTable', {});
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
+      case 'mpLadder': {
+        this.leaveBunker();
+        break;
+      }
+      case 'mpSlot': {
+        this.playSlot(it.slot);
+        break;
+      }
+      case 'mpVendor': {
+        this.screens.push('mpShop', { sel: 0, side: 0, vendor: true });
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
       case 'mpShop':
         this.screens.push('mpShop', { sel: 0, side: 0 });
         document.exitPointerLock?.();
@@ -1332,6 +1417,28 @@ export class MPGame extends Game {
 
     if (id === 'tonic') { this.player.staminaDrain = 0.06; this.player.staminaRegen = 0.5; }
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
+    if (id === 'chart') {
+      this.knowsBunker = true;
+      this.ui.toast('THE POST IS ON YOUR CHART', 'jade', 2600);
+    }
+    if (id === 'skeleton') {
+      // straight down, from wherever you are standing
+      this.enterBunker();
+      this.useCarried('skeleton');
+    }
+    if (id === 'chaff') {
+      this.useCarried('chaff');
+      this._send({ t: C.PERK, perk: 'chaff', on: true });
+      this.ui.toast('THE TABLE IS LYING NOW', 'jade', 2600);
+    }
+    if (id === 'flask') {
+      this.flask = true;
+      this.ui.toast('YOUR NEXT JOB IS DONE ON SIGHT', 'jade', 2600);
+    }
+    if (id === 'speaker') {
+      this.dropSpeaker();
+      this.useCarried('speaker');
+    }
     if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
     if (id === 'whetstone' && this.mp.myKillReady) {
       this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
@@ -1484,6 +1591,138 @@ export class MPGame extends Game {
     this.audio.sfx('confirm');
   }
 
+  /* =========================================================
+     THE LISTENING POST
+     ========================================================= */
+  enterBunker() {
+    const M = this.mp;
+    if (this.state !== 'island') return;
+    M.bunker?.node.userData.setOpen(true);
+    this.state = 'bunker';
+    this.scene = this.bunkerScene;
+    this.player.mesh.removeFromParent();
+    this.bunkerScene.add(this.player.mesh);
+    this.player.setColliders([]);
+    this.player.teleport(0, 1.0, -5.2, 0);
+    this.audio.sfx('descend');
+    this.audio.playMusic('temple');
+    this.ui.toast('THE LISTENING POST', 'jade', 2600);
+  }
+
+  leaveBunker() {
+    const M = this.mp;
+    if (this.state !== 'bunker') return;
+    this.state = 'island';
+    this.scene = this.islandScene;
+    this.player.mesh.removeFromParent();
+    this.islandScene.add(this.player.mesh);
+    this.player.setColliders(this.colliders);
+    const b = M.bunker;
+    if (b) this.player.teleport(b.x + 2.6, heightAt(b.x + 2.6, b.z) + 0.8, b.z, 0);
+    M.bunker?.node.userData.setOpen(false);
+    this.audio.sfx('door');
+    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+  }
+
+  /** Everything the table knows. Deliberately a lot. */
+  bunkerReadout() {
+    const M = this.mp;
+    const jam = this.jammed, chaff = M.chaffUntil && now() < M.chaffUntil;
+    const roster = [...M.view.players.values()].map((p) => {
+      const av = M.avatars.get(p.id);
+      const pos = p.id === M.view.selfId ? this.player.pos : (av ? av.pos : null);
+      const scatter = chaff ? 120 : 0;
+      return {
+        id: p.id, name: p.name || '?', colour: colourHex(p.colour),
+        alive: p.alive !== false,
+        x: (pos ? pos.x : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
+        z: (pos ? pos.z : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
+      };
+    });
+    return {
+      roster,
+      chaff,
+      alive: roster.filter((r) => r.alive).length,
+      total: roster.length,
+      work: `${M.view.tasksDone || 0} / ${M.view.tasksTotal || 0}`,
+      sabotage: M.view.sabotage ? (SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '') : null,
+      shop: this.shopShut ? 'SHUTTERED' : 'TRADING',
+      weather: this.stormOn ? 'STORM' : (this.blinded ? 'MIST' : (this.night > 0.55 ? 'NIGHT' : 'CLEAR')),
+      bunker: M.bunker?.name || '',
+    };
+  }
+
+  /* =========================================================
+     THE LUCKY FLOPPER
+     ========================================================= */
+  playSlot(slot) {
+    if ((this.coins || 0) < 3) { this.audio.sfx('deny'); return; }
+    this.coins -= 3;
+    this._send({ t: C.PURSE, coins: this.coins });
+    slot.userData.spin();
+    this.audio.sfx('charge');
+    setTimeout(() => {
+      /* House edge, and Tim keeps his thumb on it: about one in four pays
+         eight, one in twelve pays twenty-five, the rest pay nothing. */
+      const r = Math.random();
+      let win = 0;
+      if (r < 0.08) win = 25;
+      else if (r < 0.30) win = 8;
+      if (win) {
+        this.coins += win;
+        this._send({ t: C.PURSE, coins: this.coins });
+        slot.userData.payout(true);
+        this.audio.sfx('victory');
+        this.ui.showPopup(`${win} SYNCOIN`, 'TIM WILL BE FURIOUS', 'coin', 'THE FLOPPER PAYS');
+      } else {
+        this.audio.sfx('deny');
+        this.ui.toast('NOTHING', 'bad', 1400);
+      }
+    }, 1700);
+  }
+
+  /** A boombox on the sand, and everybody knows exactly where it is. */
+  dropSpeaker() {
+    const p = this.player.pos;
+    this._send({ t: C.PERK, perk: 'speaker', on: true, x: +p.x.toFixed(1), z: +p.z.toFixed(1) });
+    this.audio.sfx('confirm');
+  }
+
+  _onSpeaker(x, z, secs) {
+    const M = this.mp;
+    M.speaker = { x, z, until: now() + secs };
+    this.audio.playMusic('title');
+    this.ui.toast('SOMEBODY PUT A SPEAKER ON', 'gold', 3000);
+    this._compassForTasks();
+    if (!M.speakerNode && this.islandScene) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(1.5, 1.0, 0.8),
+        new THREE.MeshLambertMaterial({ color: 0x2a2a32 })
+      );
+      body.position.y = 0.5;
+      g.add(body);
+      for (const sx of [-0.38, 0.38]) {
+        const cone = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.28, 0.34, 0.1, 10),
+          new THREE.MeshLambertMaterial({ color: 0x8a8a96 })
+        );
+        cone.rotation.x = Math.PI / 2;
+        cone.position.set(sx, 0.5, 0.42);
+        g.add(cone);
+      }
+      const glow = new THREE.PointLight(0xff5aa8, 0, 16, 1.8);
+      glow.position.set(0, 1.2, 0);
+      g.add(glow);
+      g.userData.glow = glow;
+      g.userData.body = body;
+      this.islandScene.add(g);
+      M.speakerNode = g;
+    }
+    M.speakerNode.visible = true;
+    M.speakerNode.position.set(x, heightAt(x, z), z);
+  }
+
   /** A puzzle stage was solved; it counts exactly like a hold would. */
   finishMinigame(taskId) {
     if (!taskId) return;
@@ -1535,6 +1774,24 @@ export class MPGame extends Game {
       return;
     }
 
+    /* Down the hatch: its own room, its own walls, and the island keeps
+       running above you — which is the whole risk of being down here. */
+    if (this.state === 'bunker') {
+      if (this.isHost) M.host.update(0);
+      const froze = this.paused || this.screens.open;
+      if (!froze) {
+        this.player.update(dt, this.input, {
+          groundOf: bunkerHeight, water: false, bounds: false,
+          insideBox: BUNKER_BOX,
+        });
+      } else this.player.updateCamera(dt, bunkerHeight);
+      this.bunkerScene.userData.tick(this.time, dt, this.bunkerReadout().roster);
+      this._mpHud();
+      const bit = froze ? null : this.nearestInteractable();
+      this.ui.setPrompt(bit ? bit.prompt : null);
+      return;
+    }
+
     /* Whatever happened — a pause card, an alt-tab, a stray Escape — if the
        council is sitting then the council screen is what you should be
        looking at. Without this you could end up frozen in the world with no
@@ -1565,13 +1822,15 @@ export class MPGame extends Game {
     const stunned = this.stunnedUntil && now() < this.stunnedUntil;
     if (stunned) {
       // on the sand: you can look, and that is all
-      this.player.updateCamera(dt, heightAt);
+      this.player.updateCamera(dt, this.groundOf || heightAt);
       this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
     } else if (!frozen) {
-      this.player.update(dt, this.input, { groundOf: heightAt, water: true, bounds: true });
+      this.player.update(dt, this.input, {
+        groundOf: this.groundOf || heightAt, water: true, bounds: true,
+      });
       this.runTime += dt;
     } else {
-      this.player.updateCamera(dt, heightAt);
+      this.player.updateCamera(dt, this.groundOf || heightAt);
     }
 
     // task hold
@@ -1601,6 +1860,20 @@ export class MPGame extends Game {
     if (M.doneFlash) { M.doneFlash.t -= dt; if (M.doneFlash.t <= 0) M.doneFlash = null; }
     this.taskFx?.update(dt);
     this._updateTaskBeacons(dt);
+    // the party box, thumping away and pulling people towards it
+    if (M.speaker) {
+      if (now() > M.speaker.until) {
+        M.speaker = null;
+        if (M.speakerNode) M.speakerNode.visible = false;
+        this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+        this._compassForTasks();
+      } else if (M.speakerNode) {
+        const beat = 1 + Math.abs(Math.sin(this.time * 4.2)) * 0.14;
+        M.speakerNode.userData.body.scale.set(beat, 2 - beat, beat);
+        M.speakerNode.userData.glow.intensity = 3 + Math.sin(this.time * 8.4) * 2.4;
+        M.speakerNode.userData.glow.color.setHSL((this.time * 0.3) % 1, 0.8, 0.6);
+      }
+    }
     this.gore?.update(dt);
     this.flares?.update(dt);
     this.dizzy?.update(dt, this.time, (id) => {
