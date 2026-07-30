@@ -167,6 +167,16 @@ export const STOCK = [
 
   /* ---------- the thing under the counter ---------- */
   {
+    /* The one thing that will find the Stranger. He comes ashore once, he
+       stands in the trees, and without this you find him by walking into
+       him — which is not a mechanic, it is a coincidence. */
+    id: 'scanner', name: 'SIGNAL SCANNER', cost: 15, side: 'open', icon: 'scanner',
+    blurb: 'A handheld set that hears one thing: whoever is transmitting from the '
+      + 'treeline. Switch it on and it sweeps. It gives you a bearing, not a '
+      + 'position - wide when he is far off, tight when he is near.',
+    tag: 'BELT',
+  },
+  {
     id: 'gun', name: 'FLARE PISTOL', cost: 24, side: 'both', icon: 'gun',
     blurb: 'One shot. It does not kill: it puts them on the ground for 12 seconds and '
       + 'calls an immediate vote among everyone who saw it. Draw it from your belt, '
@@ -183,6 +193,10 @@ export const STOCK = [
 /* The cane tonic used to be in here. It is Cathy's popcorn now, and Ferdi
    does not stock anything of hers, so his machines got the cork vest
    instead — a thing nobody buys at full price at the counter either. */
+/* Added late, and deliberately not cheap: it is the only thing on the
+   island that will point you at the one who is not on the roster. */
+export const SCANNER_ID = 'scanner';
+
 export const VENDOR_IDS = ['lantern', 'flask', 'whistle', 'ticket', 'vest'];
 
 /* ===========================================================

@@ -34,8 +34,8 @@ const NET_TICK_MS = 40;
 const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
   'spyglass', 'rounds', 'nightglass']);
 /** Bought and carried until you choose the moment. These fill the belt. */
-const BELT_IDS = ['gun', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton', 'chaff',
-  'shroud', 'blackout', 'ticket'];
+const BELT_IDS = ['gun', 'scanner', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton',
+  'chaff', 'shroud', 'blackout', 'ticket'];
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
@@ -2053,6 +2053,24 @@ export class MPGame extends Game {
 
   /** Spend one carried item. */
   useItem(id) {
+    /* The scanner is the one thing on the belt you switch ON rather than
+       use up: pressing it again puts it away, and it is still in your hand
+       either way. Everything else here is consumed. */
+    if (id === 'scanner') {
+      if (!this.hasItem('scanner')) { this.audio.sfx('deny'); return false; }
+      this.scannerOn = !this.scannerOn;
+      if (this.scannerOn) {
+        this.audio.sfx('terminal');
+        this.scanSweep = 0;
+        this.scanPing = 0;
+        this.ui.toast('SCANNER ON - IT IS LISTENING', 'jade', 2400);
+      } else {
+        this.audio.sfx('select');
+        this.ui.toast('SCANNER OFF', 'bad', 1600);
+      }
+      return true;
+    }
+
     if (!this.useCarried(id)) { this.audio.sfx('deny'); return false; }
     const it = itemById(id);
 
@@ -2359,6 +2377,67 @@ export class MPGame extends Game {
     this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.4;
+  }
+
+  /* =========================================================
+     THE SIGNAL SCANNER
+
+     A direction finder, not a map. It sweeps, and when the sweep passes
+     the bearing it is hearing, it pings and paints a blip. The bearing it
+     gives you is WRONG by a margin that closes as you get nearer — sixty
+     degrees of doubt at a hundred and fifty metres, six at twenty — so it
+     narrows the island down rather than walking you to the spot.
+
+     The error is not re-rolled every frame. It wanders on its own slow
+     clock, because a needle that jitters is a needle you learn to average
+     out, and a needle that drifts is one you have to keep checking.
+     ========================================================= */
+  _tickScanner(dt) {
+    if (!this.scannerOn) { this.scanContact = null; return; }
+    if (!this.hasItem('scanner')) { this.scannerOn = false; return; }
+
+    const t = now();
+    this.scanSweep = ((this.scanSweep || 0) + dt * 1.35) % 1;
+
+    const him = this.mp.stranger;
+    const p = this.player.pos;
+    if (!him || !this.amAlive) {
+      // it still sweeps, it just has nothing to say
+      this.scanContact = null;
+      this.scanNoise = 0.85 + Math.sin(t * 13) * 0.15;
+      return;
+    }
+
+    const dx = him.x - p.x, dz = him.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    const trueBearing = Math.atan2(dx, dz);
+
+    /* How wrong it is, in radians, and it wanders. 1.05 rad is sixty
+       degrees; by twenty metres it is a tenth of that. */
+    const far = THREE.MathUtils.clamp((dist - 20) / 130, 0, 1);
+    const spread = 0.10 + far * 0.95;
+    const drift = Math.sin(t * 0.23) * 0.6 + Math.sin(t * 0.11 + 1.7) * 0.4;
+    const bearing = trueBearing + drift * spread;
+
+    this.scanContact = {
+      bearing,
+      spread,
+      // how strong he reads: everything the panel draws scales off this
+      strength: THREE.MathUtils.clamp(1 - far, 0.08, 1),
+      dist,
+    };
+    this.scanNoise = 0.25 + far * 0.55 + Math.sin(t * 17) * 0.1;
+
+    /* The ping happens when the sweep line crosses the bearing, which is
+       what makes it a sweep rather than a dial. */
+    const sweepAng = this.scanSweep * Math.PI * 2;
+    const rel = ((bearing - sweepAng) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+    if (this._scanLast !== undefined && this._scanLast < 0 && rel >= 0) {
+      this.scanPing = 1;
+      this.audio.sfx(dist < 40 ? 'ping' : 'terminal');
+    }
+    this._scanLast = rel;
+    this.scanPing = Math.max(0, (this.scanPing || 0) - dt * 1.6);
   }
 
   /* =========================================================
@@ -3443,6 +3522,7 @@ export class MPGame extends Game {
     this._sweepCoins(dt);
     this._tickFood();
     this._tickDig(dt);
+    this._tickScanner(dt);
 
     /* The one on the treeline. His position comes off the wire at the net
        tick, so it is interpolated here — he moves far too fast for a
@@ -3685,6 +3765,23 @@ export class MPGame extends Game {
     d.tasksTotal = M.view.tasksTotal;
     d.coins = this.coins || 0;
     d.stamina = this.player?.stamina ?? 1;
+    /* The scanner panel. One object, reused, because this is written every
+       frame and a new one each time is garbage for nothing. */
+    if (this.scannerOn) {
+      const sc = (d.scanner = d.scanner || {});
+      sc.on = true;
+      sc.sweep = this.scanSweep || 0;
+      sc.ping = this.scanPing || 0;
+      sc.noise = this.scanNoise || 0.5;
+      sc.facing = this.player?.facing || 0;
+      const c = this.scanContact;
+      sc.contact = !!c;
+      sc.bearing = c ? c.bearing : 0;
+      sc.spread = c ? c.spread : 0;
+      sc.strength = c ? c.strength : 0;
+    } else if (d.scanner) {
+      d.scanner.on = false;
+    }
     d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;

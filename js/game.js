@@ -586,8 +586,13 @@ export class Game {
         this.paths.push(path);
         for (const p of path.userData.line) clearZones.push({ x: p.x, z: p.z, r: 3.4 });
       }
-      scatterIsland(this.islandScene, this.propMats, makeRng(2468),
+      const scattered = scatterIsland(this.islandScene, this.propMats, makeRng(2468),
         this.settings.density, this.colliders, clearZones);
+      /* Everything the scatter put down, footprints and all. Coins and
+         anything else placed later has to keep off it — the collider list
+         alone is not enough, because a small rock gets no collider so you
+         can step over it, and a coin was landing on one. */
+      this.scattered = scattered.placed || [];
     });
 
     await step('RAISING THE PENDULUMS', 0.62, () => this._buildLandmarks());
@@ -1005,6 +1010,13 @@ export class Game {
       for (const c of this.colliders) {
         const rr = c.r + need;
         if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
+      }
+      /* And every rock, log and shell the scatter dropped, collider or not.
+         This is the check that was missing: the coin near the Flopper sat on
+         a rock too small to have been given one. */
+      for (const q of (this.scattered || [])) {
+        const rr = q.r + need;
+        if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
       }
       return true;
     };

@@ -121,6 +121,7 @@ export class Hud {
       this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
       this._mpBelt(4, H - 52, d.mp);
+      if (d.mp.scanner?.on) this._scanner(4, 70, d.mp.scanner);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       /* An Agent has a knife panel in the bottom right corner, and a long
          prompt centred on the screen runs straight into it — "QUEZETRIEL
@@ -243,6 +244,141 @@ export class Hud {
     }
     if (agent) drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 1, scale: 1, color: '#a05c50' });
     else drawText(x, 'TAB  MAP', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
+  }
+
+  /* ===========================================================
+     THE SIGNAL SCANNER
+
+     A handheld set with a round green face, drawn as a piece of hardware
+     rather than as an overlay: a bezel with four screws, a phosphor
+     screen that is still faintly lit where the beam last passed, range
+     rings, a sweep arm, and a needle that only means anything when the
+     sweep is near it.
+
+     Nothing here is decoration for its own sake. The sweep tells you it
+     is working; the wedge tells you how much it does not know; the bar
+     tells you whether you are getting warmer. The static tells you the
+     answer is unreliable, which it is.
+     =========================================================== */
+  _scanner(ox, oy, sc) {
+    const x = this.x;
+    const W = 62, H = 74;
+    const R = 24;
+    const cx = ox + W / 2, cy = oy + 27;
+
+    /* ---- the case ---- */
+    x.fillStyle = 'rgba(6,8,6,.90)'; x.fillRect(ox - 1, oy - 1, W + 2, H + 2);
+    x.fillStyle = '#2a2e28'; x.fillRect(ox, oy, W, H);
+    x.fillStyle = '#3c423a'; x.fillRect(ox, oy, W, 1);
+    x.fillStyle = '#161a15'; x.fillRect(ox, oy + H - 1, W, 1);
+    // four screws
+    for (const [sx, sy] of [[ox + 3, oy + 3], [ox + W - 5, oy + 3],
+      [ox + 3, oy + H - 5], [ox + W - 5, oy + H - 5]]) {
+      x.fillStyle = '#5a6154'; x.fillRect(sx, sy, 2, 2);
+      x.fillStyle = '#161a15'; x.fillRect(sx, sy + 1, 2, 1);
+    }
+
+    /* ---- the screen ---- */
+    x.fillStyle = '#04120a';
+    x.beginPath(); x.arc(cx, cy, R + 2, 0, 6.283); x.fill();
+    x.fillStyle = '#07200f';
+    x.beginPath(); x.arc(cx, cy, R, 0, 6.283); x.fill();
+    // range rings, and the cross
+    x.strokeStyle = 'rgba(90,220,130,.20)'; x.lineWidth = 1;
+    for (const rr of [R * 0.34, R * 0.67, R]) {
+      x.beginPath(); x.arc(cx, cy, rr, 0, 6.283); x.stroke();
+    }
+    x.fillStyle = 'rgba(90,220,130,.16)';
+    x.fillRect(cx - R, cy, R * 2, 1);
+    x.fillRect(cx, cy - R, 1, R * 2);
+
+    /* ---- the sweep, with a phosphor tail ----
+       Twelve steps behind the arm, each fainter, which is what a screen
+       that keeps glowing after the beam has gone actually looks like. */
+    const ang = sc.sweep * Math.PI * 2 - Math.PI / 2;
+    for (let i = 12; i >= 0; i--) {
+      const a = ang - i * 0.075;
+      const k = (1 - i / 12);
+      x.strokeStyle = `rgba(120,255,170,${(k * k * 0.42).toFixed(3)})`;
+      x.beginPath();
+      x.moveTo(cx, cy);
+      x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+      x.stroke();
+    }
+
+    /* ---- what it is hearing ---- */
+    if (sc.contact) {
+      /* The wedge of doubt: everything between here and here. It is the
+         honest part of the display and it is the part that shrinks as you
+         close on him. */
+      const b = sc.bearing - sc.facing - Math.PI / 2;
+      const half = Math.max(0.06, sc.spread);
+      x.fillStyle = `rgba(255,210,74,${(0.10 + sc.strength * 0.10).toFixed(3)})`;
+      x.beginPath();
+      x.moveTo(cx, cy);
+      x.arc(cx, cy, R, b - half, b + half);
+      x.closePath(); x.fill();
+
+      /* The blip, which is only bright just after the sweep has passed it.
+         Between passes it fades, so you have to wait for the next one —
+         which is the whole feel of a set like this. */
+      const passed = ((sc.sweep * Math.PI * 2 - Math.PI / 2) - b + 6.283 * 2) % 6.283;
+      const fresh = Math.max(0, 1 - passed / 1.2);
+      const br = R * (0.30 + (1 - sc.strength) * 0.62);
+      const bx = cx + Math.cos(b) * br, by = cy + Math.sin(b) * br;
+      if (fresh > 0.02) {
+        for (let i = 3; i >= 0; i--) {
+          x.fillStyle = `rgba(180,255,200,${(fresh * 0.16 / (i + 1)).toFixed(3)})`;
+          x.beginPath(); x.arc(bx, by, 2 + i * 2, 0, 6.283); x.fill();
+        }
+        x.fillStyle = `rgba(210,255,225,${fresh.toFixed(2)})`;
+        x.fillRect(Math.round(bx) - 1, Math.round(by) - 1, 3, 3);
+      }
+      // and a needle round the bezel pointing the way, which does not fade
+      const nx = cx + Math.cos(b) * (R + 3), ny = cy + Math.sin(b) * (R + 3);
+      x.fillStyle = sc.ping > 0.3 ? '#fff3c4' : '#ffd24a';
+      x.fillRect(Math.round(nx) - 1, Math.round(ny) - 1, 3, 3);
+    }
+
+    /* ---- static, everywhere, and worse the less it can hear ---- */
+    {
+      const n = Math.round(18 + sc.noise * 34);
+      for (let i = 0; i < n; i++) {
+        const a = (i * 2.399 + sc.sweep * 31) % 6.283;
+        const r = ((i * 7.13) % 100) / 100 * R;
+        x.fillStyle = `rgba(150,255,190,${(0.05 + (i % 3) * 0.03).toFixed(3)})`;
+        x.fillRect(Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 1, 1);
+      }
+    }
+    // the glass, and the shine on it
+    x.strokeStyle = 'rgba(120,200,150,.30)'; x.lineWidth = 1;
+    x.beginPath(); x.arc(cx, cy, R + 1.5, 0, 6.283); x.stroke();
+    x.strokeStyle = 'rgba(220,255,235,.10)';
+    x.beginPath(); x.arc(cx, cy, R - 3, -2.5, -1.4); x.stroke();
+
+    /* ---- the readout under it ---- */
+    const ry = oy + 56;
+    x.fillStyle = '#0b0f0a'; x.fillRect(ox + 4, ry, W - 8, 8);
+    if (sc.contact) {
+      const k = sc.strength;
+      const bw = Math.round((W - 12) * k);
+      for (let i = 0; i < bw; i += 2) {
+        x.fillStyle = i > (W - 12) * 0.72 ? '#ffd24a' : '#5ae08a';
+        x.fillRect(ox + 6 + i, ry + 2, 1, 4);
+      }
+      drawText(x, k > 0.72 ? 'CLOSE' : (k > 0.34 ? 'SIGNAL' : 'FAINT'), {
+        x: cx, y: oy + 65, scale: 1, align: 'center',
+        color: k > 0.72 ? '#fff3c4' : '#8fe8a0',
+      });
+    } else {
+      // a dead line crawling across, so it is obviously ON and hearing nothing
+      const dx2 = Math.round((sc.sweep * (W - 12)) % (W - 12));
+      x.fillStyle = '#2a4a34'; x.fillRect(ox + 6, ry + 4, W - 12, 1);
+      x.fillStyle = '#5ae08a'; x.fillRect(ox + 6 + dx2, ry + 3, 3, 2);
+      drawText(x, 'NO SIGNAL', {
+        x: cx, y: oy + 65, scale: 1, align: 'center', color: '#4a7a5c',
+      });
+    }
   }
 
   /**
@@ -974,6 +1110,26 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
     p(2, 3, 8, 3, C('#f090c0', '#6a3a52'));
     p(4, 1, 4, 2, C('#f8a8d0', '#74405a'));
     if (beat > 0.5) { p(2, 1, 1, 1, C('#ffc8e0', '#7a4a60')); p(9, 4, 1, 1, C('#ffc8e0', '#7a4a60')); }
+  } else if (kind === 'scanner') {
+    // a handheld set: a round green screen, an aerial and a carrying strap
+    p(1, 2, 10, 9, C('#2a2e28', '#1a1c18'));
+    p(1, 2, 10, 1, C('#3c423a', '#22261f'));
+    p(2, 3, 8, 7, C('#07200f', '#050c07'));
+    p(3, 4, 6, 5, C('#0d3418', '#07160c'));
+    // the sweep, which only moves when it is lit
+    if (lit) {
+      const a = beat * 6.283;
+      const sx = Math.round(6 + Math.cos(a) * 3), sy = Math.round(6.5 + Math.sin(a) * 2.5);
+      p(6, 6, 1, 1, '#7affaa');
+      p(sx, sy, 1, 1, '#7affaa');
+    } else {
+      p(6, 6, 1, 1, '#2a5a3a');
+    }
+    // the aerial
+    p(9, 0, 1, 3, C('#8a9184', '#40443c'));
+    p(8, 0, 3, 1, C('#c0c8b8', '#50564c'));
+    if (lit && beat > 0.6) p(8, -1, 3, 1, C('#7affaa', '#2a5a3a'));
+
   /* ---- the saloon: one drawing per drink, not one glass shared out ---- */
   } else if (kind === 'bitter') {
     // PINT OF SHIPWRECK: a straight glass of brown bitter with a thick head

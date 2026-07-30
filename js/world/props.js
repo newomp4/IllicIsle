@@ -828,7 +828,15 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
    * @param {number} foot  radius of the thing's base, in metres. 0 skips
    *   the extra sampling for scatter that has no base worth speaking of.
    */
+  /* Everything this scatter puts down, with a rough footprint. NOT the
+     same as the collider list: a small rock gets no collider on purpose so
+     you can step over it, and that is exactly the kind of thing a Syncoin
+     was landing on top of — visible, unreachable, and invisible to any
+     check that only looked at colliders. */
+  const placed = [];
+
   const put = (key, x, y, z, yaw, s, tilt = false, foot = 0) => {
+    placed.push({ x, z, r: Math.max(0.35, (foot || 0.5) * s) });
     let yy = y;
     if (foot > 0) {
       const r = foot * s;
@@ -955,7 +963,10 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     }
   }
 
-  return B.build(scene);
+  /* Batcher.build returns the array of InstancedMeshes it added, so the
+     footprints ride along beside it rather than on it. Whatever is placed
+     after the scatter reads this to keep out of the way. */
+  return { meshes: B.build(scene), placed };
 }
 
 /* ===========================================================
