@@ -2046,6 +2046,12 @@ export const SCREENS = {
       s.t0 = 0;
       s.dealt = 0;
       s.said = 0;
+      /* When each card arrived, keyed by where it sits. Every card flies out
+         of the shoe from the moment it is stamped, so a hit in the middle of
+         a hand animates exactly like a card off the deal. */
+      s.at = {};
+      s.holeShown = false;
+      s.chips = 0;
       s.line = "SIT DOWN. SIX DECKS, I STAND ON ALL SEVENTEENS.";
       s.flash = 0;
       s.won = 0;
@@ -2083,28 +2089,36 @@ export const SCREENS = {
       x.fillStyle = '#c39a2c'; x.fillRect(10, TY - 4, W - 20, 1);
 
 
-      /* ---- a card ---- */
+      /* ---- a card ----
+         Cards are dealt, not placed. Each one flies out of the shoe at the
+         dealer's left, spinning, arrives face down, and flips over as it
+         settles with a little overshoot. `key` is where it lives, so the same
+         card keeps its own clock across frames. */
       const CW = 20, CH = 28;
-      const card = (c, px, py, faceDown, lift) => {
-        const yy = Math.round(py - (lift || 0));
-        x.fillStyle = 'rgba(0,0,0,.45)';
-        x.fillRect(px + 2, yy + 3, CW, CH);
-        if (faceDown) {
-          x.fillStyle = '#8a2018'; x.fillRect(px, yy, CW, CH);
-          x.fillStyle = '#5a1410'; x.fillRect(px + 2, yy + 2, CW - 4, CH - 4);
-          x.fillStyle = '#c39a2c';
-          for (let i = 4; i < CH - 4; i += 4) x.fillRect(px + 3, yy + i, CW - 6, 1);
-          return;
-        }
-        x.fillStyle = '#f2ecd8'; x.fillRect(px, yy, CW, CH);
-        x.fillStyle = '#c8c0a4'; x.fillRect(px, yy + CH - 1, CW, 1);
+      const SHOE_X = 20, SHOE_Y = TY + 6;
+
+      /* the shoe itself, which is where they all come from */
+      const shoe = () => {
+        x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(SHOE_X + 1, SHOE_Y + 2, 26, 20);
+        x.fillStyle = '#3a1a14'; x.fillRect(SHOE_X, SHOE_Y, 26, 20);
+        x.fillStyle = '#5a2418'; x.fillRect(SHOE_X, SHOE_Y, 26, 2);
+        x.fillStyle = '#c39a2c'; x.fillRect(SHOE_X, SHOE_Y + 18, 26, 2);
+        // the deck showing through the top
+        x.fillStyle = '#e6dcc0'; x.fillRect(SHOE_X + 3, SHOE_Y + 3, 20, 6);
+        x.fillStyle = '#b8ae92';
+        for (let i = 0; i < 6; i++) x.fillRect(SHOE_X + 3, SHOE_Y + 3 + i, 20, 1);
+      };
+
+      const faceUp = (c, px, yy, w) => {
+        x.fillStyle = '#f2ecd8'; x.fillRect(px, yy, w, CH);
+        x.fillStyle = '#c8c0a4'; x.fillRect(px, yy + CH - 1, w, 1);
+        if (w < 9) return;                       // mid-flip, no room for the face
         const red = c.s === 'H' || c.s === 'D';
         const col = red ? '#b02418' : '#1a1410';
         drawText(x, c.r === '10' ? '10' : c.r, {
           x: px + 2, y: yy + 3, scale: 1, color: col, shadow: false,
         });
-        // the pip, drawn rather than lettered
-        const sx = px + CW - 8, sy = yy + CH - 11;
+        const sx = px + w - 8, sy = yy + CH - 11;
         x.fillStyle = col;
         if (c.s === 'H') {
           x.fillRect(sx, sy + 1, 2, 3); x.fillRect(sx + 3, sy + 1, 2, 3);
@@ -2121,9 +2135,59 @@ export const SCREENS = {
         }
       };
 
+      const faceDown = (px, yy, w) => {
+        x.fillStyle = '#8a2018'; x.fillRect(px, yy, w, CH);
+        if (w < 7) return;
+        x.fillStyle = '#5a1410'; x.fillRect(px + 2, yy + 2, w - 4, CH - 4);
+        x.fillStyle = '#c39a2c';
+        for (let i = 4; i < CH - 4; i += 4) x.fillRect(px + 3, yy + i, w - 6, 1);
+      };
+
+      /**
+       * @param key  a stable name for this card's slot
+       * @param hold true to keep it face down after it lands (the hole card)
+       */
+      const card = (key, c, tx, ty2, hold) => {
+        if (s.at[key] === undefined) s.at[key] = s.t;
+        const age = Math.max(0, s.t - s.at[key]);
+        const FLY = 0.30;
+        const k = Math.min(1, age / FLY);
+        const e = 1 - Math.pow(1 - k, 3);
+        // a touch of overshoot so it settles rather than stopping dead
+        const over = k >= 1 ? 0 : Math.sin(k * Math.PI) * 3;
+        const px = Math.round(SHOE_X + (tx - SHOE_X) * e);
+        const py = Math.round(SHOE_Y + (ty2 - SHOE_Y) * e - over);
+
+        // its shadow, which shrinks as it lands
+        x.fillStyle = `rgba(0,0,0,${(0.45 - (1 - k) * 0.2).toFixed(2)})`;
+        x.fillRect(px + 2 + Math.round((1 - k) * 3), py + 3 + Math.round((1 - k) * 3), CW, CH);
+
+        /* In flight it is face down and spinning — the spin is a horizontal
+           squash, which is all a card needs in two dimensions. Then it flips
+           once, unless it is the hole card. */
+        if (k < 1) {
+          const spin = Math.abs(Math.cos(age * 26));
+          const w = Math.max(2, Math.round(CW * (0.25 + spin * 0.75)));
+          faceDown(px + Math.round((CW - w) / 2), py, w);
+          return;
+        }
+        const flipT = age - FLY;
+        const FLIP = 0.22;
+        if (hold) { faceDown(px, py, CW); return; }
+        if (flipT < FLIP) {
+          const f = flipT / FLIP;
+          const w = Math.max(2, Math.round(CW * Math.abs(Math.cos(f * Math.PI))));
+          const ox2 = px + Math.round((CW - w) / 2);
+          if (f < 0.5) faceDown(ox2, py, w); else faceUp(c, ox2, py, w);
+          return;
+        }
+        faceUp(c, px, py, CW);
+      };
+
       /* ---- the dealer's hand ---- */
       const st = s.st;
       const dy = DEAL_CARDS;
+      shoe();
       if (st) {
         const dn = st.dealer.length;
         const dx0 = Math.round(W / 2 - (dn * (CW + 3) - 3) / 2);
@@ -2132,8 +2196,7 @@ export const SCREENS = {
           const down = i === 1 && st.phase === 'player';
           const shown = s.phase === 'dealing' ? (s.dealt > i * 2 + 1) : true;
           if (!shown) return;
-          const age = s.phase === 'dealing' ? 0 : 1;
-          card(c, dx0 + i * (CW + 3), dy, down, age ? 0 : 6);
+          card(`d${i}`, c, dx0 + i * (CW + 3), dy, down);
         });
         drawText(x, st.phase === 'player' ? 'DEALER' : `DEALER  ${BJ.handText(st.dealer)}`, {
           x: W / 2, y: DEAL_LBL, scale: 1, align: 'center',
@@ -2161,7 +2224,7 @@ export const SCREENS = {
           h.cards.forEach((c, i) => {
             const shown = s.phase === 'dealing' ? (s.dealt > i * 2) : true;
             if (!shown) return;
-            card(c, px0 + i * (CW + 3), py0, false, 0);
+            card(`p${hi}_${i}`, c, px0 + i * (CW + 3), py0, false);
           });
           const sc = BJ.score(h.cards);
           const res = st.results && st.results[hi];
@@ -2174,11 +2237,18 @@ export const SCREENS = {
           drawText(x, txt, {
             x: cxh, y: YOU_LBL, scale: 1, align: 'center', color: col,
           });
-          // the chips staked on this hand
-          for (let k = 0; k < Math.min(6, Math.ceil(h.bet / 5)); k++) {
+          /* The chips, dropping in one at a time from above rather than all
+             appearing at once. */
+          const chipKey = `c${hi}`;
+          if (s.at[chipKey] === undefined) s.at[chipKey] = s.t;
+          const chipAge = s.t - s.at[chipKey];
+          const nChips = Math.min(6, Math.ceil(h.bet / 5));
+          for (let k = 0; k < Math.min(nChips, Math.floor(chipAge / 0.07) + 1); k++) {
             // stacked downward: growing upward, the top chip landed on the
             // hand's own label
-            const chx = Math.round(cxh - 4), chy = YOU_CHIPS + k * 2;
+            const drop = Math.max(0, 1 - (chipAge - k * 0.07) / 0.14);
+            const chx = Math.round(cxh - 4);
+            const chy = Math.round(YOU_CHIPS + k * 2 - drop * drop * 14);
             x.fillStyle = '#0a0604'; x.fillRect(chx - 1, chy - 1, 10, 4);
             x.fillStyle = h.doubled ? '#c39a2c' : '#8a2018'; x.fillRect(chx, chy, 8, 3);
             x.fillStyle = 'rgba(255,255,255,.25)'; x.fillRect(chx, chy, 8, 1);
@@ -2278,6 +2348,15 @@ export const SCREENS = {
         return;
       }
       if (s.phase === 'dealer') {
+        /* His hole card turns over the moment it becomes his turn, on its own
+           clock, so the flip reads as a deliberate reveal rather than the
+           card silently changing. */
+        if (s.at.d1 !== undefined && !s.holeShown) {
+          s.holeShown = true;
+          s.at.d1 = s.t;
+          g.audio?.sfx('page');
+          return;
+        }
         // one card a beat, so you can watch him go over
         if (t - s.t0 < 0.5) return;
         s.t0 = t;
@@ -2590,6 +2669,19 @@ export const SCREENS = {
       s.sel = s.sel || 0;
       s.side = s.side || 0;
       s.flash = 0;
+      s.wipe = 0;             // the shutter, 1 down to 0 up
+      s.wipeTo = null;
+    },
+    /** The shutter comes down, the side changes behind it, and it goes up. */
+    tick(s, g, dt) {
+      if (!s.wipe) return;
+      s.wipe = Math.max(0, s.wipe - dt * 1.5);
+      if (s.wipeTo !== null && s.wipe <= 0.5) {
+        s.side = s.wipeTo;
+        s.wipeTo = null;
+        s.sel = 0;
+        g.audio?.sfx('door');
+      }
     },
     draw(x, W, H, s, g, t) {
       const agent = g.amAgent;
@@ -2890,6 +2982,40 @@ export const SCREENS = {
       });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
 
+      /* ---- the shutter ----
+         Going through to the back room used to be an instant swap, which
+         read as a bug. Now a roller shutter comes down over the counter, the
+         room changes behind it, and it goes back up. */
+      if (s.wipe > 0) {
+        // 1..0.5 closing, 0.5..0 opening
+        const closing = s.wipe > 0.5;
+        const k = closing ? (1 - s.wipe) * 2 : s.wipe * 2;
+        const hgt = Math.round(H * (1 - k));
+        // the slats
+        for (let sy = 0; sy < hgt; sy += 4) {
+          x.fillStyle = (sy / 4) % 2 ? 'rgba(46,34,32,.97)' : 'rgba(72,54,50,.97)';
+          x.fillRect(0, sy, W, 4);
+        }
+        // the lip, with hazard paint on it
+        if (hgt > 0) {
+          x.fillStyle = '#1a1210'; x.fillRect(0, hgt, W, 2);
+          for (let hx = 0; hx < W; hx += 10) {
+            x.fillStyle = (hx / 10) % 2 ? '#c8a02a' : '#2a1a10';
+            x.fillRect(hx, hgt + 2, 10, 3);
+          }
+          // a hairline of light under it
+          x.fillStyle = 'rgba(255,214,140,.16)';
+          x.fillRect(0, hgt + 5, W, 2);
+        }
+        // and what it says on the way
+        if (hgt > 40) {
+          drawText(x, s.side === 0 ? 'THROUGH THE BACK' : 'BACK TO THE COUNTER', {
+            x: W / 2, y: Math.min(hgt - 20, H / 2), scale: 2, align: 'center',
+            color: s.side === 0 ? '#c08078' : GOLD,
+          });
+        }
+      }
+
       footer(x, W, H, 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
       return rows;
     },
@@ -2902,7 +3028,17 @@ export const SCREENS = {
         : shelf(black ? 'black' : 'open', isNight);
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true; }
-      if (code === 'Tab' && agent && !s.vendor) { s.side = 1 - s.side; s.sel = 0; g.audio?.sfx('page'); return true; }
+      if (code === 'Tab' && agent && !s.vendor) {
+        if (!s.wipe) {
+          s.wipe = 1;
+          s.wipeTo = 1 - s.side;
+          g.audio?.sfx('slam');
+          g.audio?.sfx('rumble');
+        }
+        return true;
+      }
+      // nothing else works while the shutter is moving
+      if (s.wipe > 0) return true;
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
         if (list[s.sel] && g.buyItem(list[s.sel].id)) {
@@ -3047,11 +3183,11 @@ export const SCREENS = {
         x: W - 14, y: 10, scale: 1, align: 'right', color: sab ? '#ff6a5a' : '#6a8a5a',
       });
       drawText(x, `${alive} STILL BREATHING`, { x: W - 14, y: 20, scale: 1, align: 'right', color: '#8a5a52' });
-      x.fillStyle = '#5a1a14'; x.fillRect(14, 28, W - 28, 1);
+      x.fillStyle = '#5a1a14'; x.fillRect(14, 31, W - 28, 1);
 
       /* ---- left: the rack of switches ---- */
       const LX = 14, LW = 106, ROW = 17;
-      let y = 36;
+      let y = 38;
       const rows = [];
       defs.forEach((def, i) => {
         const on = i === s.sel;
@@ -3082,24 +3218,26 @@ export const SCREENS = {
         y += ROW;
       });
 
-      /* ---- right: what the selected switch does ---- */
+      /* ---- right: what the selected switch does ----
+         It gets the full height of the panel now that the lever has moved
+         out of it. */
       const RX = LX + LW + 8, RW = W - RX - 14;
-      const RB = H - 30;
-      x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 36, RW, RB - 36);
+      const RB = H - 26;
+      x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 38, RW, RB - 38);
       x.fillStyle = locked(d) ? '#4a2a26' : '#8a2018';
-      x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
-      x.fillRect(RX, 36, 1, RB - 36); x.fillRect(RX + RW - 1, 36, 1, RB - 36);
+      x.fillRect(RX, 38, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
+      x.fillRect(RX, 38, 1, RB - 38); x.fillRect(RX + RW - 1, 38, 1, RB - 38);
 
       /* The right-hand panel is a set of bands with a hard floor. The prose
          used to be allowed to run down until it hit an arbitrary number,
          which on the longer descriptions put it straight through the timings
          and the plot underneath. */
-      const PLOT_H = 46;
-      const FIG_TOP = H - 50 - PLOT_H;          // where the figures begin
+      const PLOT_H = 54;
+      const FIG_TOP = RB - PLOT_H - 6;          // where the figures begin
       const PROSE_END = FIG_TOP - 5;            // and the hard floor for prose
 
-      drawSabotageIcon(x, d.id, RX + RW / 2 - 14, 40, 28, !locked(d), t);
-      let by = 68;
+      drawSabotageIcon(x, d.id, RX + RW / 2 - 14, 42, 28, !locked(d), t);
+      let by = 72;
       for (const ln of wrapText(d.name, RW - 12, 1, 1)) {
         drawText(x, ln, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: '#ffd8ce' });
         by += 10;
@@ -3141,7 +3279,7 @@ export const SCREENS = {
       };
       const spots = (d.fixAt || []).map((k) => WHERE[k] || k.toUpperCase());
       const PLOT = PLOT_H;
-      const plx = RX + RW - PLOT - 6, ply = FIG_TOP;
+      const plx = RX + RW - PLOT - 5, ply = FIG_TOP;
       x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(plx, ply, PLOT, PLOT);
       x.fillStyle = '#4a1a16';
       x.fillRect(plx, ply, PLOT, 1); x.fillRect(plx, ply + PLOT - 1, PLOT, 1);
@@ -3193,63 +3331,92 @@ export const SCREENS = {
       }
 
       /* ---- the lever ----
-         A caged switch you throw, and it takes a real pull: the fatal one
-         is behind a cover you have to lift first. Dragging it works, and so
-         does holding E. */
-      const lvx = W - 32, lvy = H - 48, lvH = 36;
-      x.fillStyle = '#1a0605'; x.fillRect(lvx - 12, lvy - 4, 26, lvH + 8);
-      x.fillStyle = '#5a1a14';
-      x.fillRect(lvx - 12, lvy - 4, 26, 1); x.fillRect(lvx - 12, lvy + lvH + 3, 26, 1);
-      x.fillRect(lvx - 12, lvy - 4, 1, lvH + 8); x.fillRect(lvx + 13, lvy - 4, 1, lvH + 8);
-      // hazard stripes down the throat of the slot
-      for (let i = 0; i < lvH; i += 6) {
-        x.fillStyle = (i / 6) % 2 ? 'rgba(200,160,42,.30)' : 'rgba(40,10,8,.6)';
-        x.fillRect(lvx - 5, lvy + i, 10, 6);
-      }
-      const pull = Math.max(s.pull || 0, s.drag || 0);
-      const knobY = Math.round(lvy + pull * (lvH - 8));
-      // the shaft above the knob
-      x.fillStyle = '#8a9096'; x.fillRect(lvx - 2, lvy, 4, knobY - lvy + 4);
-      // the knob
-      const hot = pull > 0.7;
-      x.fillStyle = locked(d) ? '#4a2a26' : (hot ? '#ff6a5a' : '#c03a2c');
-      x.fillRect(lvx - 8, knobY, 16, 8);
-      x.fillStyle = locked(d) ? '#6a3a34' : (hot ? '#ffd8ce' : '#e06a58');
-      x.fillRect(lvx - 8, knobY, 16, 2);
-      s.leverBox = { x: lvx - 14, y: lvy - 6, w: 30, h: lvH + 12, top: lvy, throwLen: lvH - 8 };
-      // and sparks once it is most of the way down
-      if (pull > 0.55 && !locked(d)) {
-        for (let i = 0; i < 5; i++) {
-          const a2 = (t * 40 + i * 13) % 1;
-          x.fillStyle = i % 2 ? '#ffd8a0' : '#ff8a4a';
-          x.fillRect(
-            Math.round(lvx - 8 + a2 * 16 + Math.sin(t * 31 + i) * 3),
-            Math.round(knobY + 6 + a2 * 7), 2, 2
-          );
+         Under the rack, in the left column, directly beneath the switch you
+         have selected. It used to hang off the right-hand edge of the panel
+         where it sat on top of the plot and ran down past the panel into the
+         key hints — the one control on the screen and it was the worst
+         placed thing on it.
+
+         It is a caged handle you drag, or hold E on. */
+      {
+        /* Right of centre in the well, so the label beside it has clear
+           room — centred, the knob at the top of its travel printed over
+           the word telling you what it is. */
+        const LVX = LX + Math.round(LW * 0.70);
+        const LVY = 38 + defs.length * ROW + 10; // straight under the rack
+        const LVH = Math.min(46, (H - 34) - LVY);
+        // the cage
+        x.fillStyle = '#1a0605'; x.fillRect(LX, LVY, LW, LVH);
+        x.fillStyle = '#5a1a14';
+        x.fillRect(LX, LVY, LW, 1); x.fillRect(LX, LVY + LVH - 1, LW, 1);
+        x.fillRect(LX, LVY, 1, LVH); x.fillRect(LX + LW - 1, LVY, 1, LVH);
+        // hazard stripes down the throat
+        const THROAT = LVH - 16;
+        for (let i = 0; i < THROAT; i += 6) {
+          x.fillStyle = (i / 6) % 2 ? 'rgba(200,160,42,.26)' : 'rgba(40,10,8,.6)';
+          x.fillRect(LVX - 6, LVY + 8 + i, 12, Math.min(6, THROAT - i));
         }
-      }
-      if (!locked(d)) {
-        drawText(x, 'PULL', {
-          x: lvx, y: lvy + lvH + 6, scale: 1, align: 'center',
-          color: Math.floor(t * 3) % 2 ? RED : '#7a3a34',
+        // what it is for
+        drawText(x, locked(d) ? 'COOLING' : 'THROW', {
+          x: LX + 6, y: LVY + 6, scale: 1,
+          color: locked(d) ? '#6a3a34' : (Math.floor(t * 3) % 2 ? RED : '#8a3a34'),
         });
+        if (!locked(d)) {
+          drawText(x, 'IT', {
+            x: LX + 6, y: LVY + 16, scale: 1,
+            color: Math.floor(t * 3) % 2 ? RED : '#8a3a34',
+          });
+        }
+
+        const pull = Math.max(s.pull || 0, s.drag || 0);
+        const top = LVY + 8;
+        const knobY = Math.round(top + pull * (THROAT - 9));
+        // the shaft, and the knob
+        x.fillStyle = '#8a9096'; x.fillRect(LVX - 2, top, 4, knobY - top + 4);
+        const hot = pull > 0.7;
+        x.fillStyle = locked(d) ? '#4a2a26' : (hot ? '#ff6a5a' : '#c03a2c');
+        x.fillRect(LVX - 9, knobY, 19, 9);
+        x.fillStyle = locked(d) ? '#6a3a34' : (hot ? '#ffd8ce' : '#e06a58');
+        x.fillRect(LVX - 9, knobY, 19, 2);
+        x.fillStyle = '#7a1810'; x.fillRect(LVX - 9, knobY + 7, 19, 2);
+        s.leverBox = { x: LX, y: LVY, w: LW, h: LVH, top, throwLen: THROAT - 9 };
+
+        // sparks once it is most of the way down
+        if (pull > 0.55 && !locked(d)) {
+          for (let i = 0; i < 6; i++) {
+            const a2 = (t * 40 + i * 13) % 1;
+            x.fillStyle = i % 2 ? '#ffd8a0' : '#ff8a4a';
+            x.fillRect(
+              Math.round(LVX - 9 + a2 * 19 + Math.sin(t * 31 + i) * 4),
+              Math.round(knobY + 8 + a2 * 8), 2, 2
+            );
+          }
+        }
+        // and the contact it closes at the bottom
+        x.fillStyle = pull > 0.8 ? '#ffd8ce' : '#3a1a16';
+        x.fillRect(LVX - 7, LVY + LVH - 6, 15, 3);
       }
 
       /* a hazard band across the header when the fatal one is selected */
       if (d.fatal && !locked(d)) {
+        /* Across the top, above both columns, on a band of its own — not
+           printed over the divider where the rack starts. */
         for (let hx = 8; hx < W - 8; hx += 8) {
           x.fillStyle = (hx / 8) % 2 ? 'rgba(200,160,42,.55)' : 'rgba(120,20,14,.75)';
-          x.fillRect(hx, 24, 8, 3);
+          x.fillRect(hx, 25, 8, 3);
         }
-        const warn = 'THIS ONE ENDS THE ROUND IF IT RUNS OUT';
         if (Math.floor(t * 2) % 2 === 0) {
-          drawText(x, warn, { x: W / 2, y: 30, scale: 1, align: 'center', color: '#ffd24a' });
+          const warn = 'THIS ONE ENDS THE ROUND IF IT RUNS OUT';
+          const ww = textWidth(warn, 1) + 10;
+          x.fillStyle = 'rgba(12,3,3,.92)';
+          x.fillRect(Math.round(W / 2 - ww / 2), 24, ww, 5);
+          drawText(x, warn, { x: W / 2, y: 22, scale: 1, align: 'center', color: '#ffd24a' });
         }
       }
 
       footer(x, W, H, locked(d)
-        ? 'UP DOWN CHOOSE   Q OR ESC AWAY'
-        : 'UP DOWN CHOOSE   DRAG OR HOLD E   Q OR ESC AWAY');
+        ? 'UP DOWN CHOOSE      Q OR ESC AWAY'
+        : 'UP DOWN CHOOSE   DRAG THE LEVER OR HOLD E   Q OR ESC AWAY');
       return rows;
     },
 

@@ -301,7 +301,7 @@ export function makeGroundWith(platforms, base) {
 
 /** The footprint one of Ferdi's machines needs to stand on. */
 const VENDOR_FOOT = [
-  [-0.75, -0.5], [0.75, -0.5], [-0.75, 0.5], [0.75, 0.5], [0, 0],
+  [-1.05, -0.65], [1.05, -0.65], [-1.05, 0.65], [1.05, 0.65], [0, 0],
 ];
 
 /** The footprint Ferdi's hut actually occupies, in its own space. */
@@ -1169,7 +1169,7 @@ export class Game {
       let lo = vg.y;
       for (let k = 0; k < 8; k++) {
         const a2 = (k / 8) * Math.PI * 2;
-        const hh = heightAt(vg.x + Math.cos(a2) * 1.15, vg.z + Math.sin(a2) * 1.15);
+        const hh = heightAt(vg.x + Math.cos(a2) * 1.35, vg.z + Math.sin(a2) * 1.35);
         if (hh < lo) lo = hh;
       }
       const vm = buildVendingMachine(rng, this.propMats);
@@ -1179,7 +1179,7 @@ export class Game {
       vm.rotation.y = Math.atan2(vg.x, vg.z);
       scene.add(vm);
       this.tickers.push(vm);
-      this.colliders.push({ x: vg.x, z: vg.z, r: 0.95 });
+      this.colliders.push({ x: vg.x, z: vg.z, r: 1.15 });
       this.vendors.push({ x: vg.x, z: vg.z, y: lo, node: vm });
     }
 
