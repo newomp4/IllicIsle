@@ -18,8 +18,8 @@ import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } fro
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import {
-  STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
-  itemById, stockFor, VENDOR_IDS,
+  STOCK, FOOD, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
+  itemById, stockFor, VENDOR_IDS, SCHLARNA_UP, SCHLARNA_N,
 } from './market.js';
 
 /* How often the wire carries anything.
@@ -825,9 +825,18 @@ export class MPGame extends Game {
        if they want anything off Ferdi they have to go and find coins on
        the ground like a scavenger, which puts them out in the open. */
     if (!this.amAgent) {
-      const pay = STAGE_PAY_MIN + Math.floor(Math.random() * (STAGE_PAY_MAX - STAGE_PAY_MIN + 1));
+      let pay = STAGE_PAY_MIN + Math.floor(Math.random() * (STAGE_PAY_MAX - STAGE_PAY_MIN + 1));
+      // Cathy's house burger: the next three jobs pay twice
+      if (this.bigMeals > 0) {
+        pay *= 2;
+        this.bigMeals--;
+        this.ui.toast(this.bigMeals > 0
+          ? `DOUBLE PAY - ${this.bigMeals} MORE`
+          : 'THAT WAS THE LAST DOUBLE', 'jade', 2200);
+      }
       this.coins = (this.coins || 0) + pay;
       this.ui.toast(`+${pay} SYNCOIN`, 'gold', 1600);
+      this._payInstalment();
     }
 
     const def = taskById(id);
@@ -1089,6 +1098,10 @@ export class MPGame extends Game {
     }
   }
 
+  /* The base class rebuilds the compass through _refreshCompass; in a round
+     the list of ticks is a different list, so it comes through here. */
+  _refreshCompass() { if (this.mp?.active) this._compassForTasks(); else super._refreshCompass(); }
+
   /** Your own chores get compass ticks. Nobody else's do. */
   _compassForTasks() {
     const M = this.mp;
@@ -1116,6 +1129,17 @@ export class MPGame extends Game {
         pois.push({ label: 'MACHINE', x: v.x, z: v.z, kind: 'poi' });
       }
     }
+    /* Once you have spoken to her, Cathy is on your compass. Before that
+       she is on the map and nowhere else, which is the whole point of her
+       being out there. */
+    if (this.metCathy && this.cathy) {
+      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
+    }
+
+    /* Cathy's sauce puts a needle on the nearest loose coin, and her eggs
+       put a tick on every one inside seventy metres. */
+    this._coinPois(pois);
+
     const sab = M.view.sabotage;
     if (sab) {
       const def = SABOTAGE_DEFS[sab.kind];
@@ -1249,6 +1273,12 @@ export class MPGame extends Game {
       }
     }
 
+    // Cathy, on the far side of the island
+    if (this.cathy && this.amAlive) {
+      const dc = Math.hypot(p.x - this.cathy.x, p.z - this.cathy.z);
+      if (dc < 5.0 && dc < bestD) { bestD = dc; best = { kind: 'mpCathy', prompt: 'CATHY' }; }
+    }
+
     // the one who is not on the roster
     if (M.stranger) {
       const ds = Math.hypot(p.x - M.stranger.x, p.z - M.stranger.z);
@@ -1377,6 +1407,17 @@ export class MPGame extends Game {
       }
       case 'mpFlopper': {
         this.screens.push('mpFlopper', {});
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
+      case 'mpCathy': {
+        if (!this.metCathy) {
+          this.metCathy = true;
+          this._compassForTasks();
+          this.ui.toast(`CATHY IS ON YOUR COMPASS - ${this.cathy.name}`, 'jade', 3400);
+        }
+        this.screens.push('mpCathy', { sel: 0 });
         document.exitPointerLock?.();
         this.audio.sfx('page');
         break;
@@ -1519,6 +1560,7 @@ export class MPGame extends Game {
         rogue: this.rogueSandPos,
         hut: this.hutPos,
         shop: this.shopShut ? null : this.hutPos,
+        cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
         relics: [],
         fixes: (() => {
           const sab2 = M.view.sabotage;
@@ -1617,6 +1659,7 @@ export class MPGame extends Game {
     this.ui.toast(`+${d.coins} SYNCOIN`, 'gold', 1800);
     this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
     this.player.punch?.(0.2);
+    this._payInstalment();
   }
 
   _takeCoin(c) {
@@ -1629,6 +1672,7 @@ export class MPGame extends Game {
     this.taskFx?.burst(c.x, heightAt(c.x, c.z), c.z, 0xffd24a, 'done', 2.4);
     this.player.punch?.(0.16);
     this._send({ t: C.PURSE, coins: this.coins });
+    this._payInstalment();
   }
 
   /* =========================================================
@@ -1650,6 +1694,98 @@ export class MPGame extends Game {
     M.sale = { id: it.id, cut, day: M.saleDay = (M.saleDay || 0) + 1, at: now() };
     this.ui.toast(`FERDI HAS MARKED SOMETHING DOWN ${cut}%`, 'gold', 4200);
     this.audio.sfx('stinger');
+
+    /* ---- and the day's Schlarna line ----
+       Somebody sold Ferdi a card reader. One item a day can be taken away in
+       four parts instead of paid for; it is never the item that is already
+       marked down, because two offers on one line is how a shop ends up
+       giving things away. */
+    const open2 = STOCK.filter((i) => i.side === 'open' && i.id !== it.id
+      && (!i.night || (this.night || 0) > 0.5));
+    if (open2.length) {
+      const pick = open2[(Math.random() * open2.length) | 0];
+      M.after = { id: pick.id };
+    }
+  }
+
+  /* =========================================================
+     SCHLARNA
+
+     Four payments, no coins needed up front beyond the first, and a
+     premium for the privilege. Ferdi does not know how the arrangement
+     works either; he knows the reader beeps and the money turns up.
+     ========================================================= */
+
+  /** The full price of paying for something in parts. */
+  schlarnaTotal(id) {
+    const it = itemById(id);
+    if (!it) return 0;
+    return Math.max(SCHLARNA_N, Math.ceil(this.priceOf(id) * (1 + SCHLARNA_UP)));
+  }
+
+  /** What each of the four payments comes to. */
+  schlarnaEach(id) { return Math.ceil(this.schlarnaTotal(id) / SCHLARNA_N); }
+
+  /** Whether this line is on the plan today, and you are not already on one. */
+  schlarnaOn(id) {
+    return this.mp.after?.id === id && !this.plan
+      && !(this.owned?.has(id) && itemById(id)?.tag === 'PASSIVE');
+  }
+
+  /** Take something away now and settle it over the round. */
+  buySchlarna(id) {
+    const it = itemById(id);
+    if (!it || !this.schlarnaOn(id)) { this.audio.sfx('deny'); return false; }
+    const each = this.schlarnaEach(id);
+    if ((this.coins || 0) < each) {
+      this.audio.sfx('deny');
+      this.ui.toast(`THE FIRST PAYMENT IS ${each} SYNCOIN`, 'bad', 2200);
+      return false;
+    }
+    this.coins -= each;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.audio.sfx('confirm');
+    this.audio.sfx('coin');
+
+    if (it.tag === 'PASSIVE') { this.owned = this.owned || new Set(); this.owned.add(id); }
+    else this.carry = [...(this.carry || []), id];
+    if (PASSIVE_AT_BUY.has(id)) this.applyItem(id);
+
+    this.plan = {
+      id, name: it.name, each,
+      left: SCHLARNA_N - 1,
+      owed: this.schlarnaTotal(id) - each,
+    };
+    this.mp.after = null;                    // one a day, and it has gone
+    this.ui.showPopup(it.name,
+      `${SCHLARNA_N - 1} PAYMENTS OF ${each} LEFT`, 'coin', 'SCHLARNA');
+    return true;
+  }
+
+  /**
+   * A payment comes out of the next money you earn.
+   *
+   * Half of whatever lands in your purse goes to the plan until it is
+   * settled, which means the debt is real without ever being able to leave
+   * you unable to move: you always keep half of everything you find.
+   */
+  _payInstalment() {
+    const pl = this.plan;
+    if (!pl || !this.coins) return;
+    const take = Math.min(this.coins, pl.each, Math.max(1, Math.ceil(this.coins / 2)));
+    if (take <= 0) return;
+    this.coins -= take;
+    pl.owed -= take;
+    this._send({ t: C.PURSE, coins: this.coins });
+    if (pl.owed <= 0) {
+      this.plan = null;
+      this.ui.toast('SCHLARNA IS SETTLED', 'jade', 3000);
+      this.audio.sfx('confirm');
+    } else {
+      pl.left = Math.ceil(pl.owed / pl.each);
+      this.ui.toast(`SCHLARNA TOOK ${take} - ${pl.owed} LEFT`, 'bad', 2200);
+      this.audio.sfx('select');
+    }
   }
 
   /** What this item costs right now. */
@@ -1678,8 +1814,16 @@ export class MPGame extends Game {
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
 
-    if (it.tag === 'PASSIVE') this.owned.add(id);
+    /* Food is eaten at the counter. It does not go on your belt: there is
+       no version of this where you carry a burger around and press 4. */
+    const isFood = FOOD.some((f) => f.id === id);
+    if (it.tag === 'PASSIVE' || isFood) this.owned.add(id);
     else this.carry = [...(this.carry || []), id];
+    if (isFood) {
+      this.applyFood(id);
+      this.ui.showPopup(it.name, 'EATEN', 'coin', 'CATHY SAYS');
+      return true;
+    }
 
     /* Passives take effect the moment they are bought. Everything else goes
        on your belt and waits for you.
@@ -1705,7 +1849,8 @@ export class MPGame extends Game {
 
   /** What an item actually does. Called at the counter, or off the belt. */
   applyItem(id) {
-    if (id === 'tonic') { this.player.staminaDrain = 0.06; this.player.staminaRegen = 0.5; }
+    // Cathy's food does the same thing in both modes, so it lives on Game
+    if (FOOD.some((f) => f.id === id)) this.applyFood(id);
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
     if (id === 'vest') {
       this._send({ t: C.PERK, perk: 'vest', on: true });
@@ -2161,6 +2306,9 @@ export class MPGame extends Game {
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.4;
   }
+
+  /** In a round there is paid work, so the burger is on the counter too. */
+  foodList() { return FOOD; }
 
   /* ---------- the table ---------- */
   /** The rules, handed to the screen so it never implements any itself. */
@@ -2888,6 +3036,7 @@ export class MPGame extends Game {
     }
 
     this._sweepCoins(dt);
+    this._tickFood();
 
     /* The one on the treeline. His position comes off the wire at the net
        tick, so it is interpolated here — he moves far too fast for a

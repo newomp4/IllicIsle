@@ -57,12 +57,6 @@ export const STOCK = [
     tag: 'ONE USE',
   },
   {
-    id: 'tonic', name: 'CANE TONIC', cost: 12, side: 'open', icon: 'tonic',
-    blurb: 'You stop running out of breath: sprinting costs almost nothing and '
-      + 'recovers five times faster. Lasts the whole round.',
-    tag: 'PASSIVE',
-  },
-  {
     /* Sold at the FRONT counter on purpose. When only Agents could buy
        these, a missing name over somebody's head was a confession — you
        had found your Agent without doing anything. Anyone can buy them, so
@@ -186,9 +180,68 @@ export const STOCK = [
  * things nobody walks all the way to the clearing for. A machine is worth
  * finding, but it is not a substitute for the counter.
  */
-export const VENDOR_IDS = ['tonic', 'lantern', 'flask', 'whistle', 'ticket'];
+/* The cane tonic used to be in here. It is Cathy's popcorn now, and Ferdi
+   does not stock anything of hers, so his machines got the cork vest
+   instead — a thing nobody buys at full price at the counter either. */
+export const VENDOR_IDS = ['lantern', 'flask', 'whistle', 'ticket', 'vest'];
 
-export const itemById = (id) => STOCK.find((i) => i.id === id);
+/* ===========================================================
+   SCHLARNA
+
+   A card reader turned up in Ferdi's stock one morning with nobody's name
+   on the box. One line a day can be taken away in four payments instead of
+   bought; it costs a third more in total, and the rest comes out of
+   whatever you earn afterwards.
+   =========================================================== */
+export const SCHLARNA_UP = 0.30;   // a third more, near enough
+export const SCHLARNA_N = 4;       // in four parts
+
+/* ===========================================================
+   CATHY'S STALL
+
+   She is on the far side of the island and she is the only person on it who
+   sells anything to eat. Nothing here is sold at Ferdi's counter, and Ferdi
+   has never been asked about the arrangement.
+   =========================================================== */
+export const FOOD = [
+  {
+    id: 'tonic', name: 'CUSTOM POPCORN', cost: 12, side: 'food', icon: 'popcorn',
+    blurb: 'Cathy will not say what is in it. You stop running out of breath: '
+      + 'sprinting costs almost nothing and recovers five times faster, for the '
+      + 'rest of the round.',
+    tag: 'PASSIVE',
+  },
+  {
+    id: 'eggs', name: 'BAG OF PICKLED EGGS', cost: 9, side: 'food', icon: 'eggs',
+    blurb: 'Every loose Syncoin within 70 metres shows through the trees and the '
+      + 'hills, and appears on your compass. You will not walk past money again. '
+      + 'Lasts the whole round.',
+    tag: 'PASSIVE',
+  },
+  {
+    id: 'sauce', name: "CATHY'S OWN SAUCE", cost: 7, side: 'food', icon: 'sauce',
+    blurb: 'Your compass grows one more needle and it points at the nearest loose '
+      + 'Syncoin, wherever it is. Lasts the whole round.',
+    tag: 'PASSIVE',
+  },
+  {
+    id: 'burger', name: 'THE HOUSE BURGER', cost: 14, side: 'food', icon: 'burger',
+    blurb: 'The one she is proud of. Your next three jobs pay double - so up to '
+      + '12 Syncoin apiece instead of 6.',
+    tag: 'THREE JOBS',
+  },
+  {
+    id: 'floss', name: 'CANDY FLOSS', cost: 5, side: 'food', icon: 'floss',
+    blurb: 'Pure sugar. You walk and sprint 30% faster for ninety seconds, then '
+      + 'you feel it.',
+    tag: 'ONE USE',
+  },
+];
+
+/** Everything Cathy has, in the order it sits on her counter. */
+export function cathyStock() { return FOOD; }
+
+export const itemById = (id) => STOCK.find((i) => i.id === id) || FOOD.find((i) => i.id === id);
 
 /**
  * What this player is allowed to be shown right now.

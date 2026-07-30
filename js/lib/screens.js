@@ -14,7 +14,9 @@ import { drawRelicIcon, drawShopIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
-import { STOCK, stockFor, shelf, SANCTUARY_R, VENDOR_IDS } from '../mp/market.js';
+import {
+  STOCK, FOOD, stockFor, shelf, SANCTUARY_R, VENDOR_IDS, SCHLARNA_N,
+} from '../mp/market.js';
 
 // the minigames borrow the one font everything else is set in
 bindText(drawText);
@@ -158,6 +160,95 @@ function drawFerdi(x, ox, oy, black, t) {
   p(6 + sway, -5, 12, 1, '#3a3220');
 }
 
+/**
+ * Cathy, at her own counter.
+ *
+ * Shoulder-length brown hair with a heavy level fringe, a cheeseburger where
+ * her mouth should be, and a black t-shirt. She is drawn big — she is the
+ * only thing on the far side of the island and the screen belongs to her.
+ *
+ * Layered from the back forward: hair, then head, then the burger over the
+ * lower half of the face, because that is the order the thing reads in.
+ */
+function drawCathy(x, ox, oy, t) {
+  const p = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx, oy + gy, w, h); };
+  const sway = Math.round(Math.sin(t * 0.8) * 1.5);
+  const blink = Math.sin(t * 0.73) > 0.955;
+  const chew = Math.round(Math.abs(Math.sin(t * 1.9)) * 1.4);   // the burger settling
+
+  const SKIN = '#d8a882', SKIN_D = '#b8845e', HAIR = '#4a2c1a', HAIR_L = '#633c22';
+  const TEE = '#1c1c20', TEE_L = '#2c2c32';
+
+  /* ---- her, from the shoulders down ---- */
+  // a wide, soft shape: she is heavyset and the silhouette says so first
+  p(-4 + sway, 34, 44, 40, TEE);
+  p(-7 + sway, 40, 4, 30, TEE);            // the arm nearest us
+  p(39 + sway, 40, 4, 30, TEE);
+  p(-4 + sway, 34, 44, 2, TEE_L);          // light along the shoulder seam
+  p(-2 + sway, 44, 3, 24, TEE_L);          // a fold down the front
+  p(-8 + sway, 66, 8, 6, SKIN);            // a forearm on the counter
+  p(-8 + sway, 66, 8, 1, SKIN_D);
+
+  /* ---- the hair, behind everything ---- */
+  p(1 + sway, 2, 34, 40, HAIR);            // the whole helmet, down to her shoulders
+  p(-2 + sway, 12, 5, 28, HAIR);           // and the fall either side of her face
+  p(33 + sway, 12, 5, 28, HAIR);
+  p(3 + sway, 1, 30, 3, HAIR_L);           // the sheen on the crown
+  // it thins to points where it ends, rather than stopping square
+  p(-2 + sway, 40, 4, 3, HAIR);
+  p(34 + sway, 40, 4, 3, HAIR);
+
+  /* ---- the face ---- */
+  p(5 + sway, 8, 26, 26, SKIN);
+  p(3 + sway, 14, 3, 14, SKIN);            // full cheeks, wider than the brow
+  p(32 + sway, 14, 3, 14, SKIN);
+  p(8 + sway, 32, 20, 5, SKIN);            // a soft jaw
+  p(11 + sway, 36, 14, 3, SKIN_D);         // and the second chin under it
+
+  /* ---- the fringe: heavy, level, and low ---- */
+  p(2 + sway, 4, 32, 9, HAIR);
+  p(2 + sway, 12, 32, 2, HAIR_L);          // the blunt cut line across her brow
+  for (let i = 0; i < 8; i++) {            // strand ends, all the same length
+    p(3 + sway + i * 4, 14, 2, 1, HAIR);
+  }
+
+  /* ---- eyes, just under the fringe ---- */
+  if (!blink) {
+    p(9 + sway, 16, 6, 4, '#f2ece0');
+    p(21 + sway, 16, 6, 4, '#f2ece0');
+    p(11 + sway, 17, 3, 3, '#5a3a1e');
+    p(23 + sway, 17, 3, 3, '#5a3a1e');
+    p(12 + sway, 18, 1, 1, '#100a06');
+    p(24 + sway, 18, 1, 1, '#100a06');
+  } else {
+    p(9 + sway, 18, 6, 1, '#7a5236');
+    p(21 + sway, 18, 6, 1, '#7a5236');
+  }
+  p(10 + sway, 21, 5, 1, SKIN_D);          // a crease under each
+  p(21 + sway, 21, 5, 1, SKIN_D);
+
+  /* ---- and the burger, built into her face where her mouth is ----
+     Top to bottom in the order it is stacked: cheese draped over the edge,
+     a lettuce frill poking out sideways, the patty, tomato, more lettuce. */
+  const bx = 6 + sway, by = 22 + chew;
+  // cheese, hanging over both corners
+  p(bx, by, 24, 4, '#f0a828');
+  p(bx - 1, by + 3, 4, 4, '#e09818');
+  p(bx + 21, by + 3, 4, 4, '#e09818');
+  p(bx + 2, by, 20, 1, '#ffc860');
+  // the lettuce frill, wider than everything else
+  p(bx - 2, by + 5, 28, 3, '#5f9e34');
+  for (let i = 0; i < 7; i++) p(bx - 2 + i * 4, by + 4, 3, 2, '#83c452');
+  // the patty
+  p(bx, by + 8, 24, 5, '#6b4326');
+  p(bx, by + 12, 24, 1, '#4a2c18');
+  // tomato
+  p(bx + 2, by + 13, 20, 2, '#c8342a');
+  p(bx + 4, by + 13, 16, 1, '#e0503a');
+  // and the bottom leaf
+  p(bx + 1, by + 15, 22, 2, '#5f9e34');
+}
+
 /** A vertical list of choices with a blinking selector. */
 function menuList(x, items, sel, cx, top, t, opts = {}) {
   const gap = opts.gap ?? 14;
@@ -298,6 +389,28 @@ export class ScreenStack {
    SCREENS
    =========================================================== */
 /** What Michael Beef says while he waits for you. */
+/* The table limits. Five is the chip, a hundred is as much as Beef will take
+   without going to ask somebody. */
+const BJ_MIN = 5, BJ_MAX = 200;
+
+/* What Cathy says while you read her board. She talks about the food and
+   nothing else, which is either because that is all she thinks about or
+   because it is all she is willing to discuss. */
+const CATHY_LINES = [
+  "NOBODY COMES OUT THIS FAR. TAKE YOUR TIME.",
+  "THE POPCORN IS MINE. THE RECIPE IS ALSO MINE.",
+  "FERDI SELLS TOOLS. I SELL FOOD. WE HAVE AN UNDERSTANDING.",
+  "EVERYTHING IS HOT. DO NOT ASK HOW.",
+  "THE EGGS FIND MONEY. I DO NOT KNOW WHY EITHER.",
+  "IF YOU ARE LOST, EAT SOMETHING FIRST.",
+];
+const CATHY_SOLD = [
+  "GOOD CHOICE. EAT IT WALKING.",
+  "THAT IS THE ONE I WOULD HAVE PICKED.",
+  "NO REFUNDS AND NO NAPKINS.",
+  "TELL THE OTHERS WHERE I AM.",
+];
+
 const BEEF_PROMPTS = [
   'YOUR CALL.',
   'TAKE YOUR TIME. THE BOAT IS NOT GOING ANYWHERE.',
@@ -2043,7 +2156,13 @@ export const SCREENS = {
      =========================================================== */
   mpBlackjack: {
     init(s, g) {
-      s.stake = Math.min(25, Math.max(5, Math.floor((g.coins || 0) / 4 / 5) * 5)) || 5;
+      /* A quarter of the purse, rounded down to a five, and never more than
+         you are holding. Opening on a stake you cannot cover was the reason
+         the arrows felt broken: you pressed DEAL and he refused. */
+      const purse = g.coins || 0;
+      s.stake = Math.max(BJ_MIN,
+        Math.min(BJ_MAX, purse, Math.floor(purse / 4 / 5) * 5 || BJ_MIN));
+      s.bump = 0;             // the little kick when the stake changes
       s.st = null;
       s.phase = 'bet';        // bet | dealing | player | dealer | paid
       s.t0 = 0;
@@ -2259,6 +2378,75 @@ export const SCREENS = {
         });
       }
 
+      /* ---- the betting box ----
+         The stake used to be a number in the top corner and a line of key
+         hints, and there was no sign that the arrows did anything. It is a
+         box on the felt now, in the band that is empty until cards land in
+         it, and it moves when you change it. */
+      if (s.phase === 'bet') {
+        const bw = 116, bh = 46;
+        const bx = Math.round(W / 2 - bw / 2);
+        const by = Math.round(TY + (TH - bh) / 2) - 4;
+        const kick = Math.round((s.bump || 0) * 3);
+
+        // the painted circle it all sits in
+        x.strokeStyle = 'rgba(255,255,255,.14)'; x.lineWidth = 1;
+        x.beginPath(); x.ellipse(W / 2, by + bh / 2, 62, 27, 0, 0, 6.283); x.stroke();
+        x.strokeStyle = 'rgba(195,154,44,.30)';
+        x.beginPath(); x.ellipse(W / 2, by + bh / 2, 58, 24, 0, 0, 6.283); x.stroke();
+
+        drawText(x, 'YOUR STAKE', {
+          x: W / 2, y: by - 2, scale: 1, align: 'center', color: '#7fb8a0',
+        });
+
+        /* The chips, one per five, in columns of five, stacked upward. They
+           live in the left half of the box and the figure lives in the right
+           half. The first version worked its own left edge out from the
+           column count and pushed the whole pile off the felt at a big
+           stake. */
+        const nCh = Math.max(1, Math.min(20, Math.round(s.stake / 5)));
+        const cols = Math.ceil(nCh / 5);
+        const cw = cols * 11 - 1;
+        const cx0 = Math.round(bx + 30 - cw / 2);
+        for (let i = 0; i < nCh; i++) {
+          const col = (i / 5) | 0, row = i % 5;
+          const chx = cx0 + col * 11;
+          const chy = by + 32 - row * 3 - kick;
+          x.fillStyle = '#0a0604'; x.fillRect(chx - 1, chy - 1, 12, 5);
+          x.fillStyle = (col % 2) ? '#c39a2c' : '#8a2018'; x.fillRect(chx, chy, 10, 4);
+          x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(chx, chy, 10, 1);
+        }
+        // and past twenty chips it says so rather than drawing off the table
+        if (Math.round(s.stake / 5) > 20) {
+          drawText(x, '+', { x: cx0 + cw + 3, y: by + 26, scale: 1, color: GOLD_LT });
+        }
+
+        // the figure, and the arrows that change it
+        const can = coins >= BJ_MIN;
+        const nw = textWidth(String(s.stake), 2);
+        const nx = Math.round(W / 2 + 14);
+        drawText(x, String(s.stake), {
+          x: nx, y: by + 14 - kick, scale: 2,
+          color: can ? (s.stake > coins ? RED : GOLD_LT) : RED,
+        });
+        // a triangle above and below, lit when there is room to move
+        const ax2 = nx + nw + 7;
+        const up = s.stake < Math.min(BJ_MAX, coins), dn = s.stake > BJ_MIN;
+        for (let r = 0; r < 4; r++) {
+          x.fillStyle = up ? '#8fe8a0' : '#2a4a3a';
+          x.fillRect(ax2 + 3 - r, by + 11 + r - kick, r * 2 + 1, 1);
+          x.fillStyle = dn ? '#ffb08a' : '#4a3a2a';
+          x.fillRect(ax2 + r, by + 25 - r - kick, 7 - r * 2, 1);
+        }
+        drawText(x, `AFTER THE BET  ${Math.max(0, coins - s.stake)}`, {
+          x: W / 2, y: by + bh - 1, scale: 1, align: 'center',
+          color: coins - s.stake < 0 ? RED : '#6a9a86',
+        });
+        drawText(x, `TABLE LIMIT ${BJ_MIN} TO ${BJ_MAX}`, {
+          x: W / 2, y: by + bh + 9, scale: 1, align: 'center', color: '#4a7a6a',
+        });
+      }
+
       /* ---- Michael Beef, a portrait beside his own name ----
          He used to be drawn across the middle of the header, where the
          dealer's total lands. He sits in the corner now, out of everything's
@@ -2299,7 +2487,13 @@ export const SCREENS = {
 
       /* ---- the keys, and what they do right now ---- */
       let hint;
-      if (s.phase === 'bet') hint = 'UP DOWN  STAKE      E  DEAL      ESC  LEAVE';
+      if (s.phase === 'bet') {
+        /* No plus-or-minus sign: the font has not got one and it printed as
+           a question mark. */
+        /* Short enough to fit. At 320 pixels the footer holds about fifty
+           characters, and the first version ran off both ends. */
+        hint = 'UP DN 5   LEFT RIGHT 1   A ALL IN   E DEAL';
+      }
       else if (s.phase === 'dealing' || s.phase === 'dealer') hint = '';
       else if (s.phase === 'player') {
         const bits = ['H  HIT', 'S  STAND'];
@@ -2334,6 +2528,7 @@ export const SCREENS = {
       const BJ = g.bjRules;
       if (!BJ) return;
       if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 1.4);
+      if (s.bump > 0) s.bump = Math.max(0, s.bump - dt * 6);
 
       if (s.phase === 'dealing') {
         // four cards, one at a time, with a sound each
@@ -2400,12 +2595,27 @@ export const SCREENS = {
       }
 
       if (s.phase === 'bet') {
-        if (code === 'ArrowUp' || code === 'KeyW') {
-          s.stake = Math.min(100, s.stake + 5); g.audio?.sfx('select'); return true;
+        /* Add or take away, and never leave the stake somewhere the purse
+           cannot follow. The ceiling is whichever is lower: the table limit
+           or what you are carrying. */
+        const setStake = (n) => {
+          const top = Math.min(BJ_MAX, Math.max(BJ_MIN, coins));
+          const v = Math.max(BJ_MIN, Math.min(top, n));
+          if (v === s.stake) { g.audio?.sfx('deny'); return true; }
+          s.stake = v;
+          s.bump = 1;
+          g.audio?.sfx('select');
+          return true;
+        };
+        if (code === 'ArrowUp' || code === 'KeyW') return setStake(s.stake + 5);
+        if (code === 'ArrowDown' || code === 'KeyS') return setStake(s.stake - 5);
+        if (code === 'ArrowRight') return setStake(s.stake + 1);
+        if (code === 'ArrowLeft') return setStake(s.stake - 1);
+        if (code === 'KeyA') {
+          s.line = 'ALL OF IT. HE LIKES YOU ALREADY.';
+          return setStake(coins);
         }
-        if (code === 'ArrowDown' || code === 'KeyS') {
-          s.stake = Math.max(5, s.stake - 5); g.audio?.sfx('select'); return true;
-        }
+        if (code === 'KeyM') return setStake(BJ_MIN);
         if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
           if (coins < s.stake) {
             s.line = 'NOT AT THAT STAKE. NOT WITH THAT PURSE.';
@@ -2865,6 +3075,12 @@ export const SCREENS = {
             : (onSale ? (Math.floor(t * 5) % 2 ? '#fff3c4' : '#8fe8a0')
               : (carrying ? '#8fd8b8' : (afford ? GOLD : '#8a4a44'))),
         });
+        /* A pink pip on the line the reader will take, so you can see there
+           is a plan on without opening every item. */
+        if (g.schlarnaOn?.(it.id)) {
+          x.fillStyle = Math.floor(t * 3) % 2 ? '#f4a6bd' : '#c46f8c';
+          x.fillRect(LX + LW - 2, y + 1, 2, 5);
+        }
         rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
         y += ROW;
       });
@@ -2879,6 +3095,10 @@ export const SCREENS = {
       x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
       x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
       x.fillRect(RX, 36, 1, RB - 36); x.fillRect(RX + RW - 1, 36, 1, RB - 36);
+
+      /* Is today's afterpay line the one you are looking at? Ferdi's reader
+         only handles one item a day and one plan at a time. */
+      const sch = !!(d && g.schlarnaOn?.(d.id));
 
       if (d) {
         /* The thing itself, stood on the counter with a light on it and a
@@ -2961,7 +3181,10 @@ export const SCREENS = {
         x.fillRect(RX + 8, by - 3, RW - 16, 1);
         by += 3;
         for (const ln of wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1)) {
-          if (by > RB - 26) break;
+          /* With a Schlarna offer there are two buttons and a line of
+             explanation under this panel, not one button. At 42 the last
+             line of the blurb printed straight through "PAY 3 NOW". */
+          if (by > RB - (sch ? 54 : 26)) break;
           drawText(x, ln, { x: RX + 6, y: by, scale: 1, color: '#c9b98a' });
           by += 9;
         }
@@ -2973,7 +3196,7 @@ export const SCREENS = {
       const afford = d && (g.coins || 0) >= dPrice2;
       const label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
         : (afford ? `E   BUY FOR ${dPrice2}` : 'NOT ENOUGH SYNCOIN');
-      const bw = RW - 12, bx = RX + 6, byy = RB - 16;
+      const bw = RW - 12, bx = RX + 6, byy = RB - (sch ? 32 : 16);
       x.fillStyle = s.flash > 0 ? accent : (afford && !owned ? (black ? '#3a0e0b' : '#3a2a10') : '#1a1208');
       x.fillRect(bx, byy, bw, 12);
       x.fillStyle = afford && !owned ? accent : '#5a4a30';
@@ -2984,6 +3207,60 @@ export const SCREENS = {
         color: s.flash > 0 ? '#160c04' : (afford && !owned ? GOLD_LT : '#7a6a4a'),
       });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
+
+      /* ---- SCHLARNA ----
+         A card reader appeared in Ferdi's stock one morning with nobody's
+         name on the box. It handles one line a day. The badge is pink
+         because whoever made it wanted it to look like something you have
+         seen before. */
+      if (sch) {
+        const each = g.schlarnaEach(d.id);
+        const total = g.schlarnaTotal(d.id);
+        const sy = RB - 16;
+        const PINK = '#f4a6bd', PINK_D = '#c46f8c';
+        const lit = (g.coins || 0) >= each;
+
+        x.fillStyle = lit ? PINK : '#6a4a56';
+        x.fillRect(bx, sy, bw, 12);
+        // the soft corners of the badge, faked by knocking the pixels out
+        x.fillStyle = black ? '#080506' : '#120c06';
+        x.fillRect(bx, sy, 1, 1); x.fillRect(bx + bw - 1, sy, 1, 1);
+        x.fillRect(bx, sy + 11, 1, 1); x.fillRect(bx + bw - 1, sy + 11, 1, 1);
+        x.fillStyle = lit ? '#ffd4e2' : '#8a6a76';
+        x.fillRect(bx + 1, sy, bw - 2, 1);
+        x.fillStyle = PINK_D;
+        x.fillRect(bx + 1, sy + 11, bw - 2, 1);
+
+        // the wordmark, and the offer beside it
+        drawText(x, 'SCHLARNA', {
+          x: bx + 4, y: sy + 3, scale: 1, color: '#2a0a16', shadow: false,
+        });
+        const off = `${SCHLARNA_N}x${each}`;
+        drawText(x, off, {
+          x: bx + bw - 4, y: sy + 3, scale: 1, align: 'right',
+          color: lit ? '#4a1226' : '#3a2a30', shadow: false,
+        });
+        rows.push({ x: bx, y: sy, w: bw, h: 12, plan: true });
+
+        // and what it actually means, in words, above the buy button
+        drawText(x, lit ? `K  PAY ${each} NOW, ${total} IN ALL` : `NEED ${each} FOR THE FIRST`, {
+          x: RX + RW / 2, y: byy - 11, scale: 1, align: 'center',
+          color: lit ? PINK : '#8a6a76',
+        });
+      }
+
+      /* If you are already on a plan, you are told, wherever you are in the
+         shop. Money vanishing out of your purse with no explanation is not
+         an installment, it is a bug. */
+      if (g.plan) {
+        const pl = g.plan;
+        const txt = `SCHLARNA: ${pl.owed} STILL OWED ON ${pl.name}`;
+        const tw = textWidth(txt, 1);
+        x.fillStyle = 'rgba(60,14,32,.9)';
+        x.fillRect(LX, H - 28, Math.min(W - LX * 2, tw + 8), 11);
+        x.fillStyle = '#f4a6bd'; x.fillRect(LX, H - 28, 2, 11);
+        drawText(x, txt, { x: LX + 5, y: H - 25, scale: 1, color: '#f4a6bd' });
+      }
 
       /* ---- the shutter ----
          Going through to the back room used to be an instant swap, which
@@ -3023,7 +3300,8 @@ export const SCREENS = {
         }
       }
 
-      footer(x, W, H, 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
+      footer(x, W, H, sch ? 'UP DOWN CHOOSE   E BUY   K SCHLARNA   ESC LEAVE'
+        : 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
       return rows;
     },
     key(code, s, g, st) {
@@ -3047,6 +3325,12 @@ export const SCREENS = {
       // nothing else works while the shutter is moving
       if (s.wipe > 0) return true;
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
+      if (code === 'KeyK') {
+        const it = list[s.sel];
+        if (it && g.schlarnaOn?.(it.id) && g.buySchlarna(it.id)) s.flash = 0.3;
+        else g.audio?.sfx('deny');
+        return true;
+      }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
         if (list[s.sel] && g.buyItem(list[s.sel].id)) {
           s.flash = 0.3;
@@ -3059,6 +3343,191 @@ export const SCREENS = {
             g.afterOverlayClose();
             g.ui?.toast('THE MACHINE IS EMPTY NOW', 'gold', 2400);
           }
+        }
+        return true;
+      }
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (row?.plan) { this.key('KeyK', s, g, st); return true; }
+      if (row?.buy) { this.key('Enter', s, g, st); return true; }
+      if (row?.pick !== undefined) {
+        if (row.pick === s.sel) this.key('Enter', s, g, st);
+        else { s.sel = row.pick; g.audio?.sfx('select'); }
+      }
+      return true;
+    },
+  },
+
+  /* ---------------- CATHY'S STALL ---------------- */
+  /* She is on the far side of the island with a counter, a parasol and a
+     board she painted herself. Ferdi does not stock food and has never been
+     asked why. */
+  mpCathy: {
+    init(s) {
+      if (s.sel === undefined) s.sel = 0;
+      s.flash = 0;
+      s.line = CATHY_LINES[0];
+      s.said = 0;
+      s.lineAt = 0;
+    },
+    tick(s, g, dt, t) {
+      if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 3);
+      // she keeps talking, whether or not you buy anything
+      if (t - s.lineAt > 7) {
+        s.lineAt = t;
+        s.line = CATHY_LINES[(++s.said) % CATHY_LINES.length];
+      }
+    },
+    draw(x, W, H, s, g, t) {
+      const list = g.foodList ? g.foodList() : FOOD;
+      if (s.sel >= list.length) s.sel = 0;
+      const d = list[s.sel];
+
+      /* ---- her pitch: sand, sea behind it, and the parasol overhead ---- */
+      x.fillStyle = '#1a1408'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#1a1408', '#241a0c', 0.5, 2);
+      // the water on the horizon, because she is on the shore side
+      x.fillStyle = '#123040'; x.fillRect(0, 30, W, 16);
+      for (let i = 0; i < 5; i++) {
+        const wy = 32 + i * 3;
+        x.fillStyle = `rgba(140,200,220,${(0.05 + i * 0.012).toFixed(3)})`;
+        x.fillRect((Math.sin(t * 0.6 + i) * 20 + W / 2 - 40) | 0, wy, 80, 1);
+      }
+      x.fillStyle = '#3a2c14'; x.fillRect(0, 46, W, H - 46);
+      ditherRect(x, 0, 46, W, H - 46, '#3a2c14', '#4a3a1c', 0.5, 2);
+      // the striped sailcloth over the top of everything
+      for (let i = 0; i * 14 < W; i++) {
+        x.fillStyle = i % 2 ? '#a83c34' : '#e0d4b0';
+        x.fillRect(i * 14, 0, 14, 9);
+      }
+      x.fillStyle = '#6a2c24'; x.fillRect(0, 9, W, 2);
+      // its scalloped edge
+      for (let i = 0; i * 8 < W; i++) {
+        x.fillStyle = (i % 2) ? '#a83c34' : '#c8bc98';
+        x.fillRect(i * 8, 11, 8, 2);
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
+
+      // her, behind the counter, on the right where nothing else goes
+      drawCathy(x, W - 58, 42, t);
+      // the counter she is stood behind, in front of her
+      x.fillStyle = '#5a4020'; x.fillRect(W - 72, 110, 68, 5);
+      x.fillStyle = '#7a5a2c'; x.fillRect(W - 72, 110, 68, 1);
+      x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(W - 72, 115, 68, 4);
+
+      /* ---- her board ----
+         Her name at double height needs its own band. The first version put
+         the strap line nine pixels under a fourteen-pixel word, and the two
+         printed straight through each other. */
+      x.fillStyle = '#e0d4b0'; x.fillRect(8, 16, 130, 30);
+      x.fillStyle = '#8a6a3c'; x.fillRect(8, 16, 130, 1);
+      x.fillStyle = '#6a4a24'; x.fillRect(8, 45, 130, 1);
+      drawText(x, 'CATHY', { x: 13, y: 19, scale: 2, color: '#a83c34', shadow: false });
+      x.fillStyle = '#c8b890'; x.fillRect(12, 34, 122, 1);
+      drawText(x, 'HOT FOOD ALL HOURS', { x: 13, y: 37, scale: 1, color: '#3a2c14', shadow: false });
+      drawText(x, `${g.coins || 0} SYNCOIN`, {
+        x: W - 8, y: 16, scale: 1, align: 'right', color: GOLD_LT,
+      });
+
+      /* ---- the list, on the left ---- */
+      /* Wide enough for the longest thing she sells. At 118 the names came
+         out as "BAG OF PICKL." and "CATHY'S OWN .", which tells you nothing
+         about either. */
+      const LX = 8, LW = 172, ROW = 15;
+      let y = 52;
+      const rows = [];
+      list.forEach((it, i) => {
+        const on = i === s.sel;
+        const held = it.tag === 'PASSIVE' && g.hasItem?.(it.id);
+        const price = g.priceOf ? g.priceOf(it.id) : it.cost;
+        const afford = (g.coins || 0) >= price;
+        if (on) {
+          x.fillStyle = '#3a2a10'; x.fillRect(LX, y - 1, LW, ROW - 1);
+          x.fillStyle = GOLD; x.fillRect(LX, y - 1, 2, ROW - 1);
+        }
+        drawShopIcon(x, it.icon, LX + 5, y, 12, on, t);
+        const right = held ? 'EATEN' : String(price);
+        const room = LW - 26 - textWidth(right, 1) - 6;
+        let nm = it.name;
+        while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
+        if (nm !== it.name) nm = nm.slice(0, -1) + '.';
+        drawText(x, nm, {
+          x: LX + 21, y: y + 1, scale: 1,
+          color: held ? '#5f7a4a' : (on ? GOLD_LT : (afford ? '#c9b98a' : '#7a6a52')),
+        });
+        drawText(x, right, {
+          x: LX + LW - 4, y: y + 1, scale: 1, align: 'right',
+          color: held ? JADE : (afford ? GOLD : '#8a4a44'),
+        });
+        rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
+        y += ROW;
+      });
+
+      /* ---- what it does, under the list rather than beside it, so her half
+              of the screen stays hers ---- */
+      const PY = y + 4, PB = H - 32;
+      x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(LX, PY, W - LX * 2, PB - PY);
+      x.fillStyle = '#5c3f1c';
+      x.fillRect(LX, PY, W - LX * 2, 1); x.fillRect(LX, PB - 1, W - LX * 2, 1);
+      if (d) {
+        let by = PY + 4;
+        drawText(x, d.tag, { x: LX + 5, y: by, scale: 1, color: '#8a7a52' });
+        by += 10;
+        for (const ln of wrapText(d.blurb.toUpperCase(), W - LX * 2 - 12, 1, 1)) {
+          if (by > PB - 12) break;
+          drawText(x, ln, { x: LX + 5, y: by, scale: 1, color: '#c9b98a' });
+          by += 9;
+        }
+      }
+
+      /* ---- what she is saying ---- */
+      {
+        const lw = Math.min(W - 16, textWidth(s.line, 1));
+        x.fillStyle = 'rgba(10,6,4,.86)';
+        x.fillRect(8, PB + 2, lw + 8, 12);
+        x.fillStyle = '#a83c34'; x.fillRect(8, PB + 2, 2, 12);
+        drawText(x, s.line, { x: 13, y: PB + 5, scale: 1, color: '#e8d8b8' });
+      }
+
+      /* ---- the counter ---- */
+      const owned = d && d.tag === 'PASSIVE' && g.hasItem?.(d.id);
+      const price = d ? (g.priceOf ? g.priceOf(d.id) : d.cost) : 0;
+      const afford = d && (g.coins || 0) >= price;
+      const label = owned ? 'YOU HAVE EATEN THAT'
+        : (afford ? `E   BUY FOR ${price}` : 'NOT ENOUGH SYNCOIN');
+      const bw = W - 16, bx = 8, byy = H - 16;
+      x.fillStyle = s.flash > 0 ? GOLD : (afford && !owned ? '#3a2a10' : '#1a1208');
+      x.fillRect(bx, byy, bw, 12);
+      x.fillStyle = afford && !owned ? GOLD : '#5a4a30';
+      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
+      drawText(x, label, {
+        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
+        color: s.flash > 0 ? '#160c04' : (afford && !owned ? GOLD_LT : '#7a6a4a'),
+      });
+      rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
+      return rows;
+    },
+    key(code, s, g, st) {
+      const list = g.foodList ? g.foodList() : FOOD;
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'Escape' || code === 'Backspace') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        const it = list[s.sel];
+        if (it && g.buyItem(it.id)) {
+          s.flash = 1;
+          s.line = CATHY_SOLD[(s.said++) % CATHY_SOLD.length];
+          s.lineAt = s.t;
+        } else {
+          s.line = 'COME BACK WHEN YOU HAVE GOT IT.';
+          s.lineAt = s.t;
         }
         return true;
       }
@@ -4104,6 +4573,10 @@ export const SCREENS = {
         rows.push({ x: bx, y, w: W - 32, h: 22 });
         y += 25;
       });
+      /* There is no Schlarna reader in the castaway story — Ferdi has not
+         been sold one yet. (This line was collateral from the same edit that
+         added it to the Castaways counter, and it threw the moment the
+         single-player shop opened.) */
       footer(x, W, H, 'UP DOWN CHOOSE   E BUY   ESC LEAVE');
       return rows;
     },
@@ -4570,6 +5043,22 @@ export function drawChart(x, ox, oy, S, data, t) {
       x.fillStyle = '#3a2f22';
       for (let i = -6; i < 7; i += 3) x.fillRect(sx + i, sy - 2, 2, 7);
       label('SHUT', sx, sy + 8, '#6a5a48');
+    }
+  }
+  /* Cathy's stall. She is out on her own on the far side, so the map is the
+     only reasonable way to find her — a striped parasol over a counter. */
+  if (data.cathy) {
+    const [sx, sy] = toPx(data.cathy.x, data.cathy.z);
+    if (onMap(sx, sy)) {
+      x.fillStyle = '#5a4020';
+      x.fillRect(sx - 5, sy, 11, 3);              // the counter
+      x.fillStyle = '#a83c34';
+      x.fillRect(sx - 6, sy - 4, 13, 2);          // the parasol
+      x.fillStyle = '#e0d4b0';
+      x.fillRect(sx - 3, sy - 4, 2, 2); x.fillRect(sx + 2, sy - 4, 2, 2);
+      x.fillStyle = '#5a4020';
+      x.fillRect(sx, sy - 3, 1, 3);               // its pole
+      label('CATHY', sx, sy + 6, '#8a2a22');
     }
   }
   // the Lucky Flopper, and her pier

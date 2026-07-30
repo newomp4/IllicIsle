@@ -34,6 +34,8 @@ import {
 import {
   buildHighRoller, HR_ENTRY, HR_BOX, HR_COLLIDERS, hrHeight,
 } from './world/highroller.js';
+import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
+import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
 
@@ -483,6 +485,21 @@ export class Game {
       const hatchPads = BUNKER_SPOTS.map((sp) => ({
         x: sp.x, z: sp.z, rx: 5.5, rz: 5.5, yaw: 0, y: heightAt(sp.x, sp.z),
       }));
+      /* Cathy's pitch, chosen now rather than later so her ground can be
+         levelled before the mesh is built.
+
+         Sinking her to the lowest point under her footprint — the rule for
+         anything with a base — put her standing in a dip with the sand up to
+         her waist on the uphill side, and left you looking down on the top of
+         her head from six metres away. A person is not a crate: she needs
+         flat ground, so she gets a level pad of her own like Ferdi's
+         clearing and every hatch. */
+      {
+        const crng = makeRng(4242);
+        const sp = CATHY_SPOTS[(crng() * CATHY_SPOTS.length) | 0];
+        this.cathyPad = { x: sp.x, z: sp.z, y: heightAt(sp.x, sp.z), name: sp.name };
+        hatchPads.push({ x: sp.x, z: sp.z, rx: 10, rz: 10, yaw: 0, y: this.cathyPad.y });
+      }
       setCarves([...hatchPads, {
         x: FX, z: FZ, rx: 21, rz: 21, yaw: 0, y: FY,
       }, {
@@ -508,6 +525,10 @@ export class Game {
       clearZones.push({ x: LANDMARKS.wreck.x, z: LANDMARKS.wreck.z, r: 30 });
       clearZones.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, r: 30 });
       clearZones.push({ x: -30, z: 46, r: 24 });   // Ferdi's clearing
+      /* A wide clearing at every place Cathy might set up. Sixteen metres
+         left a palm standing directly behind her head from the only angle you
+         ever approach her stall from. */
+      for (const c of CATHY_SPOTS) clearZones.push({ x: c.x, z: c.z, r: 24 });
       /* Every place a chore happens needs a clearing. TASHA sat inside a
          thicket you could walk past three times without seeing her, which
          is not a puzzle, it is a bad map. */
@@ -1183,6 +1204,33 @@ export class Game {
       this.vendors.push({ x: vg.x, z: vg.z, y: lo, node: vm });
     }
 
+    /* ---- Cathy, on the far side of the island ----
+       One of four spots, chosen per world, all of them on the opposite side
+       from the wreck camp and behind the ridge. There is nothing else out
+       there, which is the point: finding her should feel like finding
+       something. */
+    {
+      const pad = this.cathyPad;
+      // she faces the middle of the island, so you meet her front-on
+      const yaw = Math.atan2(-pad.x, -pad.z);
+      const y = heightAt(pad.x, pad.z);     // her pad is level, so this is flat
+      const cathy = buildCathy(rng, this.propMats, buildFlameCluster);
+      cathy.position.set(pad.x, y, pad.z);
+      cathy.rotation.y = yaw;
+      scene.add(cathy);
+      this.tickers.push(cathy);
+      this.cathy = { x: pad.x, z: pad.z, y, node: cathy, name: pad.name, yaw };
+      // her counter is solid, and so is she
+      const cc = Math.cos(yaw), cs = Math.sin(yaw);
+      for (const [lx, lz] of [[-1.3, 1.0], [0, 1.0], [1.3, 1.0], [0, -0.1]]) {
+        this.colliders.push({
+          x: pad.x + lx * cc + lz * cs,
+          z: pad.z - lx * cs + lz * cc,
+          r: 0.8,
+        });
+      }
+    }
+
     /* ---- the storm, dormant until the Pendulums are read ---- */
     this.storm = buildStorm(scene);
     this.storm.onThunder = () => {
@@ -1429,8 +1477,144 @@ export class Game {
     return best || { x: LANDMARKS.temple.x, y: heightAt(LANDMARKS.temple.x, LANDMARKS.temple.z), z: LANDMARKS.temple.z };
   }
 
+  /* ===========================================================
+     CATHY'S FOOD
+
+     The stall is on the island in both modes, so what her food does lives
+     here and the Castaways client calls into it. Three of the five are
+     about finding loose Syncoin, which is the one thing on this island
+     nobody will tell you the location of.
+     =========================================================== */
+
+  /** What is on her counter. The double-pay burger needs paid work to exist. */
+  foodList() { return FOOD.filter((i) => i.id !== 'burger'); }
+
+  /** Whether you have already eaten a permanent one. */
+  hasFood(id) { return !!this.ate?.has(id); }
+
+  /** Do what the label says. Shared by both modes. */
+  applyFood(id) {
+    this.ate = this.ate || new Set();
+    if (id === 'tonic') {
+      this.player.staminaDrain = 0.06;
+      this.player.staminaRegen = 0.5;
+      this.ate.add(id);
+      this.ui.toast('SPRINTING COSTS ALMOST NOTHING NOW', 'jade', 3000);
+    }
+    if (id === 'eggs') {
+      this.coinSense = true;
+      this._coinPoiAt = 0;
+      this.ate.add(id);
+      this.ui.toast('YOU CAN SEE COINS THROUGH THE HILLS - 70 METRES', 'jade', 3400);
+    }
+    if (id === 'sauce') {
+      this.coinNeedle = true;
+      this._coinPoiAt = 0;
+      this.ate.add(id);
+      this.ui.toast('THE COMPASS HAS A COIN NEEDLE NOW', 'jade', 3000);
+    }
+    if (id === 'burger') {
+      this.bigMeals = (this.bigMeals || 0) + 3;
+      this.ui.toast(`${this.bigMeals} JOBS AT DOUBLE PAY`, 'jade', 3000);
+    }
+    if (id === 'floss') {
+      this.flossUntil = performance.now() / 1000 + 90;
+      this.player.SPEED = this.player.BASE_SPEED * 1.30;
+      this.player.SPRINT = this.player.BASE_SPRINT * 1.30;
+      this.ui.toast('30% FASTER FOR NINETY SECONDS', 'jade', 3000);
+    }
+  }
+
+  /**
+   * The food, ticking.
+   *
+   * "Every coin within seventy metres" and "the nearest coin" both change
+   * with every step, so both are recomputed twice a second — thirty-eight
+   * distance checks, which costs nothing.
+   */
+  _tickFood() {
+    /* One clock. This used to be handed this.time in single player and
+       performance.now() in a round, so candy floss either expired the
+       instant you ate it or never expired at all. */
+    const t = performance.now() / 1000;
+    if (this.flossUntil && t > this.flossUntil) {
+      this.flossUntil = 0;
+      const vest = this.hasItem?.('vest') ? 0.75 : 1;
+      this.player.SPEED = this.player.BASE_SPEED * vest;
+      this.player.SPRINT = this.player.BASE_SPRINT * vest;
+      this.ui.toast('THE SUGAR HAS GONE', 'bad', 2400);
+    }
+    if (!this.coinSense && !this.coinNeedle) return;
+    if (t - (this._coinPoiAt || 0) < 0.5) return;
+    this._coinPoiAt = t;
+    const p = this.player.pos;
+    let near = null, nearD = Infinity;
+    for (const c of (this.syncoins || [])) {
+      const d = Math.hypot(p.x - c.x, p.z - c.z);
+      if (this.coinSense) c.mesh?.userData.setSense?.(!c.taken && d < 70);
+      if (!c.taken && d < nearD) { nearD = d; near = c; }
+    }
+    const key = `${this.coinSense ? 1 : 0}${near ? `${near.x | 0},${near.z | 0}` : '-'}`;
+    if (key === this._coinPoiKey) return;
+    this._coinPoiKey = key;
+    this._refreshCompass();
+  }
+
+  /** Every compass tick her food is responsible for. Used by both modes. */
+  _coinPois(out = []) {
+    if (!this.coinSense && !this.coinNeedle) return out;
+    const p = this.player.pos;
+    let near = null, nearD = Infinity;
+    for (const c of (this.syncoins || [])) {
+      if (c.taken) continue;
+      const d = Math.hypot(p.x - c.x, p.z - c.z);
+      if (this.coinSense && d < 70) out.push({ label: '', x: c.x, z: c.z, kind: 'coin' });
+      if (d < nearD) { nearD = d; near = c; }
+    }
+    if (this.coinNeedle && near) out.push({ label: 'COIN', x: near.x, z: near.z, kind: 'coin' });
+    return out;
+  }
+
+  /* ---- her counter, in single player ---- */
+  openCathy() {
+    if (!this.metCathy) {
+      this.metCathy = true;
+      this._refreshCompass();
+      this.ui.toast(`CATHY IS ON YOUR COMPASS - ${this.cathy.name}`, 'jade', 3400);
+    }
+    document.exitPointerLock?.();
+    this.screens.push('mpCathy', { sel: 0 });
+    this.audio.sfx('page');
+  }
+
+  /** Single player has no market, so her prices are her prices. */
+  priceOf(id) { return itemById(id)?.cost || 0; }
+
+  hasItem(id) { return this.hasFood(id); }
+
+  /** Buy and eat, in single player. */
+  buyItem(id) {
+    const it = itemById(id);
+    if (!it) return false;
+    if (it.tag === 'PASSIVE' && this.hasFood(id)) { this.audio.sfx('deny'); return false; }
+    if (this.coins < it.cost) {
+      this.audio.sfx('deny');
+      this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
+      return false;
+    }
+    this.coins -= it.cost;
+    this.audio.sfx('confirm');
+    this.audio.sfx('coin');
+    this.applyFood(id);
+    return true;
+  }
+
   _refreshCompass() {
     const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi' }];
+    if (this.metCathy && this.cathy) {
+      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
+    }
+    this._coinPois(pois);
     if (this.hasChart) {
       PENDULUMS.forEach((p, i) => pois.push({
         label: ['I', 'II', 'III', 'IV'][p.order - 1],
@@ -2307,6 +2491,7 @@ I have snacks."`);
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
+        cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
         // relics get a "?" on the chart until you pick them up — without
         // this they are three specks on a 340-unit island
         relics: this.interactables
@@ -2367,6 +2552,10 @@ I have snacks."`);
       if (c.taken) continue;
       const d = Math.hypot(p.x - c.x, p.z - c.z);
       if (d < 4.2 && d < bestD) { bestD = d; best = { kind: 'coin', coin: c, prompt: 'Take Syncoin' }; }
+    }
+    if (this.cathy) {
+      const d = Math.hypot(p.x - this.cathy.x, p.z - this.cathy.z);
+      if (d < 5.0 && d < bestD) { bestD = d; best = { kind: 'cathy', prompt: 'Cathy' }; }
     }
     return best;
   }
@@ -2457,6 +2646,7 @@ I have snacks."`);
         break;
       }
 
+      case 'cathy': this.openCathy(); break;
       case 'templeExit': this.exitTemple(); break;
       case 'takeIdol': this.takeIdol(); break;
     }
@@ -2901,6 +3091,8 @@ I have snacks."`);
 
     const frozen = this.paused || this.anyOverlayOpen();
     const inTemple = this.state === 'temple';
+    // whatever Cathy sold you, keeping up with where you are
+    if (!frozen && !inTemple) this._tickFood();
 
     // Speedrun clock: only while you actually have control.
     if (!frozen && !this.transitioning) this.runTime += dt;

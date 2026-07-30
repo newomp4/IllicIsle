@@ -15,6 +15,77 @@ const G = (n) => new THREE.Color(n);
 /* ===========================================================
    SYNCOIN — currency, and the oldest thing on the island
    =========================================================== */
+/* ===========================================================
+   THE COIN BEACON
+
+   Cathy sells a bag of pickled eggs that lets you see money through the
+   island. That is drawn here, on the coin itself, rather than by fiddling
+   with the coin's own materials: those are shared with half the props, and
+   turning depth testing off on them would put the whole island in front of
+   itself.
+
+   One material and one geometry for all thirty-eight beacons, made once at
+   module load so nothing is ever compiled mid-round.
+   =========================================================== */
+let _SENSE_MAT = null, _SENSE_GEO = null, _SENSE_TIP = null;
+function senseParts() {
+  if (_SENSE_MAT) return { mat: _SENSE_MAT, geo: _SENSE_GEO, tip: _SENSE_TIP };
+  _SENSE_MAT = new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+    fog: false, side: THREE.DoubleSide,
+  });
+  /* A column of light with a hard bright core.
+
+     The first version faded as (1 - f)^2.2 over seven and a half metres,
+     which meant the top four-fifths of it was invisible and the whole thing
+     read as a small pale smear on the hillside. The point of this is to be
+     seen from the other side of the island, so: a nearly linear fade, a
+     narrow white-hot core, and a wider soft flank around it. */
+  const H = 9.0;
+  /* Six segments across, not one.
+
+     The fade is computed per VERTEX, and with a single segment the only x
+     values in the geometry are the two edges — so the bright core term was
+     evaluated at |x| = half-width every time, came out as zero, and the whole
+     column drew at twelve per cent alpha. That is why it read as a faint
+     smear rather than a beam. There has to be a vertex in the middle for the
+     middle to be bright. */
+  const seg = new THREE.PlaneGeometry(1.5, H, 6, 10);
+  seg.translate(0, H / 2, 0);
+  {
+    const pc = seg.attributes.position;
+    const cols = new Float32Array(pc.count * 4);
+    for (let i = 0; i < pc.count; i++) {
+      const f = pc.getY(i) / H;                    // 0 at the foot, 1 at the top
+      // 1 in the middle 20 per cent, falling away to 0 at the flanks
+      const core = Math.max(0, 1 - Math.abs(pc.getX(i)) / 0.75);
+      cols[i * 4] = 1;
+      cols[i * 4 + 1] = 0.80 + core * 0.18;
+      cols[i * 4 + 2] = 0.34 + core * 0.40;
+      cols[i * 4 + 3] = (1 - f * 0.86) * (0.12 + Math.pow(core, 2.2) * 1.05);
+    }
+    seg.setAttribute('color', new THREE.BufferAttribute(cols, 4));
+  }
+  _SENSE_GEO = seg;
+  // and a diamond floating well clear of the trees, so it is findable at range
+  // two segments each way, for the same reason: the middle needs a vertex
+  _SENSE_TIP = new THREE.PlaneGeometry(0.9, 0.9, 2, 2);
+  _SENSE_TIP.rotateZ(Math.PI / 4);
+  _SENSE_TIP.translate(0, 6.0, 0);
+  {
+    const pc = _SENSE_TIP.attributes.position;
+    const cols = new Float32Array(pc.count * 4);
+    for (let i = 0; i < pc.count; i++) {
+      const r = Math.hypot(pc.getX(i), pc.getY(i) - 6.0) / 0.64;
+      cols[i * 4] = 1; cols[i * 4 + 1] = 0.94; cols[i * 4 + 2] = 0.70;
+      cols[i * 4 + 3] = Math.max(0, 1 - r) * 1.1;
+    }
+    _SENSE_TIP.setAttribute('color', new THREE.BufferAttribute(cols, 4));
+  }
+  return { mat: _SENSE_MAT, geo: _SENSE_GEO, tip: _SENSE_TIP };
+}
+
 export function buildSyncoin(mats, big = false) {
   const s = big ? 1.5 : 1;
   const P = [];
@@ -113,9 +184,27 @@ export function buildSyncoin(mats, big = false) {
     pips.push({ m, a: (i / 4) * Math.PI * 2 });
   }
 
+  /* the through-the-island beacon, off until somebody eats something */
+  const sp = senseParts();
+  const beacon = new THREE.Group();
+  beacon.add(new THREE.Mesh(sp.geo, sp.mat));
+  beacon.add(new THREE.Mesh(sp.tip, sp.mat));
+  beacon.renderOrder = 40;
+  beacon.visible = false;
+  g.add(beacon);
+  g.userData.setSense = (on) => { beacon.visible = !!on; };
+
   const _up = new THREE.Vector3();
   g.userData.tick = (t, dt = 0.016, camPos = null) => {
     if (g.userData.flourish) return;      // the pickup animation owns it
+    if (beacon.visible) {
+      // stood on the ground, not on the bobbing coin, and always facing you
+      beacon.position.y = -(g.userData.baseY !== undefined
+        ? g.position.y - g.userData.baseY : 0);
+      if (camPos) beacon.rotation.y = Math.atan2(camPos.x - g.position.x,
+        camPos.z - g.position.z) - g.rotation.y;
+      beacon.scale.y = 1 + Math.sin(t * 3.1) * 0.05;
+    }
     g.rotation.y = t * 1.9;
     const baseY = g.userData.baseY ?? 0;
     const bob = 0.42 + Math.sin(t * 2.4) * 0.13;

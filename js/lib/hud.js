@@ -633,7 +633,26 @@ export class Hud {
       x.fillRect(tx, oy + H - (major ? 5 : 3), 1, major ? 5 : 3);
     }
 
-    for (const m of c.marks) {
+    /* Two named places on the same bearing used to print on top of each
+       other — CAMP and COIN at the same angle came out as "CCOAIMNP". The
+       place labels share one row, so they are drawn in order of how much you
+       need them and anything that would land on top of one already there is
+       dropped. The pip or diamond still draws; only the lettering goes. */
+    const PRI = { FIX: 0, COIN: 1, BOX: 2, POST: 3, CATHY: 4, MACHINE: 5, FIRE: 6, CAMP: 7 };
+    const taken = [];
+    const roomFor = (px, w) => {
+      for (const [a, b] of taken) if (px - w / 2 < b + 2 && px + w / 2 > a - 2) return false;
+      taken.push([px - w / 2, px + w / 2]);
+      return true;
+    };
+    const ordered = c.marks.slice().sort((p, q) => {
+      const cardP = p.kind === 'card' || p.kind === 'inter';
+      const cardQ = q.kind === 'card' || q.kind === 'inter';
+      if (cardP !== cardQ) return cardP ? -1 : 1;      // cardinals have their own row
+      return (PRI[p.label] ?? 9) - (PRI[q.label] ?? 9);
+    });
+
+    for (const m of ordered) {
       const dA = wrap(m.angle - c.yaw);
       if (Math.abs(dA) > HALF) continue;
       const px = toX(dA);
@@ -643,8 +662,19 @@ export class Hud {
           : m.kind === 'goal' ? '#ffe07a'
             : m.kind === 'job' ? '#7ec850'
             : m.kind === 'fix' ? (Math.floor(performance.now() / 180) % 2 ? '#ff5a4a' : '#ffd0c0')
+            : m.kind === 'coin' ? GOLD_LT
               : '#8fd8ff';
       if (near < 0.10) continue;
+      /* Loose money, from something Cathy sold you. Unlabelled ones are the
+         seventy-metre sweep and get a pip; the one labelled COIN is the
+         needle on the nearest, and gets its name. */
+      if (m.kind === 'coin' && !m.label) {
+        x.fillStyle = col;
+        x.fillRect(px - 1, oy + 12, 3, 3);
+        x.fillStyle = '#8a6c2a';
+        x.fillRect(px, oy + 13, 1, 1);
+        continue;
+      }
       if (m.kind === 'job' || m.kind === 'fix') {
         // a small diamond, below the lettering rather than through it
         x.fillStyle = col;
@@ -657,6 +687,7 @@ export class Hud {
       /* Cardinals on the top line, places on the bottom. They used to share
          a row and spell nonsense wherever a landmark lined up with a letter. */
       const card = m.kind === 'card' || m.kind === 'inter';
+      if (!card && !roomFor(px, textWidth(m.label, 1))) continue;
       drawText(x, m.label, {
         x: px, y: oy + (card ? 1 : 9), scale: 1, align: 'center', color: col, shadow: false,
       });
@@ -890,6 +921,46 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
     const lvl = 4 + Math.round(beat * 1);
     p(4, lvl + 1, 4, 9 - lvl, C('#7ec850', '#3a5a2c'));
     p(4, lvl, 4, 1, C('#bfffa0', '#4a6a3a'));
+  /* ---- Cathy's counter ----
+     Five things she cooks, each recognisable at twelve pixels. */
+  } else if (kind === 'popcorn') {
+    // a striped box with it coming over the top
+    p(3, 4, 6, 7, C('#c83a30', '#5a2420'));
+    p(4, 4, 1, 7, C('#f0e4c0', '#6a6250'));
+    p(6, 4, 1, 7, C('#f0e4c0', '#6a6250'));
+    p(3, 2, 2, 2, C('#f8f0d0', '#6a6250'));
+    p(6, 1, 2, 2, C('#fff8e0', '#787058'));
+    p(8, 3, 2, 2, C('#f8f0d0', '#6a6250'));
+    if (beat > 0.5) p(5, 0, 2, 2, C('#fffce8', '#807850'));
+  } else if (kind === 'eggs') {
+    // three of them in a twist of paper
+    p(2, 6, 8, 5, C('#8a7a52', '#40382a'));
+    p(3, 3, 3, 4, C('#f0ecd8', '#706c58'));
+    p(6, 2, 3, 4, C('#f8f4e0', '#787460'));
+    p(4, 5, 3, 4, C('#e8e4d0', '#686450'));
+    p(4, 4, 1, 1, C('#c8b890', '#585440'));
+  } else if (kind === 'sauce') {
+    // a squeeze bottle with a drip coming out of it
+    p(5, 0, 2, 2, C('#d8d0b0', '#585040'));
+    p(4, 2, 4, 2, C('#8a8270', '#3a382c'));
+    p(3, 4, 6, 7, C('#a82820', '#4a1810'));
+    p(4, 6, 4, 4, C('#d84438', '#5a201a'));
+    p(4, 5, 4, 1, C('#f07060', '#6a2820'));
+    if (beat > 0.6) p(6, 11, 1, 1, C('#f07060', '#6a2820'));
+  } else if (kind === 'burger') {
+    p(2, 3, 8, 3, C('#d8a050', '#5a4424'));      // the top of the bun
+    p(3, 2, 6, 1, C('#f0c078', '#68502c'));
+    p(2, 6, 8, 1, C('#7ec850', '#3a5a2c'));      // lettuce
+    p(2, 7, 8, 2, C('#8a5a30', '#3c2818'));      // the patty
+    p(2, 9, 8, 2, C('#c08040', '#54381c'));      // and the bottom
+    if (beat > 0.5) p(4, 1, 1, 1, C('#fff0c0', '#6a5a3a'));
+  } else if (kind === 'floss') {
+    // a cloud of it on a stick
+    p(5, 7, 2, 5, C('#c8b890', '#5a5240'));
+    p(3, 2, 6, 5, C('#e07aa8', '#603448'));
+    p(2, 3, 8, 3, C('#f090c0', '#6a3a52'));
+    p(4, 1, 4, 2, C('#f8a8d0', '#74405a'));
+    if (beat > 0.5) { p(2, 1, 1, 1, C('#ffc8e0', '#7a4a60')); p(9, 4, 1, 1, C('#ffc8e0', '#7a4a60')); }
   } else if (kind === 'soles') {
     p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
     p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
