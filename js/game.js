@@ -32,8 +32,11 @@ import {
   BUNKER_SPOTS, buildHatch, buildBunkerRoom, BUNKER_ENTRY, BUNKER_BOX, bunkerHeight,
 } from './world/bunker.js';
 import {
-  buildHighRoller, HR_ENTRY, HR_BOX, HR_COLLIDERS, hrHeight,
+  buildHighRoller, HR_ENTRY, HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
 } from './world/highroller.js';
+import {
+  buildBar, BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_BOARD,
+} from './world/bar.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
@@ -351,7 +354,11 @@ export class Game {
     /* Day/night: 2 minutes light, 2 minutes dark, with a short dawn and
        dusk either side so it doesn't snap. */
     this.clock24 = 0;
-    this.DAY_LEN = 240;
+    /* Six minutes round the clock: about two and a quarter minutes of day,
+       a bit over three of night, and twenty seconds of dusk and dawn either
+       side of them. The old cycle was four minutes flat and the night was
+       gone before you had walked anywhere in it. */
+    this.DAY_LEN = 360;
     this.night = 0;
     this.stats = { deaths: 0, thrown: 0, hits: 0 };
 
@@ -574,6 +581,9 @@ export class Game {
          and the listening post, so walking through the frame is instant and
          its shaders are warmed with everything else. */
       this.hrScene = buildHighRoller(this.propMats, buildFlameCluster);
+      /* And the bar behind it. Built at load with everything else so the
+         door is instant and its shaders are warmed in the same pass. */
+      this.barScene = buildBar(this.propMats, buildFlameCluster);
     });
 
     await step('CASTING THE IDOL', 0.90, () => {
@@ -620,7 +630,7 @@ export class Game {
         this.islandScene.add(this._lanternLight);
 
         for (const sc of [this.islandScene, this.templeScene, this.bunkerScene,
-          this.hrScene, this.titleScene]) {
+          this.hrScene, this.barScene, this.titleScene]) {
           if (!sc) continue;
           showAll(sc);
           this.renderer.compile(sc, this.camera);
@@ -1478,6 +1488,53 @@ export class Game {
   }
 
   /* ===========================================================
+     THE TIDE
+
+     Step off the end of the pier, or off the Flopper's deck while she is
+     under way, and you used to tread water a hundred metres out with
+     nothing to do about it but swim — and swimming is slow, and there is
+     nothing to aim at. The sea brings you in now.
+
+     It waits a second and a half first, so a deliberate swim still works,
+     and it builds rather than snatching, so it reads as a current and not
+     as the game moving you. It stops the moment there is ground under you.
+     Standing on the deck or the bridge is not being in the sea: the check
+     is against groundOf, which knows about platforms.
+     =========================================================== */
+  _tide(dt) {
+    if (!this.player) return;
+    const p = this.player.pos;
+    const under = (this.groundOf || heightAt)(p.x, p.z, p.y);
+    /* Driven off the sea floor alone, not off how wet you are. Using
+       inWater as well meant the two thresholds disagreed in the shallows and
+       it let go of you in three feet of water, a swim short of the sand. */
+    if (under > -0.25 || p.y > 0.7) {
+      if ((this._adrift || 0) > 2.0) this.ui.toast('BACK ON THE SAND', 'jade', 1600);
+      this._adrift = 0;
+      return;
+    }
+    this._adrift = (this._adrift || 0) + dt;
+    if (this._adrift < 1.5) return;
+    if (!this._tideSaid) {
+      this._tideSaid = true;
+      this.ui.toast('THE TIDE IS TAKING YOU IN', 'gold', 2600);
+      this.audio?.sfx?.('wave');
+      setTimeout(() => { this._tideSaid = false; }, 9000);
+    }
+    /* Straight at the middle of the island, which is the shortest line to
+       some beach from anywhere in this sea. */
+    const d = Math.hypot(p.x, p.z) || 1;
+    /* Strong in deep water, easing off as the bottom comes up, so you are
+       set down on the sand rather than thrown at it. */
+    const shallow = THREE.MathUtils.clamp((-under - 0.25) / 1.6, 0.25, 1);
+    const pull = Math.min(8.5, 1.8 + (this._adrift - 1.5) * 2.6) * shallow * dt;
+    p.x -= (p.x / d) * pull;
+    p.z -= (p.z / d) * pull;
+    // and a swell, so it feels like water rather than a conveyor
+    p.y += Math.sin(this.time * 2.3) * 0.05 * dt;
+  }
+
+  /* ===========================================================
      CATHY'S FOOD
 
      The stall is on the island in both modes, so what her food does lives
@@ -1496,8 +1553,9 @@ export class Game {
   applyFood(id) {
     this.ate = this.ate || new Set();
     if (id === 'tonic') {
-      this.player.staminaDrain = 0.06;
-      this.player.staminaRegen = 0.5;
+      // a fifth of the cost, five times the recovery, which is what it says
+      this.player.staminaDrain = this.player.BASE_DRAIN * 0.2;
+      this.player.staminaRegen = this.player.BASE_REGEN * 5;
       this.ate.add(id);
       this.ui.toast('SPRINTING COSTS ALMOST NOTHING NOW', 'jade', 3000);
     }
@@ -1514,10 +1572,12 @@ export class Game {
       this.ui.toast('THE COMPASS HAS A COIN NEEDLE NOW', 'jade', 3000);
     }
     if (id === 'burger') {
-      this.bigMeals = (this.bigMeals || 0) + 3;
-      this.ui.toast(`${this.bigMeals} JOBS AT DOUBLE PAY`, 'jade', 3000);
+      this.bigMeals = true;
+      this.ate.add(id);
+      this.ui.toast('EVERY JOB PAYS DOUBLE NOW', 'jade', 3000);
     }
     if (id === 'floss') {
+      // the one that wears off, so it never goes into `ate`
       this.flossUntil = performance.now() / 1000 + 90;
       this.player.SPEED = this.player.BASE_SPEED * 1.30;
       this.player.SPRINT = this.player.BASE_SPRINT * 1.30;
@@ -1596,7 +1656,7 @@ export class Game {
   buyItem(id) {
     const it = itemById(id);
     if (!it) return false;
-    if (it.tag === 'PASSIVE' && this.hasFood(id)) { this.audio.sfx('deny'); return false; }
+    if (it.once && this.hasFood(id)) { this.audio.sfx('deny'); return false; }
     if (this.coins < it.cost) {
       this.audio.sfx('deny');
       this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
@@ -2673,7 +2733,7 @@ I have snacks."`);
 
     if (id === 'heart') { this.player.maxHp += 1; this.player.hp = this.player.maxHp; }
     if (id === 'satchel') { this.coconutMax = 14; }
-    if (id === 'boots') { this.player.SPRINT = 19.5; this.player.staminaDrain = 0.10; }
+    if (id === 'boots') { this.player.SPRINT = 19.5; this.player.staminaDrain = this.player.BASE_DRAIN * 0.65; }
 
     this.ui.toast(`FERDI: ${item.name}. NO REFUNDS.`, 'jade', 3000);
     return true;
@@ -3111,6 +3171,7 @@ I have snacks."`);
           ? { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ }
           : null,
       });
+      if (!inTemple) this._tide(dt);
       this.updateCoconuts(dt);
       this.updateCoinFx(dt);
     } else {
@@ -3224,13 +3285,15 @@ I have snacks."`);
 
   updateDayNight(dt) {
     this.clock24 = (this.clock24 + dt) % this.DAY_LEN;
-    const p = this.clock24 / this.DAY_LEN;          // 0..1 through the cycle
-    // 0.00-0.42 day, 0.42-0.50 dusk, 0.50-0.92 night, 0.92-1.00 dawn
+    const t = this.clock24;                        // seconds through the cycle
+    /* Written in seconds rather than fractions, because that is the unit the
+       length of a night is actually argued about in. */
+    const DAY = 131, DUSK = 19, NIGHT = 191;       // and DAWN is the remainder
     let n;
-    if (p < 0.42) n = 0;
-    else if (p < 0.50) n = (p - 0.42) / 0.08;
-    else if (p < 0.92) n = 1;
-    else n = 1 - (p - 0.92) / 0.08;
+    if (t < DAY) n = 0;
+    else if (t < DAY + DUSK) n = (t - DAY) / DUSK;
+    else if (t < DAY + DUSK + NIGHT) n = 1;
+    else n = 1 - (t - DAY - DUSK - NIGHT) / (this.DAY_LEN - DAY - DUSK - NIGHT);
     this.night = n * n * (3 - 2 * n);                 // smooth the ramp
 
     this._sailCasino(dt);
@@ -3251,7 +3314,9 @@ I have snacks."`);
     /* Night glass. Bought at Ferdi's after dark, it stops the night from
        dimming anything for the person carrying it — the sky still turns,
        the torches still burn, but they can see. */
-    if (this.hasItem?.('nightglass')) dark *= 0.15;
+    // the nightglass, or the Lamplighter, which does the same thing by the
+    // hour rather than for good
+    if (this.hasItem?.('nightglass') || this.nightEyes) dark *= 0.15;
 
     // sky and fog
     const f = this.islandScene.fog;

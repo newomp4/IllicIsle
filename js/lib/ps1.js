@@ -193,6 +193,7 @@ uniform float uTime;
 uniform float uFade;       // 1 = normal, 0 = black
 uniform vec3  uTint;       // damage / underwater tint
 uniform float uTintAmt;
+uniform float uDrunk;      // 0..1, and everything about it is on purpose
 varying vec2 vUv;
 
 // 4x4 Bayer matrix — the PSX dithered 24-bit down to 15-bit with this.
@@ -218,12 +219,40 @@ void main(){
   float r2 = dot(c, c);
   uv = 0.5 + c * (1.0 + 0.055 * r2 * uCrt);
 
+  /* ---- drink ----
+     Three things happen to a room when you have had too much, and all
+     three are here: it breathes (a slow swell in and out from the middle),
+     it swims (a lazy figure-of-eight), and it doubles (the eye stops
+     converging, so a second, offset, half-strength image of everything
+     slides about behind the first one). */
+  float dz = uDrunk;
+  if (dz > 0.001) {
+    float sway = sin(uTime * 0.9) * 0.010 + sin(uTime * 1.37 + 1.1) * 0.006;
+    float bob  = cos(uTime * 0.7) * 0.009 + sin(uTime * 2.1) * 0.0035;
+    uv += vec2(sway, bob) * dz;
+    // and a breath, from the centre out
+    float breathe = 1.0 + sin(uTime * 0.55) * 0.018 * dz;
+    uv = 0.5 + (uv - 0.5) * breathe;
+  }
+
   if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0){
     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
 
   vec3 col = texture2D(tDiffuse, uv).rgb;
+
+  if (dz > 0.001) {
+    // the second image, offset and rolling, at half strength
+    vec2 ghost = vec2(sin(uTime * 0.63) * 0.017, cos(uTime * 0.47) * 0.011) * dz;
+    vec2 guv = clamp(uv + ghost, 0.0, 1.0);
+    col = mix(col, max(col, texture2D(tDiffuse, guv).rgb), 0.45 * dz);
+    // and the colour goes warm and loose at the edges
+    vec2 ca = ghost * 0.6;
+    col.r = mix(col.r, texture2D(tDiffuse, clamp(uv + ca, 0.0, 1.0)).r, 0.5 * dz);
+    col.b = mix(col.b, texture2D(tDiffuse, clamp(uv - ca, 0.0, 1.0)).b, 0.5 * dz);
+    col = mix(col, col * vec3(1.18, 1.02, 0.80), dz * 0.55);
+  }
 
   // Damage / environment tint, while we're still linear
   col = mix(col, uTint, uTintAmt);
@@ -276,6 +305,9 @@ export class RetroPipeline {
     this.fade = 1;
     this.tint = new THREE.Color(0, 0, 0);
     this.tintAmt = 0;
+    /* How much of whatever Quezetriel sold you is still in you. 0 is sober;
+       1 is the room going round. */
+    this.drunk = 0;
 
     this.target = new THREE.WebGLRenderTarget(320, 224, {
       minFilter: THREE.NearestFilter,
@@ -311,6 +343,7 @@ export class RetroPipeline {
         uFade: { value: 1 },
         uTint: { value: new THREE.Vector3(0, 0, 0) },
         uTintAmt: { value: 0 },
+        uDrunk: { value: 0 },
       },
       vertexShader: COMPOSITE_VERT,
       fragmentShader: COMPOSITE_FRAG,
@@ -383,6 +416,7 @@ export class RetroPipeline {
     u.uFade.value = this.fade;
     u.uTint.value.set(this.tint.r, this.tint.g, this.tint.b);
     u.uTintAmt.value = this.tintAmt;
+    u.uDrunk.value = this.drunk;
 
     const r = this.renderer;
     r.setRenderTarget(this.target);

@@ -195,6 +195,7 @@ export class UI {
 
   /* ---------- toasts ---------- */
   toast(text, kind = 'gold', ms = 2600) { this.hud.toast(text, kind, ms); }
+  clearToasts() { this.hud.clearToasts(); }
 
 
   /* ===========================================================

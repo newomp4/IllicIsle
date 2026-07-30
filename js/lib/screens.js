@@ -14,8 +14,9 @@ import { drawRelicIcon, drawShopIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
+import * as DARTS from '../mp/darts.js';
 import {
-  STOCK, FOOD, stockFor, shelf, SANCTUARY_R, VENDOR_IDS, SCHLARNA_N,
+  STOCK, FOOD, DRINKS, stockFor, shelf, SANCTUARY_R, VENDOR_IDS, SCHLARNA_N,
 } from '../mp/market.js';
 
 // the minigames borrow the one font everything else is set in
@@ -249,29 +250,187 @@ function drawCathy(x, ox, oy, t) {
   p(bx + 1, by + 15, 22, 2, '#5f9e34');
 }
 
+/**
+ * QUEZETRIEL QUEBOLIUS, drawn behind his own bar.
+ *
+ * A silhouette with two lit eyes, like Michael Beef — deliberately, because
+ * they are the same kind of thing. What makes him a different man is the
+ * shape: Beef is broad and wears a hat, Quezetriel is a head taller, narrow,
+ * stooped from a lifetime under a low beam, in a waistcoat, with a cloth
+ * over one shoulder and hands he never stops using.
+ */
+function drawQuez(x, ox, oy, t, pulling) {
+  const p = (gx, gy, w, h, col) => { x.fillStyle = col; x.fillRect(ox + gx, oy + gy, w, h); };
+  const sway = Math.round(Math.sin(t * 0.6) * 1.2);
+  const blink = Math.sin(t * 0.71) > 0.972;
+  const SH = '#0b0709', SH_L = '#181016', VEST = '#2c1a22';
+
+  // long legs and a narrow body, leaning in over the bar
+  p(6 + sway, 44, 8, 34, SH);
+  p(18 + sway, 44, 8, 34, SH);
+  p(4 + sway, 14, 24, 34, SH);
+  p(6 + sway, 16, 20, 26, VEST);
+  p(6 + sway, 16, 20, 1, SH_L);
+  // the watch chain, the one bright thing on him
+  p(9 + sway, 30, 8, 1, '#c8a040');
+  p(8 + sway, 30, 2, 2, '#e0bc58');
+  // shoulders, and the cloth over the left one
+  p(1 + sway, 12, 30, 6, SH);
+  p(-1 + sway, 14, 6, 20, '#6a6458');
+  // arms: the near one reaches for the pump, the far one polishes
+  const reach = Math.round(pulling * 6);
+  p(28 + sway, 18, 6, 20 + reach, SH);
+  p(31 + sway, 36 + reach, 6, 5, '#7a6a62');
+  const pol = Math.round(Math.sin(t * 4.2) * 2);
+  p(-2 + sway, 20, 6, 18, SH);
+  p(-3 + sway + pol, 37, 6, 5, '#7a6a62');
+  // a long neck and a narrow head, tipped a little
+  p(13 + sway, 8, 6, 6, SH);
+  p(9 + sway, -6, 14, 16, SH);
+  p(8 + sway, -8, 16, 3, SH_L);
+  /* And the eyes, which are the only thing about him you will remember.
+     Two pixels of light on a black head is not a face at anything under a
+     hand's width — they get a halo and a highlight. */
+  if (!blink) {
+    x.fillStyle = 'rgba(255,190,90,.16)';
+    x.fillRect(ox + 8 + sway, oy - 4, 16, 8);
+    p(10 + sway, -2, 6, 4, '#c8903a');
+    p(17 + sway, -2, 6, 4, '#c8903a');
+    p(11 + sway, -1, 4, 2, '#ffe0a0');
+    p(18 + sway, -1, 4, 2, '#ffe0a0');
+    p(12 + sway, -1, 1, 1, '#fffbe8');
+    p(19 + sway, -1, 1, 1, '#fffbe8');
+  } else {
+    p(10 + sway, 0, 6, 1, '#8a6a30');
+    p(17 + sway, 0, 6, 1, '#8a6a30');
+  }
+  // a rim of firelight down one side of him, so he is not a hole in the wall
+  p(-2 + sway, 12, 1, 24, '#3a2418');
+  p(9 + sway, -6, 1, 16, '#33222a');
+}
+
 /** A vertical list of choices with a blinking selector. */
+/* ===========================================================
+   THE SELECTOR
+
+   Every menu in the game draws through menuList, so this is the one place
+   worth making feel like something. What it does now that it did not:
+
+   - the highlight SLIDES to the new row rather than teleporting, on its own
+     spring, so moving down a list has weight;
+   - the chosen row sits a pixel to the right of the others, the way a
+     pressed key does;
+   - a band of light sweeps across the highlight every couple of seconds;
+   - the arrow breathes in and out instead of blinking on and off;
+   - and a row that has just been chosen flashes and squashes.
+
+   The state has nowhere to live — draw is a pure function of the screen's
+   own object — so it is kept per-list in a small map keyed by the list's
+   identity. A menu that vanishes takes its entry with it on the next sweep.
+   =========================================================== */
+const _menuState = new Map();
+let _menuSweep = 0;
+
+/**
+ * The same sliding highlight for lists that draw their own rows — the shops,
+ * Cathy's counter, the bar. Returns where the highlight has got to, in rows,
+ * and how recently something was bought off it.
+ */
+function listCursor(key, sel, rowCount) {
+  let m = _menuState.get(key);
+  if (!m) { m = { at: sel, want: sel, vel: 0, hit: 0, seen: _menuSweep }; _menuState.set(key, m); }
+  m.want = sel;
+  m.seen = _menuSweep;
+  if (m.snap || Math.abs(m.at - sel) > rowCount) { m.at = sel; m.vel = 0; m.snap = false; }
+  return m;
+}
+
+/** Call once a frame. Ages every selector and drops the ones nobody drew. */
+function menuTick(dt) {
+  _menuSweep++;
+  for (const [k, m] of _menuState) {
+    if (_menuSweep - m.seen > 240) { _menuState.delete(k); continue; }
+    // a critically-damped spring: it arrives, and it does not wobble past
+    const d = m.want - m.at;
+    m.vel += d * 260 * dt;
+    m.vel *= Math.exp(-14 * dt);
+    m.at += m.vel * dt;
+    if (Math.abs(d) < 0.002 && Math.abs(m.vel) < 0.02) { m.at = m.want; m.vel = 0; }
+    if (m.hit > 0) m.hit = Math.max(0, m.hit - dt * 4);
+  }
+}
+
+/* The screens do not know which selector is theirs, and they do not need
+   to: there is only ever one menu on screen at a time, so these speak to
+   whichever selectors were drawn on the last frame. */
+/** A row was chosen. Flash and squash. */
+function menuFlash() { for (const m of _menuState.values()) m.hit = 1; }
+/* The selection wrapped round the end, so the highlight should appear there
+   rather than sliding the length of the list. It cannot just be set here:
+   `want` is only told about the new row on the next draw, so this leaves a
+   note for the draw to act on. */
+function menuSnap() { for (const m of _menuState.values()) m.snap = true; }
+
 function menuList(x, items, sel, cx, top, t, opts = {}) {
   const gap = opts.gap ?? 14;
   const w = opts.width ?? 130;
+  const key = opts.key || `${cx}:${top}:${items.length}`;
+  let m = _menuState.get(key);
+  if (!m) { m = { at: sel, want: sel, vel: 0, hit: 0, seen: _menuSweep }; _menuState.set(key, m); }
+  m.want = sel;
+  m.seen = _menuSweep;
+  if (m.snap) { m.at = sel; m.vel = 0; m.snap = false; }
+  // a list that changes length under the selector should not slide across it
+  if (Math.abs(m.at - sel) > items.length) m.at = sel;
+
   const rows = [];
+  // the highlight, drawn once at wherever it has got to
+  {
+    const hy = Math.round(top + m.at * gap) - 3;
+    const squash = Math.round(m.hit * 2);
+    const hw = w + Math.round(m.hit * 4);
+    const hx = Math.round(cx - hw / 2);
+    x.fillStyle = m.hit > 0 ? '#6a4a18' : '#3a2a10';
+    x.fillRect(hx, hy + squash, hw, 11 - squash * 2);
+    // the rails either side
+    x.fillStyle = m.hit > 0 ? '#fff3c4' : GOLD;
+    x.fillRect(hx, hy + squash, 1, 11 - squash * 2);
+    x.fillRect(hx + hw - 1, hy + squash, 1, 11 - squash * 2);
+    /* A band of light running across it. Two seconds apart, a third of a
+       second long, and it only touches the highlighted row — which is what
+       makes it read as the selection being alive rather than the screen. */
+    const sw = (t % 2.2) / 0.34;
+    if (sw < 1) {
+      const bx = Math.round(hx + sw * (hw + 16)) - 8;
+      for (let i = 0; i < 8; i++) {
+        const a = (0.13 * (1 - Math.abs(i - 3.5) / 4)).toFixed(3);
+        x.fillStyle = `rgba(255,230,150,${a})`;
+        x.fillRect(bx + i, hy + squash + 1, 1, 9 - squash * 2);
+      }
+    }
+  }
+
   items.forEach((it, i) => {
     const y = top + i * gap;
     const on = i === sel;
     const label = typeof it === 'string' ? it : it.label;
     const dis = typeof it === 'object' && it.disabled;
+    /* The chosen row steps a pixel to the right, like a key going down, and
+       the nearer rows lean toward it a little. */
+    const near = Math.max(0, 1 - Math.abs(i - m.at));
+    const off = Math.round(near * 2);
     if (on) {
-      x.fillStyle = '#3a2a10';
-      x.fillRect(cx - w / 2, y - 3, w, 11);
-      x.fillStyle = GOLD;
-      x.fillRect(cx - w / 2, y - 3, 1, 11);
-      x.fillRect(cx + w / 2 - 1, y - 3, 1, 11);
-      if (Math.floor(t * 3) % 2 === 0) {
-        drawText(x, '>', { x: cx - w / 2 + 4, y, scale: 1, color: GOLD });
-      }
+      // the arrow breathes rather than blinking, and it points
+      const br = 0.55 + Math.sin(t * 4.4) * 0.45;
+      const ax = Math.round(cx - w / 2 + 4 + br * 2);
+      x.fillStyle = m.hit > 0 ? '#fff3c4' : GOLD;
+      x.fillRect(ax, y + 1, 1, 3);
+      x.fillRect(ax + 1, y + 2, 1, 1);
+      x.fillRect(ax - 1, y, 1, 5);
     }
     drawText(x, label, {
-      x: cx, y, scale: 1, align: 'center',
-      color: dis ? '#6a5c40' : (on ? GOLD_LT : DIM),
+      x: cx + off, y, scale: 1, align: 'center',
+      color: dis ? '#6a5c40' : (on ? (m.hit > 0.5 ? '#fffbe8' : GOLD_LT) : DIM),
     });
     rows.push({ y: y - 3, h: 11, x: cx - w / 2, w });
   });
@@ -366,6 +525,7 @@ export class ScreenStack {
 
   update(dt) {
     this.t += dt;
+    menuTick(dt);
     const s = this.top;
     if (!s) return;
     s.t += dt;
@@ -381,7 +541,34 @@ export class ScreenStack {
     const s = this.top;
     if (!s) return;
     const def = SCREENS[s.name];
-    if (def?.draw) this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
+    if (!def?.draw) return;
+
+    /* ---- a screen arriving ----
+       Every interface in the game used to simply BE there on the frame it
+       was pushed. A set that has just been switched on does not do that: it
+       opens out from a line, overshoots a little, and settles. A sixth of a
+       second, so it is felt rather than waited for. */
+    const OPEN = 0.17;
+    if (s.t < OPEN) {
+      const k = s.t / OPEN;
+      const e = 1 - Math.pow(1 - k, 3);
+      const sy = 0.12 + e * 0.88 + Math.sin(k * Math.PI) * 0.05;
+      const sx = 1 + Math.sin(k * Math.PI) * 0.035;
+      x.save();
+      x.translate(W / 2, H / 2);
+      x.scale(sx, sy);
+      x.translate(-W / 2, -H / 2);
+      this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
+      x.restore();
+      // the line of light it opens out of
+      const a = (1 - k) * 0.5;
+      if (a > 0.01) {
+        x.fillStyle = `rgba(255,244,214,${a.toFixed(3)})`;
+        x.fillRect(0, Math.round(H / 2) - 1, W, 2);
+      }
+      return;
+    }
+    this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
   }
 }
 
@@ -404,6 +591,39 @@ const CATHY_LINES = [
   "THE EGGS FIND MONEY. I DO NOT KNOW WHY EITHER.",
   "IF YOU ARE LOST, EAT SOMETHING FIRST.",
 ];
+/* What you can put on a leg of darts. He will not take more than fifty. */
+const DARTS_MIN = 2, DARTS_MAX = 50;
+const QUEZ_DARTS_WIN = [
+  "THAT IS THE LEG. THANK YOU.",
+  "I HAVE HAD A LOT OF PRACTICE AND NOTHING ELSE TO DO.",
+  "THE BOARD DOES NOT CARE WHO YOU ARE.",
+];
+
+/** Settle a finished leg. The stake was taken when it started. */
+function DARTS_PAY(s, g) {
+  if (s.paid) return;
+  s.paid = true;
+  if (s.leg?.over === 'you') g.dartsSettle?.(s.stake * 2);
+  else g.dartsSettle?.(0);
+}
+
+/* What Quezetriel says. He does not chat; he states things. */
+const QUEZ_LINES = [
+  "YOU CAME THROUGH THE DOOR. MOST DO NOT SEE IT.",
+  "I HAVE BEEN HERE LONGER THAN THE BOAT HAS.",
+  "BEEF DEALS. I POUR. WE DO NOT DISCUSS IT.",
+  "THE BOARD IS THERE IF YOU FANCY LOSING SOMETHING.",
+  "NO TABS. NOT FOR ANYBODY. NOT EVEN FOR HIM.",
+  "IF THE ROOM MOVES, THAT IS THE DRINK AND NOT THE SEA.",
+  "I DO NOT ASK WHAT YOU ARE. DO NOT ASK WHAT I AM.",
+];
+const QUEZ_SOLD = [
+  "THAT ONE TAKES A MOMENT. SIT IF YOU LIKE.",
+  "MIND HOW YOU GO.",
+  "IT IS SUPPOSED TO TASTE LIKE THAT.",
+  "YOU WILL FEEL IT SHORTLY.",
+];
+
 const CATHY_SOLD = [
   "GOOD CHOICE. EAT IT WALKING.",
   "THAT IS THE ONE I WOULD HAVE PICKED.",
@@ -499,10 +719,28 @@ const SETTING_ROWS = [
 /** How long the command table takes to wake up. */
 const BOOT_LEN = 1.9;
 
+/* Every menu shares one navigator, so this is the one place that has to
+   tell the selector something happened: choosing a row makes it flash and
+   squash. Wrapping past either end nudges it the short way rather than
+   sliding the whole list, which looked like the menu falling over. */
 const nav = (code, s, len, onOk, onBack) => {
-  if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + len - 1) % len; return true; }
-  if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % len; return true; }
-  if (code === 'Enter' || code === 'KeyE' || code === 'Space') { onOk?.(s.sel); return true; }
+  if (code === 'ArrowUp' || code === 'KeyW') {
+    const was = s.sel;
+    s.sel = (s.sel + len - 1) % len;
+    if (was === 0) menuSnap();
+    return true;
+  }
+  if (code === 'ArrowDown' || code === 'KeyS') {
+    const was = s.sel;
+    s.sel = (s.sel + 1) % len;
+    if (was === len - 1) menuSnap();
+    return true;
+  }
+  if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+    menuFlash();
+    onOk?.(s.sel);
+    return true;
+  }
   if (code === 'Escape' || code === 'Backspace') { onBack?.(); return true; }
   return false;
 };
@@ -3026,6 +3264,26 @@ export const SCREENS = {
       const LX = 10, LW = 138, ROW = 15;
       let y = 36;
       const rows = [];
+      /* The highlight slides between rows on a spring and the icon on the
+         chosen line lifts a pixel, so running down a shelf has some weight
+         to it. Drawn before the rows, so the type is never under it. */
+      const cur = listCursor(`shop:${black ? 'b' : 'o'}`, s.sel, list.length);
+      {
+        const hy = Math.round(36 + cur.at * ROW) - 1;
+        const bump = Math.round(cur.hit * 3);
+        x.fillStyle = cur.hit > 0 ? (black ? '#6a1a12' : '#6a4a18') : (black ? '#3a0e0b' : '#3a2a10');
+        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
+        x.fillStyle = cur.hit > 0 ? '#fff3c4' : accent;
+        x.fillRect(LX - bump, hy, 2, ROW - 1);
+        const sw = (t % 2.4) / 0.36;
+        if (sw < 1) {
+          const bx2 = Math.round(LX + sw * (LW + 16)) - 8;
+          for (let i = 0; i < 8; i++) {
+            x.fillStyle = `rgba(255,230,150,${(0.11 * (1 - Math.abs(i - 3.5) / 4)).toFixed(3)})`;
+            x.fillRect(bx2 + i, hy + 1, 1, ROW - 3);
+          }
+        }
+      }
       list.forEach((it, i) => {
         const on = i === s.sel;
         /* Only permanent things read as HELD. A consumable you are carrying
@@ -3035,12 +3293,7 @@ export const SCREENS = {
         const carrying = it.tag !== 'PASSIVE' && g.hasItem?.(it.id);
         const owned = held;
         const afford = (g.coins || 0) >= (g.priceOf ? g.priceOf(it.id) : it.cost);
-        if (on) {
-          x.fillStyle = black ? '#3a0e0b' : '#3a2a10';
-          x.fillRect(LX, y - 1, LW, ROW - 1);
-          x.fillStyle = accent; x.fillRect(LX, y - 1, 2, ROW - 1);
-        }
-        drawShopIcon(x, it.icon, LX + 5, y, 12, on, t);
+        drawShopIcon(x, it.icon, LX + 5, y - (on ? 1 : 0), 12, on, t);
         /* Trim against the width of the label that is actually going to sit
            on the right. "HELD" is wider than a two-digit price, and the
            names used to run straight into it. */
@@ -3311,8 +3564,14 @@ export const SCREENS = {
       const list = s.vendor
         ? STOCK.filter((i) => VENDOR_IDS.includes(i.id) && (!i.night || isNight))
         : shelf(black ? 'black' : 'open', isNight);
-      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true; }
-      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        if (s.sel === 0) menuSnap();
+        s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        if (s.sel === list.length - 1) menuSnap();
+        s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true;
+      }
       if (code === 'Tab' && agent && !s.vendor) {
         if (!s.wipe) {
           s.wipe = 1;
@@ -3332,6 +3591,7 @@ export const SCREENS = {
         return true;
       }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        menuFlash();
         if (list[s.sel] && g.buyItem(list[s.sel].id)) {
           s.flash = 0.3;
           /* A machine in the trees holds one thing. Once it has taken your
@@ -3437,16 +3697,21 @@ export const SCREENS = {
       const LX = 8, LW = 172, ROW = 15;
       let y = 52;
       const rows = [];
+      const cur = listCursor('cathy', s.sel, list.length);
+      {
+        const hy = Math.round(52 + cur.at * ROW) - 1;
+        const bump = Math.round(cur.hit * 3);
+        x.fillStyle = cur.hit > 0 ? '#6a4a18' : '#3a2a10';
+        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
+        x.fillStyle = cur.hit > 0 ? '#fff3c4' : GOLD;
+        x.fillRect(LX - bump, hy, 2, ROW - 1);
+      }
       list.forEach((it, i) => {
         const on = i === s.sel;
-        const held = it.tag === 'PASSIVE' && g.hasItem?.(it.id);
+        const held = it.once && g.hasItem?.(it.id);
         const price = g.priceOf ? g.priceOf(it.id) : it.cost;
         const afford = (g.coins || 0) >= price;
-        if (on) {
-          x.fillStyle = '#3a2a10'; x.fillRect(LX, y - 1, LW, ROW - 1);
-          x.fillStyle = GOLD; x.fillRect(LX, y - 1, 2, ROW - 1);
-        }
-        drawShopIcon(x, it.icon, LX + 5, y, 12, on, t);
+        drawShopIcon(x, it.icon, LX + 5, y - (on ? 1 : 0), 12, on, t);
         const right = held ? 'EATEN' : String(price);
         const room = LW - 26 - textWidth(right, 1) - 6;
         let nm = it.name;
@@ -3491,7 +3756,7 @@ export const SCREENS = {
       }
 
       /* ---- the counter ---- */
-      const owned = d && d.tag === 'PASSIVE' && g.hasItem?.(d.id);
+      const owned = d && d.once && g.hasItem?.(d.id);
       const price = d ? (g.priceOf ? g.priceOf(d.id) : d.cost) : 0;
       const afford = d && (g.coins || 0) >= price;
       const label = owned ? 'YOU HAVE EATEN THAT'
@@ -3511,15 +3776,18 @@ export const SCREENS = {
     key(code, s, g, st) {
       const list = g.foodList ? g.foodList() : FOOD;
       if (code === 'ArrowUp' || code === 'KeyW') {
+        if (s.sel === 0) menuSnap();
         s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true;
       }
       if (code === 'ArrowDown' || code === 'KeyS') {
+        if (s.sel === list.length - 1) menuSnap();
         s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true;
       }
       if (code === 'Escape' || code === 'Backspace') {
         st.pop(); g.afterOverlayClose(); return true;
       }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        menuFlash();
         const it = list[s.sel];
         if (it && g.buyItem(it.id)) {
           s.flash = 1;
@@ -3538,6 +3806,701 @@ export const SCREENS = {
       if (row?.pick !== undefined) {
         if (row.pick === s.sel) this.key('Enter', s, g, st);
         else { s.sel = row.pick; g.audio?.sfx('select'); }
+      }
+      return true;
+    },
+  },
+
+  /* ---------------- THE SALOON ---------------- */
+  /* Quezetriel's bar. The list is on the left, he is on the right, and the
+     drink you buy is POURED: the pump comes down, the glass fills, the head
+     settles, and only then does it do anything. */
+  mpBar: {
+    init(s) {
+      if (s.sel === undefined) s.sel = 0;
+      s.line = QUEZ_LINES[0];
+      s.said = 0;
+      s.lineAt = 0;
+      s.pour = null;          // {id, t, colour} while one is being poured
+      s.pull = 0;             // how far down the pump handle is
+      s.flash = 0;
+    },
+    tick(s, g, dt, t) {
+      if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 3);
+      s.pull = Math.max(0, s.pull - dt * 1.6);
+      if (s.pour) {
+        s.pour.t += dt;
+        // three seconds from the pull to the drink being yours
+        if (s.pour.t > 2.9 && !s.pour.done) {
+          s.pour.done = true;
+          g.buyDrink?.(s.pour.id);
+          g.audio?.sfx('gulp');
+          s.line = QUEZ_SOLD[(s.said++) % QUEZ_SOLD.length];
+          s.lineAt = t;
+        }
+        if (s.pour.t > 4.2) s.pour = null;
+      } else if (t - s.lineAt > 8) {
+        s.lineAt = t;
+        s.line = QUEZ_LINES[(++s.said) % QUEZ_LINES.length];
+      }
+    },
+    draw(x, W, H, s, g, t) {
+      const list = DRINKS;
+      if (s.sel >= list.length) s.sel = 0;
+      const d = list[s.sel];
+      const coins = g.coins || 0;
+
+      /* ---- the room: brown, low, and lit by one lamp ---- */
+      x.fillStyle = '#140b06'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#140b06', '#241408', 0.5, 2);
+      // the pool of lamplight over the bar, breathing
+      {
+        const lx = W - 62, ly = 30;
+        for (let i = 12; i >= 0; i--) {
+          const a = (0.016 + Math.sin(t * 3.7) * 0.002).toFixed(3);
+          x.fillStyle = `rgba(255,176,80,${a})`;
+          x.beginPath(); x.arc(lx, ly, 14 + i * 9, 0, 6.283); x.fill();
+        }
+      }
+      // the fire, off to the left, throwing its own light up the wall
+      {
+        const flick = 0.6 + Math.abs(Math.sin(t * 5.3)) * 0.4;
+        for (let i = 9; i >= 0; i--) {
+          x.fillStyle = `rgba(255,120,40,${(0.011 * flick).toFixed(3)})`;
+          x.beginPath(); x.arc(-6, H - 40, 20 + i * 13, 0, 6.283); x.fill();
+        }
+      }
+      // panelling, and the beams across the ceiling
+      for (let i = 0; i < H; i += 9) {
+        x.fillStyle = 'rgba(120,74,32,.055)'; x.fillRect(0, i, W, 8);
+        x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1);
+      }
+      x.fillStyle = '#2a1a10'; x.fillRect(0, 0, W, 7);
+      for (let i = 0; i < W; i += 46) { x.fillStyle = '#3a2414'; x.fillRect(i, 0, 5, 7); }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.32)'; x.fillRect(0, y, W, 1); }
+
+      /* The back fitting behind him: shelves of bottles, lit, so his
+         silhouette has something to be a silhouette against. Drawn before
+         he is. */
+      {
+        const bx0 = W - 116, bw0 = 108;
+        x.fillStyle = '#3a2412'; x.fillRect(bx0, 36, bw0, 74);
+        ditherRect(x, bx0, 36, bw0, 74, '#3a2412', '#4e3018', 0.5, 2);
+        for (const sy of [52, 74, 96]) {
+          // the shelf, and the bottles on it
+          x.fillStyle = '#6a4420'; x.fillRect(bx0 + 2, sy, bw0 - 4, 2);
+          x.fillStyle = '#2a1a0c'; x.fillRect(bx0 + 2, sy + 2, bw0 - 4, 2);
+          for (let i = 0; i < 13; i++) {
+            const col = ['#6a3a18', '#8a2018', '#2a5a3a', '#c8a020', '#3a2a6a',
+              '#8a6a20', '#1a4a5a'][(i + sy) % 7];
+            const bh = 10 + ((i * 3 + sy) % 4);
+            x.fillStyle = col;
+            x.fillRect(bx0 + 4 + i * 8, sy - bh, 5, bh);
+            x.fillStyle = 'rgba(255,255,255,.16)';
+            x.fillRect(bx0 + 4 + i * 8, sy - bh, 1, bh);
+            x.fillStyle = col;
+            x.fillRect(bx0 + 5 + i * 8, sy - bh - 3, 2, 3);
+          }
+        }
+        // the mirror strip along the back, catching the lamp
+        x.fillStyle = 'rgba(180,200,215,.06)'; x.fillRect(bx0 + 4, 38, bw0 - 8, 12);
+      }
+
+      // him, in front of it
+      drawQuez(x, W - 74, 34, t, s.pull);
+
+      /* ---- the bar top, which everything happens on ---- */
+      const BY = 112;                     // the top of the counter
+      x.fillStyle = '#5a3a1c'; x.fillRect(W - 116, BY, 116, 7);
+      x.fillStyle = '#a06c34'; x.fillRect(W - 116, BY, 116, 2);
+      x.fillStyle = '#c98a4c'; x.fillRect(W - 116, BY + 1, 116, 1);
+      x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(W - 116, BY + 7, 116, 5);
+      // the brass rail below it
+      x.fillStyle = '#8a6a28'; x.fillRect(W - 116, BY + 14, 116, 2);
+
+      /* the pump: a brass column with a handle that comes down when he pulls */
+      {
+        const px = W - 92, py = BY - 34;
+        x.fillStyle = '#3a2a10'; x.fillRect(px - 5, py + 26, 12, 8);
+        x.fillStyle = '#c8a040'; x.fillRect(px - 4, py + 27, 10, 6);
+        x.fillStyle = '#8a6a28'; x.fillRect(px - 1, py, 5, 28);
+        x.fillStyle = '#d8b858'; x.fillRect(px - 1, py, 2, 28);
+        // the badge on top
+        x.fillStyle = d ? `#${(d.colour || 0xc07820).toString(16).padStart(6, '0')}` : '#c07820';
+        x.fillRect(px - 6, py - 10, 15, 10);
+        x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(px - 6, py - 10, 15, 1);
+        // the handle, hinged at the top, pulled toward you
+        const ang = s.pull * 0.9;
+        x.save();
+        x.translate(px + 1, py + 4);
+        x.rotate(-ang);
+        x.fillStyle = '#c8a040'; x.fillRect(0, 0, 3, 20);
+        x.fillStyle = '#2a1a10'; x.fillRect(-2, 19, 7, 6);
+        x.restore();
+      }
+
+      /* the glass, which only exists while there is something in it */
+      if (s.pour) {
+        const gx = W - 62, gy = BY - 30;
+        const k = Math.min(1, s.pour.t / 2.2);
+        const col = `#${(s.pour.colour || 0xd8901c).toString(16).padStart(6, '0')}`;
+        // the glass itself
+        x.fillStyle = 'rgba(190,215,225,.20)'; x.fillRect(gx, gy, 15, 30);
+        // what is in it, rising
+        const fh = Math.round(k * 26);
+        x.fillStyle = col; x.fillRect(gx + 1, gy + 29 - fh, 13, fh);
+        // a lighter face down one side, so it reads as glass
+        x.fillStyle = 'rgba(255,255,255,.14)'; x.fillRect(gx + 1, gy + 29 - fh, 3, fh);
+        // the head, which is proud and then settles
+        if (k > 0.12) {
+          const settle = Math.max(0, Math.min(1, (s.pour.t - 2.2) / 1.4));
+          const hh = Math.round(5 - settle * 2);
+          x.fillStyle = '#f4ecd8';
+          x.fillRect(gx + 1, gy + 28 - fh - hh, 13, hh);
+          x.fillStyle = '#fffaf0';
+          x.fillRect(gx + 1, gy + 28 - fh - hh, 13, 1);
+        }
+        // bubbles on the way up
+        if (k < 1) {
+          for (let i = 0; i < 5; i++) {
+            const bt = (t * 1.6 + i * 0.37) % 1;
+            x.fillStyle = 'rgba(255,255,255,.35)';
+            x.fillRect(gx + 3 + ((i * 5) % 10), gy + 29 - Math.round(bt * fh), 1, 1);
+          }
+        }
+        // the stream from the pump while it is still coming
+        if (s.pour.t < 2.2) {
+          x.fillStyle = col;
+          x.fillRect(W - 91, BY - 30, 2, Math.round(8 + Math.sin(t * 30) * 2));
+        }
+        // the outline last, so it sits over the beer
+        x.strokeStyle = 'rgba(220,235,245,.45)'; x.lineWidth = 1;
+        x.strokeRect(gx + 0.5, gy + 0.5, 14, 29);
+        // and a handle
+        x.fillStyle = 'rgba(190,215,225,.28)';
+        x.fillRect(gx + 15, gy + 8, 4, 2); x.fillRect(gx + 17, gy + 10, 2, 8);
+        x.fillRect(gx + 15, gy + 18, 4, 2);
+      }
+
+      /* ---- the sign over the bar ----
+         Two lines of seven-pixel type need more than eighteen pixels of
+         board: the first version put NO TABS through the bottom rule. */
+      x.fillStyle = '#2a1006'; x.fillRect(W - 116, 10, 108, 22);
+      x.fillStyle = '#ffb84a'; x.fillRect(W - 116, 10, 108, 1);
+      x.fillRect(W - 116, 31, 108, 1);
+      drawText(x, 'QUEBOLIUS', { x: W - 62, y: 12, scale: 1, align: 'center', color: '#ffb84a' });
+      drawText(x, 'NO TABS', { x: W - 62, y: 22, scale: 1, align: 'center', color: '#8a6a30' });
+
+      drawText(x, `${coins} SYNCOIN`, {
+        x: 8, y: 8, scale: 1, color: GOLD_LT,
+      });
+
+      /* ---- the list ---- */
+      const LX = 6, LW = 146, ROW = 14;
+      let y = 22;
+      const rows = [];
+      const cur = listCursor('bar', s.sel, list.length);
+      {
+        const hy = Math.round(22 + cur.at * ROW) - 1;
+        const bump = Math.round(cur.hit * 3);
+        x.fillStyle = cur.hit > 0 ? '#6a4418' : '#3a2410';
+        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
+        x.fillStyle = cur.hit > 0 ? '#fff3c4' : '#ffb84a';
+        x.fillRect(LX - bump, hy, 2, ROW - 1);
+      }
+      list.forEach((it, i) => {
+        const on = i === s.sel;
+        const afford = coins >= it.cost;
+        const live = g.tab && g.tab[it.id];
+        drawShopIcon(x, it.icon, LX + 4, y - 1 - (on ? 1 : 0), 12, on, t);
+        const right = live ? 'ON' : String(it.cost);
+        const room = LW - 24 - textWidth(right, 1) - 6;
+        let nm = it.name;
+        while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
+        if (nm !== it.name) nm = nm.slice(0, -1) + '.';
+        drawText(x, nm, {
+          x: LX + 19, y: y + 1, scale: 1,
+          color: on ? '#ffd8a0' : (afford ? '#c9b98a' : '#7a6a52'),
+        });
+        drawText(x, right, {
+          x: LX + LW - 4, y: y + 1, scale: 1, align: 'right',
+          color: live ? JADE : (afford ? GOLD : '#8a4a44'),
+        });
+        // a pink-brown pip on the ones that will have you over
+        if (it.drunk) {
+          x.fillStyle = Math.floor(t * 3) % 2 ? '#c86a3a' : '#7a3a1a';
+          x.fillRect(LX + LW - 2, y + 1, 2, 5);
+        }
+        rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
+        y += ROW;
+      });
+
+      /* ---- what it does ---- */
+      const PY = y + 3, PB = H - 30;
+      x.fillStyle = 'rgba(0,0,0,.52)'; x.fillRect(LX, PY, LW, PB - PY);
+      x.fillStyle = '#6a4420';
+      x.fillRect(LX, PY, LW, 1); x.fillRect(LX, PB - 1, LW, 1);
+      if (d) {
+        let by = PY + 4;
+        drawText(x, d.tag, { x: LX + 5, y: by, scale: 1, color: d.drunk ? '#e08a4a' : '#8a7a52' });
+        by += 10;
+        for (const ln of wrapText(d.blurb.toUpperCase(), LW - 12, 1, 1)) {
+          if (by > PB - 11) break;
+          drawText(x, ln, { x: LX + 5, y: by, scale: 1, color: '#c9b98a' });
+          by += 9;
+        }
+      }
+
+      /* ---- what he is saying ---- */
+      {
+        const txt = s.line;
+        const lw = Math.min(W - 16, textWidth(txt, 1));
+        x.fillStyle = 'rgba(10,6,4,.88)';
+        x.fillRect(6, PB + 2, lw + 8, 12);
+        x.fillStyle = '#ffb84a'; x.fillRect(6, PB + 2, 2, 12);
+        drawText(x, txt, { x: 11, y: PB + 5, scale: 1, color: '#e8d0a8' });
+      }
+
+      /* ---- the counter ---- */
+      const afford = d && coins >= d.cost;
+      const busy = !!s.pour;
+      const label = busy ? 'HE IS POURING' : (afford ? `E   ${d.cost} SYNCOIN` : 'NOT ENOUGH SYNCOIN');
+      const bw = W - 12, bx = 6, byy = H - 16;
+      x.fillStyle = s.flash > 0 ? '#ffb84a' : (afford && !busy ? '#3a2410' : '#1a1208');
+      x.fillRect(bx, byy, bw, 12);
+      x.fillStyle = afford && !busy ? '#ffb84a' : '#5a4a30';
+      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
+      drawText(x, label, {
+        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
+        color: s.flash > 0 ? '#160c04' : (afford && !busy ? '#ffd8a0' : '#7a6a4a'),
+      });
+      rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
+      return rows;
+    },
+    key(code, s, g, st) {
+      const list = DRINKS;
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        if (s.sel === 0) menuSnap();
+        s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        if (s.sel === list.length - 1) menuSnap();
+        s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'Escape' || code === 'Backspace') {
+        if (s.pour) { g.audio?.sfx('deny'); return true; }
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        if (s.pour) { g.audio?.sfx('deny'); return true; }
+        menuFlash();
+        const it = list[s.sel];
+        if (!it) return true;
+        if ((g.coins || 0) < it.cost) {
+          s.line = 'NO TABS. IT IS ON THE SIGN.';
+          s.lineAt = s.t;
+          g.audio?.sfx('deny');
+          return true;
+        }
+        /* He pulls it, and it takes as long as it takes. Nothing is charged
+           and nothing happens to you until the glass is full — which is
+           what makes buying a drink feel like buying a drink. */
+        s.pour = { id: it.id, t: 0, colour: it.colour, done: false };
+        s.pull = 1;
+        s.flash = 0.35;
+        s.line = 'COMING UP.';
+        s.lineAt = s.t;
+        g.audio?.sfx('lever');
+        g.audio?.sfx('pour');
+        setTimeout(() => g.audio?.sfx('fizz'), 500);
+        setTimeout(() => g.audio?.sfx('glass'), 2300);
+        // the room pours one too, on the bar top you are standing at
+        const idx = list.indexOf(it) % 3;
+        g.barScene?.userData.pour?.(idx, it.colour);
+        setTimeout(() => g.barScene?.userData.clearGlass?.(idx), 9000);
+        return true;
+      }
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (row?.buy) { this.key('Enter', s, g, st); return true; }
+      if (row?.pick !== undefined) {
+        if (row.pick === s.sel) this.key('Enter', s, g, st);
+        else { s.sel = row.pick; g.audio?.sfx('select'); }
+      }
+      return true;
+    },
+  },
+
+  /* ---------------- DARTS ---------------- */
+  /* 301, straight in, double out, against Quezetriel for money.
+
+     Two decisions per dart, never one: a line sweeps across the board and
+     you stop it, then a line sweeps down it and you stop that. Where they
+     cross is where the dart goes. Nothing is random until you have
+     committed to both — and then only your own hand, which is worse the
+     more he has sold you. */
+  mpDarts: {
+    init(s, g) {
+      s.phase = 'stake';        // stake | aimX | aimY | fly | his | turnend | over
+      s.stake = Math.max(DARTS_MIN, Math.min(DARTS_MAX, g?.coins || 0));
+      if (s.stake < DARTS_MIN) s.stake = DARTS_MIN;
+      s.leg = null;
+      s.sweep = 0;
+      s.aimX = 0;
+      s.aimY = 0;
+      s.fly = 0;
+      s.last = null;
+      s.hisT = 0;
+      s.line = 'THREE HUNDRED AND ONE. DOUBLE TO FINISH.';
+      s.said = 0;
+      s.bump = 0;
+      s.shake = 0;
+    },
+    tick(s, g, dt, t) {
+      if (s.bump > 0) s.bump = Math.max(0, s.bump - dt * 6);
+      if (s.shake > 0) s.shake = Math.max(0, s.shake - dt * 3);
+      const drunk = g?.pipeline?.drunk || 0;
+
+      if (s.phase === 'aimX' || s.phase === 'aimY') {
+        // the sweep speeds up as the leg gets tighter, and drink makes it worse
+        const base = 1.55 + (s.leg && s.leg.you < 60 ? 0.5 : 0) + drunk * 1.3;
+        s.sweep = (s.sweep + dt * base) % 1;
+      }
+      if (s.phase === 'fly') {
+        s.fly += dt;
+        if (s.fly > 0.42 && !s.landed) {
+          s.landed = true;
+          const wob = 0.055 + drunk * 0.16;
+          const dx = s.aimX + (Math.random() - 0.5) * wob;
+          const dy = s.aimY + (Math.random() - 0.5) * wob;
+          const r = DARTS.throwDart(s.leg, dx, dy);
+          s.last = r;
+          s.shake = r.hit.ring === 'treble' || r.hit.ring === 'inner' ? 1 : 0.4;
+          g.audio?.sfx(r.hit.ring === 'miss' ? 'wire' : 'dart');
+          if (r.out) {
+            s.line = 'GAME. THAT IS A FINISH.';
+            g.audio?.sfx('victory');
+          } else if (r.bust) {
+            s.line = 'BUST. THE WHOLE TURN GOES.';
+            g.audio?.sfx('deny');
+          } else if (r.hit.ring === 'treble') {
+            s.line = `${r.hit.label}. HE SAW THAT.`;
+            g.audio?.sfx('confirm');
+          } else if (r.hit.ring === 'miss') {
+            s.line = 'OFF THE BOARD ENTIRELY.';
+          }
+        }
+        if (s.fly > 0.95) {
+          if (s.leg.over) { s.phase = 'over'; DARTS_PAY(s, g); return; }
+          if (DARTS.turnDone(s.leg)) {
+            DARTS.endTurn(s.leg);
+            s.phase = 'his';
+            s.hisT = 0;
+            s.hisThrown = 0;
+            s.line = 'HIS THROW.';
+          } else {
+            s.phase = 'aimX';
+          }
+          s.fly = 0;
+          s.landed = false;
+        }
+      }
+      if (s.phase === 'his') {
+        s.hisT += dt;
+        // one dart a second, so you can watch him do it to you
+        if (s.hisT > 0.85) {
+          s.hisT = 0;
+          const th = DARTS.hisThrow(s.leg.him);
+          const r = DARTS.throwDart(s.leg, th.x, th.y);
+          s.last = r;
+          s.shake = r.hit.ring === 'treble' ? 0.9 : 0.35;
+          g.audio?.sfx(r.hit.ring === 'miss' ? 'wire' : 'dart');
+          if (r.out) {
+            s.line = QUEZ_DARTS_WIN[(s.said++) % QUEZ_DARTS_WIN.length];
+            s.phase = 'over';
+            DARTS_PAY(s, g);
+            return;
+          }
+          if (DARTS.turnDone(s.leg)) {
+            DARTS.endTurn(s.leg);
+            s.phase = 'aimX';
+            s.line = s.leg.you <= 40 && s.leg.you % 2 === 0
+              ? `YOU ARE ON DOUBLE ${s.leg.you / 2}.` : 'YOUR THROW.';
+          }
+        }
+      }
+    },
+    draw(x, W, H, s, g, t) {
+      const coins = g.coins || 0;
+      const leg = s.leg;
+      const sh = s.shake > 0 ? Math.round(Math.sin(s.shake * 40) * s.shake * 2) : 0;
+
+      /* ---- the corner of the bar the board is in ---- */
+      x.fillStyle = '#120a05'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#120a05', '#20130a', 0.5, 2);
+      for (let i = 0; i < H; i += 9) {
+        x.fillStyle = 'rgba(120,74,32,.05)'; x.fillRect(0, i, W, 8);
+        x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1);
+      }
+      // the lamp over the board
+      const CX = Math.round(W * 0.62) + sh, CY = Math.round(H * 0.47);
+      const R = 62;
+      for (let i = 12; i >= 0; i--) {
+        x.fillStyle = `rgba(255,224,170,${(0.013 + Math.sin(t * 4) * 0.001).toFixed(3)})`;
+        x.beginPath(); x.arc(CX, CY - 18, 20 + i * 8, 0, 6.283); x.fill();
+      }
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
+
+      /* ---- the board ---- */
+      // the cabinet behind it
+      x.fillStyle = '#241408'; x.fillRect(CX - R - 10, CY - R - 10, (R + 10) * 2, (R + 10) * 2);
+      x.fillStyle = '#3a2414'; x.fillRect(CX - R - 10, CY - R - 10, (R + 10) * 2, 3);
+      const wedge = (r0, r1, i, col) => {
+        const a0 = (i - 0.5) * (Math.PI * 2 / 20) - Math.PI / 2;
+        const a1 = (i + 0.5) * (Math.PI * 2 / 20) - Math.PI / 2;
+        x.beginPath();
+        x.arc(CX, CY, r1, a0, a1);
+        x.arc(CX, CY, r0, a1, a0, true);
+        x.closePath();
+        x.fillStyle = col; x.fill();
+      };
+      for (let i = 0; i < 20; i++) {
+        const dark = i % 2 === 0;
+        wedge(R * DARTS.R_OUTER, R * DARTS.R_TREBLE_IN, i, dark ? '#100d0a' : '#e2d4b0');
+        wedge(R * DARTS.R_TREBLE_OUT, R * DARTS.R_DOUBLE_IN, i, dark ? '#100d0a' : '#e2d4b0');
+        wedge(R * DARTS.R_TREBLE_IN, R * DARTS.R_TREBLE_OUT, i, dark ? '#1e7a3a' : '#b0201a');
+        wedge(R * DARTS.R_DOUBLE_IN, R * DARTS.R_DOUBLE_OUT, i, dark ? '#1e7a3a' : '#b0201a');
+      }
+      x.beginPath(); x.arc(CX, CY, R * DARTS.R_OUTER, 0, 6.283);
+      x.fillStyle = '#1e7a3a'; x.fill();
+      x.beginPath(); x.arc(CX, CY, R * DARTS.R_BULL, 0, 6.283);
+      x.fillStyle = '#b0201a'; x.fill();
+      // the wire
+      x.strokeStyle = 'rgba(220,210,190,.22)'; x.lineWidth = 1;
+      for (let i = 0; i < 20; i++) {
+        const a = (i + 0.5) * (Math.PI * 2 / 20) - Math.PI / 2;
+        x.beginPath();
+        x.moveTo(CX + Math.cos(a) * R * DARTS.R_OUTER, CY + Math.sin(a) * R * DARTS.R_OUTER);
+        x.lineTo(CX + Math.cos(a) * R, CY + Math.sin(a) * R);
+        x.stroke();
+      }
+      // and the numbers round the outside
+      for (let i = 0; i < 20; i++) {
+        const a = i * (Math.PI * 2 / 20) - Math.PI / 2;
+        drawText(x, String(DARTS.ORDER[i]), {
+          x: CX + Math.cos(a) * (R + 7), y: CY + Math.sin(a) * (R + 7) - 3,
+          scale: 1, align: 'center', color: '#c8b894', shadow: false,
+        });
+      }
+
+      /* ---- darts already in it this turn ---- */
+      if (leg) {
+        for (const d of leg.darts) {
+          const dx = CX + d.x * R, dy = CY + d.y * R;
+          // the flight, then the shaft, then the point
+          x.fillStyle = '#e8e0c8'; x.fillRect(dx + 3, dy - 5, 5, 5);
+          x.fillStyle = '#8a8a92'; x.fillRect(dx, dy - 1, 5, 2);
+          x.fillStyle = '#fff4d0'; x.fillRect(dx - 1, dy - 1, 2, 2);
+        }
+      }
+
+      /* ---- the sights ---- */
+      if (s.phase === 'aimX' || s.phase === 'aimY') {
+        // where the across-sweep is, or where it stopped
+        const ax = s.phase === 'aimX'
+          ? Math.sin(s.sweep * Math.PI * 2) * 1.05 : s.aimX;
+        x.fillStyle = s.phase === 'aimX' ? '#ffd24a' : '#6a5a2a';
+        x.fillRect(Math.round(CX + ax * R), CY - R - 8, 1, (R + 8) * 2);
+        if (s.phase === 'aimY') {
+          const ay = Math.sin(s.sweep * Math.PI * 2) * 1.05;
+          x.fillStyle = '#8fe8a0';
+          x.fillRect(CX - R - 8, Math.round(CY + ay * R), (R + 8) * 2, 1);
+          // and the point they cross, blinking
+          if (Math.floor(t * 8) % 2) {
+            x.fillStyle = '#fff3c4';
+            x.fillRect(Math.round(CX + ax * R) - 1, Math.round(CY + ay * R) - 1, 3, 3);
+          }
+        }
+      }
+
+      /* ---- a dart in flight ---- */
+      if (s.phase === 'fly' && !s.landed) {
+        const k = Math.min(1, s.fly / 0.42);
+        const dx = CX + s.aimX * R, dy = CY + s.aimY * R;
+        const fx = Math.round(20 + (dx - 20) * k);
+        const fy = Math.round(H - 14 + (dy - (H - 14)) * k);
+        const sz = Math.round(7 - k * 3);
+        x.fillStyle = '#e8e0c8'; x.fillRect(fx + 3, fy - 3, sz, sz);
+        x.fillStyle = '#c8c8d0'; x.fillRect(fx, fy - 1, sz, 2);
+      }
+
+      /* ---- the scores ---- */
+      const SX = 8;
+      x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(SX - 2, 6, 96, 46);
+      x.fillStyle = '#8a6a30'; x.fillRect(SX - 2, 6, 96, 1); x.fillRect(SX - 2, 51, 96, 1);
+      /* Three letters each. "QUEBOLIUS" at scale 1 and "301" at scale 2 do
+         not both fit on a ninety-pixel row, and they printed through each
+         other. The log below already calls him HIM. */
+      drawText(x, 'YOU', { x: SX + 2, y: 10, scale: 1, color: leg && leg.turn === 'you' ? GOLD_LT : '#8a7a52' });
+      drawText(x, String(leg ? leg.you : DARTS.START), {
+        x: SX + 90, y: 8, scale: 2, align: 'right',
+        color: leg && leg.you <= 40 ? '#8fe8a0' : GOLD,
+      });
+      drawText(x, 'HIM', { x: SX + 2, y: 32, scale: 1, color: leg && leg.turn === 'him' ? '#ffb84a' : '#8a7a52' });
+      drawText(x, String(leg ? leg.him : DARTS.START), {
+        x: SX + 90, y: 30, scale: 2, align: 'right',
+        color: leg && leg.him <= 40 ? '#ff8a7a' : '#c08078',
+      });
+      // whose throw it is, as an arrow rather than a word
+      if (leg && !leg.over) {
+        const ay2 = leg.turn === 'you' ? 12 : 34;
+        x.fillStyle = Math.floor(t * 4) % 2 ? '#ffd24a' : '#8a6a30';
+        x.fillRect(SX - 6, ay2, 1, 3); x.fillRect(SX - 7, ay2 + 1, 3, 1);
+      }
+
+      /* the three darts in hand */
+      if (leg && !leg.over) {
+        for (let i = 0; i < 3; i++) {
+          const gone = i < leg.thrown;
+          x.fillStyle = gone ? '#3a3020' : '#c8c8d0';
+          x.fillRect(SX + i * 7, 56, 2, 9);
+          x.fillStyle = gone ? '#4a4030' : '#e8e0c8';
+          x.fillRect(SX + i * 7 - 1, 54, 4, 3);
+        }
+        drawText(x, 'DARTS', { x: SX + 24, y: 57, scale: 1, color: '#7a6a4a' });
+      }
+
+      /* the last few turns */
+      if (leg && leg.log.length) {
+        let ly = 72;
+        for (const e of leg.log.slice(0, 5)) {
+          const txt = `${e.who === 'you' ? 'YOU' : 'HIM'}  ${e.bust ? 'BUST' : e.scored}`;
+          drawText(x, txt, {
+            x: SX, y: ly, scale: 1,
+            color: e.bust ? '#8a4a44' : (e.who === 'you' ? '#8a9a6a' : '#7a6a52'),
+          });
+          drawText(x, String(e.left), {
+            x: SX + 58, y: ly, scale: 1, align: 'right', color: '#6a5a3a',
+          });
+          ly += 9;
+        }
+      }
+
+      /* ---- the stake, before the first dart ---- */
+      if (s.phase === 'stake') {
+        const bw = 128, bh = 42;
+        const bx = Math.round(W / 2 - bw / 2), by = Math.round(H / 2 - bh / 2);
+        x.fillStyle = 'rgba(8,5,3,.92)'; x.fillRect(bx, by, bw, bh);
+        x.fillStyle = '#ffb84a'; x.fillRect(bx, by, bw, 1); x.fillRect(bx, by + bh - 1, bw, 1);
+        x.fillRect(bx, by, 1, bh); x.fillRect(bx + bw - 1, by, 1, bh);
+        drawText(x, 'PLAY HIM FOR', { x: W / 2, y: by + 5, scale: 1, align: 'center', color: '#c9a870' });
+        const kick = Math.round(s.bump * 3);
+        drawText(x, String(s.stake), {
+          x: W / 2, y: by + 15 - kick, scale: 2, align: 'center',
+          color: coins >= s.stake ? GOLD_LT : RED,
+        });
+        drawText(x, coins >= s.stake ? 'WINNER TAKES BOTH' : 'YOU CANNOT COVER IT', {
+          x: W / 2, y: by + 32, scale: 1, align: 'center',
+          color: coins >= s.stake ? '#8fe8a0' : RED,
+        });
+      }
+
+      /* ---- and the result ---- */
+      if (s.phase === 'over' && leg) {
+        const won = leg.over === 'you';
+        const bw = 150, bh = 34;
+        const bx = Math.round(W / 2 - bw / 2), by = Math.round(H * 0.72);
+        x.fillStyle = 'rgba(8,5,3,.92)'; x.fillRect(bx, by, bw, bh);
+        x.fillStyle = won ? '#8fe8a0' : '#c04a3a';
+        x.fillRect(bx, by, bw, 1); x.fillRect(bx, by + bh - 1, bw, 1);
+        drawText(x, won ? `YOU WIN ${s.stake * 2}` : `HE TAKES ${s.stake}`, {
+          x: W / 2, y: by + 5, scale: 2, align: 'center',
+          color: won ? (Math.floor(t * 8) % 2 ? '#fff3c4' : GOLD) : '#ff8a7a',
+        });
+        drawText(x, 'E  AGAIN     ESC  LEAVE IT', {
+          x: W / 2, y: by + 24, scale: 1, align: 'center', color: '#8a7a52',
+        });
+      }
+
+      /* ---- what he is saying ---- */
+      {
+        const lw = Math.min(W - 16, textWidth(s.line, 1));
+        x.fillStyle = 'rgba(10,6,4,.88)';
+        x.fillRect(6, H - 30, lw + 8, 12);
+        x.fillStyle = '#ffb84a'; x.fillRect(6, H - 30, 2, 12);
+        drawText(x, s.line, { x: 11, y: H - 27, scale: 1, color: '#e8d0a8' });
+      }
+
+      /* ---- and the keys ---- */
+      let hint;
+      if (s.phase === 'stake') hint = 'UP DN  STAKE     E  THROW FIRST     ESC  LEAVE';
+      else if (s.phase === 'aimX') hint = 'E  STOP THE LINE  (ACROSS)';
+      else if (s.phase === 'aimY') hint = 'E  STOP THE LINE  (UP AND DOWN)';
+      else if (s.phase === 'his') hint = '';
+      else if (s.phase === 'over') hint = '';
+      else hint = '';
+      footer(x, W, H, hint);
+      return [];
+    },
+    key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') {
+        if (s.phase === 'aimX' || s.phase === 'aimY' || s.phase === 'fly' || s.phase === 'his') {
+          s.line = 'FINISH THE LEG. YOU PUT MONEY ON IT.';
+          g.audio?.sfx('deny');
+          return true;
+        }
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      if (s.phase === 'stake') {
+        const top = Math.min(DARTS_MAX, Math.max(DARTS_MIN, g.coins || 0));
+        const set = (n) => {
+          const v = Math.max(DARTS_MIN, Math.min(top, n));
+          if (v === s.stake) { g.audio?.sfx('deny'); return true; }
+          s.stake = v; s.bump = 1; g.audio?.sfx('select'); return true;
+        };
+        if (code === 'ArrowUp' || code === 'KeyW') return set(s.stake + 5);
+        if (code === 'ArrowDown' || code === 'KeyS') return set(s.stake - 5);
+        if (code === 'ArrowRight') return set(s.stake + 1);
+        if (code === 'ArrowLeft') return set(s.stake - 1);
+        if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+          if ((g.coins || 0) < s.stake) {
+            s.line = 'NO TABS. NOT FOR DARTS EITHER.';
+            g.audio?.sfx('deny'); return true;
+          }
+          g.dartsStake?.(s.stake);
+          s.leg = DARTS.newLeg(s.stake);
+          s.phase = 'aimX';
+          s.sweep = 0;
+          s.line = 'STRAIGHT IN. DOUBLE OUT. YOUR THROW.';
+          g.audio?.sfx('confirm');
+          return true;
+        }
+        return true;
+      }
+      if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+        if (s.phase === 'aimX') {
+          s.aimX = Math.sin(s.sweep * Math.PI * 2) * 1.05;
+          s.phase = 'aimY';
+          s.sweep = 0;
+          g.audio?.sfx('select');
+          return true;
+        }
+        if (s.phase === 'aimY') {
+          s.aimY = Math.sin(s.sweep * Math.PI * 2) * 1.05;
+          s.phase = 'fly';
+          s.fly = 0;
+          s.landed = false;
+          g.audio?.sfx('throw');
+          return true;
+        }
+        if (s.phase === 'over') {
+          const keep = s.stake;
+          SCREENS.mpDarts.init(s, g);
+          s.stake = Math.max(DARTS_MIN, Math.min(g.coins || 0, keep));
+          s.line = 'AGAIN, THEN.';
+          return true;
+        }
       }
       return true;
     },
@@ -4459,6 +5422,16 @@ export const SCREENS = {
       s.cx = Math.max(-reach, Math.min(reach, s.cx));
       s.cz = Math.max(-reach, Math.min(reach, s.cz));
       if (s.zoom <= 1) { s.cx = 0; s.cz = 0; }
+      /* A map with no chart behind it is a blank map, not a crash. It only
+         happens if something pushes this screen without data, but a screen
+         that throws takes the whole frame with it. */
+      if (!s.data) {
+        drawText(x, 'NO CHART', {
+          x: W / 2, y: oy + size / 2, scale: 2, align: 'center', color: DIM,
+        });
+        footer(x, W, H, 'ESC  CLOSE');
+        return [];
+      }
       s.data.zoom = s.zoom;
       s.data.cx = s.cx;
       s.data.cz = s.cz;

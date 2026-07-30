@@ -18,8 +18,8 @@ import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } fro
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import {
-  STOCK, FOOD, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
-  itemById, stockFor, VENDOR_IDS, SCHLARNA_UP, SCHLARNA_N,
+  STOCK, FOOD, DRINKS, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
+  itemById, stockFor, VENDOR_IDS, SCHLARNA_UP, SCHLARNA_N, drinkById,
 } from './market.js';
 
 /* How often the wire carries anything.
@@ -40,7 +40,12 @@ import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
 import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
-import { HR_BOX, HR_COLLIDERS, hrHeight } from '../world/highroller.js';
+import {
+  HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
+} from '../world/highroller.js';
+import {
+  BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE,
+} from '../world/bar.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
 import { setTime } from '../lib/ps1.js';
@@ -826,14 +831,8 @@ export class MPGame extends Game {
        the ground like a scavenger, which puts them out in the open. */
     if (!this.amAgent) {
       let pay = STAGE_PAY_MIN + Math.floor(Math.random() * (STAGE_PAY_MAX - STAGE_PAY_MIN + 1));
-      // Cathy's house burger: the next three jobs pay twice
-      if (this.bigMeals > 0) {
-        pay *= 2;
-        this.bigMeals--;
-        this.ui.toast(this.bigMeals > 0
-          ? `DOUBLE PAY - ${this.bigMeals} MORE`
-          : 'THAT WAS THE LAST DOUBLE', 'jade', 2200);
-      }
+      // Cathy's house burger: every job pays twice for the rest of the round
+      if (this.bigMeals) pay *= 2;
       this.coins = (this.coins || 0) + pay;
       this.ui.toast(`+${pay} SYNCOIN`, 'gold', 1600);
       this._payInstalment();
@@ -1231,6 +1230,21 @@ export class MPGame extends Game {
       if (dt3 < 4.6) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
       const dd = Math.hypot(p.x - 0, p.z - 10.2);
       if (dd < 3.0) return { kind: 'mpDoorOut', prompt: 'BACK ON DECK' };
+      // the door in the west panelling, which has no plate on it
+      const db = Math.hypot(p.x - HR_BAR_DOOR.x, p.z - HR_BAR_DOOR.z);
+      if (db < 2.6 && !this._barCooldown) return { kind: 'mpBarDoor', prompt: 'THE SALOON' };
+      return null;
+    }
+    if (this.state === 'bar') {
+      // the bar itself: stand at it and he will serve you
+      const dq = Math.hypot(p.x - (BAR_KEEP.x + 1.9), p.z - BAR_KEEP.z);
+      if (dq < 3.4) return { kind: 'mpBar', prompt: 'QUEZETRIEL QUEBOLIUS' };
+      // the oche, at the far end
+      const do2 = Math.hypot(p.x - BAR_OCHE.x, p.z - BAR_OCHE.z);
+      if (do2 < 2.2) return { kind: 'mpDarts', prompt: 'PLAY HIM AT DARTS' };
+      // and the way back
+      const dbk = Math.hypot(p.x - (BAR_ENTRY.x + 1.2), p.z - BAR_ENTRY.z);
+      if (dbk < 2.4 && !this._barCooldown) return { kind: 'mpBarOut', prompt: 'BACK THROUGH' };
       return null;
     }
     if (this.state === 'bunker') {
@@ -1403,6 +1417,20 @@ export class MPGame extends Game {
       }
       case 'mpDoorOut': {
         this.leaveHighRoller();
+        break;
+      }
+      case 'mpBarDoor': { this.enterBar(); break; }
+      case 'mpBarOut': { this.leaveBar(); break; }
+      case 'mpBar': {
+        this.screens.push('mpBar', { sel: 0 });
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
+        break;
+      }
+      case 'mpDarts': {
+        this.screens.push('mpDarts', {});
+        document.exitPointerLock?.();
+        this.audio.sfx('page');
         break;
       }
       case 'mpFlopper': {
@@ -1653,10 +1681,11 @@ export class MPGame extends Game {
     if (d.taken) return;
     d.taken = true;
     d.mesh.visible = false;
-    this.coins = (this.coins || 0) + d.coins;
+    const got = this.doubleCoins ? d.coins * 2 : d.coins;
+    this.coins = (this.coins || 0) + got;
     this._send({ t: C.PURSE, coins: this.coins });
     this.audio.sfx('coin');
-    this.ui.toast(`+${d.coins} SYNCOIN`, 'gold', 1800);
+    this.ui.toast(`+${got} SYNCOIN`, 'gold', 1800);
     this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
     this.player.punch?.(0.2);
     this._payInstalment();
@@ -1664,7 +1693,8 @@ export class MPGame extends Game {
 
   _takeCoin(c) {
     c.taken = true;
-    this.coins = (this.coins || 0) + 1;
+    // black rum, and the falling down: every coin counts twice
+    this.coins = (this.coins || 0) + (this.doubleCoins ? 2 : 1);
     this.wallet = this.coins;
     this.audio.sfx('coin');
     this.startCoinFlourish(c);
@@ -1802,7 +1832,11 @@ export class MPGame extends Game {
     const it = itemById(id);
     if (!it) return false;
     this.owned = this.owned || new Set();
-    if (this.owned.has(id) && it.tag === 'PASSIVE') { this.audio.sfx('deny'); return false; }
+    if (this.owned.has(id) && (it.tag === 'PASSIVE' || it.once)) {
+      this.audio.sfx('deny');
+      this.ui.toast('YOU HAVE ALREADY HAD THAT', 'bad', 1600);
+      return false;
+    }
     const price = this.priceOf(id);
     if ((this.coins || 0) < price) {
       this.audio.sfx('deny');
@@ -1817,7 +1851,8 @@ export class MPGame extends Game {
     /* Food is eaten at the counter. It does not go on your belt: there is
        no version of this where you carry a burger around and press 4. */
     const isFood = FOOD.some((f) => f.id === id);
-    if (it.tag === 'PASSIVE' || isFood) this.owned.add(id);
+    if (it.tag === 'PASSIVE' || it.once) this.owned.add(id);
+    else if (isFood) { /* the floss is eaten and gone */ }
     else this.carry = [...(this.carry || []), id];
     if (isFood) {
       this.applyFood(id);
@@ -2275,10 +2310,8 @@ export class MPGame extends Game {
     this.pipeline.tint.setHex(0x000000);
     this.pipeline.tintAmt = 0.8;
     this._rehomeAvatars();
-    this.ui.toast('HIGH ROLLERS', 'gold', 2600);
-    setTimeout(() => {
-      if (this.state === 'highroller') this.ui.toast('M. BEEF PRESIDING', 'gold', 2600);
-    }, 1400);
+    this.ui.clearToasts?.();
+    this.ui.showPopup('HIGH ROLLERS', 'M. BEEF PRESIDING', 'coin', 'BEHIND THE PICTURE');
   }
 
   leaveHighRoller() {
@@ -2293,13 +2326,7 @@ export class MPGame extends Game {
     this.islandScene.add(this.player.mesh);
     this.player.setColliders(this.colliders);
     this.player.insideBox = null;
-    /* Back onto her deck, a little forward of the frame so you are not
-       standing in the doorway you just came out of. */
-    const c = this.casino;
-    if (c) {
-      const w = c.localToWorld(new THREE.Vector3(0, 0, 6.4));
-      this.player.teleport(w.x, 0.95, w.z, c.rotation.y);
-    }
+    this._backOnDeck();
     this._rehomeAvatars();
     this.audio.sfx('door');
     this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
@@ -2307,8 +2334,230 @@ export class MPGame extends Game {
     this.pipeline.tintAmt = 0.4;
   }
 
+  /* =========================================================
+     WHAT YOU DRANK
+
+     Everything Quezetriel sells runs on one clock and one set of counters,
+     so a second drink extends the first rather than fighting it, and there
+     is exactly one place that decides when it all wears off.
+     ========================================================= */
+  buyDrink(id) {
+    const d = drinkById(id);
+    if (!d) return false;
+    if ((this.coins || 0) < d.cost) {
+      this.audio.sfx('deny');
+      this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
+      return false;
+    }
+    this.coins -= d.cost;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.audio.sfx('coin');
+    this.rounds = (this.rounds || 0) + 1;
+
+    const until = now() + d.mins * 60;
+    this.tab = this.tab || {};
+    // a second of the same extends it; a different one runs alongside
+    this.tab[id] = Math.max(this.tab[id] || 0, until);
+    this._applyDrink(id, d);
+    if (d.drunk) {
+      this.drunkUntil = Math.max(this.drunkUntil || 0, until);
+      this.drunkPeak = Math.min(1, Math.max(this.drunkPeak || 0, d.drunk));
+    }
+    return true;
+  }
+
+  _applyDrink(id, d) {
+    if (id === 'pint') {
+      const half = this.player.BASE_DRAIN * 0.5;
+      this.player.staminaDrain = Math.min(this.player.staminaDrain, half);
+      this.ui.toast('SPRINTING COSTS HALF', 'jade', 2600);
+    }
+    if (id === 'lamp') {
+      this.nightEyes = true;
+      this.ui.toast('THE DARK STOPS MATTERING', 'jade', 2600);
+    }
+    if (id === 'quiet') {
+      this._send({ t: C.PERK, perk: 'quiet', on: true });
+      this.ui.toast('YOUR FEET MAKE NO SOUND', 'jade', 2600);
+    }
+    if (id === 'rum' || id === 'falling') {
+      this.doubleCoins = true;
+      this.ui.toast('EVERY SYNCOIN COUNTS TWICE', 'jade', 2600);
+    }
+    if (id === 'own' || id === 'falling') {
+      this.bigMeals = true;
+      this.player.SPEED = this.player.BASE_SPEED * 1.25;
+      this.player.SPRINT = this.player.BASE_SPRINT * 1.25;
+      this.ui.toast('FASTER, AND THE WORK PAYS DOUBLE', 'jade', 2800);
+    }
+    if (id === 'falling') {
+      this.player.staminaDrain = Math.min(this.player.staminaDrain, this.player.BASE_DRAIN * 0.5);
+      this.nightEyes = true;
+      this._send({ t: C.PERK, perk: 'quiet', on: true });
+    }
+  }
+
+  /** One clock for the whole tab. Called every frame from update(). */
+  _tickDrink(dt) {
+    const t = now();
+    const tab = this.tab;
+    if (tab) {
+      for (const id of Object.keys(tab)) {
+        if (t < tab[id]) continue;
+        delete tab[id];
+        this._endDrink(id);
+      }
+      if (!Object.keys(tab).length) this.tab = null;
+    }
+    /* The room settles rather than snapping straight: the last thirty
+       seconds of a drink are it wearing off, which is when you notice you
+       had it. */
+    let want = 0;
+    if (this.drunkUntil && t < this.drunkUntil) {
+      const left = this.drunkUntil - t;
+      want = (this.drunkPeak || 0.5) * Math.min(1, left / 25);
+    } else if (this.drunkUntil) {
+      this.drunkUntil = 0;
+      this.drunkPeak = 0;
+      this.ui.toast('YOUR HEAD CLEARS', 'jade', 2600);
+    }
+    const cur = this.pipeline.drunk || 0;
+    this.pipeline.drunk = cur + (want - cur) * Math.min(1, dt * 1.4);
+    /* And it is not only a picture: drunk, you do not walk where you point.
+       The sway is slow enough to steer through and fast enough to be a
+       nuisance, which is the whole trade. */
+    this.player.drift = this.pipeline.drunk > 0.02
+      ? Math.sin(t * 0.9) * 0.30 * this.pipeline.drunk : 0;
+  }
+
+  _endDrink(id) {
+    const d = drinkById(id);
+    if (id === 'pint' || id === 'falling') {
+      // back to whatever you had before the drink, popcorn included
+      this.player.staminaDrain = this.hasItem('tonic')
+        ? this.player.BASE_DRAIN * 0.2 : this.player.BASE_DRAIN;
+    }
+    if (id === 'lamp' || id === 'falling') this.nightEyes = this.hasItem('nightglass') || false;
+    if (id === 'quiet' || id === 'falling') {
+      if (!this.hasItem('soles')) this._send({ t: C.PERK, perk: 'quiet', on: false });
+    }
+    if (id === 'rum' || id === 'falling') this.doubleCoins = false;
+    if (id === 'own' || id === 'falling') {
+      if (!this.hasItem('burger')) this.bigMeals = false;
+      const vest = this.hasItem('vest') ? 0.75 : 1;
+      const floss = this.flossUntil && now() < this.flossUntil ? 1.30 : 1;
+      this.player.SPEED = this.player.BASE_SPEED * vest * floss;
+      this.player.SPRINT = this.player.BASE_SPRINT * vest * floss;
+    }
+    if (d) this.ui.toast(`${d.name} HAS WORN OFF`, 'bad', 2400);
+  }
+
+  /* =========================================================
+     THE BAR
+
+     Through the west door of the high rollers room. Quezetriel Quebolius
+     keeps it. He sells drink, he plays darts for money, and he has never
+     once been asked what he is.
+     ========================================================= */
+  enterBar() {
+    if (this.state !== 'highroller') return;
+    if (!this.barScene) return;
+    this.state = 'bar';
+    this.scene = this.barScene;
+    this.player.mesh.removeFromParent();
+    this.barScene.add(this.player.mesh);
+    this.player.setColliders(BAR_COLLIDERS);
+    this.player.insideBox = BAR_BOX;
+    this.player.teleport(BAR_ENTRY.x, BAR_ENTRY.y, BAR_ENTRY.z, -Math.PI / 2);
+    this.player.pitch = -0.02;
+    this._barCooldown = true;
+    setTimeout(() => { this._barCooldown = false; }, 1800);
+    this.audio.sfx('door');
+    this.audio.playMusic('bar');
+    this.pipeline.tint.setHex(0xffa040);
+    this.pipeline.tintAmt = 0.7;
+    this._rehomeAvatars();
+    /* One card, not two toasts on top of the two the room next door already
+       put up. Four stacked messages was most of the screen. */
+    this.ui.clearToasts?.();
+    this.ui.showPopup('THE SALOON', 'QUEBOLIUS, PROPRIETOR', 'coin', 'THROUGH THE DOOR');
+  }
+
+  leaveBar() {
+    if (this.state !== 'bar') return;
+    this.state = 'highroller';
+    this.scene = this.hrScene;
+    this.player.mesh.removeFromParent();
+    this.hrScene.add(this.player.mesh);
+    this.player.setColliders(HR_COLLIDERS);
+    this.player.insideBox = HR_BOX;
+    this.player.teleport(HR_BAR_RETURN.x, HR_BAR_RETURN.y, HR_BAR_RETURN.z, HR_BAR_RETURN.yaw);
+    this.player.pitch = 0;
+    this._barCooldown = true;
+    setTimeout(() => { this._barCooldown = false; }, 1800);
+    this.audio.sfx('door');
+    this.audio.playMusic('highroller');
+    this.pipeline.tint.setHex(0x000000);
+    this.pipeline.tintAmt = 0.6;
+    this._rehomeAvatars();
+  }
+
+  /**
+   * Put you back on the Flopper's deck.
+   *
+   * This used to be `casino.localToWorld(0, 0, 6.4)`, and it dropped you in
+   * the sea. The boat's matrixWorld is only refreshed when the island scene
+   * is RENDERED, and the island is not rendered at all while you are in the
+   * high rollers room — so after a few seconds inside, the matrix was
+   * wherever she had been when you walked through the picture, and she had
+   * sailed on without it. Coming out at dawn put you a hundred metres astern
+   * of her, over forty feet of water.
+   *
+   * casinoPlat is the deck's own frame and _sailCasino keeps it current
+   * every frame, boat or no boat, so it is the thing to ask.
+   *
+   * Local +z is along the deck away from the picture. Nine metres out clears
+   * both the frame's own trigger at 1.5 and the cooldown that used to be the
+   * only thing stopping the room swallowing you again.
+   */
+  _backOnDeck(lz = 9.2) {
+    const plat = this.casinoPlat;
+    if (!plat) {
+      // no boat: the pier head, which is the only other place that makes sense
+      const sh = this.casinoShore;
+      if (sh) this.player.teleport(sh.x, heightAt(sh.x, sh.z) + 0.8, sh.z, 0);
+      return;
+    }
+    const wx = plat.x + lz * plat.sin;
+    const wz = plat.z + lz * plat.cos;
+    this.player.teleport(wx, plat.y + 0.35, wz, Math.atan2(plat.sin, plat.cos));
+    this.player.pitch = 0;
+  }
+
   /** In a round there is paid work, so the burger is on the counter too. */
   foodList() { return FOOD; }
+
+  /* ---------- darts ---------- */
+  /** Put a stake up. The screen has already checked you can cover it. */
+  dartsStake(n) {
+    if ((this.coins || 0) < n) return false;
+    this.coins -= n;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.audio.sfx('coin');
+    return true;
+  }
+
+  /** Settle a leg. `pays` is the whole pot, or nought. */
+  dartsSettle(pays) {
+    if (!pays) {
+      this.audio.sfx('deny');
+      return;
+    }
+    this.coins = (this.coins || 0) + pays;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.audio.sfx('jackpot');
+    this.ui.toast(`+${pays} SYNCOIN`, 'gold', 2400);
+  }
 
   /* ---------- the table ---------- */
   /** The rules, handed to the screen so it never implements any itself. */
@@ -2511,12 +2760,14 @@ export class MPGame extends Game {
   /** Come back up, whichever room we happen to be in. */
   leaveRoom() {
     if (this.state === 'bunker') this.leaveBunker();
+    else if (this.state === 'bar') { this.leaveBar(); this.leaveHighRoller(); }
     else if (this.state === 'highroller') this.leaveHighRoller();
   }
 
   get roomId() {
     if (this.state === 'bunker') return 1;
     if (this.state === 'highroller') return 2;
+    if (this.state === 'bar') return 3;
     return 0;
   }
 
@@ -2854,6 +3105,11 @@ export class MPGame extends Game {
       }
     }
 
+    /* Whatever you drank runs on wherever you are — in the bar, on the
+       island, down the hatch. It is one clock and it is ticked here, above
+       every branch, so there is no room you can stand in to sober up. */
+    this._tickDrink(dt);
+
     if (this.state === 'cutscene') {
       this.updateCutscene(dt);
       this.ui.hud.data.mp = null;
@@ -2880,6 +3136,27 @@ export class MPGame extends Game {
       this._mpHud();
       const bit2 = froze2 ? null : this.nearestInteractable();
       this.ui.setPrompt(bit2 ? bit2.prompt : null);
+      return;
+    }
+
+    /* The bar behind the high rollers room. Same shape again: its own scene,
+       its own walls, and the island carrying on without you. */
+    if (this.state === 'bar') {
+      if (this.isHost) M.host.update(0);
+      const frozeB = this.paused || this.screens.open;
+      if (!frozeB) {
+        this.player.update(dt, this.input, {
+          groundOf: barHeight, water: false, bounds: false, insideBox: BAR_BOX,
+        });
+      } else {
+        this.player.insideBox = BAR_BOX;
+        this.player.updateCamera(dt, barHeight);
+      }
+      this.barScene.userData.tick(this.time, dt, this.camera.position);
+      this._updateAvatars(dt);
+      this._mpHud();
+      const bitB = frozeB ? null : this.nearestInteractable();
+      this.ui.setPrompt(bitB ? bitB.prompt : null);
       return;
     }
     if (this.state === 'bunker') {
@@ -2945,6 +3222,12 @@ export class MPGame extends Game {
       this.player.update(dt, this.input, {
         groundOf: this.groundOf || heightAt, water: true, bounds: true,
       });
+      /* Off the pier, or off the Flopper's deck when she sails: the sea
+         brings you in. This lives on Game and single player has always
+         called it; the round has its own update and never did, which is why
+         falling in during a round meant treading water until somebody
+         called a council. */
+      if (this.amAlive) this._tide(dt);
       this.runTime += dt;
     } else {
       this.player.updateCamera(dt, this.groundOf || heightAt);

@@ -24,6 +24,15 @@ const RED = '#e0453a';
 const INK = '#0a0704';
 
 /* ---------- shared chrome ---------- */
+/** A cheap two-tone weave, so a big flat rectangle has some grain in it. */
+function ditherRect3(x, ox, oy, w, h, a, b) {
+  x.fillStyle = a; x.fillRect(ox, oy, w, h);
+  x.fillStyle = b;
+  for (let yy = 0; yy < h; yy += 2) {
+    for (let xx = (yy / 2) % 2; xx < w; xx += 2) x.fillRect(ox + xx, oy + yy, 1, 1);
+  }
+}
+
 function bar(x, bx, by, bw, bh, k, colour) {
   x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
   x.fillStyle = '#231708'; x.fillRect(bx, by, bw, bh);
@@ -712,52 +721,169 @@ const dials = {
    =========================================================== */
 const bail = {
   name: 'BAIL OUT THE HULL',
-  hint: 'SPACE TO BAIL',
-  init(s) { s.level = s.hard ? 0.9 : 0.82; s.rate = s.hard ? 0.15 : 0.085; s.wob = 0; s.pump = 0; },
+  hint: 'LEFT RIGHT MOVE   SPACE SCOOP',
+  /* This used to be one key pressed as fast as you could, which is not a
+     game, it is a countdown with extra work. Now the water SLOSHES: the
+     ship rolls, the level runs from one end of the hull to the other, and
+     the bucket only lifts what is actually under it. So you chase the deep
+     end, and mashing at the shallow end does nothing at all. */
+  init(s) {
+    s.level = s.hard ? 0.86 : 0.76;
+    s.rate = s.hard ? 0.105 : 0.062;
+    s.wob = 0;
+    s.pump = 0;
+    s.bucket = 0.5;          // where you are, across the hull
+    s.carry = 0;             // how much is in the bucket
+    s.tip = 0;               // the tipping animation when you throw it out
+    s.roll = 0;
+    s.splash = [];
+    s.miss = 0;
+    s.best = 0;
+  },
+  /** How deep the water is at `u` across the hull, 0..1. */
+  depthAt(s, u) {
+    // the roll tilts the surface, and a second slower wave rides on it
+    const tilt = Math.sin(s.wob * (s.hard ? 1.5 : 1.05)) * (s.hard ? 0.42 : 0.30);
+    const wave = Math.sin(s.wob * 2.6 + u * 6.0) * 0.045;
+    return Math.max(0, Math.min(1, s.level + (u - 0.5) * tilt * 2 + wave));
+  },
   draw(x, W, H, s, t, dt) {
     s.level = Math.min(1, s.level + dt * (s.rate || 0.085));
     s.wob += dt;
-    if (s.pump > 0) s.pump -= dt * 4;
+    s.roll = Math.sin(s.wob * (s.hard ? 1.5 : 1.05)) * 0.06;
+    if (s.pump > 0) s.pump -= dt * 3.4;
+    if (s.tip > 0) s.tip -= dt * 2.2;
+    if (s.miss > 0) s.miss -= dt * 3;
 
-    const hx = 40, hy = 44, hw = W - 80, hh = H - 100;
+    const hx = 34, hy = 40, hw = W - 68, hh = H - 96;
+
+    /* ---- the hull, rolling ---- */
+    x.save();
+    x.translate(hx + hw / 2, hy + hh / 2);
+    x.rotate(s.roll * 0.5);
+    x.translate(-(hx + hw / 2), -(hy + hh / 2));
+
     x.fillStyle = '#3a2a18'; x.fillRect(hx, hy, hw, hh);
-    // ribs
-    for (let i = 1; i < 6; i++) {
+    ditherRect3(x, hx, hy, hw, hh, '#3a2a18', '#472f1a');
+    // ribs, and a plank line or two
+    for (let i = 1; i < 7; i++) {
       x.fillStyle = '#4a3722';
-      x.fillRect(hx + Math.round((i / 6) * hw), hy, 2, hh);
+      x.fillRect(hx + Math.round((i / 7) * hw), hy, 2, hh);
+      x.fillStyle = 'rgba(0,0,0,.25)';
+      x.fillRect(hx + Math.round((i / 7) * hw) + 2, hy, 1, hh);
     }
-    // the water
-    const wy = Math.round(hy + hh - s.level * hh);
-    for (let yy = wy; yy < hy + hh; yy++) {
-      const k = (yy - wy) / Math.max(1, hy + hh - wy);
-      x.fillStyle = `rgb(${Math.round(28 + k * 6)},${Math.round(64 - k * 18)},${Math.round(104 - k * 30)})`;
-      x.fillRect(hx, yy, hw, 1);
+    for (let yy = hy + 8; yy < hy + hh; yy += 9) {
+      x.fillStyle = 'rgba(0,0,0,.16)'; x.fillRect(hx, yy, hw, 1);
     }
-    for (let i = 0; i < 5; i++) {
-      const off = Math.sin(s.wob * 2 + i) * 8;
-      x.fillStyle = 'rgba(150,200,225,.35)';
-      x.fillRect(hx + 6 + ((i * 37 + off + hw) % (hw - 20)), wy + 2 + i * 4, 14, 1);
+
+    /* ---- the water, column by column, so it can slosh ---- */
+    const COLS = 40;
+    let deepU = 0.5, deepD = 0;
+    for (let i = 0; i < COLS; i++) {
+      const u = (i + 0.5) / COLS;
+      const d = bail.depthAt(s, u);
+      if (d > deepD) { deepD = d; deepU = u; }
+      const cw = Math.ceil(hw / COLS);
+      const cx0 = hx + Math.floor((i / COLS) * hw);
+      const wy = Math.round(hy + hh - d * hh);
+      for (let yy = wy; yy < hy + hh; yy++) {
+        const k = (yy - wy) / Math.max(1, hy + hh - wy);
+        x.fillStyle = `rgb(${Math.round(26 + k * 8)},${Math.round(62 - k * 18)},${Math.round(102 - k * 30)})`;
+        x.fillRect(cx0, yy, cw, 1);
+      }
+      // the lit surface, brighter where it is deepest
+      x.fillStyle = d > 0.02 ? `rgba(159,216,255,${(0.35 + d * 0.5).toFixed(2)})` : 'rgba(0,0,0,0)';
+      x.fillRect(cx0, wy, cw, 1);
     }
-    x.fillStyle = '#9fd8ff'; x.fillRect(hx, wy, hw, 1);
+    // foam streaks running with the slosh
+    for (let i = 0; i < 6; i++) {
+      const u = ((s.wob * 0.22 + i * 0.17) % 1);
+      const d = bail.depthAt(s, u);
+      if (d < 0.04) continue;
+      const wy = Math.round(hy + hh - d * hh);
+      x.fillStyle = 'rgba(190,225,245,.28)';
+      x.fillRect(hx + Math.round(u * hw), wy + 2 + (i % 3) * 3, 12, 1);
+    }
+
+    /* ---- the bucket ---- */
+    const bux = Math.round(hx + s.bucket * hw - 9);
+    const surface = hy + hh - bail.depthAt(s, s.bucket) * hh;
+    // it dips into the water when you scoop, and tips out over the side
+    const dip = Math.sin(Math.max(0, s.pump) * Math.PI) * 16;
+    const buy = Math.round(Math.min(surface - 16 + dip, hy + hh - 20));
+    x.save();
+    x.translate(bux + 9, buy + 6);
+    x.rotate(-s.tip * 1.5);
+    x.translate(-(bux + 9), -(buy + 6));
+    // what is in it
+    if (s.carry > 0.01) {
+      x.fillStyle = '#2a5a8a';
+      x.fillRect(bux + 2, buy + 12 - Math.round(s.carry * 9), 14, Math.round(s.carry * 9));
+    }
+    x.fillStyle = '#8a7048'; x.fillRect(bux, buy, 18, 13);
+    x.fillStyle = '#6a5432'; x.fillRect(bux + 1, buy + 1, 16, 3);
+    x.fillStyle = '#a88a58'; x.fillRect(bux, buy, 18, 1);
+    // the handle
+    x.fillStyle = '#5a4a2a';
+    x.fillRect(bux - 1, buy - 4, 1, 5); x.fillRect(bux + 18, buy - 4, 1, 5);
+    x.fillRect(bux, buy - 5, 18, 1);
+    x.restore();
+
+    /* the guide line: where the water is deepest, which is where to be */
+    {
+      const gx = Math.round(hx + deepU * hw);
+      const blink = Math.floor(t * 5) % 2;
+      x.fillStyle = blink ? 'rgba(255,210,74,.55)' : 'rgba(255,210,74,.22)';
+      x.fillRect(gx, hy + 2, 1, 6);
+      x.fillStyle = 'rgba(255,210,74,.75)';
+      x.fillRect(gx - 2, hy + 2, 5, 1);
+    }
+
+    /* splashes */
+    for (let i = s.splash.length - 1; i >= 0; i--) {
+      const p = s.splash[i];
+      p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 240 * dt;
+      if (p.t > 0.5) { s.splash.splice(i, 1); continue; }
+      x.fillStyle = `rgba(180,225,250,${(1 - p.t / 0.5).toFixed(2)})`;
+      x.fillRect(Math.round(p.x), Math.round(p.y), 2, 2);
+    }
+
     x.fillStyle = '#5c3f1c';
     x.fillRect(hx, hy, hw, 1); x.fillRect(hx, hy + hh - 1, hw, 1);
     x.fillRect(hx, hy, 1, hh); x.fillRect(hx + hw - 1, hy, 1, hh);
+    x.restore();
 
-    // the bucket
-    const bxp = Math.round(W / 2 - 8);
-    const byp = Math.round(hy + hh - 26 - s.pump * 16);
-    x.fillStyle = '#8a7048'; x.fillRect(bxp, byp, 16, 12);
-    x.fillStyle = '#6a5432'; x.fillRect(bxp + 1, byp + 1, 14, 3);
-
-    bar(x, 40, H - 50, W - 80, 6, 1 - s.level, s.level > 0.9 ? RED : JADE);
-    drawText3(x, s.level > 0.9 ? 'SHE IS GOING DOWN' : 'KEEP IT UNDER THE LINE',
-      W / 2, H - 40, s.level > 0.9 ? RED : DIM);
+    /* ---- the readout ---- */
+    bar(x, 34, H - 48, W - 68, 6, 1 - s.level, s.level > 0.88 ? RED : JADE);
+    const msg = s.miss > 0 ? 'NOTHING THERE - FIND THE DEEP END'
+      : (s.level > 0.88 ? 'SHE IS GOING DOWN'
+        : 'BAIL FROM WHERE IT IS DEEPEST');
+    drawText3(x, msg, W / 2, H - 38, s.miss > 0 ? '#ffb08a' : (s.level > 0.88 ? RED : DIM));
     return [];
   },
   key(code, s) {
+    if (code === 'ArrowLeft' || code === 'KeyA') { s.bucket = Math.max(0.04, s.bucket - 0.09); return false; }
+    if (code === 'ArrowRight' || code === 'KeyD') { s.bucket = Math.min(0.96, s.bucket + 0.09); return false; }
     if (code !== 'Space' && code !== 'Enter' && code !== 'KeyE') return false;
-    s.level = Math.max(0, s.level - 0.115);
+
+    /* What you lift is what is under you. At the shallow end that is
+       nothing, and the whole game is knowing that. */
+    const d = bail.depthAt(s, s.bucket);
+    const got = Math.min(s.level, d * 0.20);
     s.pump = 1;
+    s.tip = 1;
+    if (got < 0.012) { s.miss = 1; s.carry = 0; return false; }
+    s.carry = Math.min(1, got / 0.2);
+    s.level = Math.max(0, s.level - got);
+    s.best = Math.max(s.best || 0, got);
+    // a handful of drops thrown over the side
+    for (let i = 0; i < 7; i++) {
+      s.splash.push({
+        x: 34 + s.bucket * 100, y: 60,
+        vx: -60 - Math.random() * 90, vy: -90 - Math.random() * 70, t: 0,
+      });
+    }
+    setTimeout(() => { s.carry = 0; }, 260);
     return s.level <= 0.02;
   },
 };

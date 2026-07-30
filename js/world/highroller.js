@@ -13,7 +13,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { mergeGeos, box, cyl, tint, blankUV } from '../lib/geo.js';
+import { mergeGeos, box, cyl, sphere, tint, blankUV } from '../lib/geo.js';
 import { drawText, textWidth } from '../lib/bitfont.js';
 
 const G = (n) => new THREE.Color(n);
@@ -270,6 +270,46 @@ export function buildHighRoller(mats, flameFactory) {
     scene.add(new THREE.Mesh(mergeGeos(DP), mats.opaque));
   }
 
+  /* ---- and the door nobody mentions ----
+     In the west panelling, half the height of the one you came in by, with
+     no plate on it and no handle on this side. Warm light comes under it.
+     It goes to the bar. */
+  {
+    const DX = -W / 2 + 0.30;
+    const DP = [];
+    DP.push(tint(box(0.22, 2.35, 1.5, 'planks', { pos: [DX, 1.17, HR_BAR_DOOR.z] }), G(0x4a1c16)));
+    // a frame round it, in the same gilt as everything else in here
+    DP.push(tint(box(0.12, 0.14, 1.9, 'metal', { pos: [DX + 0.06, 2.42, HR_BAR_DOOR.z] }), GOLD));
+    for (const dz of [-0.82, 0.82]) {
+      DP.push(tint(box(0.12, 2.5, 0.14, 'metal', { pos: [DX + 0.06, 1.25, HR_BAR_DOOR.z + dz] }), GOLD));
+    }
+    // a brass knob, and a keyhole with the light of another room behind it
+    DP.push(tint(sphere(0.09, 7, 6, 'metal', { pos: [DX + 0.14, 1.15, HR_BAR_DOOR.z - 0.55] }), GOLD));
+    scene.add(new THREE.Mesh(mergeGeos(DP), mats.opaque));
+
+    // the line of light under it, which is the only advertisement it gets
+    const spill = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.4, 0.9),
+      new THREE.MeshBasicMaterial({
+        color: 0xffa848, transparent: true, opacity: 0.30,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })
+    );
+    spill.rotation.x = -Math.PI / 2;
+    spill.position.set(DX + 0.85, 0.02, HR_BAR_DOOR.z);
+    scene.add(spill);
+    scene.userData.barSpill = spill;
+
+    // a small brass plate, which somebody has polished the letters off
+    const pl = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.34),
+      new THREE.MeshBasicMaterial({ map: plate(['SALOON']), fog: true })
+    );
+    pl.position.set(DX + 0.13, 2.05, HR_BAR_DOOR.z);
+    pl.rotation.y = Math.PI / 2;
+    scene.add(pl);
+  }
+
   /* ===========================================================
      MICHAEL BEEF
      A figure who does not step out of the dark. He is built almost
@@ -355,6 +395,11 @@ export function buildHighRoller(mats, flameFactory) {
       L.intensity = 3.3 + Math.sin(t * 7.3 + i * 1.7) * 0.6 + Math.sin(t * 19 + i) * 0.26;
     });
     tableLamp.intensity = 3.9 + Math.sin(t * 4.1) * 0.22;
+    // the light under the saloon door, which somebody keeps walking past
+    if (scene.userData.barSpill) {
+      scene.userData.barSpill.material.opacity =
+        0.26 + Math.sin(t * 1.7) * 0.05 + (Math.sin(t * 0.6) > 0.93 ? -0.16 : 0);
+    }
     for (const sc of sconces) {
       const k = 0.82 + Math.sin(t * 8.1 + sc.phase) * 0.14 + Math.sin(t * 23 + sc.phase) * 0.06;
       sc.L.intensity = 1.9 * k;
@@ -377,6 +422,9 @@ export function buildHighRoller(mats, flameFactory) {
 
 /** Where you stand when you come through the frame. */
 export const HR_ENTRY = { x: 0, y: 1.0, z: 9.4 };
+/** The door in the west panelling, and where you stand coming back through it. */
+export const HR_BAR_DOOR = { x: -11.7, z: 1.6 };
+export const HR_BAR_RETURN = { x: -9.4, y: 1.0, z: 1.6, yaw: Math.PI / 2 };
 export const HR_BOX = { minX: -11.4, maxX: 11.4, minZ: -10.4, maxZ: 10.4, maxY: 5.0 };
 export function hrHeight() { return 0; }
 

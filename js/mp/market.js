@@ -203,32 +203,40 @@ export const SCHLARNA_N = 4;       // in four parts
    sells anything to eat. Nothing here is sold at Ferdi's counter, and Ferdi
    has never been asked about the arrangement.
    =========================================================== */
+/* `once` means the effect lasts the round, so buying a second one would be
+   money for nothing and the counter refuses it. Only the candy floss wears
+   off, and only the candy floss can be bought again. */
 export const FOOD = [
   {
-    id: 'tonic', name: 'CUSTOM POPCORN', cost: 12, side: 'food', icon: 'popcorn',
+    once: true, id: 'tonic', name: 'CUSTOM POPCORN', cost: 12, side: 'food', icon: 'popcorn',
     blurb: 'Cathy will not say what is in it. You stop running out of breath: '
       + 'sprinting costs almost nothing and recovers five times faster, for the '
       + 'rest of the round.',
     tag: 'PASSIVE',
   },
   {
-    id: 'eggs', name: 'BAG OF PICKLED EGGS', cost: 9, side: 'food', icon: 'eggs',
+    once: true, id: 'eggs', name: 'BAG OF PICKLED EGGS', cost: 9, side: 'food', icon: 'eggs',
     blurb: 'Every loose Syncoin within 70 metres shows through the trees and the '
       + 'hills, and appears on your compass. You will not walk past money again. '
       + 'Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
-    id: 'sauce', name: "CATHY'S OWN SAUCE", cost: 7, side: 'food', icon: 'sauce',
+    once: true, id: 'sauce', name: "CATHY'S OWN SAUCE", cost: 7, side: 'food', icon: 'sauce',
     blurb: 'Your compass grows one more needle and it points at the nearest loose '
       + 'Syncoin, wherever it is. Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
-    id: 'burger', name: 'THE HOUSE BURGER', cost: 14, side: 'food', icon: 'burger',
-    blurb: 'The one she is proud of. Your next three jobs pay double - so up to '
-      + '12 Syncoin apiece instead of 6.',
-    tag: 'THREE JOBS',
+    /* Three jobs at double pay averages ten Syncoin back on a fourteen
+       Syncoin burger, which is a burger you would have to be very hungry to
+       buy. It runs for the rest of the round now and costs less than a
+       night's work. */
+    once: true, id: 'burger', name: 'THE HOUSE BURGER', cost: 10, side: 'food', icon: 'burger',
+    blurb: 'The one she is proud of. Every job you finish for the rest of the '
+      + 'round pays double: 2 to 12 Syncoin instead of 1 to 6. A full list left '
+      + 'to do is about 25 back.',
+    tag: 'REST OF THE ROUND',
   },
   {
     id: 'floss', name: 'CANDY FLOSS', cost: 5, side: 'food', icon: 'floss',
@@ -237,6 +245,58 @@ export const FOOD = [
     tag: 'ONE USE',
   },
 ];
+
+/* ===========================================================
+   QUEZETRIEL QUEBOLIUS' BAR
+
+   Through the west door of the high rollers room. Everything here is
+   timed rather than permanent, everything says what it does in minutes
+   and per cents, and three of the six will get you drunk.
+
+   `drunk` is how far the room goes round: 0.45 is a sway you can steer
+   through, 1 is a night you will not remember. `mins` is how long the
+   whole thing lasts.
+   =========================================================== */
+export const DRINKS = [
+  {
+    id: 'pint', name: 'PINT OF SHIPWRECK', cost: 4, icon: 'pint',
+    blurb: 'The house bitter. Sprinting costs you half as much breath for '
+      + 'three minutes.',
+    tag: '3 MINUTES', mins: 3, colour: 0xc07820,
+  },
+  {
+    id: 'lamp', name: 'THE LAMPLIGHTER', cost: 6, icon: 'shot',
+    blurb: 'A tallow-coloured spirit. The dark stops mattering for three '
+      + 'minutes - you see at night exactly as you do by day.',
+    tag: '3 MINUTES', mins: 3, colour: 0xe8c860,
+  },
+  {
+    id: 'quiet', name: 'QUIET WATER', cost: 7, icon: 'shot',
+    blurb: 'Clear, and it is not water. Your footsteps make no sound at all '
+      + 'for three minutes. Nobody is told you drank it.',
+    tag: '3 MINUTES', mins: 3, colour: 0xa8d0d8,
+  },
+  {
+    id: 'rum', name: 'BLACK RUM', cost: 5, icon: 'pint',
+    blurb: 'Every Syncoin you pick up counts double for two minutes. You will '
+      + 'also not walk in a straight line.',
+    tag: 'DRINK - 2 MINUTES', mins: 2, drunk: 0.45, colour: 0x5a2a12,
+  },
+  {
+    id: 'own', name: "QUEBOLIUS' OWN", cost: 9, icon: 'shot',
+    blurb: 'He will not say. You move 25% faster and every job pays double for '
+      + 'two minutes. The room comes with it.',
+    tag: 'DRINK - 2 MINUTES', mins: 2, drunk: 0.7, colour: 0x7a1a5a,
+  },
+  {
+    id: 'falling', name: 'THE FALLING DOWN', cost: 14, icon: 'pint',
+    blurb: 'All three of the above at once, for ninety seconds, and you will '
+      + 'be no use to anybody. He pours it slowly so you can change your mind.',
+    tag: 'DRINK - 90 SECONDS', mins: 1.5, drunk: 1, colour: 0x2a1830,
+  },
+];
+
+export const drinkById = (id) => DRINKS.find((d) => d.id === id);
 
 /** Everything Cathy has, in the order it sits on her counter. */
 export function cathyStock() { return FOOD; }

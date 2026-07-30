@@ -398,10 +398,61 @@ const HIGHROLLER = {
   },
 };
 
+/* ===========================================================
+   THE SALOON
+
+   Slower than the room next door and a great deal less sober. A shuffling
+   twelve-bar in a minor key, a piano that comes in late and leaves early,
+   and a bass that walks the same four bars all night because nobody has
+   ever asked it to do anything else.
+   =========================================================== */
+const BAR = {
+  bpm: 68, len: 32, sections: 4,
+  voices: {
+    // the walk, in a low blues: root, flat third, fourth, flat five, five
+    bass: {
+      layers: [1, 1, 1, 1],
+      notes: [
+        33, _, _, _, 36, _, _, _, 38, _, _, _, 39, _, 40, _,
+        33, _, _, _, 36, _, _, _, 40, _, 39, _, 38, _, 36, _,
+      ],
+    },
+    // dominant sevenths, held long and let go of untidily
+    pad: {
+      layers: [1, 1, 1, 1],
+      chords: [
+        [45, 49, 52, 55], _, _, _, _, _, _, _,
+        [50, 54, 57, 60], _, _, _, _, _, _, _,
+        [45, 49, 52, 55], _, _, _, _, _, _, _,
+        [52, 56, 59, 62], _, _, _, _, _, _, _,
+      ],
+    },
+    // the piano in the corner, which is nearly in tune
+    lead: {
+      layers: [0, 0, 1, 1],
+      notes: [
+        _, _, _, 68, _, 70, 71, _, _, _, 68, _, 66, _, _, _,
+        _, _, _, 63, _, 66, 68, _, _, _, 66, _, 63, _, _, _,
+      ],
+    },
+    bell: {
+      layers: [0, 1, 1, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, 80, _, _,
+      ],
+    },
+    // brushes and a foot, and nothing else
+    kick:  { layers: [1, 1, 1, 1], hits: 'x.......x...x...' },
+    snare: { layers: [0, 1, 1, 1], hits: '....x.......x...' },
+    hat:   { layers: [1, 1, 1, 1], hits: 'x..x..x.x..x..x.' },
+  },
+};
+
 const TRACKS = {
   island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS,
   storm: STORM, alarm: ALARM, night: NIGHT, bunker: BUNKER,
-  flopper: FLOPPER, highroller: HIGHROLLER,
+  flopper: FLOPPER, highroller: HIGHROLLER, bar: BAR,
 };
 
 export class GameAudio {
@@ -1007,6 +1058,58 @@ export class GameAudio {
       case 'alert':
         this._tone(220, t, 0.22, { type: 'square', gain: 0.13, filter: 1400 });
         this._tone(180, t + 0.24, 0.28, { type: 'square', gain: 0.13, filter: 1200 });
+        break;
+
+      /* ---- the sea ---- */
+      case 'wave':
+        // a swell arriving and drawing back out
+        this._noiseHit(t, 1.5, { gain: 0.10, filter: 340, type: 'lowpass', sweep: 3.4, send: 0.5 });
+        this._noiseHit(t + 0.55, 1.4, { gain: 0.06, filter: 1500, type: 'lowpass', sweep: 0.22, send: 0.6 });
+        break;
+
+      /* ---- the bar ---- */
+      case 'pour': {
+        /* Liquid into a glass: filtered noise whose pitch climbs as the glass
+           fills, which is the whole reason you can hear a glass filling. */
+        this._noiseHit(t, 1.05, { gain: 0.075, filter: 620, type: 'bandpass', q: 3.5, sweep: 2.6, send: 0.28 });
+        for (let i = 0; i < 7; i++) {
+          this._tone(300 + i * 62, t + i * 0.13, 0.07,
+            { type: 'sine', gain: 0.028, filter: 2200, release: 0.05 });
+        }
+        break;
+      }
+      case 'fizz':
+        // the head settling on a pint
+        this._noiseHit(t, 1.9, { gain: 0.045, filter: 7200, type: 'highpass', send: 0.3 });
+        break;
+      case 'glass':
+        // a heavy base set down on wood
+        this._tone(150, t, 0.09, { type: 'sine', gain: 0.16, filter: 900, release: 0.07 });
+        this._noiseHit(t, 0.10, { gain: 0.10, filter: 2400, type: 'bandpass', q: 2, sweep: 0.4 });
+        this._tone(1900, t, 0.16, { type: 'sine', gain: 0.035, release: 0.14, send: 0.5 });
+        break;
+      case 'clink':
+        // two glasses meeting
+        this._tone(2350, t, 0.5, { type: 'sine', gain: 0.055, release: 0.42, send: 0.8 });
+        this._tone(3130, t + 0.01, 0.42, { type: 'sine', gain: 0.032, release: 0.38, send: 0.8 });
+        break;
+      case 'gulp':
+        this._tone(160, t, 0.10, { type: 'sine', gain: 0.10, sweep: 1.9, release: 0.07 });
+        this._tone(140, t + 0.16, 0.10, { type: 'sine', gain: 0.09, sweep: 2.1, release: 0.07 });
+        break;
+      case 'dart':
+        // a tungsten point going into cork
+        this._noiseHit(t, 0.06, { gain: 0.16, filter: 3000, type: 'bandpass', q: 3, sweep: 0.25 });
+        this._tone(420, t, 0.07, { type: 'triangle', gain: 0.08, sweep: 0.45, release: 0.05 });
+        break;
+      case 'wire':
+        // a dart off the wire, which is the sound of a bad night
+        this._tone(3600, t, 0.30, { type: 'sine', gain: 0.06, release: 0.26, send: 0.7 });
+        this._tone(2700, t + 0.02, 0.22, { type: 'sine', gain: 0.04, release: 0.2, send: 0.7 });
+        break;
+      case 'oche':
+        // the little wooden knock of a dart being lifted off the board
+        this._noiseHit(t, 0.05, { gain: 0.08, filter: 1800, type: 'bandpass', q: 4 });
         break;
     }
   }

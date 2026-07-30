@@ -173,12 +173,23 @@ export class Player {
     this.invuln = 0;
     this.stamina = 1;
     this.staminaLock = false;
+    /* How fast sprinting costs you and how fast you get it back, per second.
+       These were hard-coded numbers inside update() and `staminaDrain` was a
+       property three different things wrote to and nothing ever read — so
+       the cane tonic, the deck boots and everything else that claimed to
+       change your wind did precisely nothing. */
+    this.BASE_DRAIN = 0.155;
+    this.BASE_REGEN = 0.26;
+    this.staminaDrain = this.BASE_DRAIN;
+    this.staminaRegen = this.BASE_REGEN;
 
     this.walkPhase = 0;
     this.throwAnim = 0;
     this.bobT = 0;
     this.landSquash = 0;
     this.inWater = 0;
+    /** How far off your own feet take you. Set by the bar. */
+    this.drift = 0;
 
     this.SPEED = 7.0;
     this.SPRINT = 15.5;
@@ -297,10 +308,11 @@ export class Player {
     // stamina / sprint
     const wantSprint = input.sprint && moving && !this.staminaLock;
     if (wantSprint) {
-      this.stamina = Math.max(0, this.stamina - dt * 0.155);
+      this.stamina = Math.max(0, this.stamina - dt * this.staminaDrain);
       if (this.stamina <= 0) this.staminaLock = true;
     } else {
-      this.stamina = Math.min(1, this.stamina + dt * (moving ? 0.26 : 0.55));
+      // you get it back faster standing still than walking
+      this.stamina = Math.min(1, this.stamina + dt * this.staminaRegen * (moving ? 1 : 2.1));
       if (this.stamina > 0.28) this.staminaLock = false;
     }
     const sprinting = wantSprint && this.stamina > 0;
@@ -312,6 +324,16 @@ export class Player {
     if (moving) {
       const len = Math.hypot(mx, mz);
       mx /= len; mz /= len;
+      /* Drink. `drift` is set by whatever is in you and rotates where you
+         actually go away from where you pointed — so you can still get
+         where you are going, you just have to keep correcting, which is
+         exactly what walking home drunk is. */
+      if (this.drift) {
+        const c2 = Math.cos(this.drift), s2 = Math.sin(this.drift);
+        const ox = mx, oz = mz;
+        mx = ox * c2 - oz * s2;
+        mz = ox * s2 + oz * c2;
+      }
       const sinY = Math.sin(this.yaw), cosY = Math.cos(this.yaw);
       /* Camera-relative basis. Forward is (sin yaw, cos yaw); looking down
          +Z with +Y up, screen-right is -X, so the right vector is

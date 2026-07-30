@@ -64,8 +64,16 @@ export class Hud {
     this.x.imageSmoothingEnabled = false;
   }
 
+  /** Wipe the stack. Used when a room change would otherwise pile four up. */
+  clearToasts() { this.data.toasts.length = 0; }
+
   toast(text, kind = 'gold', ms = 2600) {
-    this.data.toasts.push({ text: normalize(text), kind, life: ms / 1000, max: ms / 1000 });
+    /* The same message twice running is one message with its clock reset,
+       not two lines saying the same thing. */
+    const t = normalize(text);
+    const last = this.data.toasts[this.data.toasts.length - 1];
+    if (last && last.text === t) { last.life = ms / 1000; last.max = ms / 1000; return; }
+    this.data.toasts.push({ text: t, kind, life: ms / 1000, max: ms / 1000 });
     while (this.data.toasts.length > 4) this.data.toasts.shift();
   }
 
@@ -114,7 +122,11 @@ export class Hud {
       this._mpBanner(W, H, d.mp);
       this._mpBelt(4, H - 52, d.mp);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
-      if (d.prompt) this._prompt(W / 2, H - 34, d.prompt);
+      /* An Agent has a knife panel in the bottom right corner, and a long
+         prompt centred on the screen runs straight into it — "QUEZETRIEL
+         QUEBOLIUS" printed the S of SABOTAGE off. Centre the prompt in
+         whatever room is actually left. */
+      if (d.prompt) this._prompt(d.mp.role === 'agent' ? (W - 118) / 2 : W / 2, H - 34, d.prompt);
       this._toasts(W / 2, Math.round(H * 0.26));
       if (d.popup) this._popup(W, H, d.popup);
       return this.c;
@@ -752,7 +764,8 @@ export class Hud {
     const capW = keycapWidth(key);
     const w = textWidth(label, 1, 1) + capW + 20;
     const h = 17;
-    const left = Math.round(cx - w / 2);
+    // never off either edge, whatever it has been asked to centre on
+    const left = Math.round(Math.max(3, Math.min(this.c.width - w - 3, cx - w / 2)));
     panel(x, left, cy, w, h, { border: 2, dither: 0.55 });
     keycap(x, left + 5, cy + 3, key);
     drawText(x, label, { x: left + 10 + capW, y: cy + 6, scale: 1, color: GOLD_LT });
@@ -961,6 +974,27 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
     p(2, 3, 8, 3, C('#f090c0', '#6a3a52'));
     p(4, 1, 4, 2, C('#f8a8d0', '#74405a'));
     if (beat > 0.5) { p(2, 1, 1, 1, C('#ffc8e0', '#7a4a60')); p(9, 4, 1, 1, C('#ffc8e0', '#7a4a60')); }
+  /* ---- the saloon ---- */
+  } else if (kind === 'pint') {
+    // a straight glass with a handle, a head on it, and a bead of condensation
+    p(2, 2, 7, 9, C('#d8901c', '#5a4014'));
+    p(2, 1, 7, 2, C('#f6efe0', '#6a6458'));
+    p(1, 1, 9, 10, C('rgba(0,0,0,0)', 'rgba(0,0,0,0)'));
+    p(1, 1, 1, 10, C('#cfe0e8', '#585c60'));
+    p(9, 1, 1, 10, C('#cfe0e8', '#585c60'));
+    p(1, 11, 9, 1, C('#a8bcc4', '#484c50'));
+    p(10, 3, 2, 1, C('#a8bcc4', '#484c50'));
+    p(11, 4, 1, 4, C('#a8bcc4', '#484c50'));
+    p(10, 8, 2, 1, C('#a8bcc4', '#484c50'));
+    if (beat > 0.5) p(3, 4, 1, 1, C('#ffe0a0', '#6a5a34'));
+  } else if (kind === 'shot') {
+    // a small heavy glass, a third full of something serious
+    p(3, 3, 7, 8, C('#cfe0e8', '#585c60'));
+    p(4, 6, 5, 5, C('#8a3418', '#3a1a0c'));
+    p(4, 6, 5, 1, C('#c05a28', '#4a2412'));
+    p(3, 11, 7, 1, C('#a8bcc4', '#484c50'));
+    p(3, 3, 1, 8, C('#e8f4fa', '#686c70'));
+    if (beat > 0.6) p(6, 2, 2, 1, C('#ffd8a0', '#5a4a30'));
   } else if (kind === 'soles') {
     p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
     p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
