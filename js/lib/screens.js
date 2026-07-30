@@ -656,6 +656,9 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
 /* ===========================================================
    SCREEN STACK
    =========================================================== */
+/** clamp, without dragging three into this file for one line. */
+const THREE_CLAMP = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+
 const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false });
 
 export class ScreenStack {
@@ -4083,6 +4086,290 @@ export const SCREENS = {
         if (row.pick === s.sel) this.key('Enter', s, g, st);
         else { s.sel = row.pick; g.audio?.sfx('select'); }
       }
+      return true;
+    },
+  },
+
+  /* ---------------- THE MAST TERMINAL ----------------
+     Four feeds off four cameras you placed yourself. The one you are
+     looking at is rendered live, every frame, from a real camera standing
+     where you left it — so what is on it is what is actually happening,
+     bodies and all. The other three are stills, refreshed one at a time on
+     a rotation, which is exactly how a four-channel multiplexer worked and
+     is also the only honest way to afford four extra render passes.
+
+     Everything on this screen is either a control or a fact. */
+  mpCams: {
+    init(s, g) {
+      if (s.sel === undefined) s.sel = 0;
+      s.boot = 0;
+      s.rot = 0;              // which thumbnail gets refreshed next
+      s.thumbs = [null, null, null, null];
+      s.contacts = [];
+      s.glitch = 0;
+      s.rec = 0;
+      s.log = [];
+      s.lastSeen = '';
+    },
+    tick(s, g, dt, t) {
+      s.boot = Math.min(1, s.boot + dt * 0.9);
+      s.rec = (s.rec + dt) % 2;
+      if (s.glitch > 0) s.glitch = Math.max(0, s.glitch - dt * 3);
+
+      /* Who the selected camera can see, and a line in the log when that
+         changes — the log is what makes this a tool rather than a window. */
+      const before = s.lastSeen;
+      g.feedContacts?.(s.sel, s.contacts);
+      const nowSeen = s.contacts.map((c) => c.name).join(',');
+      if (nowSeen && nowSeen !== before) {
+        const cam = g.cams?.[s.sel];
+        for (const c of s.contacts) {
+          if (before.includes(c.name)) continue;
+          s.log.unshift({ t: s.t, cam: cam ? cam.name : '?', who: c.name, d: c.dist });
+        }
+        if (s.log.length > 6) s.log.length = 6;
+        s.glitch = 0.5;
+        g.audio?.sfx('select');
+      }
+      s.lastSeen = nowSeen;
+    },
+    draw(x, W, H, s, g, t) {
+      const cams = g.cams || [];
+      const rows = [];
+      const boot = s.boot;
+
+      /* ---- the set itself ---- */
+      x.fillStyle = '#080b09'; x.fillRect(0, 0, W, H);
+      ditherRect(x, 0, 0, W, H, '#080b09', '#0e130f', 0.5, 2);
+
+      /* ---- the header ---- */
+      x.fillStyle = '#0d1a12'; x.fillRect(0, 0, W, 15);
+      x.fillStyle = '#1e7a4a'; x.fillRect(0, 15, W, 1);
+      drawText(x, 'ISLE RELAY', { x: 6, y: 4, scale: 1, color: '#5ae08a' });
+      const live = cams.filter((c) => c.placed).length;
+      drawText(x, `${live}/${cams.length} ONLINE`, {
+        x: W - 6, y: 4, scale: 1, align: 'right',
+        color: live ? '#5ae08a' : '#c04a3a',
+      });
+      /* The recording pip lives on the LEFT, beside the name. On the right
+         it sat inside "4/4 ONLINE", which is right-aligned and grows to the
+         left as the number of channels changes. */
+      if (s.rec < 1) {
+        x.fillStyle = '#e02a1a';
+        x.fillRect(72, 5, 4, 4);
+        drawText(x, 'REC', { x: 79, y: 4, scale: 1, color: '#e05a4a' });
+      }
+
+      /* ---- the big feed ---- */
+      const FX = 6, FY = 20, FW = 180, FH = 124;
+      x.fillStyle = '#000'; x.fillRect(FX - 2, FY - 2, FW + 4, FH + 4);
+      x.fillStyle = '#1e7a4a'; x.fillRect(FX - 2, FY - 2, FW + 4, 1);
+      x.fillRect(FX - 2, FY + FH + 1, FW + 4, 1);
+
+      const sel = cams[s.sel];
+      if (!sel || !sel.placed) {
+        // a dead channel: noise, and it says why
+        for (let i = 0; i < 900; i++) {
+          const px = FX + ((i * 37 + Math.floor(t * 190)) % FW);
+          const py = FY + ((i * 53 + Math.floor(t * 97)) % FH);
+          const v = ((i * 29 + Math.floor(t * 60)) % 5) * 14;
+          x.fillStyle = `rgb(${v},${v + 6},${v + 2})`;
+          x.fillRect(px, py, 2, 1);
+        }
+        drawText(x, 'NO CAMERA ON THIS CHANNEL', {
+          x: FX + FW / 2, y: FY + FH / 2 - 8, scale: 1, align: 'center', color: '#5ae08a',
+        });
+        drawText(x, 'TAKE ONE FROM THE SHELF AND SET IT', {
+          x: FX + FW / 2, y: FY + FH / 2 + 2, scale: 1, align: 'center', color: '#2e6a48',
+        });
+      } else {
+        /* The live pass. It comes back as a flipped RGBA buffer, and it is
+           drawn a pixel at a time into the same canvas as everything else
+           so it picks up the dither, the scanlines and the barrel curve
+           with the rest of the interface. */
+        const feed = g.feedPixels?.(s.sel);
+        if (feed) {
+          const { buf, w, h } = feed;
+          const sx = FW / w, sy = FH / h;
+          /* AUTO-GAIN. A camera under a tree at dusk sees almost nothing,
+             and a straight luminance conversion of that is a black
+             rectangle — which is exactly what this was. Every camera of
+             this kind opens its iris until the picture averages out to
+             something usable, so: measure the frame, scale it to land
+             around 0.42, and clamp how far it is allowed to push so a
+             genuinely dark shot still reads as a dark shot. */
+          let sum = 0;
+          for (let k = 0; k < buf.length; k += 16) {
+            sum += buf[k] * 0.3 + buf[k + 1] * 0.6 + buf[k + 2] * 0.1;
+          }
+          const mean = (sum / (buf.length / 16)) / 255 || 0.01;
+          const gain = THREE_CLAMP(0.42 / Math.max(0.02, mean), 0.8, 5.5);
+          s.gain = s.gain === undefined ? gain : s.gain + (gain - s.gain) * 0.10;
+
+          for (let py = 0; py < h; py++) {
+            for (let px = 0; px < w; px++) {
+              // readRenderTargetPixels gives bottom-up rows
+              const o = ((h - 1 - py) * w + px) * 4;
+              /* Green phosphor: a security monitor of this vintage did not
+                 have colour, and the brightness is what matters. */
+              const lum = (buf[o] * 0.3 + buf[o + 1] * 0.6 + buf[o + 2] * 0.1) / 255;
+              const q = Math.min(1, Math.pow(lum * s.gain, 0.78));
+              x.fillStyle = `rgb(${Math.round(q * 60)},${Math.round(q * 245)},${Math.round(q * 135)})`;
+              x.fillRect(FX + Math.floor(px * sx), FY + Math.floor(py * sy),
+                Math.ceil(sx), Math.ceil(sy));
+            }
+          }
+        }
+        // scanlines and a roll bar over the top of it
+        for (let yy = 0; yy < FH; yy += 2) {
+          x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(FX, FY + yy, FW, 1);
+        }
+        const roll = Math.round(((t * 0.22) % 1) * FH);
+        x.fillStyle = 'rgba(150,255,190,.05)';
+        x.fillRect(FX, FY + roll, FW, 6);
+        if (s.glitch > 0) {
+          // a tear across the picture when something walks into shot
+          const gy = Math.round((1 - s.glitch) * FH);
+          x.fillStyle = 'rgba(180,255,210,.18)';
+          x.fillRect(FX, FY + gy, FW, 3);
+          x.fillStyle = 'rgba(0,0,0,.5)';
+          x.fillRect(FX, FY + gy + 3, FW, 2);
+        }
+        // the burned-in caption every camera has
+        drawText(x, sel.name, { x: FX + 4, y: FY + 3, scale: 1, color: '#a8ffc8' });
+        const clock = `${String(Math.floor(g.clock24 / 60) % 24).padStart(2, '0')}:`
+          + `${String(Math.floor(g.clock24) % 60).padStart(2, '0')}`;
+        drawText(x, clock, {
+          x: FX + FW - 4, y: FY + 3, scale: 1, align: 'right', color: '#a8ffc8',
+        });
+        drawText(x, `${Math.round(sel.x)} ${Math.round(sel.z)}`, {
+          x: FX + 4, y: FY + FH - 10, scale: 1, color: '#5ae08a',
+        });
+        // crosshair, because every one of these had one
+        x.fillStyle = 'rgba(168,255,200,.30)';
+        x.fillRect(FX + FW / 2 - 4, FY + FH / 2, 9, 1);
+        x.fillRect(FX + FW / 2, FY + FH / 2 - 4, 1, 9);
+      }
+
+      /* ---- the channel strip down the right ---- */
+      const CX = FX + FW + 8, CW2 = W - CX - 6;
+      for (let i = 0; i < cams.length; i++) {
+        const c = cams[i];
+        const cy = 20 + i * 27;
+        const on = i === s.sel;
+        x.fillStyle = on ? '#12301e' : '#0c1610';
+        x.fillRect(CX, cy, CW2, 24);
+        x.fillStyle = on ? '#5ae08a' : '#1e4a32';
+        x.fillRect(CX, cy, CW2, 1); x.fillRect(CX, cy + 23, CW2, 1);
+        x.fillRect(CX, cy, 1, 24); x.fillRect(CX + CW2 - 1, cy, 1, 24);
+        // a thumbnail: a still, kept from the last time it was refreshed
+        const tw = 30, th = 20;
+        x.fillStyle = '#000'; x.fillRect(CX + 2, cy + 2, tw, th);
+        const th2 = s.thumbs[i];
+        if (c.placed && th2) {
+          for (let k = 0; k < th2.length; k++) {
+            const q = th2[k] / 255;
+            x.fillStyle = `rgb(${Math.round(q * 60)},${Math.round(q * 210)},${Math.round(q * 115)})`;
+            x.fillRect(CX + 2 + (k % 10) * 3, cy + 2 + ((k / 10) | 0) * 3, 3, 3);
+          }
+          // the one being refreshed right now gets a corner mark
+          if (s.thumbNext === i) { x.fillStyle = '#a8ffc8'; x.fillRect(CX + 2, cy + 2, 2, 2); }
+        } else if (c.placed) {
+          x.fillStyle = '#0e2a1a'; x.fillRect(CX + 2, cy + 2, tw, th);
+        } else {
+          for (let k = 0; k < 40; k++) {
+            const v = ((k * 31 + Math.floor(t * 40) + i * 7) % 4) * 16;
+            x.fillStyle = `rgb(${v},${v + 4},${v})`;
+            x.fillRect(CX + 2 + (k % 10) * 3, cy + 2 + ((k / 10) | 0) * 5, 3, 5);
+          }
+        }
+        drawText(x, c.name, {
+          x: CX + 36, y: cy + 4, scale: 1, color: on ? '#a8ffc8' : '#4a8a64',
+        });
+        drawText(x, c.placed ? 'LIVE' : 'NO SIG', {
+          x: CX + 36, y: cy + 14, scale: 1,
+          color: c.placed ? (Math.floor(t * 2) % 2 ? '#5ae08a' : '#2e7a4a') : '#8a4a3a',
+        });
+        rows.push({ x: CX, y: cy, w: CW2, h: 24, pick: i });
+      }
+      // how many are still in your hands
+      {
+        const hy = 20 + cams.length * 27 + 2;
+        const held = g.camsHeld || 0;
+        drawText(x, `${held} IN HAND`, {
+          x: CX, y: hy, scale: 1, color: held ? '#5ae08a' : '#2e6a48',
+        });
+        drawText(x, 'V TO SET ONE', { x: CX, y: hy + 9, scale: 1, color: '#2e6a48' });
+      }
+
+      /* ---- what the selected camera can see, and the log ---- */
+      const LY = FY + FH + 6;
+      x.fillStyle = '#0c1610'; x.fillRect(FX - 2, LY, FW + 4, H - LY - 14);
+      x.fillStyle = '#1e4a32'; x.fillRect(FX - 2, LY, FW + 4, 1);
+      if (s.contacts.length) {
+        drawText(x, 'IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#5ae08a' });
+        let cx2 = FX + 44;
+        for (const c of s.contacts.slice(0, 3)) {
+          const col = c.colour ? colourOf(c.colour) : '#a8ffc8';
+          x.fillStyle = col; x.fillRect(cx2, LY + 3, 5, 5);
+          drawText(x, `${c.name} ${c.dist}M`, { x: cx2 + 8, y: LY + 3, scale: 1, color: '#a8ffc8' });
+          cx2 += 12 + textWidth(`${c.name} ${c.dist}M`, 1);
+          if (cx2 > FX + FW - 30) break;
+        }
+      } else {
+        drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#2e6a48' });
+      }
+      // the log, newest first
+      let ly = LY + 13;
+      for (const e of s.log.slice(0, 2)) {
+        drawText(x, `${e.cam}  ${e.who} AT ${e.d}M`, {
+          x: FX + 2, y: ly, scale: 1, color: '#3e8a5c',
+        });
+        ly += 9;
+      }
+
+      /* ---- the set warming up, over the top of everything ---- */
+      if (boot < 1) {
+        const k = boot;
+        x.fillStyle = `rgba(4,8,6,${(1 - k).toFixed(2)})`;
+        x.fillRect(0, 0, W, H);
+        if (k < 0.75) {
+          const ly2 = Math.round(H / 2);
+          const hgt = Math.round((1 - Math.min(1, k / 0.55)) * H);
+          x.fillStyle = '#040806';
+          x.fillRect(0, 0, W, Math.max(0, ly2 - (H - hgt) / 2));
+          x.fillRect(0, ly2 + (H - hgt) / 2, W, H);
+          x.fillStyle = `rgba(168,255,200,${(0.5 * (1 - k)).toFixed(2)})`;
+          x.fillRect(0, ly2 - 1, W, 2);
+        }
+        const msg = ['RELAY POWER', 'SYNC', 'CHANNELS', 'READY'][Math.min(3, Math.floor(k * 4))];
+        drawText(x, msg, {
+          x: W / 2, y: H / 2 + 14, scale: 1, align: 'center',
+          color: '#5ae08a',
+        });
+      }
+
+      footer(x, W, H, 'UP DOWN CHANNEL   V SET A CAMERA   ESC AWAY');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const n = (g.cams || []).length || 1;
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        s.sel = (s.sel + n - 1) % n; s.glitch = 0.6; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        s.sel = (s.sel + 1) % n; s.glitch = 0.6; g.audio?.sfx('select'); return true;
+      }
+      if (/^Digit[1-9]$/.test(code)) {
+        const i = +code.slice(5) - 1;
+        if (i < n) { s.sel = i; s.glitch = 0.6; g.audio?.sfx('select'); }
+        return true;
+      }
+      return true;
+    },
+    click(row, i, s, g) {
+      if (row?.pick !== undefined) { s.sel = row.pick; s.glitch = 0.6; g.audio?.sfx('select'); }
       return true;
     },
   },

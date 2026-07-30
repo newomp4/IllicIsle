@@ -39,6 +39,10 @@ import {
 } from './world/bar.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
 import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
+import {
+  buildTower, buildCab, buildCamera, TOWER_SPOT, TOWER_H, CAB_Y,
+  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAMERA_COUNT,
+} from './world/tower.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
@@ -516,6 +520,12 @@ export class Game {
         /* And the X, for the same reason: it has to be chosen before the
            jungle is planted so nothing grows through it, and its ground has
            to be level or the chest comes up out of a slope. */
+        /* The mast needs level ground under its feet: four legs splayed
+           three and a half metres from the middle, and a slope under them
+           puts one of them in the air. */
+        this.towerPad = { x: TOWER_SPOT.x, z: TOWER_SPOT.z, y: heightAt(TOWER_SPOT.x, TOWER_SPOT.z) };
+        hatchPads.push({ x: TOWER_SPOT.x, z: TOWER_SPOT.z, rx: 11, rz: 11, yaw: 0, y: this.towerPad.y });
+
         const xrng = makeRng(9119);
         // only the ones that are low, flat and dry this time round
         const good = X_SPOTS.filter((q) => goodXSpot(heightAt, q.x, q.z));
@@ -555,6 +565,8 @@ export class Game {
       for (const c of CATHY_SPOTS) clearZones.push({ x: c.x, z: c.z, r: 24 });
       // and nothing grows over the X
       if (this.xPad) clearZones.push({ x: this.xPad.x, z: this.xPad.z, r: 9 });
+      // and nothing grows through the mast's legs
+      clearZones.push({ x: TOWER_SPOT.x, z: TOWER_SPOT.z, r: 13 });
       /* Every place a chore happens needs a clearing. TASHA sat inside a
          thicket you could walk past three times without seeing her, which
          is not a puzzle, it is a bad map. */
@@ -608,6 +620,8 @@ export class Game {
       /* And the bar behind it. Built at load with everything else so the
          door is instant and its shaders are warmed in the same pass. */
       this.barScene = buildBar(this.propMats, buildFlameCluster);
+      // and the hut at the head of the mast's ladder
+      this.cabScene = buildCab(this.propMats);
     });
 
     await step('CASTING THE IDOL', 0.90, () => {
@@ -654,7 +668,7 @@ export class Game {
         this.islandScene.add(this._lanternLight);
 
         for (const sc of [this.islandScene, this.templeScene, this.bunkerScene,
-          this.hrScene, this.barScene, this.titleScene]) {
+          this.hrScene, this.barScene, this.cabScene, this.titleScene]) {
           if (!sc) continue;
           showAll(sc);
           this.renderer.compile(sc, this.camera);
@@ -1315,6 +1329,29 @@ export class Game {
         x: pad.x, z: pad.z, y, node,
         state: node.userData.state, digging: 0,
       };
+    }
+
+    /* ---- the radio mast ----
+       Forty metres of angle iron on the back shoulder with a red lamp on
+       it. Its hut is a room of its own, built here with the temple and
+       the bunker so climbing to it is instant. */
+    {
+      const pad = this.towerPad;
+      const y = heightAt(pad.x, pad.z);
+      const tw = buildTower(rng, this.propMats, buildFlameCluster);
+      tw.position.set(pad.x, y, pad.z);
+      scene.add(tw);
+      this.tickers.push(tw);
+      this.tower = { x: pad.x, z: pad.z, y, node: tw };
+      // the cameras exist from now, hidden, so nothing compiles mid-round
+      this._initCameras?.();
+      // its four legs and the ladder are solid
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        this.colliders.push({
+          x: pad.x + Math.cos(a) * 3.4, z: pad.z + Math.sin(a) * 3.4, r: 0.55,
+        });
+      }
     }
 
     /* ---- the storm, dormant until the Pendulums are read ---- */

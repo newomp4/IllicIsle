@@ -47,6 +47,9 @@ import {
 import {
   BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_DOOR,
 } from '../world/bar.js';
+import {
+  buildCamera, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y, CAMERA_COUNT,
+} from '../world/tower.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
 import { setTime } from '../lib/ps1.js';
@@ -1239,6 +1242,15 @@ export class MPGame extends Game {
       if (db < 2.6 && !this._barCooldown) return { kind: 'mpBarDoor', prompt: 'THE SALOON' };
       return null;
     }
+    if (this.state === 'cab') {
+      const dt4 = Math.hypot(p.x - 0, p.z - (-1.5));
+      if (dt4 < 2.4) return { kind: 'mpCams', prompt: 'THE TERMINAL' };
+      const dsh = Math.hypot(p.x - 1.6, p.z - (-2.2));
+      if (dsh < 1.8) return { kind: 'mpTakeCams', prompt: 'TAKE THE CAMERAS' };
+      const ddn = Math.hypot(p.x - 0, p.z - 2.2);
+      if (ddn < 1.8 && !this._cabCooldown) return { kind: 'mpCabOut', prompt: 'BACK DOWN' };
+      return null;
+    }
     if (this.state === 'bar') {
       // the bar itself: stand at it and he will serve you
       const dq = Math.hypot(p.x - (BAR_KEEP.x + 1.9), p.z - BAR_KEEP.z);
@@ -1289,6 +1301,14 @@ export class MPGame extends Game {
           best = { kind: 'mpFlopper', prompt: 'TIM GRADY FLOPPER' };
         }
       }
+    }
+
+    /* The foot of the mast's ladder. */
+    if (this.tower && this.amAlive && !this._cabCooldown) {
+      const a = Math.PI / 4 + Math.PI;
+      const lx = this.tower.x + Math.cos(a) * 3.0, lz = this.tower.z + Math.sin(a) * 3.0;
+      const dl = Math.hypot(p.x - lx, p.z - lz);
+      if (dl < 3.0 && dl < bestD) { bestD = dl; best = { kind: 'mpLadderUp', prompt: 'CLIMB THE MAST' }; }
     }
 
     /* The X. Three states, three different prompts: sand to move, a chest
@@ -1444,6 +1464,16 @@ export class MPGame extends Game {
       case 'mpDig': break;      // held, not pressed: see _tickDig
       case 'mpDug': break;
       case 'mpChest': { this.openChest(); break; }
+      case 'mpLadderUp': { this.enterCab(); break; }
+      case 'mpCabOut': { this.leaveCab(); break; }
+      case 'mpTakeCams': { this.takeCameras(); break; }
+      case 'mpCams': {
+        this._initCameras();
+        this.screens.push('mpCams', { sel: 0 });
+        document.exitPointerLock?.();
+        this.audio.sfx('terminal');
+        break;
+      }
       case 'mpBarDoor': { this.enterBar(); break; }
       case 'mpBarOut': { this.leaveBar(); break; }
       case 'mpBar': {
@@ -1651,6 +1681,7 @@ export class MPGame extends Game {
          had no way of doing at all. */
       if (/^Digit[1-9]$/.test(e.code)) { this.useBeltSlot(+e.code.slice(5)); return; }
       if (e.code === 'KeyG') { this.togglePistol(); return; }
+      if (e.code === 'KeyV') { this.placeCamera(); return; }
       if (e.code === 'KeyF') {
         if (this.pistolOut) this.fireFlare(); else this.tryKill();
         return;
@@ -2380,6 +2411,189 @@ export class MPGame extends Game {
   }
 
   /* =========================================================
+     THE MAST
+
+     The ladder is fifteen metres and there is no climbing in this game,
+     so the ladder is a door: stand at the foot of it, hold E, and you go
+     up. It takes a moment, and the moment is the climb.
+     ========================================================= */
+  enterCab() {
+    if (this.state !== 'island') return;
+    if (!this.cabScene) return;
+    this.state = 'cab';
+    this.scene = this.cabScene;
+    this.player.mesh.removeFromParent();
+    this.cabScene.add(this.player.mesh);
+    this.player.setColliders(CAB_COLLIDERS);
+    this.player.insideBox = CAB_BOX;
+    this.player.teleport(CAB_ENTRY.x, CAB_ENTRY.y, CAB_ENTRY.z, Math.PI);
+    this.player.pitch = -0.05;
+    this._cabCooldown = true;
+    setTimeout(() => { this._cabCooldown = false; }, 1800);
+    this.audio.sfx('ladder');
+    this.audio.sfx('door');
+    this.audio.playMusic('bunker');
+    this.pipeline.tint.setHex(0x203028);
+    this.pipeline.tintAmt = 0.55;
+    this._rehomeAvatars();
+    this.ui.clearToasts?.();
+    this.ui.showPopup('THE MAST', 'NOBODY CAME BACK FOR IT', 'coin', 'UP THE LADDER');
+  }
+
+  leaveCab() {
+    if (this.state !== 'cab') return;
+    this.state = 'island';
+    this.scene = this.islandScene;
+    this.player.mesh.removeFromParent();
+    this.islandScene.add(this.player.mesh);
+    this.player.setColliders(this.colliders);
+    this.player.insideBox = null;
+    const tw = this.tower;
+    if (tw) {
+      // back at the foot of the ladder, facing away from the mast
+      const a = Math.PI / 4 + Math.PI;
+      const bx = tw.x + Math.cos(a) * 4.6, bz = tw.z + Math.sin(a) * 4.6;
+      this.player.teleport(bx, heightAt(bx, bz) + 0.6, bz, a);
+    }
+    this._cabCooldown = true;
+    setTimeout(() => { this._cabCooldown = false; }, 1800);
+    this.audio.sfx('ladder');
+    this._rehomeAvatars();
+    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+    this.pipeline.tint.setHex(0xffffff);
+    this.pipeline.tintAmt = 0.4;
+  }
+
+  /* =========================================================
+     THE CAMERAS
+
+     Four of them, and they start in the hut. You take them out, you put
+     them where you think somebody will walk, and the terminal shows you
+     what they see. A camera nobody has found is worth more than any
+     amount of standing about watching a corridor.
+     ========================================================= */
+  /* Built at world-build time, not on first use: a material that arrives
+     in the middle of a round compiles a program in the middle of a round,
+     and that is a freeze. They are hidden until they are placed, and the
+     load-time warm-up reveals hidden objects before it compiles. */
+  _initCameras() {
+    if (this.cams) return;
+    this.cams = [];
+    for (let i = 0; i < CAMERA_COUNT; i++) {
+      const node = buildCamera(this.propMats);
+      node.userData.phase = i * 0.6;
+      node.visible = false;
+      this.islandScene.add(node);
+      this.tickers.push(node);
+      this.cams.push({
+        i, node, placed: false, x: 0, y: 0, z: 0, yaw: 0,
+        name: `CAM ${i + 1}`,
+      });
+    }
+    this.camsHeld = CAMERA_COUNT;      // how many are still in your hands
+  }
+
+  /** Take the lot off the shelf in the hut. */
+  takeCameras() {
+    this._initCameras();
+    const loose = this.cams.filter((c) => !c.placed).length;
+    if (!loose) {
+      this.audio.sfx('deny');
+      this.ui.toast('THEY ARE ALL OUT THERE ALREADY', 'bad', 2000);
+      return;
+    }
+    this.camsHeld = loose;
+    this.audio.sfx('pickup');
+    this.ui.toast(`${loose} CAMERA${loose === 1 ? '' : 'S'} - PRESS V TO SET ONE`, 'jade', 3600);
+  }
+
+  /**
+   * Point a real camera at what camera `i` can see and render it.
+   *
+   * Called once a frame by the terminal, for the ONE feed you are looking
+   * at — four live feeds is four extra passes and the other three are
+   * thumbnails nobody is reading. The result is read back as pixels so the
+   * interface, which is a 2D canvas, can draw it with everything else.
+   */
+  feedPixels(i) {
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return null;
+    if (!this._feedCam) {
+      this._feedCam = new THREE.PerspectiveCamera(62, 128 / 88, 0.4, 220);
+    }
+    const fc = this._feedCam;
+    fc.position.set(cam.x, cam.y, cam.z);
+    fc.rotation.set(0, 0, 0);
+    fc.rotateY(cam.yaw);
+    fc.rotateX(-0.10);                    // they all look slightly down
+    fc.updateMatrixWorld(true);
+
+    /* The island keeps running whether or not anybody is in it, so this
+       renders the live scene — bodies, avatars, the lot. */
+    this.pipeline.renderFeed(this.islandScene, fc);
+    this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
+    return this._feedBuf;
+  }
+
+  /** Who camera `i` can actually see, for the contact list under the feed. */
+  feedContacts(i, out = []) {
+    out.length = 0;
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return out;
+    const M = this.mp;
+    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
+    const look = (x, z, name, colour) => {
+      const dx = x - cam.x, dz = z - cam.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 46) return;
+      // 62 degrees across, so a little over half a radian either side
+      const dot = (dx * fwdX + dz * fwdZ) / (d || 1);
+      if (dot < 0.55) return;
+      out.push({ name, colour, dist: Math.round(d) });
+    };
+    for (const av of M.avatars.values()) {
+      const rec = M.view.players.get(av.id);
+      if (rec?.alive === false) continue;
+      if ((av.room | 0) !== 0) continue;          // only what is on the island
+      look(av.pos.x, av.pos.z, av.name || '?', av.colour);
+    }
+    // and you, if you are somehow in your own shot
+    if (this.state === 'island' && this.amAlive) {
+      look(this.player.pos.x, this.player.pos.z, 'YOU', null);
+    }
+    for (const b of M.bodies.values()) look(b.mesh.position.x, b.mesh.position.z, 'A BODY', 'red');
+    out.sort((a, b) => a.dist - b.dist);
+    return out;
+  }
+
+  /** Put one down where you are standing, aimed the way you are facing. */
+  placeCamera() {
+    this._initCameras();
+    if (this.state !== 'island') { this.audio.sfx('deny'); return; }
+    const cam = this.cams.find((c) => !c.placed);
+    if (!cam || !this.camsHeld) {
+      this.audio.sfx('deny');
+      this.ui.toast('NO CAMERA IN HAND', 'bad', 1800);
+      return;
+    }
+    const p = this.player.pos;
+    /* A little forward of you and at head height, looking where you are
+       looking — you are hanging it on whatever is in front of you. */
+    const f = this.player.facing;
+    cam.x = p.x + Math.sin(f) * 0.5;
+    cam.z = p.z + Math.cos(f) * 0.5;
+    cam.y = heightAt(cam.x, cam.z) + 1.85;
+    cam.yaw = f;
+    cam.placed = true;
+    cam.node.position.set(cam.x, cam.y, cam.z);
+    cam.node.rotation.y = f;
+    cam.node.visible = true;
+    this.camsHeld--;
+    this.audio.sfx('terminal');
+    this.ui.toast(`${cam.name} SET - ${this.camsHeld} LEFT`, 'jade', 2600);
+  }
+
+  /* =========================================================
      THE SIGNAL SCANNER
 
      A direction finder, not a map. It sweeps, and when the sweep passes
@@ -2961,6 +3175,7 @@ export class MPGame extends Game {
   /** Come back up, whichever room we happen to be in. */
   leaveRoom() {
     if (this.state === 'bunker') this.leaveBunker();
+    else if (this.state === 'cab') this.leaveCab();
     else if (this.state === 'bar') { this.leaveBar(); this.leaveHighRoller(); }
     else if (this.state === 'highroller') this.leaveHighRoller();
   }
@@ -2969,6 +3184,7 @@ export class MPGame extends Game {
     if (this.state === 'bunker') return 1;
     if (this.state === 'highroller') return 2;
     if (this.state === 'bar') return 3;
+    if (this.state === 'cab') return 4;
     return 0;
   }
 
@@ -3337,6 +3553,26 @@ export class MPGame extends Game {
       this._mpHud();
       const bit2 = froze2 ? null : this.nearestInteractable();
       this.ui.setPrompt(bit2 ? bit2.prompt : null);
+      return;
+    }
+
+    /* The hut at the head of the mast. Same shape again. */
+    if (this.state === 'cab') {
+      if (this.isHost) M.host.update(0);
+      const frozeC = this.paused || this.screens.open;
+      if (!frozeC) {
+        this.player.update(dt, this.input, {
+          groundOf: cabHeight, water: false, bounds: false, insideBox: CAB_BOX,
+        });
+      } else {
+        this.player.insideBox = CAB_BOX;
+        this.player.updateCamera(dt, cabHeight);
+      }
+      this.cabScene.userData.tick(this.time, dt);
+      this._updateAvatars(dt);
+      this._mpHud();
+      const bitC = frozeC ? null : this.nearestInteractable();
+      this.ui.setPrompt(bitC ? bitC.prompt : null);
       return;
     }
 

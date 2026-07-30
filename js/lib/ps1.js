@@ -410,6 +410,41 @@ export class RetroPipeline {
     this.internal = { w: iw, h: ih };
   }
 
+  /**
+   * Render one extra view into a small target, for the mast's camera feeds.
+   *
+   * Its own target and its own camera so nothing about the main pass has to
+   * change, and it is deliberately tiny — a hundred and twenty by eighty is
+   * more than a security camera deserves and it costs a fraction of a full
+   * frame. Made on first use, because most rounds nobody climbs the mast.
+   */
+  renderFeed(scene, camera) {
+    if (!this.feedTarget) {
+      this.feedTarget = new THREE.WebGLRenderTarget(128, 88, {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        depthBuffer: true,
+        generateMipmaps: false,
+      });
+    }
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    r.setRenderTarget(this.feedTarget);
+    r.clear();
+    r.render(scene, camera);
+    r.setRenderTarget(prev);
+    return this.feedTarget;
+  }
+
+  /** Read the feed back as pixels the interface can draw. */
+  readFeed(out) {
+    if (!this.feedTarget) return null;
+    const w = this.feedTarget.width, h = this.feedTarget.height;
+    const buf = out && out.length === w * h * 4 ? out : new Uint8Array(w * h * 4);
+    this.renderer.readRenderTargetPixels(this.feedTarget, 0, 0, w, h, buf);
+    return { buf, w, h };
+  }
+
   render(scene, camera, dt = 0) {
     const u = this.quadMat.uniforms;
     u.uTime.value += dt;
