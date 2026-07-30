@@ -23,112 +23,98 @@ const G = (n) => new THREE.Color(n);
    THE PROPRIETOR
    A lumpy brown mass in a tin, framed and hung above the slots.
    =========================================================== */
+/**
+ * The proprietor's portrait, from the photograph.
+ *
+ * A pale bowl seen from above: a grey-white rim, a ring of shadow inside it,
+ * a pool the colour of weak tea, and a dark mass sitting slightly high of
+ * centre with a tapering streak running down out of it. That is the whole
+ * joke and the whole picture — nobody aboard has ever explained why it hangs
+ * in a gilt frame with his name under it.
+ */
 function flopperPortrait() {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const x = c.getContext('2d');
 
-  /* The backing the tin is presented on, because it is a PORTRAIT */
-  x.fillStyle = '#3a2418'; x.fillRect(0, 0, 128, 128);
-  const vig = x.createRadialGradient(64, 56, 10, 64, 64, 78);
-  vig.addColorStop(0, '#6a4a30'); vig.addColorStop(1, '#241408');
-  x.fillStyle = vig; x.fillRect(0, 0, 128, 128);
+  const CX = 64, CY = 66;
+  /* The photograph is taller than it is wide, so the bowl is an oval on its
+     end rather than a circle. */
+  const RX = 40, RY = 50;
 
-  const CX = 64, CY = 66, R = 44;
+  // ---- the wall behind it: flat, slightly cool, slightly uneven ----
+  x.fillStyle = '#c9cbc9'; x.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 220; i++) {
+    const px = (i * 53) % 128, py = (i * 97) % 128;
+    x.fillStyle = i % 3 ? 'rgba(255,255,255,.22)' : 'rgba(150,155,155,.18)';
+    x.fillRect(px, py, 2, 2);
+  }
 
-  // the shadow it casts
-  x.fillStyle = 'rgba(0,0,0,.45)';
-  x.beginPath(); x.ellipse(CX + 4, CY + R * 0.55, R * 0.98, R * 0.34, 0, 0, 6.29); x.fill();
-
-  /* ---- the tin ---- */
-  // the body, seen slightly from above: a squat cylinder
-  x.fillStyle = '#8a8f94';
-  x.fillRect(CX - R, CY - R * 0.30, R * 2, R * 0.62);
-  x.beginPath(); x.ellipse(CX, CY + R * 0.32, R, R * 0.34, 0, 0, 6.29); x.fill();
-  // a band of shade down the right of the can
-  x.fillStyle = 'rgba(30,36,42,.42)';
-  x.fillRect(CX + R * 0.34, CY - R * 0.30, R * 0.66, R * 0.62);
-  // and a highlight down the left
-  x.fillStyle = 'rgba(240,246,250,.42)';
-  x.fillRect(CX - R * 0.86, CY - R * 0.30, R * 0.22, R * 0.62);
-
-  // the rolled rim
-  x.fillStyle = '#c8ced4';
-  x.beginPath(); x.ellipse(CX, CY - R * 0.30, R, R * 0.36, 0, 0, 6.29); x.fill();
-  x.fillStyle = '#6f757b';
-  x.beginPath(); x.ellipse(CX, CY - R * 0.30, R * 0.90, R * 0.31, 0, 0, 6.29); x.fill();
-
-  /* ---- what is in it ---- */
-  // the gravy the loaf sits in
-  x.fillStyle = '#3e2a14';
-  x.beginPath(); x.ellipse(CX, CY - R * 0.28, R * 0.84, R * 0.29, 0, 0, 6.29); x.fill();
-
-  /* A single moulded loaf rather than a heap of lumps: it holds the shape
-     of the tin, it has a flat top with the ring of the mould pressed into
-     it, and it glistens. */
-  const loaf = (dy, fill) => {
+  const oval = (rx, ry, fill, dy = 0) => {
     x.fillStyle = fill;
-    x.beginPath(); x.ellipse(CX, CY - R * 0.42 + dy, R * 0.74, R * 0.26, 0, 0, 6.29); x.fill();
+    x.beginPath(); x.ellipse(CX, CY + dy, rx, ry, 0, 0, Math.PI * 2); x.fill();
   };
-  // the side of the loaf standing proud of the gravy
-  x.fillStyle = '#5c3f22';
-  x.fillRect(CX - R * 0.74, CY - R * 0.44, R * 1.48, R * 0.18);
-  x.beginPath(); x.ellipse(CX, CY - R * 0.26, R * 0.74, R * 0.26, 0, 0, 6.29); x.fill();
-  loaf(0, '#6d4c2b');
-  // the pressed ring on top
-  x.strokeStyle = 'rgba(40,24,10,.55)'; x.lineWidth = 2;
-  x.beginPath(); x.ellipse(CX, CY - R * 0.42, R * 0.52, R * 0.18, 0, 0, 6.29); x.stroke();
-  // grain: short strokes, all lying the same way, the way pressed meat does
-  for (let i = 0; i < 90; i++) {
-    const a = (i * 2.399) % 6.283;
-    const rr = Math.sqrt((i % 17) / 17);
-    const px = CX + Math.cos(a) * rr * R * 0.68;
-    const py = CY - R * 0.42 + Math.sin(a) * rr * R * 0.22;
-    x.fillStyle = i % 3 ? 'rgba(120,88,52,.5)' : 'rgba(52,34,16,.5)';
-    x.fillRect(px, py, 3, 1);
-  }
-  // fat, in little pale flecks
-  for (let i = 0; i < 26; i++) {
-    const a = (i * 1.77) % 6.283;
-    const rr = Math.sqrt((i % 11) / 11);
-    x.fillStyle = 'rgba(226,206,170,.62)';
-    x.fillRect(CX + Math.cos(a) * rr * R * 0.62, CY - R * 0.44 + Math.sin(a) * rr * R * 0.2, 2, 2);
-  }
-  // the jelly, catching the light
-  x.fillStyle = 'rgba(255,232,180,.30)';
-  x.beginPath(); x.ellipse(CX - R * 0.26, CY - R * 0.52, R * 0.26, R * 0.08, -0.25, 0, 6.29); x.fill();
-  x.fillStyle = 'rgba(255,246,214,.22)';
-  x.beginPath(); x.ellipse(CX + R * 0.28, CY - R * 0.36, R * 0.16, R * 0.05, 0.2, 0, 6.29); x.fill();
 
-  /* ---- the lid, peeled back on its ring ---- */
+  // ---- the rim: a pale ring, lit from the upper left ----
+  oval(RX, RY, '#eceeec');
+  // its shadowed side
   x.save();
-  x.translate(CX + R * 0.52, CY - R * 0.86);
-  x.rotate(-0.42);
-  x.fillStyle = '#dfe5ea';
-  x.beginPath(); x.ellipse(0, 0, R * 0.72, R * 0.24, 0, 0, 6.29); x.fill();
-  x.fillStyle = '#a8b0b6';
-  x.beginPath(); x.ellipse(0, 2, R * 0.72, R * 0.20, 0, 0, 6.29); x.fill();
-  // curl marks across it
-  x.strokeStyle = 'rgba(120,130,138,.7)'; x.lineWidth = 1;
-  for (let i = -2; i <= 2; i++) {
-    x.beginPath(); x.moveTo(i * 8, -R * 0.18); x.lineTo(i * 8, R * 0.18); x.stroke();
-  }
+  x.beginPath(); x.ellipse(CX, CY, RX, RY, 0, 0, Math.PI * 2); x.clip();
+  x.fillStyle = 'rgba(120,126,126,.55)';
+  x.beginPath(); x.ellipse(CX + 9, CY + 6, RX, RY, 0, 0, Math.PI * 2); x.fill();
   x.restore();
-  // the pull ring
-  x.strokeStyle = '#e8eef2'; x.lineWidth = 3;
-  x.beginPath(); x.ellipse(CX + R * 0.96, CY - R * 1.04, 7, 5, 0.3, 0, 6.29); x.stroke();
+  oval(RX - 3, RY - 4, '#e4e7e6');
 
-  // a label band round the can with nothing legible on it
-  x.fillStyle = '#8a2018';
-  x.fillRect(CX - R, CY - R * 0.06, R * 2, R * 0.20);
-  x.fillStyle = 'rgba(0,0,0,.35)';
-  x.fillRect(CX + R * 0.34, CY - R * 0.06, R * 0.66, R * 0.20);
-  x.fillStyle = '#ffd88a';
-  for (let i = 0; i < 9; i++) x.fillRect(CX - R * 0.72 + i * 9, CY + R * 0.01, 5, 2);
+  // ---- inside the rim: shadow, then the pool ----
+  oval(RX - 11, RY - 14, '#a9aeae');
+  oval(RX - 13, RY - 16, '#8f9596', 2);
+  // the water: weak tea, brighter where the light falls on it
+  oval(RX - 17, RY - 21, '#b99a52', 3);
+  x.save();
+  x.beginPath(); x.ellipse(CX, CY + 3, RX - 17, RY - 21, 0, 0, Math.PI * 2); x.clip();
+  x.fillStyle = 'rgba(214,186,120,.75)';
+  x.beginPath(); x.ellipse(CX - 4, CY - 6, RX - 20, RY - 26, 0, 0, Math.PI * 2); x.fill();
+  x.fillStyle = 'rgba(120,96,42,.5)';
+  x.beginPath(); x.ellipse(CX + 7, CY + 22, RX - 20, RY - 30, 0, 0, Math.PI * 2); x.fill();
+  x.restore();
 
-  // the gilt frame's inner shadow, so it sits IN a frame
-  x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 6;
-  x.strokeRect(3, 3, 122, 122);
+  /* ---- the mass ----
+     High of centre, wider than it is tall, with a lumpy top edge and a
+     tapering streak running down out of it into the pool. */
+  const blob = (bx, by, rx, ry, fill) => {
+    x.fillStyle = fill;
+    x.beginPath(); x.ellipse(bx, by, rx, ry, 0, 0, Math.PI * 2); x.fill();
+  };
+  // the streak first, so the body sits on top of it
+  x.fillStyle = '#4a3418';
+  x.beginPath();
+  x.moveTo(CX - 4, CY - 4);
+  x.lineTo(CX + 5, CY - 4);
+  x.lineTo(CX + 3, CY + 22);
+  x.lineTo(CX - 1, CY + 26);
+  x.lineTo(CX - 3, CY + 18);
+  x.closePath();
+  x.fill();
+  x.fillStyle = '#33240f';
+  x.fillRect(CX + 1, CY + 4, 3, 18);
+
+  // the body of it
+  blob(CX - 1, CY - 20, 27, 15, '#3f2c14');
+  blob(CX - 12, CY - 24, 14, 9, '#4a3418');
+  blob(CX + 10, CY - 23, 13, 9, '#463117');
+  blob(CX + 1, CY - 12, 22, 10, '#382611');
+  // and the lumps along the top, catching the light
+  for (const [lx, ly, lr, col] of [
+    [-18, -27, 6, '#5c421f'], [-8, -31, 7, '#66491f'], [4, -30, 6, '#5c421f'],
+    [14, -27, 6, '#513a1a'], [-2, -24, 8, '#59401d'],
+  ]) blob(CX + lx, CY + ly, lr, lr * 0.72, col);
+  // the darkest hollows
+  for (const [lx, ly, lr] of [[-6, -20, 5], [8, -18, 4], [-14, -19, 3]]) {
+    blob(CX + lx, CY + ly, lr, lr * 0.6, 'rgba(24,15,5,.62)');
+  }
+  // one wet highlight, upper left, like the photograph
+  x.fillStyle = 'rgba(196,168,110,.45)';
+  x.beginPath(); x.ellipse(CX - 13, CY - 29, 6, 2.5, -0.3, 0, Math.PI * 2); x.fill();
 
   // quantise: this is a PS1 texture, not a photograph
   const img = x.getImageData(0, 0, 128, 128);

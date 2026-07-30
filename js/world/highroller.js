@@ -377,7 +377,7 @@ export function buildHighRoller(mats, flameFactory) {
 
 /** Where you stand when you come through the frame. */
 export const HR_ENTRY = { x: 0, y: 1.0, z: 9.4 };
-export const HR_BOX = { minX: -11.4, maxX: 11.4, minZ: -10.4, maxZ: 10.4 };
+export const HR_BOX = { minX: -11.4, maxX: 11.4, minZ: -10.4, maxZ: 10.4, maxY: 5.0 };
 export function hrHeight() { return 0; }
 
 /** The table, the stools and the braziers are all solid. */

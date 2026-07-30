@@ -523,9 +523,15 @@ export function buildBunkerRoom(mats) {
 export const BUNKER_COLLIDERS = (() => {
   const out = [];
   const W = 18, D = 14;
-  // the command table, at (0, 1.5), 4.6 x 3.0
-  for (let i = 0; i < 4; i++) {
-    out.push({ x: -1.7 + i * 1.13, z: 1.5, r: 1.5 });
+  /* The command table, at (0, 1.5), 4.6 by 3.0. Circles that hug the real
+     rectangle rather than four fat ones: at r = 1.5 the blob was 6.4 by 3.0
+     — a metre wider than the table on each side — and because the camera
+     inflates every collider by another 35cm, standing anywhere near it jammed
+     the camera at its minimum distance and made it pop about. */
+  for (let i = 0; i < 6; i++) {
+    const tx = -1.9 + i * 0.76;
+    out.push({ x: tx, z: 1.5 - 0.55, r: 0.62 });
+    out.push({ x: tx, z: 1.5 + 0.55, r: 0.62 });
   }
   // the crate stack
   for (let i = 0; i < 6; i++) {
@@ -543,5 +549,5 @@ export const BUNKER_COLLIDERS = (() => {
 /** Where you stand when you climb down. */
 export const BUNKER_ENTRY = { x: 0, y: 1.0, z: -5.2 };
 export const BUNKER_TABLE = { x: 0, z: 1.5 };
-export const BUNKER_BOX = { minX: -8.4, maxX: 8.4, minZ: -6.4, maxZ: 6.4 };
+export const BUNKER_BOX = { minX: -8.4, maxX: 8.4, minZ: -6.4, maxZ: 6.4, maxY: 4.4 };
 export function bunkerHeight() { return 0; }

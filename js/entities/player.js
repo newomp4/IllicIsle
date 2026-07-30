@@ -522,63 +522,96 @@ export class Player {
       const rightX = -Math.cos(this.yaw), rightZ = Math.sin(this.yaw);
       const SHOULDER = 0.5;
 
-      let dist = this.camDist;
+      /* A shorter leash indoors. In a room the wall is often two metres
+         behind you, and the further the camera WANTS to be the more it has to
+         travel every time you turn — which is what the pumping actually is.
+         Pulling it in halves the range it can swing over. */
+      let dist = this.insideBox ? Math.min(this.camDist, 2.9) : this.camDist;
+      const ox = this.pos.x + rightX * SHOULDER;
+      const oz = this.pos.z + rightZ * SHOULDER;
 
-      // terrain
-      for (let s = 1; s <= 8; s++) {
-        const t = (s / 8) * this.camDist;
-        const sx = this.pos.x + dirX * t + rightX * SHOULDER;
-        const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
-        const sy = targetY + dirY * t;
-        if (sy < groundOf(sx, sz, sy) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
+      /* Terrain. Only outdoors: inside a room the floor and ceiling are flat
+         and the slab test below handles them exactly, whereas this walk along
+         the ray in eight steps makes the distance jump between step
+         boundaries as you turn — and because the camera snaps inward
+         instantly and eases outward slowly, every jump is a visible pump. */
+      if (!this.insideBox) {
+        for (let s = 1; s <= 8; s++) {
+          const t = (s / 8) * dist;
+          const sx = ox + dirX * t;
+          const sz = oz + dirZ * t;
+          const sy = targetY + dirY * t;
+          if (sy < groundOf(sx, sz, sy) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
+        }
       }
 
-      // tree trunks and rocks — without this the camera spends the whole
-      // jungle buried inside a palm
+      /* Trunks, rocks and furniture — without this the camera spends the
+         whole jungle buried inside a palm.
+
+         Solved rather than sampled: the first hit along the ray comes out of
+         the quadratic, so the distance changes smoothly as you turn instead
+         of stepping between six sample points. */
       if (this.grid) {
-        for (const c of this.nearbyColliders(this.pos.x, this.pos.z)) {
-          if (c.r < 0.7) continue;   // saplings shouldn't shove the camera
-          const r = c.r + 0.35;
-          for (let s = 1; s <= 6; s++) {
-            const t = (s / 6) * dist;
-            const sx = this.pos.x + dirX * t + rightX * SHOULDER;
-            const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
-            if ((sx - c.x) ** 2 + (sz - c.z) ** 2 < r * r) {
-              // never inside the body: at 1.2 the camera sat in the head
-              dist = Math.max(2.1, t - 0.4);
-              break;
-            }
+        const a2 = dirX * dirX + dirZ * dirZ;
+        if (a2 > 1e-6) {
+          for (const c of this.nearbyColliders(this.pos.x, this.pos.z)) {
+            if (c.r < 0.7) continue;   // saplings shouldn't shove the camera
+            const r = c.r + 0.35;
+            const ex = ox - c.x, ez = oz - c.z;
+            const b2 = 2 * (ex * dirX + ez * dirZ);
+            const cc = ex * ex + ez * ez - r * r;
+            /* If the camera's own origin is already inside the inflated
+               circle, this collider cannot usefully constrain anything —
+               movement collision guarantees the BODY is outside it, so this
+               only happens because we inflate by 35cm for the camera. Jamming
+               the distance to its minimum here is what made the camera pop
+               whenever you stood beside a big prop. Ignore it instead. */
+            if (cc < 0) continue;
+            const disc = b2 * b2 - 4 * a2 * cc;
+            if (disc <= 0) continue;
+            const t = (-b2 - Math.sqrt(disc)) / (2 * a2);
+            if (t > 0 && t < dist) dist = Math.max(1.3, t - 0.15);
           }
         }
       }
 
-      /* Indoors the camera has to respect the walls. The listening post is
-         a sealed box and the ladder is right against the far wall, so on
-         the way down the camera swung straight through the concrete and
-         you were looking at the room from inside the rock. */
+      /* Indoors the camera has to respect the walls. The listening post is a
+         sealed box and the ladder is right against the far wall, so without
+         this the camera swings through the concrete and you are looking at
+         the room from inside the rock.
+
+         This is an exact ray-box intersection, not a walk along the ray in
+         ten steps. Sampling meant the distance jumped between step
+         boundaries as you turned, and because the camera snaps inward
+         instantly but eases outward slowly, every jump showed up as a pump —
+         that was the juddering down there. A slab test gives one stable
+         number that changes smoothly with the angle. */
       const box = this.insideBox;
       if (box) {
-        for (let s = 1; s <= 10; s++) {
-          const t = (s / 10) * dist;
-          const sx = this.pos.x + dirX * t + rightX * SHOULDER;
-          const sz = this.pos.z + dirZ * t + rightZ * SHOULDER;
-          const sy = targetY + dirY * t;
-          const M = 0.55;                  // keep this far off the surface
-          if (sx < box.minX + M || sx > box.maxX - M
-            || sz < box.minZ + M || sz > box.maxZ - M
-            || sy < 0.5 || sy > (box.maxY ?? 4.0)) {
-            dist = Math.max(1.15, t - 0.35);
-            break;
-          }
-        }
+        const M = 0.5;                       // keep this far off every surface
+        const oy = targetY;
+        let limit = dist;
+        const slab = (o, d, lo, hi) => {
+          if (Math.abs(d) < 1e-5) return Infinity;
+          const bound = d > 0 ? hi : lo;
+          const t = (bound - o) / d;
+          return t > 0 ? t : Infinity;
+        };
+        limit = Math.min(limit, slab(ox, dirX, box.minX + M, box.maxX - M));
+        limit = Math.min(limit, slab(oz, dirZ, box.minZ + M, box.maxZ - M));
+        limit = Math.min(limit, slab(oy, dirY, 0.55, (box.maxY ?? 4.0) - 0.35));
+        // never inside the body: at anything under 1.3 the camera is in the head
+        dist = Math.max(1.3, Math.min(dist, limit));
       }
 
       if (cam.fov !== this.FOV_THIRD) {
         cam.fov = this.FOV_THIRD;
         cam.updateProjectionMatrix();
       }
-      // snap in fast, ease out slow — avoids nauseating pops
-      const k = dist < this.camDistCur ? 1 : Math.min(1, 5 * dt);
+      /* Snap in fast, ease out slow — avoids nauseating pops. Indoors it
+         eases out faster, because in a tight room the free distance changes
+         very quickly as you turn and a slow recovery reads as lag. */
+      const k = dist < this.camDistCur ? 1 : Math.min(1, (this.insideBox ? 10 : 5) * dt);
       this.camDistCur += (dist - this.camDistCur) * k;
 
       cam.position.set(
@@ -623,32 +656,58 @@ export class Player {
   _buildViewHands() {
     if (this.viewHands) return this.viewHands;
     const g = new THREE.Group();
-    const skin = new THREE.MeshLambertMaterial({ color: 0xc4a488 });
-    const cuff = new THREE.MeshLambertMaterial({ color: 0x8a8272 });
+    /* Darker than you would guess. These are twenty centimetres from a
+       camera standing in tropical sun, so anything pale reads as two white
+       slabs at the bottom of the frame. */
+    const skin = new THREE.MeshLambertMaterial({ color: 0x8f6f52 });
+    const knuckle = new THREE.MeshLambertMaterial({ color: 0x9c7a5b });
+    const cuff = new THREE.MeshLambertMaterial({ color: 0x6a6455 });
     const arms = [];
+    /* Short, and well clear of the near plane.
+
+       The first version had a 34cm forearm whose elbow end sat at z = -0.38
+       — the camera's near plane is at 0.35, so the sleeve was clipping
+       through it, and the walk cycle moved them along z as well, which drove
+       them in and out of the near plane every stride. That is the "camera
+       intersecting into them" and the weird movement both.
+
+       Everything is 60cm out now, the forearm is 20cm, and nothing about the
+       stride touches z. */
     for (const side of [-1, 1]) {
       const a = new THREE.Group();
-      // the forearm, angled in toward the middle of the view
-      const fore = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.085, 0.34), skin);
-      fore.position.set(0, 0, -0.17);
+      // the forearm, short: a wrist and a little sleeve, nothing more
+      const fore = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.075, 0.20), skin);
+      fore.position.set(0, 0, -0.10);
       a.add(fore);
-      // a rolled sleeve at the elbow end
-      const sl = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.105, 0.10), cuff);
-      sl.position.set(0, 0, 0.02);
+      // a rolled cuff at the near end, which is where the arm leaves frame
+      const sl = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.095, 0.07), cuff);
+      sl.position.set(0, 0, 0.015);
       a.add(sl);
-      // the hand: a palm and a thumb, no more than that at this size
-      const palm = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.07, 0.11), skin);
-      palm.position.set(0, 0, -0.39);
+      /* The hand. A palm, four knuckles and a thumb: seen from behind at
+         this size the knuckle line is the only thing that says "hand" rather
+         than "block". */
+      const palm = new THREE.Mesh(new THREE.BoxGeometry(0.082, 0.050, 0.095), skin);
+      palm.position.set(0, 0, -0.23);
       a.add(palm);
-      const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.05, 0.07), skin);
-      thumb.position.set(side * -0.055, 0.005, -0.37);
+      for (let k = 0; k < 4; k++) {
+        const f = new THREE.Mesh(new THREE.BoxGeometry(0.017, 0.030, 0.055), knuckle);
+        f.position.set(-0.030 + k * 0.020, -0.004, -0.305);
+        f.rotation.x = 0.28 + k * 0.05;
+        a.add(f);
+      }
+      const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.034, 0.058), knuckle);
+      thumb.position.set(side * -0.048, -0.002, -0.245);
+      thumb.rotation.y = side * -0.5;
       a.add(thumb);
 
-      /* Just on screen. At 78 degrees the bottom of the frame is about
-         0.34 below the axis at this distance, so this shows the hands and
-         the last few centimetres of forearm and nothing else. */
-      a.position.set(side * 0.40, -0.255, -0.40);
-      a.rotation.set(-0.42, side * 0.30, side * -0.16);
+      /* Out to the sides and a touch higher. At the very bottom of the frame
+         they sat behind the belt and the interaction prompt, which own that
+         band in Castaways — visible geometry nobody could see.
+
+         Rolled so you are looking at the back of the hand and along the
+         knuckles, not down onto the flat top of a box. */
+      a.position.set(side * 0.58, -0.30, -0.62);
+      a.rotation.set(-0.52, side * 0.34, side * -0.30);
       g.add(a);
       arms.push({ a, side });
     }
@@ -674,12 +733,15 @@ export class Player {
        Without this the hands existed, were visible, and were never drawn. */
     const sc = this.mesh.parent;
     if (sc && this.camera.parent !== sc) sc.add(this.camera);
+    /* The stride moves them up and down and rocks them, and never along z.
+       Anything that changes their distance from the eye walks them through
+       the near plane. */
     const run = Math.min(1.5, hspeed / Math.max(1, this.SPEED));
     for (const { a, side } of g.userData.arms) {
       const ph = this.walkPhase + (side > 0 ? Math.PI : 0);
-      a.position.y = -0.255 + Math.sin(ph) * 0.030 * run;
-      a.position.z = -0.40 + Math.cos(ph) * 0.045 * run;
-      a.rotation.x = -0.42 + Math.sin(ph) * 0.11 * run;
+      a.position.y = -0.30 + Math.sin(ph) * 0.026 * run;
+      a.rotation.x = -0.52 + Math.sin(ph) * 0.09 * run;
+      a.rotation.z = side * -0.30 + Math.cos(ph) * 0.05 * run;
     }
   }
 

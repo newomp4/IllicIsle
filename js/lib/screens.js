@@ -2987,10 +2987,14 @@ export const SCREENS = {
          read as a bug. Now a roller shutter comes down over the counter, the
          room changes behind it, and it goes back up. */
       if (s.wipe > 0) {
-        // 1..0.5 closing, 0.5..0 opening
-        const closing = s.wipe > 0.5;
-        const k = closing ? (1 - s.wipe) * 2 : s.wipe * 2;
-        const hgt = Math.round(H * (1 - k));
+        /* How much of the counter you can still see. It is 1 at either end of
+           the wipe and 0 in the middle, where the shutter is fully down.
+
+           The first version worked out "closing" and then used (1 - wipe),
+           which is zero on the very first frame — so the shutter appeared
+           already shut, then opened, then shut again. That was the glitch. */
+        const open = Math.abs(s.wipe - 0.5) * 2;
+        const hgt = Math.round(H * (1 - open));
         // the slats
         for (let sy = 0; sy < hgt; sy += 4) {
           x.fillStyle = (sy / 4) % 2 ? 'rgba(46,34,32,.97)' : 'rgba(72,54,50,.97)';
