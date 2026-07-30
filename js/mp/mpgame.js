@@ -2395,6 +2395,14 @@ export class MPGame extends Game {
       bu.said = true;
       this.audio.sfx('confirm');
       this.audio.sfx('rumble');
+      /* It is a solid object once it is standing on the sand, and it was
+         not one — you could walk straight through it, and the camera went
+         through it too. */
+      if (!bu.solid) {
+        bu.solid = true;
+        this.colliders.push({ x: bu.x, z: bu.z, r: 0.95 });
+        this.player.setColliders(this.colliders);
+      }
       this.ui.showPopup('A CHEST', 'IT IS NOT LOCKED', 'coin', 'OUT OF THE SAND');
     } else if (st.dug > 0.62 && !bu.saidHalf) {
       bu.saidHalf = true;

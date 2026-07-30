@@ -97,101 +97,171 @@ function field(x, ox, oy, w, h, active) {
  * Returns the rows it drew, so the tray can be clicked.
  */
 const CHIPS = [
-  { v: 25, face: '#2a2a36', edge: '#4a4a5c', pip: '#c8c8d8' },
-  { v: 10, face: '#1e5a3a', edge: '#2e7a52', pip: '#a8e0c0' },
-  { v: 5,  face: '#8a2018', edge: '#b03428', pip: '#ffb0a0' },
-  { v: 1,  face: '#c8b48a', edge: '#e8d8b0', pip: '#6a5432' },
+  { v: 25, face: '#2a2a36', edge: '#585874', pip: '#c8c8d8' },
+  { v: 10, face: '#1e5a3a', edge: '#36936a', pip: '#a8e0c0' },
+  { v: 5,  face: '#8a2018', edge: '#c04030', pip: '#ffb0a0' },
+  { v: 1,  face: '#c8b48a', edge: '#efe0bc', pip: '#6a5432' },
 ];
 
+/**
+ * One chip, seen slightly from above: a face with a rim under it.
+ *
+ * `face` prints the denomination on it, which is how a real chip tells you
+ * what it is — the value used to be printed on the FELT under each pile,
+ * where it collided with whatever was written along the bottom of the tray.
+ */
+function drawChip(x, cx, cy, c, w = 15, face = null) {
+  const h = 7;
+  x.fillStyle = '#050704';
+  x.fillRect(cx - w / 2, cy, w, h + 1);
+  x.fillStyle = c.face;
+  x.fillRect(cx - w / 2, cy + 1, w, h - 1);
+  x.fillStyle = c.edge;
+  x.fillRect(cx - w / 2, cy + 1, w, 1);
+  // the notches round the rim, which is what makes it a chip
+  x.fillStyle = c.pip;
+  x.fillRect(cx - w / 2 + 1, cy + 2, 2, 1);
+  x.fillRect(cx + w / 2 - 3, cy + 2, 2, 1);
+  if (face) {
+    drawText(x, face, {
+      x: cx, y: cy + 1, scale: 1, align: 'center', color: c.pip, shadow: false,
+    });
+  }
+  x.fillStyle = 'rgba(0,0,0,.34)';
+  x.fillRect(cx - w / 2, cy + h, w, 1);
+}
+
+/**
+ * A stake, as a thing rather than a number.
+ *
+ * The first version had two faults you could see from across the room: the
+ * up and down keycaps were drawn at a fixed offset from the right edge and
+ * a three-digit figure was drawn straight through them, and the middle
+ * third of the tray was empty. This one gives every part its own column and
+ * the keycaps sit OUTSIDE the figure, not on it.
+ *
+ *   ┌────────────────────────────────────────┐
+ *   │ YOUR STAKE                             │
+ *   │  ▤▤▤  25 x8              ▲             │
+ *   │  ▤▤▤  10 x2            2 0 0           │
+ *   │  ▤▤▤   5 x1              ▼             │
+ *   │ ────────────────────────────────────── │
+ *   │ AFTER 799                 LIMIT 5-200  │
+ *   └────────────────────────────────────────┘
+ *
+ * Returns the rows it drew, so the caps can be clicked.
+ */
 function stakeTray(x, cx, cy, w, stake, purse, t, opts = {}) {
   const kick = Math.round((opts.kick || 0) * 3);
   const accent = opts.accent || GOLD;
-  const label = opts.label || 'YOUR STAKE';
   const rows = [];
-  const bx = Math.round(cx - w / 2);
-  const H = 54;
+  const W2 = Math.max(176, w);
+  const bx = Math.round(cx - W2 / 2);
+  const H = 72;
+  const MIN = opts.min ?? 1, MAX = opts.max ?? 999;
 
-  /* the tray: a shallow well with a felt bottom and a lipped rail */
-  x.fillStyle = 'rgba(6,10,8,.80)'; x.fillRect(bx, cy, w, H);
-  x.fillStyle = opts.felt || '#123a2c'; x.fillRect(bx + 2, cy + 2, w - 4, H - 4);
-  ditherRect(x, bx + 2, cy + 2, w - 4, H - 4, opts.felt || '#123a2c', opts.feltHi || '#17503c', 0.5, 2);
-  x.fillStyle = accent; x.fillRect(bx, cy, w, 1); x.fillRect(bx, cy + H - 1, w, 1);
-  x.fillRect(bx, cy, 1, H); x.fillRect(bx + w - 1, cy, 1, H);
-  // a lit inner lip, so it reads as a well rather than a rectangle
-  x.fillStyle = 'rgba(255,240,190,.10)'; x.fillRect(bx + 2, cy + 2, w - 4, 1);
-  x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(bx + 2, cy + H - 4, w - 4, 2);
+  /* ---- the well ---- */
+  x.fillStyle = 'rgba(4,8,6,.86)'; x.fillRect(bx - 2, cy - 2, W2 + 4, H + 4);
+  x.fillStyle = opts.felt || '#123a2c'; x.fillRect(bx, cy, W2, H);
+  ditherRect(x, bx, cy, W2, H, opts.felt || '#123a2c', opts.feltHi || '#17503c', 0.5, 2);
+  // a gilt rule top and bottom, and a lit inner lip
+  x.fillStyle = accent; x.fillRect(bx, cy, W2, 1); x.fillRect(bx, cy + H - 1, W2, 1);
+  x.fillStyle = 'rgba(255,240,190,.12)'; x.fillRect(bx, cy + 1, W2, 1);
+  x.fillStyle = 'rgba(0,0,0,.40)'; x.fillRect(bx, cy + H - 3, W2, 2);
+  x.fillStyle = accent; x.fillRect(bx, cy, 1, H); x.fillRect(bx + W2 - 1, cy, 1, H);
 
-  drawText(x, label, {
-    x: cx, y: cy + 4, scale: 1, align: 'center', color: opts.dim || '#7fb8a0',
+  drawText(x, opts.label || 'YOUR STAKE', {
+    x: bx + 6, y: cy + 4, scale: 1, color: opts.dim || '#7fb8a0',
   });
 
-  /* ---- the chips, broken down into denominations ---- */
+  /* ---- the chips, in piles, the way they sit on a real tray ----
+     One row per denomination left three quarters of the well empty when the
+     stake happened to be a round number of twenty-fives. Piles standing side
+     by side fill the space and, more to the point, a tall pile LOOKS like a
+     lot of money, which is the only job this has. */
   let left = stake;
   const stacks = [];
   for (const c of CHIPS) {
     const n = Math.floor(left / c.v);
-    if (n > 0) { stacks.push({ c, n: Math.min(n, 9) }); left -= n * c.v; }
+    if (n > 0) { stacks.push({ c, n }); left -= n * c.v; }
   }
-  const SW = 15;
-  const tw = stacks.length * SW;
-  const sx0 = Math.round(bx + 10);
-  stacks.forEach((st, si) => {
-    const chx = sx0 + si * SW;
-    for (let i = 0; i < st.n; i++) {
-      // the top chip of the first stack lifts when the figure moves
-      const lift = (si === 0 && i === st.n - 1) ? kick : 0;
-      const chy = cy + 40 - i * 3 - lift;
-      x.fillStyle = '#050704'; x.fillRect(chx - 1, chy, 14, 5);
-      x.fillStyle = st.c.face; x.fillRect(chx, chy, 12, 4);
-      x.fillStyle = st.c.edge; x.fillRect(chx, chy, 12, 1);
-      // three pips on the rim, which is what makes it a chip and not a brick
-      x.fillStyle = st.c.pip;
-      x.fillRect(chx + 1, chy + 1, 1, 1);
-      x.fillRect(chx + 6, chy + 1, 1, 1);
-      x.fillRect(chx + 10, chy + 1, 1, 1);
+  const BASE = cy + 45;
+  const PILE_W = 22;
+  const CX0 = bx + 22;
+  stacks.slice(0, 4).forEach((st, si) => {
+    const px2 = CX0 + si * PILE_W;
+    const show = Math.min(st.n, 7);
+    for (let i = 0; i < show; i++) {
+      // the top chip of the biggest pile lifts when the figure moves
+      const lift = (si === 0 && i === show - 1) ? kick : 0;
+      // only the top chip of a pile shows its face; the rest are edges
+      drawChip(x, px2, BASE - i * 3 - lift, st.c, 18,
+        i === show - 1 ? String(st.c.v) : null);
     }
-    // its value, printed under the stack, inside the well
-    drawText(x, String(st.c.v), {
-      x: chx + 6, y: cy + 44, scale: 1, align: 'center', color: st.c.edge,
-    });
+    if (st.n > show) {
+      drawText(x, `x${st.n}`, {
+        x: px2, y: BASE - 9 - show * 3, scale: 1, align: 'center',
+        color: opts.dim || '#6a9a86',
+      });
+    }
   });
+  if (!stacks.length) {
+    drawText(x, 'NOTHING DOWN', { x: CX0 - 8, y: BASE, scale: 1, color: RED });
+  }
 
-  /* ---- the figure, and keycaps that say which way ---- */
-  const nx = Math.round(bx + w - 12);
+  /* the felt line the piles stand on, so they are on something */
+  x.fillStyle = 'rgba(0,0,0,.24)';
+  x.fillRect(bx + 10, BASE + 9, Math.max(30, stacks.length * PILE_W) + 6, 1);
+
+  /* ---- the figure, with the caps clear of it on the right ---- */
+  const capX = bx + W2 - 17;
+  const numRight = capX - 6;
   drawText(x, String(stake), {
-    x: nx, y: cy + 14 - kick, scale: 2, align: 'right',
+    x: numRight, y: cy + 28 - kick, scale: 2, align: 'right',
     color: stake > purse ? RED : (opts.figure || GOLD_LT),
   });
-  const canUp = stake < Math.min(opts.max ?? 999, purse);
-  const canDn = stake > (opts.min ?? 1);
-  const kx = bx + w - 34;
+  const canUp = stake < Math.min(MAX, purse);
+  const canDn = stake > MIN;
   const cap = (ky, up, live) => {
-    x.fillStyle = live ? '#3a2a10' : '#1a1208';
-    x.fillRect(kx, ky, 11, 9);
-    x.fillStyle = live ? accent : '#4a3a24';
-    x.fillRect(kx, ky, 11, 1); x.fillRect(kx, ky + 8, 11, 1);
-    x.fillRect(kx, ky, 1, 9); x.fillRect(kx + 10, ky, 1, 9);
-    // the triangle on the cap
+    x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(capX, ky + 1, 12, 11);
+    x.fillStyle = live ? '#3a2a10' : '#161208';
+    x.fillRect(capX, ky, 12, 11);
+    x.fillStyle = live ? accent : '#463822';
+    x.fillRect(capX, ky, 12, 1); x.fillRect(capX, ky + 10, 12, 1);
+    x.fillRect(capX, ky, 1, 11); x.fillRect(capX + 11, ky, 1, 11);
+    /* An up arrow is a point at the TOP with the base under it. Both of
+       these were drawn the other way round, so the cap that raised your
+       stake had a downward triangle on it. */
     const col = live ? (up ? '#8fe8a0' : '#ffb08a') : '#3a3226';
-    for (let r = 0; r < 3; r++) {
+    for (let r = 0; r < 4; r++) {
       x.fillStyle = col;
-      if (up) x.fillRect(kx + 5 - r, ky + 5 - r, r * 2 + 1, 1);
-      else x.fillRect(kx + 5 - r, ky + 3 + r, r * 2 + 1, 1);
+      if (up) x.fillRect(capX + 6 - r, ky + 3 + r, r * 2 + 1, 1);
+      else x.fillRect(capX + 6 - r, ky + 7 - r, r * 2 + 1, 1);
     }
-    return { x: kx, y: ky, w: 11, h: 9 };
+    return { x: capX, y: ky, w: 12, h: 11 };
   };
-  rows.push({ ...cap(cy + 12, true, canUp), stakeUp: true });
-  rows.push({ ...cap(cy + 24, false, canDn), stakeDown: true });
+  rows.push({ ...cap(cy + 15, true, canUp), stakeUp: true });
+  rows.push({ ...cap(cy + 40, false, canDn), stakeDown: true });
 
-  /* ---- and what is left, on the rail INSIDE the well ----
-     It used to hang below the tray, where it collided with whatever line
-     the screen itself put under the whole thing. Nothing is drawn outside
-     the well now, so a caller can put its own caption straight underneath. */
+  /* ---- the rail ---- */
+  x.fillStyle = 'rgba(255,255,255,.10)';
+  x.fillRect(bx + 5, cy + H - 14, W2 - 10, 1);
   const after = purse - stake;
-  drawText(x, `AFTER  ${Math.max(0, after)}`, {
-    x: bx + w - 6, y: cy + 44, scale: 1, align: 'right',
+  const leftTxt = `AFTER  ${Math.max(0, after)}`;
+  const rightTxt = opts.rail || `LIMIT ${MIN} - ${MAX}`;
+  drawText(x, leftTxt, {
+    x: bx + 6, y: cy + H - 11, scale: 1,
     color: after < 0 ? RED : (opts.dim || '#6a9a86'),
   });
+  /* The right-hand note only goes on if there is room for it. "AFTER 50"
+     and "HE TAKES 50 AT MOST" on a hundred and eighty pixel rail printed
+     straight through each other. */
+  if (textWidth(leftTxt, 1) + textWidth(rightTxt, 1) + 20 < W2) {
+    drawText(x, rightTxt, {
+      x: bx + W2 - 6, y: cy + H - 11, scale: 1, align: 'right',
+      color: opts.dim2 || '#4a7a6a',
+    });
+  }
   return rows;
 }
 
@@ -2778,17 +2848,14 @@ export const SCREENS = {
          what it is made of, what it comes to, which way the keys move it,
          and what you will be sitting on afterwards. */
       if (s.phase === 'bet') {
-        const ty = Math.round(TY + (TH - 54) / 2) - 6;
-        // the painted circle it sits in
-        x.strokeStyle = 'rgba(255,255,255,.10)'; x.lineWidth = 1;
-        x.beginPath(); x.ellipse(W / 2, ty + 28, 84, 38, 0, 0, 6.283); x.stroke();
-        x.strokeStyle = 'rgba(195,154,44,.24)';
-        x.beginPath(); x.ellipse(W / 2, ty + 28, 79, 34, 0, 0, 6.283); x.stroke();
-        stakeRows = stakeTray(x, W / 2, ty, 150, s.stake, coins, t, {
+        const ty = Math.round(TY + (TH - 68) / 2);
+        // the painted betting circle it sits in
+        x.strokeStyle = 'rgba(255,255,255,.09)'; x.lineWidth = 1;
+        x.beginPath(); x.ellipse(W / 2, ty + 34, 104, 45, 0, 0, 6.283); x.stroke();
+        x.strokeStyle = 'rgba(195,154,44,.20)';
+        x.beginPath(); x.ellipse(W / 2, ty + 34, 99, 41, 0, 0, 6.283); x.stroke();
+        stakeRows = stakeTray(x, W / 2, ty, 182, s.stake, coins, t, {
           kick: s.bump || 0, min: BJ_MIN, max: BJ_MAX,
-        });
-        drawText(x, `TABLE LIMIT ${BJ_MIN} TO ${BJ_MAX}`, {
-          x: W / 2, y: ty + 58, scale: 1, align: 'center', color: '#4a7a6a',
         });
       }
 
@@ -3926,19 +3993,30 @@ export const SCREENS = {
      ("4x3") next to a button, which is not an explanation of anything. */
   mpSchlarna: {
     init(s) {
-      s.t0 = 0;
-      s.pulse = 0;
       s.drop = 0;          // how far the card has come down
+      s.pulse = 0;
+      s.demo = 0;          // the loop that shows you how it works
       s.done = false;
+      s.coins = [];        // the coins the demo throws
     },
     tick(s, g, dt) {
-      s.drop = Math.min(1, s.drop + dt * 4.2);
+      s.drop = Math.min(1, s.drop + dt * 4.6);
       s.pulse += dt;
+      if (s.drop < 1) return;
+      /* The demonstration runs on a loop of its own: a coin leaves your
+         purse and lands in the next box, four times, then it resets. This
+         is the whole explanation — you should be able to look away from
+         the words and still understand it. */
+      s.demo += dt * 0.62;
+      if (s.demo > SCHLARNA_N + 1.4) { s.demo = 0; s.coins.length = 0; }
+      const want = Math.floor(s.demo);
+      if (want < SCHLARNA_N && !s.coins[want]) s.coins[want] = { t: 0 };
+      for (const c of s.coins) if (c) c.t += dt;
     },
     draw(x, W, H, s, g, t) {
       const id = s.id;
       const it = id ? STOCK.find((q) => q.id === id) : null;
-      if (!it) { st_popSafe(s, g); return []; }
+      if (!it) return [];
       const cash = g.priceOf(id);
       const total = g.schlarnaTotal(id);
       const each = g.schlarnaEach(id);
@@ -3946,119 +4024,171 @@ export const SCREENS = {
       const coins = g.coins || 0;
       const rows = [];
 
-      /* the shop, dimmed behind it */
-      x.fillStyle = 'rgba(6,4,2,.80)'; x.fillRect(0, 0, W, H);
-      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
+      /* ---- the shop, dimmed and pushed back ---- */
+      x.fillStyle = 'rgba(6,4,2,.86)'; x.fillRect(0, 0, W, H);
+      for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
-      /* ---- the card, on a spring ---- */
+      /* ---- the card, arriving on a spring ---- */
       const ease = 1 - Math.pow(1 - s.drop, 3);
-      const over = Math.sin(Math.min(1, s.drop) * Math.PI) * 5;
-      const CW = W - 40, CH = 150;
+      const over = Math.sin(Math.min(1, s.drop) * Math.PI) * 6;
+      const CW = W - 28, CH = 176;
       const cx0 = Math.round((W - CW) / 2);
       const cy0 = Math.round(-CH + (H / 2 - CH / 2 + CH) * ease - over);
+      const cxm = cx0 + CW / 2;
 
-      const PINK = '#f4a6bd', PINK_D = '#c46f8c', INK2 = '#2a0a16';
-      // the card itself, with its corners knocked off
-      x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(cx0 + 2, cy0 + 3, CW, CH);
+      const PINK = '#f4a6bd', PINK_D = '#c46f8c', PINK_L = '#ffd4e2', INK = '#2a0a16';
+
+      // its shadow on the shop behind
+      x.fillStyle = 'rgba(0,0,0,.60)'; x.fillRect(cx0 + 3, cy0 + 4, CW, CH);
       x.fillStyle = PINK; x.fillRect(cx0, cy0, CW, CH);
-      x.fillStyle = 'rgba(6,4,2,.80)';
-      for (const [qx, qy] of [[cx0, cy0], [cx0 + CW - 2, cy0],
-        [cx0, cy0 + CH - 2], [cx0 + CW - 2, cy0 + CH - 2]]) {
-        x.fillRect(qx, qy, 2, 2);
+      /* Diagonal banding in the pink, very faint — a flat field of one
+         colour this size reads as a bug rather than as a card. */
+      for (let d = -CH; d < CW; d += 8) {
+        x.fillStyle = 'rgba(255,255,255,.045)';
+        for (let yy = 0; yy < CH; yy++) {
+          const xx = d + yy;
+          if (xx >= 0 && xx < CW) x.fillRect(cx0 + xx, cy0 + yy, 3, 1);
+        }
       }
-      x.fillStyle = '#ffd4e2'; x.fillRect(cx0 + 1, cy0 + 1, CW - 2, 1);
-      x.fillStyle = PINK_D; x.fillRect(cx0 + 1, cy0 + CH - 2, CW - 2, 1);
+      // corners knocked off, a lit top edge and a shaded bottom
+      x.fillStyle = 'rgba(6,4,2,.86)';
+      for (const [qx, qy] of [[cx0, cy0], [cx0 + CW - 2, cy0],
+        [cx0, cy0 + CH - 2], [cx0 + CW - 2, cy0 + CH - 2]]) x.fillRect(qx, qy, 2, 2);
+      x.fillStyle = PINK_L; x.fillRect(cx0 + 2, cy0, CW - 4, 1);
+      x.fillStyle = PINK_D; x.fillRect(cx0 + 2, cy0 + CH - 1, CW - 4, 1);
 
-      /* the wordmark, big, with the little swoosh it has instead of an S */
+      /* ---- the wordmark, in its own dark band ---- */
+      x.fillStyle = INK; x.fillRect(cx0 + 6, cy0 + 5, CW - 12, 22);
       drawText(x, 'SCHLARNA', {
-        x: cx0 + 8, y: cy0 + 7, scale: 2, color: INK2, shadow: false,
+        x: cx0 + 12, y: cy0 + 9, scale: 2, color: PINK, shadow: false,
+      });
+      drawText(x, 'PAY IN FOUR', {
+        x: cx0 + CW - 12, y: cy0 + 15, scale: 1, align: 'right',
+        color: PINK_D, shadow: false,
       });
       {
-        // a shine travelling across the wordmark, once every couple of seconds
-        const sw = (s.pulse % 2.4) / 0.4;
+        // a shine travelling across the band
+        const sw = (s.pulse % 2.6) / 0.42;
         if (sw < 1) {
-          const bxs = Math.round(cx0 + 4 + sw * (textWidth('SCHLARNA', 2) + 18));
-          for (let i = 0; i < 6; i++) {
-            x.fillStyle = `rgba(255,255,255,${(0.18 * (1 - Math.abs(i - 2.5) / 3)).toFixed(3)})`;
-            x.fillRect(bxs + i, cy0 + 7, 1, 14);
+          const bxs = Math.round(cx0 + 4 + sw * (CW - 4));
+          for (let i = 0; i < 7; i++) {
+            x.fillStyle = `rgba(255,214,232,${(0.22 * (1 - Math.abs(i - 3) / 3.5)).toFixed(3)})`;
+            x.fillRect(bxs + i, cy0 + 6, 1, 20);
           }
         }
       }
-      drawText(x, 'PAY IN FOUR. NO INTEREST. NO NAMES.', {
-        x: cx0 + 8, y: cy0 + 24, scale: 1, color: '#7a3050', shadow: false,
-      });
-      x.fillStyle = PINK_D; x.fillRect(cx0 + 8, cy0 + 33, CW - 16, 1);
 
-      /* ---- what you are buying ---- */
-      drawShopIcon(x, it.icon, cx0 + 8, cy0 + 38, 16, true, t);
-      drawText(x, it.name, { x: cx0 + 28, y: cy0 + 40, scale: 1, color: INK2, shadow: false });
-      drawText(x, `TODAY ${cash}`, {
-        x: cx0 + CW - 8, y: cy0 + 40, scale: 1, align: 'right', color: '#7a3050', shadow: false,
+      /* ---- what you are buying, and what it comes to ---- */
+      const IY = cy0 + 32;
+      /* Twenty-eight pixels, not twenty-four: a scale-2 figure is fourteen
+         tall and the premium line under it is seven, and at twenty-four the
+         two printed into each other. */
+      x.fillStyle = 'rgba(42,10,22,.14)'; x.fillRect(cx0 + 6, IY, CW - 12, 28);
+      drawShopIcon(x, it.icon, cx0 + 10, IY + 5, 16, true, t);
+      drawText(x, it.name, { x: cx0 + 30, y: IY + 4, scale: 1, color: INK, shadow: false });
+      drawText(x, `CASH TODAY  ${cash}`, {
+        x: cx0 + 30, y: IY + 15, scale: 1, color: '#7a3050', shadow: false,
+      });
+      // the total, big, on the right, with the premium under it
+      drawText(x, String(total), {
+        x: cx0 + CW - 12, y: IY + 2, scale: 2, align: 'right', color: INK, shadow: false,
+      });
+      drawText(x, `+${total - cash} FOR THE PLAN`, {
+        x: cx0 + CW - 12, y: IY + 19, scale: 1, align: 'right',
+        color: '#7a3050', shadow: false,
       });
 
-      /* ---- the four payments, drawn as four payments ---- */
-      const PY2 = cy0 + 58;
+      /* ---- the four payments, and a coin going into each ----
+         The purse is on the left, the four boxes run across, and the demo
+         throws a coin from one to the next on a loop. */
+      const PY = cy0 + 68;
+      const PURSE_X = cx0 + 18, PURSE_Y = PY + 14;
+      // your purse
+      x.fillStyle = INK; x.fillRect(PURSE_X - 11, PY + 2, 22, 26);
+      x.fillStyle = '#6a2a44'; x.fillRect(PURSE_X - 9, PY + 4, 18, 22);
+      drawText(x, 'YOURS', {
+        x: PURSE_X, y: PY - 8, scale: 1, align: 'center', color: INK, shadow: false,
+      });
+      for (let i = 0; i < 3; i++) {
+        drawCoinPipLocal(x, PURSE_X - 4, PY + 18 - i * 4, INK, PINK);
+      }
+
+      const BX0 = cx0 + 40, BW = Math.floor((CW - 52 - (n - 1) * 5) / n);
       const paid = g.plan && g.plan.id === id ? n - Math.ceil(g.plan.owed / each) : 0;
       for (let i = 0; i < n; i++) {
-        const bw = Math.floor((CW - 16 - (n - 1) * 6) / n);
-        const bx2 = cx0 + 8 + i * (bw + 6);
-        const now2 = i === 0;
+        const bx2 = BX0 + i * (BW + 5);
+        const first = i === 0;
         const donePay = i < paid;
-        // the payment box: the first is filled, the rest are outlines
-        x.fillStyle = donePay ? '#6a2a44' : (now2 ? INK2 : 'rgba(42,10,22,.18)');
-        x.fillRect(bx2, PY2, bw, 26);
-        x.fillStyle = INK2;
-        x.fillRect(bx2, PY2, bw, 1); x.fillRect(bx2, PY2 + 25, bw, 1);
-        x.fillRect(bx2, PY2, 1, 26); x.fillRect(bx2 + bw - 1, PY2, 1, 26);
+        // has the demo coin landed in this one yet?
+        const c2 = s.coins[i];
+        const landed = c2 && c2.t > 0.42;
+        x.fillStyle = donePay || landed ? '#6a2a44' : (first ? INK : 'rgba(42,10,22,.16)');
+        x.fillRect(bx2, PY, BW, 30);
+        x.fillStyle = INK;
+        x.fillRect(bx2, PY, BW, 1); x.fillRect(bx2, PY + 29, BW, 1);
+        x.fillRect(bx2, PY, 1, 30); x.fillRect(bx2 + BW - 1, PY, 1, 30);
         drawText(x, String(each), {
-          x: bx2 + bw / 2, y: PY2 + 4, scale: 2, align: 'center',
-          color: donePay || now2 ? PINK : INK2, shadow: false,
+          x: bx2 + BW / 2, y: PY + 5, scale: 2, align: 'center',
+          color: donePay || landed || first ? PINK : INK, shadow: false,
         });
-        drawText(x, now2 ? 'NOW' : (donePay ? 'PAID' : `${i + 1}`), {
-          x: bx2 + bw / 2, y: PY2 + 19, scale: 1, align: 'center',
-          color: donePay || now2 ? '#ffd4e2' : '#7a3050', shadow: false,
+        drawText(x, first ? 'NOW' : (donePay ? 'PAID' : 'LATER'), {
+          x: bx2 + BW / 2, y: PY + 20, scale: 1, align: 'center',
+          color: donePay || landed || first ? PINK_L : '#7a3050', shadow: false,
         });
-        // a dotted line joining them, so it reads as a sequence
+        // an arrow on to the next one
         if (i < n - 1) {
-          for (let d = 0; d < 6; d += 2) {
-            x.fillStyle = INK2;
-            x.fillRect(bx2 + bw + d, PY2 + 13, 1, 1);
-          }
+          x.fillStyle = INK;
+          x.fillRect(bx2 + BW + 1, PY + 14, 3, 1);
+          x.fillRect(bx2 + BW + 2, PY + 13, 1, 3);
+        }
+        /* the coin in flight, on an arc from the purse to this box */
+        if (c2 && c2.t < 0.42) {
+          const k = c2.t / 0.42;
+          const tx = bx2 + BW / 2 - 4;
+          const px2 = PURSE_X - 4 + (tx - (PURSE_X - 4)) * k;
+          const py2 = PURSE_Y - 4 - Math.sin(k * Math.PI) * 20 + (PY + 8 - (PURSE_Y - 4)) * k;
+          drawCoinPipLocal(x, Math.round(px2), Math.round(py2), INK, '#ffe08a');
         }
       }
 
-      /* ---- how it is settled, in a sentence and a picture ---- */
-      const SY = PY2 + 32;
-      drawText(x, `${total} IN ALL. ${total - cash} MORE THAN CASH.`, {
-        x: cx0 + 8, y: SY, scale: 1, color: INK2, shadow: false,
+      /* ---- and where the payments come from, in one line ---- */
+      const SY = PY + 38;
+      x.fillStyle = INK; x.fillRect(cx0 + 8, SY, CW - 16, 1);
+      drawText(x, 'HALF OF EVERY SYNCOIN YOU EARN GOES TO IT', {
+        x: cxm, y: SY + 5, scale: 1, align: 'center', color: INK, shadow: false,
       });
-      drawText(x, 'HALF OF EVERYTHING YOU EARN GOES TO IT', {
-        x: cx0 + 8, y: SY + 10, scale: 1, color: '#7a3050', shadow: false,
+      drawText(x, 'UNTIL IT IS SETTLED. YOU KEEP THE OTHER HALF.', {
+        x: cxm, y: SY + 15, scale: 1, align: 'center', color: '#7a3050', shadow: false,
       });
-      // a coin splitting into two, animated, which is the whole mechanism
+      // a bar showing the split, which is the whole deal in one picture
       {
-        const ax = cx0 + CW - 46, ay = SY + 2;
-        const k = (s.pulse * 0.7) % 1;
-        drawCoinPipLocal(x, ax, ay, INK2, PINK);
-        const spread = Math.round(k * 9);
-        drawCoinPipLocal(x, ax + 14 + spread, ay - 4, INK2, PINK);
-        drawCoinPipLocal(x, ax + 14 + spread, ay + 8, '#6a2a44', '#c46f8c');
-        x.fillStyle = INK2;
-        x.fillRect(ax + 8, ay + 3, 5, 1);
-        x.fillRect(ax + 12, ay - 1, 1, 9);
+        const bw2 = CW - 40, bx3 = cx0 + 20, by3 = SY + 26;
+        x.fillStyle = INK; x.fillRect(bx3 - 1, by3 - 1, bw2 + 2, 8);
+        x.fillStyle = '#6a2a44'; x.fillRect(bx3, by3, bw2 / 2, 6);
+        x.fillStyle = '#e8c860'; x.fillRect(bx3 + bw2 / 2, by3, bw2 / 2, 6);
+        // it breathes, so the eye goes to it
+        const w3 = Math.round(Math.sin(s.pulse * 2) * 2);
+        x.fillStyle = PINK_L; x.fillRect(bx3 + bw2 / 2 - 1 + w3, by3, 2, 6);
+        drawText(x, 'TO SCHLARNA', {
+          x: bx3, y: by3 + 10, scale: 1, color: '#7a3050', shadow: false,
+        });
+        drawText(x, 'YOU KEEP', {
+          x: bx3 + bw2, y: by3 + 10, scale: 1, align: 'right',
+          color: '#7a3050', shadow: false,
+        });
       }
 
       /* ---- the buttons ---- */
       const canStart = coins >= each && g.schlarnaOn?.(id);
-      const bw2 = Math.floor((CW - 22) / 2);
-      const byy = cy0 + CH - 20;
-      rows.push({ ...pressButton(x, cx0 + 8, byy, bw2,
-        canStart ? `E   PAY ${each} NOW` : (g.plan ? 'ONE PLAN AT A TIME' : `NEED ${each}`), {
+      const bw4 = Math.floor((CW - 22) / 2);
+      const byy = cy0 + CH - 22;
+      rows.push({ ...pressButton(x, cx0 + 8, byy, bw4,
+        canStart ? `E   PAY ${each} NOW` : (g.plan ? 'ONE PLAN AT A TIME' : `YOU NEED ${each}`), {
           hit: s.done ? 1 : 0, enabled: canStart,
-          accent: INK2, fill: '#e08cae', text: INK2,
+          accent: INK, fill: '#e88cb0', text: INK,
         }), take: true });
-      rows.push({ ...pressButton(x, cx0 + 14 + bw2, byy, bw2, 'ESC   NO THANK YOU', {
-        enabled: true, accent: '#7a3050', fill: 'rgba(42,10,22,.20)', text: INK2,
+      rows.push({ ...pressButton(x, cx0 + 14 + bw4, byy, bw4, 'ESC   NO THANK YOU', {
+        enabled: true, accent: '#7a3050', fill: 'rgba(42,10,22,.22)', text: INK,
       }), leave: true });
 
       return rows;
@@ -4066,7 +4196,7 @@ export const SCREENS = {
     key(code, s, g, st) {
       if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
       if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
-        if (g.buySchlarna?.(s.id)) { s.done = true; setTimeout(() => st.pop(), 260); }
+        if (g.buySchlarna?.(s.id)) { s.done = true; setTimeout(() => st.pop(), 300); }
         return true;
       }
       return true;
@@ -4493,7 +4623,7 @@ export const SCREENS = {
       s.fly = 0;
       s.last = null;
       s.hisT = 0;
-      s.line = 'THREE HUNDRED AND ONE. DOUBLE TO FINISH.';
+      s.line = `${DARTS.START} UP. STRAIGHT IN, DOUBLE OUT.`;
       s.said = 0;
       s.bump = 0;
       s.shake = 0;
@@ -4743,14 +4873,17 @@ export const SCREENS = {
       if (s.phase === 'stake') {
         // a plain wall to choose against, with the lamp still on it
         x.fillStyle = 'rgba(6,4,2,.55)'; x.fillRect(0, 0, W, H);
-        stakeRows = stakeTray(x, W / 2, Math.round(H / 2 - 34), 150,
-          s.stake, coins, t, {
-            kick: s.bump || 0, min: DARTS_MIN, max: DARTS_MAX,
-            label: 'PLAY HIM FOR', accent: '#ffb84a',
-            felt: '#2a1a0c', feltHi: '#3a2412', dim: '#c9a870', figure: GOLD_LT,
-          });
-        drawText(x, coins >= s.stake ? 'WINNER TAKES BOTH' : 'YOU CANNOT COVER IT', {
-          x: W / 2, y: Math.round(H / 2 + 24), scale: 1, align: 'center',
+        const ty = Math.round(H / 2 - 40);
+        stakeRows = stakeTray(x, W / 2, ty, 182, s.stake, coins, t, {
+          kick: s.bump || 0, min: DARTS_MIN, max: DARTS_MAX,
+          label: 'PLAY HIM FOR', accent: '#ffb84a',
+          felt: '#2a1a0c', feltHi: '#3a2412', dim: '#c9a870', dim2: '#8a6a40',
+          figure: GOLD_LT, rail: `MOST HE TAKES  ${DARTS_MAX}`,
+        });
+        // the pot, which is the whole reason you are choosing
+        const pot = s.stake * 2;
+        drawText(x, coins >= s.stake ? `THE POT IS ${pot}` : 'YOU CANNOT COVER IT', {
+          x: W / 2, y: ty + 74, scale: 1, align: 'center',
           color: coins >= s.stake ? '#8fe8a0' : RED,
         });
       }

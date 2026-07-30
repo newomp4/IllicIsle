@@ -218,37 +218,54 @@ export function buildX(rng, mats) {
 
   g.userData.tick = (t, dt = 0.016) => {
     const d = st.dug;
+    /* How far the chest has come up. It starts at 0.62 of the dig, so the
+       first two thirds are sand and the last third is the thing itself. */
+    const rise = Math.max(0, Math.min(1, (d - 0.62) / 0.38));
+    const e = rise * rise * (3 - 2 * rise);
+
     spoil.visible = d > 0.02;
     if (spoil.visible) {
       const k = Math.min(1, d * 1.3);
       spoil.scale.set(k, 0.4 + k * 0.6, k);
     }
-    shaft.visible = shaftFloor.visible = d > 0.12;
+
+    /* The hole. It deepens while you are digging DOWN to the chest, and
+       then fills back in behind it as the chest comes up — otherwise you
+       end up with a chest sitting proudly on the sand above a two-metre
+       shaft you can see straight down, which is what it looked like. */
+    const depth = (0.4 + Math.min(d, 0.62) * 2.1) * (1 - e * 0.72);
+    shaft.visible = shaftFloor.visible = depth > 0.14;
     if (shaft.visible) {
-      // the hole deepens as you go
-      const depth = 0.5 + d * 1.9;
       shaft.scale.y = depth / 2.2;
       shaft.position.y = -depth / 2;
       shaftFloor.position.y = -depth + 0.02;
     }
-    /* The chest breaks the surface about two thirds of the way down and
-       rises the rest of the way, which is the moment the whole thing is
-       for. */
-    const rise = Math.max(0, (d - 0.62) / 0.38);
-    chest.visible = rise > 0.001;
+
+    /* And the chest itself. It used to become visible at rise > 0.001 while
+       still at -2.4, which is a metre below the bottom of its own hole —
+       so for one frame there was a chest inside the terrain. It starts at
+       the floor of the hole and comes up from there. */
+    chest.visible = rise > 0.004;
     if (chest.visible) {
-      const e = rise * rise * (3 - 2 * rise);
-      chest.position.y = -2.4 + e * 2.42;
+      const floor = -Math.max(0.4, depth) + 0.05;
+      chest.position.y = floor + e * (0.02 - floor);
       // it shrugs itself free rather than sliding up on rails
       chest.rotation.z = Math.sin(t * 7) * 0.03 * (1 - e);
       chest.rotation.y = Math.sin(t * 1.1) * 0.05 * (1 - e) + 0.12;
       glow.intensity = st.open > 0 ? 2.6 * st.open + Math.sin(t * 5) * 0.3 : 0;
+    } else {
+      glow.intensity = 0;
     }
+
     // the lid, once it is open
     lid.rotation.x = -st.open * 2.0;
     hoard.visible = st.open > 0.15;
     if (hoard.visible) hoard.position.y = 0.30 + Math.sin(t * 2.2) * 0.008;
   };
+
+  /* Once it is out it is a solid object, so you cannot stand inside it.
+     The game asks for this and adds it to its own collider list. */
+  g.userData.colliderAt = (wx, wz) => ({ x: wx, z: wz, r: 0.95 });
 
   return g;
 }

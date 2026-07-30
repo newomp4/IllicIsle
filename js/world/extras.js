@@ -195,8 +195,44 @@ export function buildSyncoin(mats, big = false) {
   g.userData.setSense = (on) => { beacon.visible = !!on; };
 
   const _up = new THREE.Vector3();
+  /* Every coin is nine separate meshes — the body, the pool of light on the
+     ground, the upright gleam, four sparkle pips and the two halves of the
+     beacon. Thirty-eight coins is over three hundred draw calls, and at
+     thirty metres not one of the decorations is more than a pixel.
+     Everything but the coin itself is switched off past that, which is a
+     third of the island's draw calls back for nothing you can see. Hiding a
+     MESH is free — it is hiding a LIGHT that recompiles shaders, and there
+     are none here. */
+  const DECOR_R2 = 34 * 34;
+  let decorOn = true;
+
   g.userData.tick = (t, dt = 0.016, camPos = null) => {
     if (g.userData.flourish) return;      // the pickup animation owns it
+
+    if (camPos) {
+      const dx = camPos.x - g.position.x, dz = camPos.z - g.position.z;
+      const near = dx * dx + dz * dz < DECOR_R2;
+      if (near !== decorOn) {
+        decorOn = near;
+        pool.visible = near;
+        gleam.visible = near;
+        for (const p of pips) p.m.visible = near;
+      }
+      if (!near) {
+        // the body still turns and bobs, because that is what catches the eye
+        g.rotation.y = t * 1.9;
+        const bob2 = 0.42 + Math.sin(t * 2.4) * 0.13;
+        g.position.y = (g.userData.baseY ?? 0) + bob2;
+        /* The beacon is meant to be seen from seventy metres, so it still
+           has to face you out here — a flat quad seen edge-on is nothing. */
+        if (beacon.visible) {
+          beacon.position.y = -bob2;
+          beacon.rotation.y = Math.atan2(dx, dz) - g.rotation.y;
+        }
+        return;
+      }
+    }
+
     if (beacon.visible) {
       // stood on the ground, not on the bobbing coin, and always facing you
       beacon.position.y = -(g.userData.baseY !== undefined

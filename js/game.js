@@ -1720,6 +1720,11 @@ export class Game {
     if (st.dug >= 1 && !bu.said) {
       bu.said = true;
       this.audio.sfx('confirm');
+      if (!bu.solid) {
+        bu.solid = true;
+        this.colliders.push({ x: bu.x, z: bu.z, r: 0.95 });
+        this.player.setColliders(this.colliders);
+      }
       this.ui.toast('A CHEST. IT IS NOT LOCKED.', 'gold', 3200);
     }
   }
