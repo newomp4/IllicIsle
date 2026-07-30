@@ -39,12 +39,13 @@ const BELT_IDS = ['gun', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton', 'ch
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
+import { DIG_SECONDS } from '../world/treasure.js';
 import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
 import {
   HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
 } from '../world/highroller.js';
 import {
-  BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE,
+  BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_DOOR,
 } from '../world/bar.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
@@ -1134,6 +1135,9 @@ export class MPGame extends Game {
     if (this.metCathy && this.cathy) {
       pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
     }
+    if (this.foundX && this.buried && !this.buried.state.taken) {
+      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal' });
+    }
 
     /* Cathy's sauce puts a needle on the nearest loose coin, and her eggs
        put a tick on every one inside seventy metres. */
@@ -1243,8 +1247,8 @@ export class MPGame extends Game {
       const do2 = Math.hypot(p.x - BAR_OCHE.x, p.z - BAR_OCHE.z);
       if (do2 < 2.2) return { kind: 'mpDarts', prompt: 'PLAY HIM AT DARTS' };
       // and the way back
-      const dbk = Math.hypot(p.x - (BAR_ENTRY.x + 1.2), p.z - BAR_ENTRY.z);
-      if (dbk < 2.4 && !this._barCooldown) return { kind: 'mpBarOut', prompt: 'BACK THROUGH' };
+      const dbk = Math.hypot(p.x - BAR_DOOR.x, p.z - BAR_DOOR.z);
+      if (dbk < 2.6 && !this._barCooldown) return { kind: 'mpBarOut', prompt: 'BACK THROUGH' };
       return null;
     }
     if (this.state === 'bunker') {
@@ -1284,6 +1288,24 @@ export class MPGame extends Game {
           bestD = dp;
           best = { kind: 'mpFlopper', prompt: 'TIM GRADY FLOPPER' };
         }
+      }
+    }
+
+    /* The X. Three states, three different prompts: sand to move, a chest
+       to get to, and a lid. */
+    if (this.buried && this.amAlive) {
+      const bu = this.buried;
+      const db = Math.hypot(p.x - bu.x, p.z - bu.z);
+      if (db < 3.2 && db < bestD) {
+        bestD = db;
+        if (!this.foundX) {
+          this.foundX = true;
+          this._compassForTasks();
+          this.ui.toast('AN X. IT IS ON YOUR MAP NOW.', 'gold', 3400);
+        }
+        if (bu.state.taken) best = { kind: 'mpDug', prompt: 'NOTHING LEFT IN IT' };
+        else if (bu.state.dug >= 1) best = { kind: 'mpChest', prompt: 'OPEN IT' };
+        else best = { kind: 'mpDig', prompt: bu.state.dug > 0.02 ? 'KEEP DIGGING' : 'DIG' };
       }
     }
 
@@ -1419,6 +1441,9 @@ export class MPGame extends Game {
         this.leaveHighRoller();
         break;
       }
+      case 'mpDig': break;      // held, not pressed: see _tickDig
+      case 'mpDug': break;
+      case 'mpChest': { this.openChest(); break; }
       case 'mpBarDoor': { this.enterBar(); break; }
       case 'mpBarOut': { this.leaveBar(); break; }
       case 'mpBar': {
@@ -1589,6 +1614,8 @@ export class MPGame extends Game {
         hut: this.hutPos,
         shop: this.shopShut ? null : this.hutPos,
         cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
+        buried: (this.foundX && this.buried)
+          ? { x: this.buried.x, z: this.buried.z, taken: this.buried.state.taken } : null,
         relics: [],
         fixes: (() => {
           const sab2 = M.view.sabotage;
@@ -2335,6 +2362,88 @@ export class MPGame extends Game {
   }
 
   /* =========================================================
+     THE X
+
+     Digging is HELD, not tapped. The sand comes up in a ring, the hole
+     deepens, and two thirds of the way down the chest breaks the surface
+     and starts to rise. Walk away and it stays exactly as deep as you left
+     it, so somebody else can finish it — or find it half done and wonder.
+     ========================================================= */
+  _tickDig(dt) {
+    const bu = this.buried;
+    if (!bu) return;
+    const st = bu.state;
+    if (st.dug >= 1 || st.taken) { bu.digging = 0; return; }
+    const p = this.player.pos;
+    const near = Math.hypot(p.x - bu.x, p.z - bu.z) < 3.2;
+    const want = near && this.mp.holdingE && this.amAlive
+      && !this.screens.open && this.mp.view.phase === PHASE.ROAM;
+    if (!want) {
+      bu.digging = 0;
+      return;
+    }
+    bu.digging += dt;
+    st.dug = Math.min(1, st.dug + dt / DIG_SECONDS);
+    // a spadeful every third of a second, and sand off the shovel
+    if (bu.digging - (bu.lastSpade || 0) > 0.34) {
+      bu.lastSpade = bu.digging;
+      this.audio.sfx('step_sand');
+      this.taskFx?.burst(bu.x, bu.y + 0.3, bu.z, 0xd8c79c, 'puff', 1.1);
+      this.player.punch?.(0.05);
+    }
+    if (st.dug >= 1 && !bu.said) {
+      bu.said = true;
+      this.audio.sfx('confirm');
+      this.audio.sfx('rumble');
+      this.ui.showPopup('A CHEST', 'IT IS NOT LOCKED', 'coin', 'OUT OF THE SAND');
+    } else if (st.dug > 0.62 && !bu.saidHalf) {
+      bu.saidHalf = true;
+      this.audio.sfx('stinger');
+      this.ui.toast('SOMETHING IS COMING UP', 'gold', 2600);
+    }
+  }
+
+  /** Open it. Gold, and one thing that is not gold. */
+  openChest() {
+    const bu = this.buried;
+    if (!bu || bu.state.taken || bu.state.dug < 1) { this.audio.sfx('deny'); return; }
+    bu.state.taken = true;
+    // the lid swings over the next second, in the node's own tick
+    const swing = setInterval(() => {
+      bu.state.open = Math.min(1, bu.state.open + 0.06);
+      if (bu.state.open >= 1) clearInterval(swing);
+    }, 16);
+    this.audio.sfx('hatch');
+    this.audio.sfx('jackpot');
+
+    /* Enough to matter and not enough to end the round: between twenty and
+       forty, which is a night at Ferdi's or a very good night at the
+       Flopper. */
+    const gold = 20 + ((Math.random() * 21) | 0);
+    this.coins = (this.coins || 0) + gold;
+    this._send({ t: C.PURSE, coins: this.coins });
+    this.taskFx?.burst(bu.x, bu.y + 1.0, bu.z, 0xffd24a, 'done', 5.0);
+    this.player.punch?.(0.28);
+
+    /* And one thing off Ferdi's shelf, free. Never the flare pistol — a
+       free gun found in a hole is not a thing this round needs. */
+    const pool = STOCK.filter((i) => i.side === 'open' && i.id !== 'gun'
+      && !(this.owned?.has(i.id)));
+    const prize = pool.length ? pool[(Math.random() * pool.length) | 0] : null;
+    if (prize) {
+      this.owned = this.owned || new Set();
+      if (prize.tag === 'PASSIVE') this.owned.add(prize.id);
+      else this.carry = [...(this.carry || []), prize.id];
+      if (PASSIVE_AT_BUY.has(prize.id)) this.applyItem(prize.id);
+    }
+    /* The card names the prize, so a toast saying it again is two messages
+       for one event — and "AND A THE PARTY BOX" is not a sentence. */
+    this.ui.clearToasts?.();
+    this.ui.showPopup(`${gold} SYNCOIN`, prize ? prize.name : 'AND NOTHING ELSE',
+      'coin', 'THE CHEST');
+  }
+
+  /* =========================================================
      WHAT YOU DRANK
 
      Everything Quezetriel sells runs on one clock and one set of counters,
@@ -2468,6 +2577,7 @@ export class MPGame extends Game {
     this.barScene.add(this.player.mesh);
     this.player.setColliders(BAR_COLLIDERS);
     this.player.insideBox = BAR_BOX;
+    // in through the door, facing across the room at the bar
     this.player.teleport(BAR_ENTRY.x, BAR_ENTRY.y, BAR_ENTRY.z, -Math.PI / 2);
     this.player.pitch = -0.02;
     this._barCooldown = true;
@@ -2516,11 +2626,14 @@ export class MPGame extends Game {
    * casinoPlat is the deck's own frame and _sailCasino keeps it current
    * every frame, boat or no boat, so it is the thing to ask.
    *
-   * Local +z is along the deck away from the picture. Nine metres out clears
-   * both the frame's own trigger at 1.5 and the cooldown that used to be the
-   * only thing stopping the room swallowing you again.
+   * And it has to come out FORWARD of the picture, not aft of it. The
+   * cabin is a solid box from local z 4 to z 10 and the portrait hangs on
+   * its front — so nine metres along the deck was nine metres INSIDE the
+   * deckhouse, which is why stepping out of the high rollers room put you
+   * in a little wooden room instead of on the open deck. The open deck, the
+   * rails, the torches and the slot machines are all at negative z.
    */
-  _backOnDeck(lz = 9.2) {
+  _backOnDeck(lz = -1.2) {
     const plat = this.casinoPlat;
     if (!plat) {
       // no boat: the pier head, which is the only other place that makes sense
@@ -2530,7 +2643,8 @@ export class MPGame extends Game {
     }
     const wx = plat.x + lz * plat.sin;
     const wz = plat.z + lz * plat.cos;
-    this.player.teleport(wx, plat.y + 0.35, wz, Math.atan2(plat.sin, plat.cos));
+    // facing forward, down the open deck at the water, with the cabin behind
+    this.player.teleport(wx, plat.y + 0.35, wz, Math.atan2(-plat.sin, -plat.cos));
     this.player.pitch = 0;
   }
 
@@ -3320,6 +3434,7 @@ export class MPGame extends Game {
 
     this._sweepCoins(dt);
     this._tickFood();
+    this._tickDig(dt);
 
     /* The one on the treeline. His position comes off the wire at the net
        tick, so it is interpolated here — he moves far too fast for a

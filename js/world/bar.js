@@ -25,20 +25,31 @@ const G = (n) => new THREE.Color(n);
    you should feel it close over you on the way in. */
 export const BAR_W = 18, BAR_D = 15, BAR_H = 3.4;
 /** Where you stand when you come through the door. */
-export const BAR_ENTRY = { x: 7.4, y: 1.0, z: 5.2 };
+export const BAR_ENTRY = { x: 7.2, y: 1.0, z: -1.0 };   // just inside BAR_DOOR
 export const BAR_BOX = {
   minX: -BAR_W / 2 + 0.6, maxX: BAR_W / 2 - 0.6,
   minZ: -BAR_D / 2 + 0.6, maxZ: BAR_D / 2 - 0.6, maxY: BAR_H,
 };
 export function barHeight() { return 0; }
 
-/** The bar top runs along the west end. Local z of its front face. */
-const BAR_X = -3.2;          // the counter's centre line, in x
+/* The bar top runs down the west side.
+
+   The first layout put the counter at x = -3.2 and the shelves at -1.9 in
+   FRONT of it, which is backwards: the back fitting belongs against the
+   wall and Quezetriel belongs between the two. With only 1.4 metres to
+   stand in he was inside the panelling from most angles. The wall is at
+   -9, the shelves are on it, and he has two and a half metres of duckboard
+   to himself. */
+const BAR_WALL = -BAR_W / 2;   // -9: where the shelves live
+const BAR_BACK = BAR_WALL + 0.55;
+const BAR_X = -5.0;            // the counter's centre line
 const BAR_FRONT = BAR_X + 0.75;
 /** Where he stands, and where the dartboard hangs. */
-export const BAR_KEEP = { x: BAR_X - 1.5, z: 0 };
-export const BAR_OCHE = { x: 5.6, z: -4.0 };       // where you throw from
-export const BAR_BOARD = { x: 5.6, z: -BAR_D / 2 + 0.55, y: 1.73 };
+export const BAR_KEEP = { x: (BAR_X + BAR_BACK) / 2 - 0.2, z: 0 };
+export const BAR_OCHE = { x: 5.4, z: -3.6 };       // where you throw from
+export const BAR_BOARD = { x: 5.4, z: -BAR_D / 2 + 0.55, y: 1.73 };
+/** The way back out, which is not behind anything. */
+export const BAR_DOOR = { x: BAR_W / 2 - 0.5, z: -1.0 };
 
 /** A hand-lettered sign for behind the bar. */
 function signTex(lines, bg, fg) {
@@ -216,15 +227,22 @@ export function buildBar(mats, flameFactory) {
     }), BRASS));
   }
 
-  /* the back fitting: shelves, a mirror, and a great many bottles */
-  P.push(tint(box(0.4, 2.6, BL, 'planks', { pos: [BAR_X - 1.9, 1.3, 0] }), WOOD_D));
+  /* The back fitting, flat against the west wall: a dresser with three
+     shelves, a mirror in the middle of it, and a great many bottles. */
+  P.push(tint(box(0.4, 2.9, BL, 'planks', { pos: [BAR_BACK, 1.45, 0] }), WOOD_D));
   for (const sy of [1.42, 1.86, 2.30]) {
-    P.push(tint(box(0.52, 0.07, BL - 0.4, 'planks', { pos: [BAR_X - 1.62, sy, 0] }), WOOD));
+    P.push(tint(box(0.56, 0.07, BL - 0.4, 'planks', { pos: [BAR_BACK + 0.28, sy, 0] }), WOOD));
   }
+  // uprights dividing it into bays, so it is joinery and not a plank
+  for (const bz of [-4.2, -1.4, 1.4, 4.2]) {
+    P.push(tint(box(0.46, 2.6, 0.09, 'planks', { pos: [BAR_BACK + 0.23, 1.3, bz] }), WOOD));
+  }
+  // a cornice along the top of it
+  P.push(tint(box(0.62, 0.14, BL, 'planks', { pos: [BAR_BACK + 0.3, 2.94, 0] }), WOOD_L));
   // the mirror, in three panes, dark and not very reflective
   for (let i = 0; i < 3; i++) {
-    P.push(tint(box(0.05, 0.9, 2.6, 'glass', {
-      pos: [BAR_X - 1.68, 1.0, -3.2 + i * 3.2],
+    P.push(tint(box(0.05, 0.86, 2.4, 'glass', {
+      pos: [BAR_BACK + 0.22, 1.0, -3.0 + i * 3.0],
     }), G(0x3a3a44)));
   }
 
@@ -243,13 +261,20 @@ export function buildBar(mats, flameFactory) {
       const col = G(BOTTLE_COLS[(i + bi * 3) % BOTTLE_COLS.length]);
       const hgt = 0.26 + ((i * 3) % 4) * 0.035;
       P.push(tint(cyl(0.055, 0.06, hgt, 6, 'glass', {
-        pos: [BAR_X - 1.58 + jitter, sy + 0.04 + hgt / 2, bz],
+        pos: [BAR_BACK + 0.32 + jitter, sy + 0.04 + hgt / 2, bz],
       }), col));
       P.push(tint(cyl(0.018, 0.026, 0.09, 5, 'glass', {
-        pos: [BAR_X - 1.58 + jitter, sy + 0.04 + hgt + 0.045, bz],
+        pos: [BAR_BACK + 0.32 + jitter, sy + 0.04 + hgt + 0.045, bz],
       }), col.clone().multiplyScalar(0.7)));
     }
     bi++;
+  }
+  /* a duckboard along the floor behind the counter, which is what makes the
+     gap read as somewhere a person stands rather than a gap */
+  for (let i = 0; i < 9; i++) {
+    P.push(tint(box(2.0, 0.06, 0.22, 'planks', {
+      pos: [(BAR_X + BAR_BACK) / 2, 0.03, -BL / 2 + 0.6 + i * ((BL - 1.2) / 8)],
+    }), G(0x5a3f22)));
   }
 
   /* ---- three pump handles on the bar, which is what you actually buy ---- */
@@ -257,7 +282,7 @@ export function buildBar(mats, flameFactory) {
   const pumps = [];
   for (let i = 0; i < 3; i++) {
     const g2 = new THREE.Group();
-    g2.position.set(BAR_X - 0.35, 1.13, PUMP_Z[i]);
+    g2.position.set(BAR_X - 0.30, 1.13, PUMP_Z[i]);
     const pp = [];
     pp.push(tint(cyl(0.075, 0.09, 0.10, 8, 'metal', { pos: [0, 0.05, 0] }), BRASS));
     pp.push(tint(cyl(0.045, 0.045, 0.52, 8, 'metal', { pos: [0, 0.36, 0] }), BRASS));
@@ -289,7 +314,8 @@ export function buildBar(mats, flameFactory) {
 
   /* ---- booths down the far side, and two round tables ---- */
   for (let i = 0; i < 2; i++) {
-    const bz = -3.6 + i * 6.0;
+    // one either side of the door, which is at z = -1
+    const bz = -5.0 + i * 8.4;
     const bx = W / 2 - 2.2;
     // bench, back, and a table between
     P.push(tint(box(1.5, 0.44, 2.4, 'planks', { pos: [bx, 0.22, bz - 1.5] }), G(0x4a2418)));
@@ -363,7 +389,7 @@ export function buildBar(mats, flameFactory) {
       new THREE.PlaneGeometry(2.4, 0.9),
       new THREE.MeshLambertMaterial({ map: signTex(['QUEBOLIUS', 'NO TABS'], '#2a1006', '#ffb84a') })
     );
-    s1.position.set(BAR_X - 1.66, 2.85, 0);
+    s1.position.set(BAR_BACK + 0.24, 3.16, -3.2);
     s1.rotation.y = Math.PI / 2;
     scene.add(s1);
 
@@ -532,7 +558,7 @@ export function buildBar(mats, flameFactory) {
   // and two candles on the booth tables
   const candles = [];
   for (let i = 0; i < 2; i++) {
-    const cz = -3.6 + i * 6.0;
+    const cz = -5.0 + i * 8.4;
     const L = new THREE.PointLight(0xffb060, 1.5, 6, 1.8);
     L.position.set(W / 2 - 2.3, 1.05, cz);
     scene.add(L);
@@ -569,16 +595,28 @@ export function buildBar(mats, flameFactory) {
 
   /* ---- the way back, and the way in ----
      A door on the east wall with a curtain over it. You came through it. */
+  /* It used to be at z 5.2, which is exactly where the first booth is — you
+     came out of the high rollers room facing the back of a bench. It is
+     between the two booths now, on the only clear stretch of that wall, with
+     a lamp over it and boards on the floor leading to it. */
   {
+    const dz = BAR_DOOR.z;
     const dr = [];
-    dr.push(tint(box(0.16, 2.2, 1.3, 'planks', { pos: [W / 2 - 0.32, 1.1, 5.2] }), G(0x3a2414)));
-    dr.push(tint(box(0.08, 0.12, 1.5, 'planks', { pos: [W / 2 - 0.40, 2.28, 5.2] }), WOOD_L));
+    dr.push(tint(box(0.16, 2.3, 1.4, 'planks', { pos: [W / 2 - 0.32, 1.15, dz] }), G(0x3a2414)));
+    // a frame, and a lintel with a lamp on it
+    dr.push(tint(box(0.10, 0.14, 1.8, 'planks', { pos: [W / 2 - 0.40, 2.38, dz] }), WOOD_L));
+    for (const s2 of [-0.78, 0.78]) {
+      dr.push(tint(box(0.10, 2.4, 0.16, 'planks', { pos: [W / 2 - 0.40, 1.2, dz + s2] }), WOOD_L));
+    }
+    // brass fingerplate and a knob you could actually turn
+    dr.push(tint(box(0.05, 0.34, 0.10, 'metal', { pos: [W / 2 - 0.44, 1.28, dz - 0.45] }), BRASS));
+    dr.push(tint(sphere(0.075, 7, 6, 'metal', { pos: [W / 2 - 0.48, 1.12, dz - 0.45] }), BRASS));
     scene.add(new THREE.Mesh(mergeGeos(dr), mats.opaque));
     const curtain = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.4, 2.2),
+      new THREE.PlaneGeometry(1.5, 2.3),
       new THREE.MeshLambertMaterial({ color: 0x5a1a18, side: THREE.DoubleSide })
     );
-    curtain.position.set(W / 2 - 0.52, 1.1, 5.2);
+    curtain.position.set(W / 2 - 0.52, 1.15, dz);
     curtain.rotation.y = -Math.PI / 2;
     scene.add(curtain);
   }
@@ -673,15 +711,15 @@ export const BAR_COLLIDERS = (() => {
   for (let i = 0; i < 13; i++) {
     out.push({ x: BAR_X + 0.1, z: -BL / 2 + i * (BL / 12), r: 0.85 });
   }
-  // the back fitting
+  // the dresser against the wall
   for (let i = 0; i < 11; i++) {
-    out.push({ x: BAR_X - 1.9, z: -BL / 2 + i * (BL / 10), r: 0.55 });
+    out.push({ x: BAR_BACK, z: -BL / 2 + i * (BL / 10), r: 0.55 });
   }
   // stools
   for (let i = 0; i < 5; i++) out.push({ x: BAR_FRONT + 1.35, z: -4.4 + i * 2.2, r: 0.42 });
-  // booths
+  // booths, one either side of the door
   for (let i = 0; i < 2; i++) {
-    const bz = -3.6 + i * 6.0, bx = BAR_W / 2 - 2.2;
+    const bz = -5.0 + i * 8.4, bx = BAR_W / 2 - 2.2;
     for (const dz of [-1.5, 1.5]) {
       for (let k = 0; k < 3; k++) out.push({ x: bx, z: bz + dz - 0.8 + k * 0.8, r: 0.62 });
     }

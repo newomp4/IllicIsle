@@ -38,6 +38,7 @@ import {
   buildBar, BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_BOARD,
 } from './world/bar.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
+import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
@@ -506,6 +507,16 @@ export class Game {
         const sp = CATHY_SPOTS[(crng() * CATHY_SPOTS.length) | 0];
         this.cathyPad = { x: sp.x, z: sp.z, y: heightAt(sp.x, sp.z), name: sp.name };
         hatchPads.push({ x: sp.x, z: sp.z, rx: 10, rz: 10, yaw: 0, y: this.cathyPad.y });
+        /* And the X, for the same reason: it has to be chosen before the
+           jungle is planted so nothing grows through it, and its ground has
+           to be level or the chest comes up out of a slope. */
+        const xrng = makeRng(9119);
+        // only the ones that are low, flat and dry this time round
+        const good = X_SPOTS.filter((q) => goodXSpot(heightAt, q.x, q.z));
+        const pool = good.length ? good : X_SPOTS;
+        const xp = pool[(xrng() * pool.length) | 0];
+        this.xPad = { x: xp.x, z: xp.z, y: heightAt(xp.x, xp.z) };
+        hatchPads.push({ x: xp.x, z: xp.z, rx: 7, rz: 7, yaw: 0, y: this.xPad.y });
       }
       setCarves([...hatchPads, {
         x: FX, z: FZ, rx: 21, rz: 21, yaw: 0, y: FY,
@@ -536,6 +547,8 @@ export class Game {
          left a palm standing directly behind her head from the only angle you
          ever approach her stall from. */
       for (const c of CATHY_SPOTS) clearZones.push({ x: c.x, z: c.z, r: 24 });
+      // and nothing grows over the X
+      if (this.xPad) clearZones.push({ x: this.xPad.x, z: this.xPad.z, r: 9 });
       /* Every place a chore happens needs a clearing. TASHA sat inside a
          thicket you could walk past three times without seeing her, which
          is not a puzzle, it is a bad map. */
@@ -989,14 +1002,42 @@ export class Game {
       }
       return true;
     };
+    /* A coin has to be somewhere you can WALK to, which is not the same as
+       somewhere flat. findGround only asks about the slope at the point
+       itself, so it will happily put one on the crown of a boulder or on a
+       ledge with a wall on every side — and one always ended up on a rock
+       near the flag, three feet in the air, where you could see it and see
+       it and never reach it.
+
+       So: the ground has to be flat AND every approach to it has to be
+       walkable. Sixteen bearings, and the rise over the last metre and a
+       half of each has to be something a pair of legs can manage. */
+    const reachable = (x, z) => {
+      const h = heightAt(x, z);
+      let ways = 0;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        const dx = Math.cos(a), dz = Math.sin(a);
+        // walk out three metres; it must not need a climb on the way
+        let ok = true;
+        let prev = h;
+        for (let step = 1; step <= 4; step++) {
+          const hh = heightAt(x + dx * step * 0.8, z + dz * step * 0.8);
+          if (Math.abs(hh - prev) > 0.75) { ok = false; break; }
+          prev = hh;
+        }
+        if (ok && prev < h + 1.4 && prev > 0.35) ways++;
+      }
+      return ways >= 5;
+    };
     for (let i = 0; i < 38; i++) {
       let g = null;
-      for (let attempt = 0; attempt < 14; attempt++) {
+      for (let attempt = 0; attempt < 22; attempt++) {
         const a = rng() * Math.PI * 2;
         const r = 26 + rng() * 132;
         const cand = findGround(Math.cos(a) * r, Math.sin(a) * r,
           { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
-        if (clearOfProps(cand.x, cand.z)) { g = cand; break; }
+        if (clearOfProps(cand.x, cand.z, 2.0) && reachable(cand.x, cand.z)) { g = cand; break; }
       }
       if (!g) continue;                       // rather no coin than one in a rock
       const coin = buildSyncoin(this.propMats);
@@ -1239,6 +1280,23 @@ export class Game {
           r: 0.8,
         });
       }
+    }
+
+    /* ---- the X ----
+       One of twenty places, chosen per world. Two lengths of driftwood laid
+       across each other in the sand with nothing to say what they are. */
+    {
+      const pad = this.xPad;
+      const y = heightAt(pad.x, pad.z);        // its pad is carved level
+      const node = buildX(rng, this.propMats);
+      node.position.set(pad.x, y + 0.02, pad.z);
+      node.rotation.y = rng() * Math.PI * 2;
+      scene.add(node);
+      this.tickers.push(node);
+      this.buried = {
+        x: pad.x, z: pad.z, y, node,
+        state: node.userData.state, digging: 0,
+      };
     }
 
     /* ---- the storm, dormant until the Pendulums are read ---- */
@@ -1635,6 +1693,53 @@ export class Game {
     return out;
   }
 
+  /* ===========================================================
+     THE X, IN SINGLE PLAYER
+
+     The same hole and the same chest. There is no market here, so what is
+     in it is Syncoin and a coconut haul rather than one of Ferdi's lines.
+     =========================================================== */
+  _tickDig(dt) {
+    const bu = this.buried;
+    if (!bu) return;
+    const st = bu.state;
+    if (st.dug >= 1 || st.taken) { bu.digging = 0; return; }
+    const p = this.player.pos;
+    const near = Math.hypot(p.x - bu.x, p.z - bu.z) < 3.2;
+    if (!(near && this.holdingE && !this.anyOverlayOpen() && !this.paused)) {
+      bu.digging = 0;
+      return;
+    }
+    bu.digging += dt;
+    st.dug = Math.min(1, st.dug + dt / DIG_SECONDS);
+    if (bu.digging - (bu.lastSpade || 0) > 0.34) {
+      bu.lastSpade = bu.digging;
+      this.audio.sfx('step_sand');
+      this.player.punch?.(0.05);
+    }
+    if (st.dug >= 1 && !bu.said) {
+      bu.said = true;
+      this.audio.sfx('confirm');
+      this.ui.toast('A CHEST. IT IS NOT LOCKED.', 'gold', 3200);
+    }
+  }
+
+  openChestSP() {
+    const bu = this.buried;
+    if (!bu || bu.state.taken || bu.state.dug < 1) { this.audio.sfx('deny'); return; }
+    bu.state.taken = true;
+    const swing = setInterval(() => {
+      bu.state.open = Math.min(1, bu.state.open + 0.06);
+      if (bu.state.open >= 1) clearInterval(swing);
+    }, 16);
+    this.audio.sfx('hatch');
+    this.audio.sfx('victory');
+    const gold = 20 + ((Math.random() * 21) | 0);
+    this.coins += gold;
+    this.coconutCount = Math.min(this.coconutMax, this.coconutCount + 4);
+    this.ui.showPopup(`${gold} SYNCOIN`, 'AND FOUR COCONUTS', 'coin', 'THE CHEST');
+  }
+
   /* ---- her counter, in single player ---- */
   openCathy() {
     if (!this.metCathy) {
@@ -1673,6 +1778,9 @@ export class Game {
     const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi' }];
     if (this.metCathy && this.cathy) {
       pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
+    }
+    if (this.foundX && this.buried && !this.buried.state.taken) {
+      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal' });
     }
     this._coinPois(pois);
     if (this.hasChart) {
@@ -1857,6 +1965,11 @@ export class Game {
       case 'Space': I.jump = down; if (down) e.preventDefault(); break;
       default: break;
     }
+    /* E is HELD for digging as well as tapped for everything else, so it has
+       to be tracked on the way up too — above the guard that throws every
+       key-up away. */
+    if (k === 'KeyE') this.holdingE = down;
+
     if (!down) return;
 
     if (this.state === 'cutscene') { this.skipCutscene(); return; }
@@ -2552,6 +2665,8 @@ I have snacks."`);
         rogue: this.rogueSandPos,
         hut: this.hutPos,
         cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
+        buried: (this.foundX && this.buried)
+          ? { x: this.buried.x, z: this.buried.z, taken: this.buried.state.taken } : null,
         // relics get a "?" on the chart until you pick them up — without
         // this they are three specks on a 340-unit island
         relics: this.interactables
@@ -2616,6 +2731,17 @@ I have snacks."`);
     if (this.cathy) {
       const d = Math.hypot(p.x - this.cathy.x, p.z - this.cathy.z);
       if (d < 5.0 && d < bestD) { bestD = d; best = { kind: 'cathy', prompt: 'Cathy' }; }
+    }
+    if (this.buried) {
+      const bu = this.buried;
+      const d = Math.hypot(p.x - bu.x, p.z - bu.z);
+      if (d < 3.2 && d < bestD) {
+        bestD = d;
+        if (!this.foundX) { this.foundX = true; this._refreshCompass(); }
+        if (bu.state.taken) best = { kind: 'dug', prompt: 'Nothing left in it' };
+        else if (bu.state.dug >= 1) best = { kind: 'chest', prompt: 'Open it' };
+        else best = { kind: 'dig', prompt: bu.state.dug > 0.02 ? 'Keep digging' : 'Dig' };
+      }
     }
     return best;
   }
@@ -2707,6 +2833,8 @@ I have snacks."`);
       }
 
       case 'cathy': this.openCathy(); break;
+      case 'dig': case 'dug': break;      // held, not pressed
+      case 'chest': this.openChestSP(); break;
       case 'templeExit': this.exitTemple(); break;
       case 'takeIdol': this.takeIdol(); break;
     }
@@ -3171,7 +3299,7 @@ I have snacks."`);
           ? { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ }
           : null,
       });
-      if (!inTemple) this._tide(dt);
+      if (!inTemple) { this._tide(dt); this._tickDig(dt); }
       this.updateCoconuts(dt);
       this.updateCoinFx(dt);
     } else {

@@ -259,37 +259,37 @@ export const FOOD = [
    =========================================================== */
 export const DRINKS = [
   {
-    id: 'pint', name: 'PINT OF SHIPWRECK', cost: 4, icon: 'pint',
+    id: 'pint', name: 'PINT OF SHIPWRECK', cost: 4, icon: 'bitter',
     blurb: 'The house bitter. Sprinting costs you half as much breath for '
       + 'three minutes.',
     tag: '3 MINUTES', mins: 3, colour: 0xc07820,
   },
   {
-    id: 'lamp', name: 'THE LAMPLIGHTER', cost: 6, icon: 'shot',
+    id: 'lamp', name: 'THE LAMPLIGHTER', cost: 6, icon: 'lamp',
     blurb: 'A tallow-coloured spirit. The dark stops mattering for three '
       + 'minutes - you see at night exactly as you do by day.',
     tag: '3 MINUTES', mins: 3, colour: 0xe8c860,
   },
   {
-    id: 'quiet', name: 'QUIET WATER', cost: 7, icon: 'shot',
+    id: 'quiet', name: 'QUIET WATER', cost: 7, icon: 'clear',
     blurb: 'Clear, and it is not water. Your footsteps make no sound at all '
       + 'for three minutes. Nobody is told you drank it.',
     tag: '3 MINUTES', mins: 3, colour: 0xa8d0d8,
   },
   {
-    id: 'rum', name: 'BLACK RUM', cost: 5, icon: 'pint',
+    id: 'rum', name: 'BLACK RUM', cost: 5, icon: 'rum',
     blurb: 'Every Syncoin you pick up counts double for two minutes. You will '
       + 'also not walk in a straight line.',
     tag: 'DRINK - 2 MINUTES', mins: 2, drunk: 0.45, colour: 0x5a2a12,
   },
   {
-    id: 'own', name: "QUEBOLIUS' OWN", cost: 9, icon: 'shot',
+    id: 'own', name: "QUEBOLIUS' OWN", cost: 9, icon: 'own',
     blurb: 'He will not say. You move 25% faster and every job pays double for '
       + 'two minutes. The room comes with it.',
     tag: 'DRINK - 2 MINUTES', mins: 2, drunk: 0.7, colour: 0x7a1a5a,
   },
   {
-    id: 'falling', name: 'THE FALLING DOWN', cost: 14, icon: 'pint',
+    id: 'falling', name: 'THE FALLING DOWN', cost: 14, icon: 'falling',
     blurb: 'All three of the above at once, for ninety seconds, and you will '
       + 'be no use to anybody. He pours it slowly so you can change your mind.',
     tag: 'DRINK - 90 SECONDS', mins: 1.5, drunk: 1, colour: 0x2a1830,

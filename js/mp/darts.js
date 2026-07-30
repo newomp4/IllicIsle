@@ -58,7 +58,10 @@ export function bedIndex(n) { return ORDER.indexOf(n); }
 /* ===========================================================
    A LEG
    =========================================================== */
-export const START = 301;
+/* Three hundred and one is a long game when every dart is two decisions.
+   Two hundred and one is four or five turns each, which is a leg you can
+   play between one thing and the next. */
+export const START = 201;
 
 export function newLeg(stake) {
   return {

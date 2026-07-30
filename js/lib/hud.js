@@ -974,7 +974,69 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
     p(2, 3, 8, 3, C('#f090c0', '#6a3a52'));
     p(4, 1, 4, 2, C('#f8a8d0', '#74405a'));
     if (beat > 0.5) { p(2, 1, 1, 1, C('#ffc8e0', '#7a4a60')); p(9, 4, 1, 1, C('#ffc8e0', '#7a4a60')); }
-  /* ---- the saloon ---- */
+  /* ---- the saloon: one drawing per drink, not one glass shared out ---- */
+  } else if (kind === 'bitter') {
+    // PINT OF SHIPWRECK: a straight glass of brown bitter with a thick head
+    p(2, 3, 8, 8, C('#a8681c', '#4a3010'));
+    p(2, 1, 8, 3, C('#f6efe0', '#6a6458'));
+    p(2, 1, 8, 1, C('#fffaf0', '#78725f'));
+    p(1, 1, 1, 11, C('#cfe0e8', '#585c60'));
+    p(10, 1, 1, 11, C('#cfe0e8', '#585c60'));
+    p(1, 11, 10, 1, C('#a8bcc4', '#484c50'));
+    p(11, 4, 1, 4, C('#a8bcc4', '#484c50'));
+    if (beat > 0.5) { p(4, 6, 1, 1, C('#d8902c', '#5a4018')); p(7, 8, 1, 1, C('#d8902c', '#5a4018')); }
+  } else if (kind === 'lamp') {
+    // THE LAMPLIGHTER: a lantern-yellow spirit, and it gives off light
+    if (lit) { p(1, 2, 10, 9, 'rgba(255,220,120,.10)'); }
+    p(3, 2, 6, 2, C('#8a8270', '#3a382c'));
+    p(3, 4, 6, 7, C('#e8c860', '#5a5028'));
+    p(3, 4, 6, 1, C('#fff0a8', '#6a6030'));
+    p(2, 3, 1, 8, C('#cfe0e8', '#585c60'));
+    p(9, 3, 1, 8, C('#cfe0e8', '#585c60'));
+    p(3, 11, 6, 1, C('#a8bcc4', '#484c50'));
+    if (beat > 0.4) p(5, 0, 2, 2, C('#fff8d0', '#6a6440'));
+  } else if (kind === 'clear') {
+    // QUIET WATER: clear, and it is not water
+    p(3, 3, 6, 8, C('#a8d0d8', '#485458'));
+    p(3, 6, 6, 5, C('#cfeef4', '#586468'));
+    p(3, 6, 6, 1, C('#eafaff', '#68787c'));
+    p(3, 11, 6, 1, C('#88a8b0', '#3a4448'));
+    p(4, 2, 4, 1, C('#c8e4ea', '#556164'));
+    // it makes no sound, so nothing about it moves
+  } else if (kind === 'rum') {
+    // BLACK RUM: a squat glass of something nearly black, over ice
+    p(2, 4, 8, 7, C('#3a1a0c', '#1c0e06'));
+    p(2, 4, 8, 1, C('#6a3418', '#301a0c'));
+    p(3, 5, 3, 3, C('#7a5a48', '#3a2c22'));
+    p(6, 7, 3, 3, C('#6a4a38', '#32261c'));
+    p(1, 3, 1, 9, C('#cfe0e8', '#585c60'));
+    p(10, 3, 1, 9, C('#cfe0e8', '#585c60'));
+    p(1, 11, 10, 1, C('#a8bcc4', '#484c50'));
+    if (beat > 0.6) p(4, 5, 1, 1, C('#c8a884', '#4a4038'));
+  } else if (kind === 'own') {
+    // QUEBOLIUS' OWN: purple, in a stemmed glass, and it does not sit still
+    const sw = lit ? Math.round(Math.sin(beat * 6.283) * 1) : 0;
+    p(3, 1, 6, 5, C('#7a1a5a', '#341028'));
+    p(3, 1, 6, 1, C('#b8409a', '#4a1c3c'));
+    p(3 + sw, 2, 6, 1, C('#a83088', '#421834'));
+    p(2, 0, 8, 1, C('#cfe0e8', '#585c60'));
+    p(5, 6, 2, 4, C('#cfe0e8', '#585c60'));
+    p(3, 10, 6, 2, C('#a8bcc4', '#484c50'));
+    if (beat > 0.5) p(4, 3, 1, 1, C('#f070d0', '#5a2848'));
+  } else if (kind === 'falling') {
+    // THE FALLING DOWN: a tumbler of something the colour of a bruise
+    p(2, 3, 8, 8, C('#2a1830', '#140c18'));
+    p(2, 3, 8, 1, C('#5a2a6a', '#2a1432'));
+    p(3, 5, 2, 2, C('#8a3a9a', '#40204a'));
+    p(6, 8, 2, 2, C('#6a2a7a', '#32183a'));
+    p(1, 2, 1, 10, C('#cfe0e8', '#585c60'));
+    p(10, 2, 1, 10, C('#cfe0e8', '#585c60'));
+    p(1, 11, 10, 1, C('#a8bcc4', '#484c50'));
+    // it is already moving before you have touched it
+    if (lit) {
+      const w = Math.round(Math.sin(beat * 6.283) * 2);
+      p(3 + w, 4, 6, 1, C('#9a4aaa', '#48244f'));
+    }
   } else if (kind === 'pint') {
     // a straight glass with a handle, a head on it, and a bead of condensation
     p(2, 2, 7, 9, C('#d8901c', '#5a4014'));
