@@ -150,8 +150,9 @@ export class HostSession {
           this.hooks.onSpeaker?.(msg.x, msg.z, 60);
         }
         if (msg.perk === 'chaff') {
-          this.net.broadcast({ t: S.CHAFF, secs: 30 });
-          this.hooks.onChaff?.(30);
+          // a remote hack: the table is off for a full minute
+          this.net.broadcast({ t: S.CHAFF, secs: 60 });
+          this.hooks.onChaff?.(60);
         }
         /* Ferdi's whistle. Twelve seconds of your name over your head for
            everybody, at any range, through any weather. */
@@ -159,7 +160,9 @@ export class HostSession {
         /* A false alibi. The host carries the decoy so it appears on every
            chart and on the command table, and clears itself. */
         if (msg.perk === 'alibi') {
-          p.decoy = { x: +msg.x || 0, z: +msg.z || 0, until: now() + 20 };
+          // three minutes, or until they drop it themselves
+          if (msg.on === false) p.decoy = null;
+          else p.decoy = { x: +msg.x || 0, z: +msg.z || 0, until: now() + 180 };
         }
         /* A lead shroud: forty-five seconds off the command table entirely.
            Carried on the roster like the others so every client agrees. */

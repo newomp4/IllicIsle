@@ -3007,7 +3007,7 @@ I have snacks."`);
         if (sh) {
           this.player.teleport(sh.x, heightAt(sh.x, sh.z) + 1.0, sh.z, this.player.facing);
           this.audio?.sfx?.('splat');
-          this.ui?.toast?.('PUT ASHORE. SHE SAILS WITHOUT YOU.', 'bad', 3000);
+          this.ui?.toast?.('PUT ASHORE. SHE LEAVES WITHOUT YOU.', 'bad', 3000);
         }
       } else if (aboard && (dx || dz)) {
         // move the position only — teleport() would zero the velocity and
@@ -3026,7 +3026,7 @@ I have snacks."`);
     // the horn, once, on each turn of the tide
     if (prev !== undefined && ((prev < 0.02 && k >= 0.02) || (prev > 0.98 && k <= 0.98))) {
       this.audio?.sfx?.('horn');
-      this.ui?.toast?.(want ? 'THE LUCKY FLOPPER IS COMING IN' : 'THE FLOPPER IS PUTTING OUT', 'gold', 3200);
+      this.ui?.toast?.(want ? 'THE LUCKY FLOPPER IS COMING IN' : 'THE LUCKY FLOPPER IS LEAVING', 'gold', 3200);
     }
   }
 

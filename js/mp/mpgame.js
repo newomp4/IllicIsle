@@ -541,6 +541,9 @@ export class MPGame extends Game {
     if (id === M.view.selfId) {
       this.owned?.delete('vest');
       this.carry = (this.carry || []).filter((c) => c !== 'vest');
+      // the weight goes with it
+      this.player.SPEED = this.player.BASE_SPEED;
+      this.player.SPRINT = this.player.BASE_SPRINT;
       this.player.punch?.(1);
       this.pipeline.tint.setHex(0xffd24a);
       this.pipeline.tintAmt = 0.85;
@@ -1158,10 +1161,10 @@ export class MPGame extends Game {
       if (db < 4.6 && db < bestD) { bestD = db; best = { kind: 'mpHatch', prompt: 'GO DOWN' }; }
     }
     if (this.state === 'highroller') {
-      const dt3 = Math.hypot(p.x - 0, p.z - 1.2);
-      if (dt3 < 4.4) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
-      const dd = Math.hypot(p.x - 0, p.z - 6.2);
-      if (dd < 2.6) return { kind: 'mpDoorOut', prompt: 'BACK ON DECK' };
+      const dt3 = Math.hypot(p.x - 0, p.z - (-3.4));
+      if (dt3 < 4.6) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
+      const dd = Math.hypot(p.x - 0, p.z - 10.2);
+      if (dd < 3.0) return { kind: 'mpDoorOut', prompt: 'BACK ON DECK' };
       return null;
     }
     if (this.state === 'bunker') {
@@ -1193,9 +1196,10 @@ export class MPGame extends Game {
       if (pt) {
         this.casino.localToWorld(_wp.set(pt.x, 0, pt.z));
         const dp = Math.hypot(p.x - _wp.x, p.z - _wp.z);
-        if (dp < 1.9 && dp < bestD) {
-          bestD = dp;
-          best = { kind: 'mpHighRoller', prompt: 'THE FRAME IS A DOOR' };
+        /* No prompt at the frame itself. Walking into it takes you through,
+           which is the whole joke — you should find the room by accident. */
+        if (dp < 1.5) {
+          if (this.state === 'island' && !this._hrCooldown) this.enterHighRoller();
         } else if (dp < 3.6 && dp < bestD) {
           bestD = dp;
           best = { kind: 'mpFlopper', prompt: 'TIM GRADY FLOPPER' };
@@ -1311,10 +1315,6 @@ export class MPGame extends Game {
         this.screens.push('mpSlot', { slot: it.slot });
         document.exitPointerLock?.();
         this.audio.sfx('page');
-        break;
-      }
-      case 'mpHighRoller': {
-        this.enterHighRoller();
         break;
       }
       case 'mpTable2': {
@@ -1478,7 +1478,8 @@ export class MPGame extends Game {
           .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !this.amAlive)
           .map((a) => {
             const rec = M.view.players.get(a.id);
-            const at = rec?.decoy || a.pos;      // a bought alibi lies here too
+            const bx = M.speaker && now() < M.speaker.until ? M.speaker : null;
+            const at = bx || rec?.decoy || a.pos;   // the box and the alibi both lie
             return { x: at.x, z: at.z, colour: colourHex(a.colour) };
           }),
       },
@@ -1654,7 +1655,14 @@ export class MPGame extends Game {
   applyItem(id) {
     if (id === 'tonic') { this.player.staminaDrain = 0.06; this.player.staminaRegen = 0.5; }
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
-    if (id === 'vest') this._send({ t: C.PERK, perk: 'vest', on: true });
+    if (id === 'vest') {
+      this._send({ t: C.PERK, perk: 'vest', on: true });
+      /* Cork and canvas over your chest is heavy. A quarter off both your
+         walk and your sprint is the price of the strike it eats. */
+      this.player.SPEED = this.player.BASE_SPEED * 0.75;
+      this.player.SPRINT = this.player.BASE_SPRINT * 0.75;
+      this.ui.toast('THE VEST IS HEAVY - YOU ARE 25% SLOWER', 'jade', 3200);
+    }
     if (id === 'chart') {
       this.knowsBunker = true;
       // the compass has to be told, or the marker only appears the next
@@ -1697,12 +1705,24 @@ export class MPGame extends Game {
     }
     // the pistol shows whether it is drawn
     for (const sl of out) if (sl.id === 'gun') sl.active = !!this.pistolOut;
+    /* A running alibi keeps a slot of its own so there is somewhere to press
+       to end it. It is not an item you hold — it is a thing that is
+       happening to you. */
+    if (this.alibiUntil && now() < this.alibiUntil) {
+      out.push({
+        id: 'alibi-live', icon: 'alibi', name: 'ALIBI RUNNING',
+        count: 1, active: true, secs: Math.ceil(this.alibiUntil - now()),
+      });
+    } else if (this.alibiUntil) {
+      this.alibiUntil = 0;
+    }
     return out;
   }
 
   /**
    * Use slot n (1-based). The pistol draws and holsters rather than firing,
-   * because firing it is a shot you have to aim.
+   * because firing it is a shot you have to aim; a live alibi is dropped
+   * rather than bought again.
    */
   useBeltSlot(n) {
     if (!this.amAlive || this.screens.open) return;
@@ -1710,7 +1730,17 @@ export class MPGame extends Game {
     const sl = slots[n - 1];
     if (!sl) { this.audio.sfx('deny'); return; }
     if (sl.id === 'gun') { this.togglePistol(); return; }
+    if (sl.id === 'alibi-live') { this.endAlibi(); return; }
     this.useItem(sl.id);
+  }
+
+  /** Drop the lie. Three minutes is a long time to be somewhere you are not. */
+  endAlibi() {
+    if (!this.alibiUntil) return;
+    this.alibiUntil = 0;
+    this._send({ t: C.PERK, perk: 'alibi', on: false });
+    this.audio.sfx('confirm');
+    this.ui.toast('YOUR MARKER IS BACK WHERE YOU ARE', 'jade', 2600);
   }
 
   /* =========================================================
@@ -1771,8 +1801,9 @@ export class MPGame extends Game {
       this.enterBunker();
     } else if (id === 'chaff') {
       this._send({ t: C.PERK, perk: 'chaff', on: true });
-      this.audio.sfx('cast');
-      this.ui.toast('THE TABLE IS LYING NOW', 'jade', 2600);
+      this.audio.sfx('terminal');
+      this.audio.sfx('alert');
+      this.ui.toast('THE COMMAND TABLE IS DOWN FOR SIXTY SECONDS', 'jade', 3400);
     } else if (id === 'flask') {
       this.flask = true;
       this.audio.sfx('heal');
@@ -1810,8 +1841,9 @@ export class MPGame extends Game {
       const jx = pick.x + (Math.random() - 0.5) * 22;
       const jz = pick.z + (Math.random() - 0.5) * 22;
       this._send({ t: C.PERK, perk: 'alibi', on: true, x: +jx.toFixed(1), z: +jz.toFixed(1) });
+      this.alibiUntil = now() + 180;
       this.audio.sfx('cast');
-      this.ui.toast('THEY WILL SWEAR YOU WERE ELSEWHERE', 'jade', 2800);
+      this.ui.toast('THEY WILL SWEAR YOU WERE ELSEWHERE - PRESS AGAIN TO DROP IT', 'jade', 4200);
     } else {
       // anything without its own moment just takes effect
       this.applyItem(id);
@@ -2037,7 +2069,7 @@ export class MPGame extends Game {
     this.player.setColliders(HR_COLLIDERS);
     this.player.insideBox = HR_BOX;
     // you arrive through the door, facing the table
-    this.player.teleport(0, 1.0, 5.0, Math.PI);
+    this.player.teleport(0, 1.0, 9.4, Math.PI);
     this.player.pitch = -0.04;
     this.audio.sfx('door');
     this.audio.sfx('descend');
@@ -2052,6 +2084,10 @@ export class MPGame extends Game {
 
   leaveHighRoller() {
     if (this.state !== 'highroller') return;
+    /* A moment's grace before the frame will swallow you again, or stepping
+       out onto the deck puts you straight back in. */
+    this._hrCooldown = true;
+    setTimeout(() => { this._hrCooldown = false; }, 2200);
     this.state = 'island';
     this.scene = this.islandScene;
     this.player.mesh.removeFromParent();
@@ -2169,22 +2205,27 @@ export class MPGame extends Game {
     const roster = [...M.view.players.values()].filter((p) => !p.shroud).map((p) => {
       const av = M.avatars.get(p.id);
       /* A false alibi shows the buyer somewhere else on everybody's plot —
-         but never on their own, or they could not use it deliberately. */
-      const pos = p.id === M.view.selfId ? this.player.pos
-        : (p.decoy ? p.decoy : (av ? av.pos : null));
-      const scatter = chaff ? 120 : 0;
+         but never on their own, or they could not use it deliberately.
+
+         And while somebody's Party Box is playing, EVERY marker sits on the
+         box: for sixty seconds the only way to know who is where is to walk
+         out there and look. */
+      const box = M.speaker && now() < M.speaker.until ? M.speaker : null;
+      const pos = box ? box
+        : (p.id === M.view.selfId ? this.player.pos
+          : (p.decoy ? p.decoy : (av ? av.pos : null)));
+
       return {
         id: p.id, name: p.name || '?', colour: colourHex(p.colour),
         alive: p.alive !== false,
         coins: M.ledger ? (M.ledger.get(p.id) ?? null) : null,
         me: p.id === M.view.selfId,
-        x: (pos ? pos.x : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
-        z: (pos ? pos.z : 0) + (chaff ? (Math.random() - 0.5) * scatter : 0),
+        x: pos ? pos.x : 0,
+        z: pos ? pos.z : 0,
       };
     });
-    /* Chaff scrambles the plot AND the ledger. A table you can half-trust
-       is worse than one you cannot, which is exactly the point of buying it. */
-    if (chaff) for (const r of roster) r.coins = r.coins == null ? null : Math.max(0, r.coins + ((Math.random() * 40) | 0) - 20);
+    /* A remote hack does not falsify the table, it takes it away — the
+       screen handles that. Nothing here has to lie. */
     const sab = M.view.sabotage;
     return {
       roster,
@@ -2202,7 +2243,7 @@ export class MPGame extends Game {
       weather: this.stormOn ? 'STORM' : (this.blinded ? 'MIST' : (this.night > 0.55 ? 'NIGHT' : 'CLEAR')),
       bunker: M.bunker?.name || '',
       flopper: this.casinoIn == null ? '--'
-        : (this.casinoIn > 0.9 ? 'ALONGSIDE' : (this.casinoIn < 0.1 ? 'IN THE OFFING' : 'UNDER WAY')),
+        : (this.casinoIn > 0.9 ? 'DOCKED' : (this.casinoIn < 0.1 ? 'OUT AT SEA' : 'MOVING')),
       ledger: !!M.ledger,
     };
   }
@@ -2312,27 +2353,86 @@ export class MPGame extends Game {
   _buildSpeakerNode() {
     const M = this.mp;
     if (M.speakerNode || !this.islandScene) return;
+    /* A big upright PA speaker, the kind somebody carries to a beach on
+       their shoulder — not the little two-cone box it was. Roughly a metre
+       and a half tall, standing on rubber feet, with a driver you can watch
+       move. */
     const g = new THREE.Group();
+    const CASE = 0x22222a, TRIM = 0x3e3e4a;
     const body = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 1.0, 0.8),
-      new THREE.MeshLambertMaterial({ color: 0x2a2a32 })
+      new THREE.BoxGeometry(0.86, 1.42, 0.62),
+      new THREE.MeshLambertMaterial({ color: CASE })
     );
-    body.position.y = 0.5;
+    body.position.y = 0.78;
     g.add(body);
-    for (const sx of [-0.38, 0.38]) {
-      const cone = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.28, 0.34, 0.1, 10),
-        new THREE.MeshLambertMaterial({ color: 0x8a8a96 })
-      );
-      cone.rotation.x = Math.PI / 2;
-      cone.position.set(sx, 0.5, 0.42);
-      g.add(cone);
+    // a lighter bezel round the front
+    const bezel = new THREE.Mesh(
+      new THREE.BoxGeometry(0.78, 1.32, 0.04),
+      new THREE.MeshLambertMaterial({ color: TRIM })
+    );
+    bezel.position.set(0, 0.78, 0.32);
+    g.add(bezel);
+    // rubber feet, and a carry handle across the top
+    for (const sx of [-0.34, 0.34]) {
+      for (const sz of [-0.22, 0.22]) {
+        const f = new THREE.Mesh(
+          new THREE.BoxGeometry(0.14, 0.1, 0.14),
+          new THREE.MeshLambertMaterial({ color: 0x14141a })
+        );
+        f.position.set(sx, 0.05, sz);
+        g.add(f);
+      }
     }
+    const handle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.44, 0.07, 0.1),
+      new THREE.MeshLambertMaterial({ color: 0x4a4a56 })
+    );
+    handle.position.set(0, 1.53, 0);
+    g.add(handle);
+
+    /* The woofer, which actually moves in and out with the beat, and a
+       tweeter above it. */
+    const woofer = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.30, 0.26, 0.12, 14),
+      new THREE.MeshLambertMaterial({ color: 0x8a8a96 })
+    );
+    woofer.rotation.x = Math.PI / 2;
+    woofer.position.set(0, 0.58, 0.34);
+    g.add(woofer);
+    const dust = new THREE.Mesh(
+      new THREE.SphereGeometry(0.11, 8, 6),
+      new THREE.MeshLambertMaterial({ color: 0x14141a })
+    );
+    dust.position.set(0, 0.58, 0.40);
+    g.add(dust);
+    const tweeter = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.13, 0.08, 10),
+      new THREE.MeshLambertMaterial({ color: 0x6a6a76 })
+    );
+    tweeter.rotation.x = Math.PI / 2;
+    tweeter.position.set(0, 1.22, 0.34);
+    g.add(tweeter);
+
+    // a row of level lights along the bottom of the bezel
+    const lamps = [];
+    for (let i = 0; i < 6; i++) {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(0.07, 0.05, 0.03),
+        new THREE.MeshBasicMaterial({ color: 0x1a1a22, fog: true })
+      );
+      m.position.set(-0.28 + i * 0.112, 0.20, 0.35);
+      g.add(m);
+      lamps.push(m);
+    }
+
     const glow = new THREE.PointLight(0xff5aa8, 0, 16, 1.8);
     glow.position.set(0, 1.2, 0);
     g.add(glow);
     g.userData.glow = glow;
     g.userData.body = body;
+    g.userData.woofer = woofer;
+    g.userData.dust = dust;
+    g.userData.lamps = lamps;
     this.islandScene.add(g);
     M.speakerNode = g;
     setHidden(M.speakerNode, true);
@@ -2562,10 +2662,24 @@ export class MPGame extends Game {
         this._compassForTasks();
       } else if (M.speakerNode) {
         const beat = 1 + Math.abs(Math.sin(this.time * 4.2)) * 0.14;
-        M.speakerNode.userData.body.scale.set(beat, 2 - beat, beat);
+        /* The case barely moves; the DRIVER moves. A speaker that squashes
+           and stretches as a whole reads as a jelly, not as a speaker. */
+        const u = M.speakerNode.userData;
+        u.body.scale.set(1 + (beat - 1) * 0.06, 1 - (beat - 1) * 0.05, 1);
+        if (u.woofer) {
+          const push = 0.34 + (beat - 1) * 0.06;
+          u.woofer.position.z = push;
+          if (u.dust) u.dust.position.z = push + 0.06;
+        }
+        if (u.lamps) {
+          const lvl = Math.abs(Math.sin(this.time * 6.1)) * 6;
+          u.lamps.forEach((m, i) => {
+            const on = i < lvl;
+            m.material.color.setHex(on ? (i > 3 ? 0xe0453a : 0x7ec850) : 0x1a1a22);
+          });
+        }
         // its own animation must not undo setHidden's zeroed intensity
-        M.speakerNode.userData.glow.intensity =
-          M.speakerNode.userData.hidden ? 0 : 3 + Math.sin(this.time * 8.4) * 2.4;
+        u.glow.intensity = u.hidden ? 0 : 3 + Math.sin(this.time * 8.4) * 2.4;
         M.speakerNode.userData.glow.color.setHSL((this.time * 0.3) % 1, 0.8, 0.6);
       }
     }
@@ -2718,6 +2832,12 @@ export class MPGame extends Game {
     if (this.blinded) reach = this.amAgent ? 12 : 5;
     // a spyglass doubles whatever the weather has left you
     if (this.hasItem('spyglass')) reach *= 2;
+    /* Nobody is named near a Party Box. Between the noise and the crowd you
+       cannot tell who is standing next to you, which is the point of it. */
+    const box2 = M.speaker && now() < M.speaker.until ? M.speaker : null;
+    if (box2 && Math.hypot(this.player.pos.x - box2.x, this.player.pos.z - box2.z) < 18) {
+      reach = Math.min(reach, 6);
+    }
 
     /** A tag that ignores range entirely — the whistle, and nothing else. */
     const addFar = (obj, name, colour) => {

@@ -62,6 +62,7 @@ export function ps1ify(material, opts = {}) {
         #ifdef USE_MAP
           varying vec2 vAffUv;
           varying float vAffW;
+          varying float vAffMix;
         #endif
       `;
     }
@@ -106,11 +107,20 @@ export function ps1ify(material, opts = {}) {
     if (affine) {
       vbody += `
         #ifdef USE_MAP
-          // Cancel the rasteriser's perspective divide: it interpolates
-          // (v/w) then divides by interp(1/w). Feeding it v*w and w lets
-          // the fragment stage recover screen-linear (affine) UVs.
+          /* Cancel the rasteriser's perspective divide: it interpolates
+             (v/w) then divides by interp(1/w). Feeding it v*w and w lets
+             the fragment stage recover screen-linear (affine) UVs.
+
+             But only out where it belongs. Affine mapping is authentic and
+             it looks right at any normal distance; on the single terrain
+             triangle you are STANDING on, which spans from under your boots
+             to eight metres away, it smears the ground down the bottom of
+             the screen. So the effect fades in over the first few metres:
+             correct where the warp would be grotesque, PS1 everywhere else. */
+          float affK = clamp((gl_Position.w - 1.2) / 3.4, 0.0, 1.0);
           vAffUv = vMapUv * gl_Position.w;
           vAffW  = gl_Position.w;
+          vAffMix = affK;
         #endif
       `;
     }
@@ -122,6 +132,7 @@ export function ps1ify(material, opts = {}) {
         #ifdef USE_MAP
           varying vec2 vAffUv;
           varying float vAffW;
+          varying float vAffMix;
         #endif
       ` + shader.fragmentShader;
 
@@ -129,7 +140,11 @@ export function ps1ify(material, opts = {}) {
         '#include <map_fragment>',
         `
         #ifdef USE_MAP
-          vec4 sampledDiffuseColor = texture2D( map, vAffUv / max(vAffW, 1e-5) );
+          // the affine UV, and the perspective-correct one the rasteriser
+          // already gave us, blended by how far away this fragment is
+          vec2 affUv = vAffUv / max(vAffW, 1e-5);
+          vec2 uvMix = mix(vMapUv, affUv, vAffMix);
+          vec4 sampledDiffuseColor = texture2D( map, uvMix );
           diffuseColor *= sampledDiffuseColor;
         #endif
         `

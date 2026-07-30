@@ -384,7 +384,7 @@ export class Hud {
       x.fillRect(bx + i, y + 12, 2, 4);
     }
 
-    /* --- your wind, where you can actually see it ---
+    /* --- your stamina, where you can actually see it ---
        The crew strip lived here and told you nothing you could not read
        from the tags over people's heads; stamina is the number you need
        while you are running away from somebody. */
@@ -393,7 +393,7 @@ export class Hud {
     plate(x, px0, y, PW, SH);
     const st = Math.max(0, Math.min(1, mp.stamina ?? 1));
     const spent = st < 0.999;
-    drawText(x, 'WIND', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
+    drawText(x, 'STAMINA', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
     drawText(x, `${Math.round(st * 100)}`, {
       x: ox - 4, y: y + 2, scale: 1, align: 'right',
       color: st < 0.25 ? RED : (spent ? '#c9b98a' : JADE),
@@ -907,17 +907,37 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
       p(13, 4, 1, 2, '#fff3c4');
     }
   } else if (kind === 'speaker') {
-    p(2, 1, 8, 10, C('#3a3a42', '#22222a'));
-    p(2, 1, 8, 1, C('#5a5a66', '#2e2e36'));
-    // two cones, pulsing
-    for (const cy of [3, 7]) {
-      const r = 2 + (lit ? Math.round(beat) : 0);
-      p(6 - r / 2, cy - r / 2 + 1, r, r, C('#8a8a96', '#3a3a44'));
-      p(5, cy, 2, 2, C('#1a1a20', '#141418'));
+    /* A big portable speaker, upright, with a carry handle, a woofer and a
+       tweeter, and a row of level lights along the bottom. The old one was
+       two grey circles in a box and read as a plug socket. */
+    // the case, with a rounded top edge
+    p(1, 1, 10, 10, C('#2a2a32', '#1a1a20'));
+    p(2, 0, 8, 1, C('#2a2a32', '#1a1a20'));
+    p(1, 1, 10, 1, C('#4a4a56', '#26262e'));
+    // the carry handle
+    p(4, 0, 4, 1, C('#5a5a66', '#2e2e36'));
+    // the grille, a mesh of dots
+    for (let gy = 2; gy < 8; gy += 2) {
+      for (let gx = 2; gx < 10; gx += 2) p(gx, gy, 1, 1, C('#4a4a56', '#26262e'));
     }
-    if (lit && beat > 0.6) {
-      p(0, 2, 1, 1, '#ffd24a'); p(11, 4, 1, 1, '#ffd24a');
-      p(1, 8, 1, 1, '#9ff0dc'); p(10, 1, 1, 1, '#9ff0dc');
+    // the woofer: a big cone that swells with the beat
+    {
+      const r = 5 + (lit ? Math.round(beat * 1.4) : 0);
+      p(6 - r / 2, 5 - r / 2, r, r, C('#3a3a46', '#22222a'));
+      p(4, 3, 4, 4, C('#8a8a96', '#3a3a44'));
+      p(5, 4, 2, 2, C('#14141a', '#101014'));
+    }
+    // a tweeter in the top corner
+    p(8, 2, 2, 2, C('#8a8a96', '#3a3a44'));
+    // the level lights along the bottom
+    for (let i = 0; i < 4; i++) {
+      const on = lit && beat > i * 0.25;
+      p(2 + i * 2, 9, 1, 1, on ? (i > 2 ? '#e0453a' : '#7ec850') : '#242430');
+    }
+    // and the sound coming off it
+    if (lit && beat > 0.55) {
+      p(0, 3, 1, 1, '#ffd24a'); p(11, 5, 1, 1, '#ffd24a');
+      p(0, 7, 1, 1, '#9ff0dc'); p(11, 2, 1, 1, '#9ff0dc');
     }
   } else if (kind === 'chart') {
     p(1, 2, 10, 8, C('#d8c69a', '#4a4436'));

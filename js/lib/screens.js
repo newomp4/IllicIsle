@@ -887,12 +887,58 @@ export const SCREENS = {
     draw(x, W, H, s, g, t) {
       const d = g.bunkerReadout ? g.bunkerReadout() : null;
       if (!d) return [];
-      const TABS = ['PLOT', 'VITALS', 'LEDGER', 'LOG'];
+      /* Two pages, not four. VITALS was a column of heartbeats that fitted
+         beside the plot anyway, and LEDGER and LOG are both records. */
+      const TABS = ['THE ISLAND', 'THE RECORD'];
 
       /* Ask the host for the ledger the moment the table is open, and keep
          it fresh. The request is answered privately; nobody upstairs learns
          that anybody looked. */
       if (!s.asked || t - s.asked > 3) { s.asked = t; g.requestLedger?.(); }
+
+      /* ---- somebody has pulled the plug on it remotely ----
+         A hacking device does not make the table lie, it takes the table
+         away: garbage, a dead carrier tone and a countdown. */
+      if (d.chaff) {
+        x.fillStyle = '#04100c'; x.fillRect(0, 0, W, H);
+        // rolling bands of nonsense
+        const CH = '0123456789ABCDEF/\\|-_=+*#%@';
+        for (let row = 0; row < 18; row++) {
+          const ry = 8 + row * 12 + ((t * 90) % 12);
+          if (ry > H - 8) continue;
+          let line = '';
+          const seed = Math.floor(t * 7) * 31 + row * 17;
+          for (let i = 0; i < 44; i++) {
+            line += CH[(seed * (i + 3) * 2654435761) % CH.length | 0];
+          }
+          x.fillStyle = row % 3 === 0 ? 'rgba(111,224,184,.5)' : 'rgba(47,122,96,.35)';
+          drawText(x, line, { x: 8, y: Math.round(ry), scale: 1, color: x.fillStyle, shadow: false });
+        }
+        // tear bands, so it reads as a signal being interfered with
+        for (let i = 0; i < 4; i++) {
+          const ty = ((t * 140 + i * 61) % H) | 0;
+          x.fillStyle = 'rgba(0,0,0,.7)'; x.fillRect(0, ty, W, 3);
+          x.fillStyle = 'rgba(190,255,220,.18)'; x.fillRect(0, ty + 3, W, 1);
+        }
+        for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
+        // and the one legible thing on it
+        const msg = 'LINK SEVERED';
+        const mw = textWidth(msg, 2) + 20;
+        x.fillStyle = 'rgba(4,16,12,.92)';
+        x.fillRect(Math.round(W / 2 - mw / 2), H / 2 - 18, mw, 34);
+        x.fillStyle = '#ff6a5a';
+        x.fillRect(Math.round(W / 2 - mw / 2), H / 2 - 18, mw, 1);
+        x.fillRect(Math.round(W / 2 - mw / 2), H / 2 + 15, mw, 1);
+        drawText(x, msg, {
+          x: W / 2, y: H / 2 - 14, scale: 2, align: 'center',
+          color: Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018',
+        });
+        drawText(x, 'SOMEBODY IS DOING THIS ON PURPOSE', {
+          x: W / 2, y: H / 2 + 5, scale: 1, align: 'center', color: '#c8ffe8',
+        });
+        footer(x, W, H, 'ESC  STEP BACK');
+        return [];
+      }
 
       /* ---- the terminal waking up ----
          Thirty years on standby and it still runs its self-test. It is a
@@ -989,9 +1035,8 @@ export const SCREENS = {
       drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: 2, color: GRN });
       drawText(x, 'SCHWAB TECHNOLOGY', { x: 14, y: 25, scale: 1, color: GRN_D });
       drawText(x, d.bunker || '', { x: W - 14, y: 10, scale: 1, align: 'right', color: GRN_D });
-      drawText(x, d.chaff ? 'SIGNAL DEGRADED' : 'SIGNAL NOMINAL', {
-        x: W - 14, y: 19, scale: 1, align: 'right',
-        color: d.chaff ? (Math.floor(t * 6) % 2 ? RED : '#8a2018') : GRN_D,
+      drawText(x, 'SIGNAL NOMINAL', {
+        x: W - 14, y: 19, scale: 1, align: 'right', color: GRN_D,
       });
       drawText(x, `FLOPPER ${d.flopper}`, {
         x: W - 14, y: 28, scale: 1, align: 'right', color: GRN_D,
@@ -1018,8 +1063,48 @@ export const SCREENS = {
          sabotage came from.
          ===================================================== */
       if (s.tab === 0) {
-        const PW = W - 28, PH = BODY_B - BODY_T;
+        /* Vitals live down the right of the plot now rather than on a page of
+           their own: a colour, a name and a trace each, which is all the old
+           page ever said. */
+        const VW = 86;
+        const PW = W - 28 - VW - 4, PH = BODY_B - BODY_T;
         const px0 = 14, py0 = BODY_T;
+        {
+          const vx = px0 + PW + 4;
+          x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(vx, py0, VW, PH);
+          x.fillStyle = GRN_D;
+          x.fillRect(vx, py0, VW, 1); x.fillRect(vx, py0 + PH - 1, VW, 1);
+          x.fillRect(vx, py0, 1, PH); x.fillRect(vx + VW - 1, py0, 1, PH);
+          drawText(x, `${d.alive}/${d.total} ALIVE`, {
+            x: vx + 4, y: py0 + 3, scale: 1, color: d.alive <= 2 ? RED : GRN,
+          });
+          let vy = py0 + 14;
+          for (const p of d.roster) {
+            if (vy > py0 + PH - 10) break;
+            const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
+            x.fillStyle = p.alive ? hex : '#2a3a34';
+            x.fillRect(vx + 4, vy, 5, 6);
+            let nm = p.name;
+            while (nm.length > 1 && textWidth(nm, 1) > VW - 44) nm = nm.slice(0, -1);
+            drawText(x, nm, {
+              x: vx + 12, y: vy, scale: 1, color: p.alive ? GRN_L : '#3f5a52',
+            });
+            // a trace, or a flat line
+            const bx = vx + VW - 26;
+            x.fillStyle = p.alive ? GRN : '#3f5a52';
+            if (p.alive) {
+              const ph = (t * 2.2 + p.name.length) % 1;
+              for (let k = 0; k < 22; k++) {
+                const u = k / 22;
+                const dd = Math.abs(u - ph);
+                const hh = dd < 0.05 ? 3 : (dd < 0.10 ? 2 : 0);
+                if (hh) x.fillRect(bx + k, vy + 3 - hh, 1, hh * 2);
+                else x.fillRect(bx + k, vy + 3, 1, 1);
+              }
+            } else x.fillRect(bx, vy + 3, 22, 1);
+            vy += 10;
+          }
+        }
         x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(px0, py0, PW, PH);
 
         const cx = px0 + PW / 2, cy = py0 + PH / 2;
@@ -1197,111 +1282,73 @@ export const SCREENS = {
       }
 
       /* =====================================================
-         VITALS — who is breathing, with a trace each.
+         THE RECORD — what everybody is carrying, and what the
+         island has had done to it. Two columns, so neither can
+         run into the other however long the round gets.
          ===================================================== */
       if (s.tab === 1) {
-        let y = BODY_T + 4;
-        const COLW = (W - 32) / 2;
-        d.roster.forEach((p, i) => {
-          const col = i % 2, row = (i / 2) | 0;
-          const ox = 14 + col * (COLW + 4);
-          const oy = y + row * 16;
-          const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
-          x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(ox, oy - 2, COLW, 14);
-          x.fillStyle = p.alive ? hex : '#2a3a34';
-          x.fillRect(ox + 2, oy + 1, 7, 7);
-          let nm = p.name;
-          while (nm.length > 1 && textWidth(nm, 1) > COLW - 52) nm = nm.slice(0, -1);
-          drawText(x, nm, { x: ox + 13, y: oy + 1, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
-          const bx = ox + COLW - 34;
-          x.fillStyle = p.alive ? GRN : '#3f5a52';
-          if (p.alive) {
-            const ph = (t * 2.2 + p.name.length) % 1;
-            for (let k = 0; k < 30; k++) {
-              const u = k / 30;
-              let hgt = 0;
-              const dd = Math.abs(u - ph);
-              if (dd < 0.05) hgt = 4; else if (dd < 0.10) hgt = 2;
-              if (hgt) x.fillRect(bx + k, oy + 4 - hgt, 1, hgt * 2);
-              else x.fillRect(bx + k, oy + 4, 1, 1);
-            }
-          } else {
-            x.fillRect(bx, oy + 4, 30, 1);
-          }
-        });
-        const rows = Math.ceil(d.roster.length / 2);
-        drawText(x, `${d.alive} OF ${d.total} BREATHING`, {
-          x: 14, y: y + rows * 16 + 6, scale: 1, color: GRN,
-        });
-      }
+        const COL = Math.floor((W - 32) / 2);
+        const LX2 = 14, RX2 = 14 + COL + 4;
 
-      /* =====================================================
-         LEDGER — what everybody is carrying. The single most
-         dangerous thing in the room: a Castaway with a fortune
-         has been working, and an Agent with one has not.
-         ===================================================== */
-      if (s.tab === 2) {
-        let y = BODY_T + 4;
+        /* ---- left: the ledger ---- */
+        drawText(x, 'SYNCOIN LEDGER', { x: LX2, y: BODY_T, scale: 1, color: GRN });
+        x.fillStyle = GRN_D; x.fillRect(LX2, BODY_T + 9, COL, 1);
+        let ly = BODY_T + 14;
         if (!d.ledger) {
-          drawText(x, 'QUERYING . . .', { x: 14, y, scale: 1, color: GRN_D });
+          drawText(x, 'QUERYING . . .', { x: LX2, y: ly, scale: 1, color: GRN_D });
         } else {
-          drawText(x, 'NAME', { x: 20, y, scale: 1, color: GRN_D });
-          drawText(x, 'SYNCOIN', { x: W - 60, y, scale: 1, color: GRN_D });
-          drawText(x, 'BAR', { x: W - 130, y, scale: 1, color: GRN_D });
-          y += 11;
           const sorted = [...d.roster].sort((a2, b2) => (b2.coins || 0) - (a2.coins || 0));
           const top = Math.max(1, sorted[0]?.coins || 1);
           for (const p of sorted) {
-            if (y > BODY_B - 8) break;
+            if (ly > BODY_B - 9) break;
             const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
             x.fillStyle = p.alive ? hex : '#2a3a34';
-            x.fillRect(14, y, 5, 7);
-            let nm = p.name + (p.me ? ' (YOU)' : '');
-            while (nm.length > 1 && textWidth(nm, 1) > 96) nm = nm.slice(0, -1);
-            drawText(x, nm, { x: 22, y, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
+            x.fillRect(LX2, ly, 5, 7);
+            let nm = p.name + (p.me ? '*' : '');
+            while (nm.length > 1 && textWidth(nm, 1) > COL - 62) nm = nm.slice(0, -1);
+            drawText(x, nm, { x: LX2 + 8, y: ly, scale: 1, color: p.alive ? GRN_L : '#3f5a52' });
             // a bar, because a column of numbers is not a picture
-            const bw = Math.round(((p.coins || 0) / top) * 64);
-            x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(W - 130, y + 1, 64, 5);
+            const bw = Math.round(((p.coins || 0) / top) * 30);
+            x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(LX2 + COL - 54, ly + 1, 30, 5);
             x.fillStyle = p.alive ? GRN : '#3f5a52';
-            x.fillRect(W - 130, y + 1, bw, 5);
+            x.fillRect(LX2 + COL - 54, ly + 1, bw, 5);
             drawText(x, p.coins == null ? '--' : String(p.coins), {
-              x: W - 20, y, scale: 1, align: 'right',
-              color: d.chaff ? RED : (p.alive ? AMB : '#5a6a62'),
+              x: LX2 + COL - 2, y: ly, scale: 1, align: 'right',
+              color: p.alive ? AMB : '#5a6a62',
             });
-            y += 10;
-          }
-          if (d.chaff) {
-            drawText(x, 'FIGURES UNRELIABLE - CHAFF IN THE AIR', {
-              x: 14, y: y + 3, scale: 1, color: RED,
-            });
+            ly += 10;
           }
         }
-      }
 
-      /* =====================================================
-         LOG — what the island has done, and which way it came.
-         ===================================================== */
-      if (s.tab === 3) {
-        let y = BODY_T + 4;
-        drawText(x, 'INCIDENT LOG', { x: 14, y, scale: 1, color: GRN_D }); y += 12;
+        /* ---- right: the incident log ---- */
+        drawText(x, 'INCIDENT LOG', { x: RX2, y: BODY_T, scale: 1, color: GRN });
+        x.fillStyle = GRN_D; x.fillRect(RX2, BODY_T + 9, COL, 1);
+        let ry = BODY_T + 14;
         const log = d.log || [];
         if (!log.length) {
-          drawText(x, 'NOTHING RECORDED THIS ROUND.', { x: 14, y, scale: 1, color: '#3f5a52' });
+          drawText(x, 'NOTHING YET.', { x: RX2, y: ry, scale: 1, color: '#3f5a52' });
         }
-        for (const e of log) {
-          if (y > BODY_B - 8) break;
-          x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(14, y - 2, W - 28, 12);
-          x.fillStyle = RED; x.fillRect(14, y - 2, 2, 12);
-          drawText(x, e.name || 'SABOTAGE', { x: 22, y, scale: 1, color: GRN_L });
+        log.forEach((e, i) => {
+          /* Two lines per entry, both clipped to the column. The old version
+             printed a name and a direction on the SAME line at opposite ends
+             of the full screen width, which on a narrow buffer overlapped
+             into each other — that was the glitch. */
+          if (ry > BODY_B - 20) return;
+          x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(RX2, ry - 2, COL, 21);
+          x.fillStyle = i === 0 ? RED : '#5a2018'; x.fillRect(RX2, ry - 2, 2, 21);
+          let nm = e.name || 'SABOTAGE';
+          while (nm.length > 1 && textWidth(nm, 1) > COL - 12) nm = nm.slice(0, -1);
+          drawText(x, nm, { x: RX2 + 6, y: ry, scale: 1, color: GRN_L });
           drawText(x, e.half ? `FROM THE ${e.half}` : 'ORIGIN UNKNOWN', {
-            x: W - 20, y, scale: 1, align: 'right', color: e.half ? AMB : '#3f5a52',
+            x: RX2 + 6, y: ry + 9, scale: 1, color: e.half ? AMB : '#3f5a52',
           });
-          y += 14;
-        }
-        y += 4;
-        drawText(x, 'THE POST TRIANGULATES A HALF, NOT A NAME.', {
-          x: 14, y, scale: 1, color: '#3f5a52',
+          ry += 23;
         });
+        if (log.length) {
+          drawText(x, 'A HALF, NOT A NAME.', {
+            x: RX2, y: Math.min(ry + 2, BODY_B - 8), scale: 1, color: '#3f5a52',
+          });
+        }
       }
 
       /* the strip along the bottom */
@@ -1316,7 +1363,7 @@ export const SCREENS = {
 
       footer(x, W, H, s.tab === 0
         ? '+ -  ZOOM   WASD  PAN   C  CENTRE   TAB  PAGE   ESC  BACK'
-        : 'LEFT/RIGHT  CHANGE PAGE      ESC  STEP BACK');
+        : 'TAB  THE ISLAND      ESC  STEP BACK');
       return [];
     },
     key(code, s, g, st) {
@@ -1324,10 +1371,10 @@ export const SCREENS = {
          the bracket keys. Everywhere else they still change page. */
       const onPlot = s.tab === 0;
       if (code === 'Tab' || code === 'BracketRight') {
-        s.tab = (s.tab + 1) % 4; g.audio?.sfx('terminal'); return true;
+        s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
       }
       if (code === 'BracketLeft') {
-        s.tab = (s.tab + 3) % 4; g.audio?.sfx('terminal'); return true;
+        s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
       }
       if (onPlot) {
         const step = (205 / (s.zoom || 1)) * 0.22;
@@ -1344,10 +1391,10 @@ export const SCREENS = {
         if (code === 'KeyS' || code === 'ArrowDown') { s.cz += step; return true; }
       } else {
         if (code === 'ArrowRight' || code === 'KeyD') {
-          s.tab = (s.tab + 1) % 4; g.audio?.sfx('terminal'); return true;
+          s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
         }
         if (code === 'ArrowLeft' || code === 'KeyA') {
-          s.tab = (s.tab + 3) % 4; g.audio?.sfx('terminal'); return true;
+          s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
         }
       }
       if (code === 'Escape' || code === 'Backspace' || code === 'KeyE') {

@@ -74,9 +74,9 @@ function plate(lines) {
 export function buildHighRoller(mats, flameFactory) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0304);
-  scene.fog = new THREE.Fog(0x1c0a0c, 8, 44);
+  scene.fog = new THREE.Fog(0x24101a, 14, 70);
 
-  const W = 16, D = 13, H = 4.2;
+  const W = 24, D = 22, H = 5.0;
   const P = [];
   /* Bright for the panelling. This is a room lit by four fires and one
      shaded lamp, and a dark-red tint under that much darkness came out as a
@@ -135,7 +135,7 @@ export function buildHighRoller(mats, flameFactory) {
   }
 
   /* ---- the table ---- */
-  const TZ = 1.2;
+  const TZ = -3.4;    // well back from the door, not on top of it
   P.push(tint(cyl(2.9, 3.1, 0.9, 14, 'planks', { pos: [0, 0.45, TZ] }), G(0x7a2c22)));
   P.push(tint(cyl(3.15, 3.15, 0.16, 16, 'planks', { pos: [0, 0.96, TZ] }), G(0xa04a2c)));
   P.push(tint(cyl(2.95, 2.95, 0.06, 16, 'clothTat', { pos: [0, 1.06, TZ] }), G(0x2f9a6c)));
@@ -159,12 +159,31 @@ export function buildHighRoller(mats, flameFactory) {
     P.push(tint(cyl(0.3, 0.3, 0.06, 10, 'metal', { pos: [sx, 0.05, sz] }), G(0x3a3a42)));
   }
 
+  /* A runner from the door to the table. The room is big now and an empty
+     floor is a corridor; a carpet tells you where to walk. */
+  {
+    const RUN = 9, BAY = 1.5;
+    for (let i = 0; i < Math.ceil(RUN / BAY); i++) {
+      const rz = D / 2 - 1.6 - i * BAY;
+      P.push(tint(box(3.0, 0.05, BAY - 0.03, 'clothTat', { pos: [0, 0.03, rz] }), G(0x8a1a18)));
+      for (const sx of [-1.6, 1.6]) {
+        P.push(tint(box(0.16, 0.06, BAY - 0.03, 'clothTat', { pos: [sx, 0.04, rz] }), GOLD));
+      }
+    }
+  }
+  // and a pair of columns either side of the way in
+  for (const sx of [-4.0, 4.0]) {
+    P.push(tint(cyl(0.42, 0.48, H - 0.6, 10, 'planks', { pos: [sx, (H - 0.6) / 2, D / 2 - 3.2] }), WOOD));
+    P.push(tint(cyl(0.56, 0.56, 0.3, 12, 'planks', { pos: [sx, H - 0.75, D / 2 - 3.2] }), GOLD));
+    P.push(tint(cyl(0.60, 0.60, 0.24, 12, 'planks', { pos: [sx, 0.12, D / 2 - 3.2] }), GOLD));
+  }
+
   scene.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
 
   /* ---- four braziers, with real fire ---- */
   const flames = [];
   const fireLights = [];
-  for (const [bx, bz] of [[-6.2, -4.6], [6.2, -4.6], [-6.2, 5.0], [6.2, 5.0]]) {
+  for (const [bx, bz] of [[-8.6, -8.0], [8.6, -8.0], [-8.6, 4.6], [8.6, 4.6]]) {
     const B = [];
     B.push(tint(cyl(0.5, 0.34, 0.16, 10, 'metal', { pos: [0, 0.08, 0] }), G(0x3a2a18)));
     B.push(tint(cyl(0.10, 0.10, 1.5, 6, 'metal', { pos: [0, 0.85, 0] }), GOLD));
@@ -190,6 +209,34 @@ export function buildHighRoller(mats, flameFactory) {
     fireLights.push(L);
   }
 
+  /* ---- sconces down the long walls ----
+     The room is twenty-four metres across now. Four braziers in the corners
+     leave the walk from the door in the dark, and a dark corridor is not
+     grand, it is just dark. */
+  const sconces = [];
+  for (const sx of [-1, 1]) {
+    for (const sz of [-6.0, 0, 6.0]) {
+      const SC = [];
+      SC.push(tint(box(0.26, 0.5, 0.22, 'metal', { pos: [0, 0, 0] }), GOLD));
+      SC.push(tint(cyl(0.20, 0.30, 0.34, 8, 'metal', { pos: [0, 0.34, 0.1] }), G(0x8a6a2a)));
+      const m = new THREE.Mesh(mergeGeos(SC), mats.opaque);
+      m.position.set(sx * (W / 2 - 0.42), 3.1, sz);
+      m.rotation.y = sx > 0 ? -Math.PI / 2 : Math.PI / 2;
+      scene.add(m);
+      const L = new THREE.PointLight(0xffb060, 1.9, 18, 1.6);
+      L.position.set(sx * (W / 2 - 1.0), 3.4, sz);
+      scene.add(L);
+      // the flame in it
+      const bulb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.13, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0xffd8a0, fog: true })
+      );
+      bulb.position.set(sx * (W / 2 - 0.72), 3.42, sz);
+      scene.add(bulb);
+      sconces.push({ L, bulb, phase: sz * 0.3 + sx });
+    }
+  }
+
   /* ---- the art, and the way out ---- */
   const arts = [];
   for (let i = 0; i < 4; i++) {
@@ -198,8 +245,8 @@ export function buildHighRoller(mats, flameFactory) {
       new THREE.MeshLambertMaterial({ map: wallArt(i + 1) })
     );
     const spots = [
-      [-4.4, 2.4, -D / 2 + 0.28, 0], [4.4, 2.4, -D / 2 + 0.28, 0],
-      [-W / 2 + 0.28, 2.4, 2.0, Math.PI / 2], [W / 2 - 0.28, 2.4, 2.0, -Math.PI / 2],
+      [-6.0, 2.6, -D / 2 + 0.28, 0], [6.0, 2.6, -D / 2 + 0.28, 0],
+      [-W / 2 + 0.28, 2.6, 0, Math.PI / 2], [W / 2 - 0.28, 2.6, 0, -Math.PI / 2],
     ][i];
     m.position.set(spots[0], spots[1], spots[2]);
     m.rotation.y = spots[3];
@@ -211,7 +258,7 @@ export function buildHighRoller(mats, flameFactory) {
       new THREE.PlaneGeometry(3.0, 0.75),
       new THREE.MeshBasicMaterial({ map: plate(['HIGH ROLLERS', 'M. BEEF PRESIDING']), fog: true })
     );
-    b.position.set(0, 2.9, -D / 2 + 0.28);
+    b.position.set(0, 3.3, -D / 2 + 0.28);
     scene.add(b);
   }
   // the door back out, behind you as you arrive
@@ -231,7 +278,7 @@ export function buildHighRoller(mats, flameFactory) {
      part of him the braziers reach.
      =========================================================== */
   const beef = new THREE.Group();
-  beef.position.set(0, 0, TZ - 4.3);
+  beef.position.set(0, 0, TZ - 4.6);
   {
     const SH = new THREE.MeshBasicMaterial({ color: 0x050304, fog: true });
     const dark = [];
@@ -286,15 +333,15 @@ export function buildHighRoller(mats, flameFactory) {
   /* lighting: the fire does most of it, and there is one shaded lamp low
      over the baize so the table is the brightest thing in the room */
   const tableLamp = new THREE.PointLight(0xffe0b8, 4.0, 16, 1.5);
-  tableLamp.position.set(0, 2.5, TZ);
+  tableLamp.position.set(0, 2.9, TZ);
   scene.add(tableLamp);
-  scene.add(new THREE.AmbientLight(0x9a6a62, 1.05));
-  scene.add(new THREE.HemisphereLight(0xc07a68, 0x3a1a16, 0.85));
+  scene.add(new THREE.AmbientLight(0xb08880, 1.5));
+  scene.add(new THREE.HemisphereLight(0xd89a86, 0x54241e, 1.15));
   // the shade it hangs in
   {
     const L = [];
-    L.push(tint(cyl(0.1, 0.1, 1.4, 6, 'metal', { pos: [0, 3.5, TZ] }), GOLD));
-    L.push(tint(cyl(0.68, 0.22, 0.42, 12, 'metal', { pos: [0, 2.72, TZ] }), G(0x5a2418)));
+    L.push(tint(cyl(0.1, 0.1, 1.8, 6, 'metal', { pos: [0, 4.1, TZ] }), GOLD));
+    L.push(tint(cyl(0.78, 0.24, 0.48, 12, 'metal', { pos: [0, 3.1, TZ] }), G(0x5a2418)));
     scene.add(new THREE.Mesh(mergeGeos(L), mats.opaque));
   }
 
@@ -308,6 +355,11 @@ export function buildHighRoller(mats, flameFactory) {
       L.intensity = 3.3 + Math.sin(t * 7.3 + i * 1.7) * 0.6 + Math.sin(t * 19 + i) * 0.26;
     });
     tableLamp.intensity = 3.9 + Math.sin(t * 4.1) * 0.22;
+    for (const sc of sconces) {
+      const k = 0.82 + Math.sin(t * 8.1 + sc.phase) * 0.14 + Math.sin(t * 23 + sc.phase) * 0.06;
+      sc.L.intensity = 1.9 * k;
+      sc.bulb.material.color.setRGB(1, 0.78 * k + 0.15, 0.5 * k + 0.1);
+    }
 
     /* He breathes, very slightly, and his eyes catch the fire. Nothing
        else about him moves unless he is dealing. */
@@ -324,20 +376,20 @@ export function buildHighRoller(mats, flameFactory) {
 }
 
 /** Where you stand when you come through the frame. */
-export const HR_ENTRY = { x: 0, y: 1.0, z: 5.0 };
-export const HR_BOX = { minX: -7.4, maxX: 7.4, minZ: -5.9, maxZ: 5.9 };
+export const HR_ENTRY = { x: 0, y: 1.0, z: 9.4 };
+export const HR_BOX = { minX: -11.4, maxX: 11.4, minZ: -10.4, maxZ: 10.4 };
 export function hrHeight() { return 0; }
 
 /** The table, the stools and the braziers are all solid. */
 export const HR_COLLIDERS = (() => {
   const out = [];
-  const TZ = 1.2;
+  const TZ = -3.4;    // well back from the door, not on top of it
   // the table: a ring of circles round its rim
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
     out.push({ x: Math.cos(a) * 2.5, z: TZ + Math.sin(a) * 2.5, r: 0.95 });
   }
-  for (const [bx, bz] of [[-6.2, -4.6], [6.2, -4.6], [-6.2, 5.0], [6.2, 5.0]]) {
+  for (const [bx, bz] of [[-8.6, -8.0], [8.6, -8.0], [-8.6, 4.6], [8.6, 4.6]]) {
     out.push({ x: bx, z: bz, r: 0.6 });
   }
   // the dealer keeps his side of the table

@@ -44,21 +44,33 @@ export const STOCK = [
     tag: 'PASSIVE',
   },
   {
-    id: 'vest', name: 'CORK VEST', cost: 13, side: 'open', icon: 'vest',
+    id: 'vest', name: 'CORK VEST', cost: 18, side: 'open', icon: 'vest',
     blurb: 'The next time an Agent strikes you, it fails and the vest is destroyed. '
-      + 'You survive; they are left standing over nobody.',
+      + 'You survive. It is heavy, though: you move and sprint 25% slower for as long '
+      + 'as you are wearing it.',
     tag: 'ONE USE',
   },
   {
-    id: 'whistle', name: "FERDI'S WHISTLE", cost: 7, side: 'open', icon: 'whistle',
+    id: 'whistle', name: "FERDI'S WHISTLE", cost: 3, side: 'open', icon: 'whistle',
     blurb: 'Blow it and your name appears over your head for every player on the '
       + 'island, through any weather, for 12 seconds. Proof of where you were.',
     tag: 'ONE USE',
   },
   {
-    id: 'tonic', name: 'CANE TONIC', cost: 4, side: 'open', icon: 'tonic',
+    id: 'tonic', name: 'CANE TONIC', cost: 12, side: 'open', icon: 'tonic',
     blurb: 'You stop running out of breath: sprinting costs almost nothing and '
       + 'recovers five times faster. Lasts the whole round.',
+    tag: 'PASSIVE',
+  },
+  {
+    /* Sold at the FRONT counter on purpose. When only Agents could buy
+       these, a missing name over somebody's head was a confession — you
+       had found your Agent without doing anything. Anyone can buy them, so
+       walking unnamed proves nothing about you either way. */
+    id: 'soles', name: 'QUIET SOLES', cost: 9, side: 'open', icon: 'soles',
+    blurb: 'Your name never appears over your head, at any distance, for anybody - '
+      + 'and neither does your footfall. Plenty of Castaways buy these too, so it '
+      + 'tells nobody anything about you. Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
@@ -69,24 +81,29 @@ export const STOCK = [
   },
   {
     id: 'speaker', name: 'THE PARTY BOX', cost: 8, side: 'open', icon: 'speaker',
-    blurb: 'Drop it and it plays for 60 seconds. Every player sees exactly where it '
-      + 'is on their map. Somewhere to be, or somewhere to send everyone else.',
+    blurb: 'A speaker the size of a crate. Drop it and it plays for 60 seconds, and '
+      + 'while it does, NOBODY on the island shows their real position on any map or '
+      + 'on the command table - every marker sits on the box instead. Names also stop '
+      + 'appearing over heads within 18 metres of it. Everyone can see where the box '
+      + 'is. Sixty seconds where the only way to know who is where is to go and look.',
     tag: 'ONE USE',
   },
   {
-    id: 'chart', name: 'SECOND CHART', cost: 8, side: 'open', icon: 'chart',
-    blurb: 'Puts the listening post on your map and your compass, wherever it is '
-      + 'buried this round. Lasts the whole round.',
+    id: 'chart', name: 'LISTENING POST MAP', cost: 8, side: 'open', icon: 'chart',
+    blurb: 'Marks the hidden listening post on your map and your compass. It is in '
+      + 'one of four places and it moves every round, so without this you have to '
+      + 'search. Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
-    id: 'rounds', name: "FERDI'S ROUNDS", cost: 10, side: 'open', icon: 'chart',
-    blurb: 'His delivery notes. Both of his machines out in the trees appear on your '
-      + 'map and compass for the rest of the round. Most players never find one.',
+    id: 'rounds', name: 'VENDING MACHINE MAP', cost: 10, side: 'open', icon: 'chart',
+    blurb: 'Ferdi has two vending machines hidden out in the jungle. This marks both '
+      + 'of them on your map and your compass for the rest of the round. Each one '
+      + 'sells one random item for 6 Syncoin, then it is empty.',
     tag: 'PASSIVE',
   },
   {
-    id: 'flask', name: "FLOPPER'S FLASK", cost: 5, side: 'open', icon: 'flask',
+    id: 'flask', name: "FLOPPER'S FLASK", cost: 2, side: 'open', icon: 'flask',
     blurb: 'Drink it and the next job you touch completes instantly - no holding, '
       + 'no puzzle. Keeps until you use it.',
     tag: 'ONE USE',
@@ -96,60 +113,61 @@ export const STOCK = [
   {
     id: 'nightglass', name: 'NIGHT GLASS', cost: 15, side: 'open', icon: 'lantern',
     night: true,
-    blurb: 'Night stops mattering to you. The world stays as bright at midnight as '
-      + 'it is at noon, for the rest of the round. Sold after dark only.',
+    blurb: 'You can see in the dark: the island stays as bright at midnight as at '
+      + 'noon, for you, for the rest of the round. Only on the shelf after dark.',
     tag: 'PASSIVE',
   },
   {
     id: 'ticket', name: 'BOOK OF TICKETS', cost: 9, side: 'open', icon: 'coin',
     night: true,
-    blurb: 'Three free pulls on any machine aboard the Lucky Flopper. Saves you 9 '
-      + 'Syncoin and the odds are the same. Sold after dark only.',
+    blurb: 'Three free pulls on the slot machines aboard the Lucky Flopper. A pull '
+      + 'normally costs 3, so this saves you 9. The odds do not change. Only on the '
+      + 'shelf after dark.',
     tag: 'THREE USES',
   },
 
   /* ---------- the room behind it ---------- */
-  {
-    id: 'soles', name: 'QUIET SOLES', cost: 9, side: 'black', icon: 'soles',
-    blurb: 'Your name never appears over your head, at any distance, for anybody. '
-      + 'They will see somebody walk past and not know who. Lasts the whole round.',
-    tag: 'PASSIVE',
-  },
+
   {
     id: 'alibi', name: 'FALSE ALIBI', cost: 11, side: 'black', icon: 'alibi',
-    blurb: 'For 20 seconds you appear on everyone else\'s map, and on the command '
-      + 'table, standing somewhere else entirely. Your own map still shows the truth.',
+    blurb: 'You appear on everyone else\'s map, and on the command table, standing '
+      + 'somewhere else entirely - for up to three minutes. Your own map still shows '
+      + 'the truth. Press its belt key again to drop the lie the moment it stops '
+      + 'being useful.',
     tag: 'ONE USE',
   },
   {
-    id: 'whetstone', name: 'THE WHETSTONE', cost: 10, side: 'black', icon: 'knife',
-    blurb: 'Cuts a third off your current kill cooldown the moment you buy it, and a '
-      + 'third off every one after it. Lasts the whole round.',
+    id: 'whetstone', name: 'THE WHETSTONE', cost: 18, side: 'black', icon: 'knife',
+    blurb: 'Your kill cooldown drops by a third - both the one running right now and '
+      + 'every one after it. Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
-    id: 'skeleton', name: 'SKELETON KEY', cost: 12, side: 'black', icon: 'key',
-    blurb: 'Drops you straight into the listening post from wherever you are '
-      + 'standing. No walk, no witnesses.',
+    id: 'skeleton', name: 'SKELETON KEY', cost: 16, side: 'black', icon: 'key',
+    blurb: 'Teleports you straight down into the listening post from wherever you '
+      + 'are standing, instead of walking there. Nobody sees you go.',
     tag: 'ONE USE',
   },
   {
-    id: 'chaff', name: 'HANDFUL OF CHAFF', cost: 9, side: 'black', icon: 'chaff',
-    blurb: 'For 30 seconds the command table lies: every marker jumps somewhere '
-      + 'random and the coin ledger is wrong. Whoever is down there stops trusting it.',
+    id: 'chaff', name: 'REMOTE HACKING DEVICE', cost: 9, side: 'black', icon: 'chaff',
+    blurb: 'Kills the command table from anywhere on the island for 60 seconds. '
+      + 'Whoever is down there watching gets a screen full of garbage instead of the '
+      + 'island - no positions, no vitals, no ledger. They will know it was done to '
+      + 'them; they will not know by whom.',
     tag: 'ONE USE',
   },
   {
     id: 'shroud', name: 'LEAD SHROUD', cost: 12, side: 'black', icon: 'soles',
-    blurb: 'For 45 seconds you do not appear on the command table at all. Not moved, '
-      + 'not scrambled - absent. Nobody watching can place you anywhere.',
+    blurb: 'For 45 seconds you vanish from the command table completely - not moved, '
+      + 'not scrambled, just not on it. Anyone watching sees one fewer person than '
+      + 'there are.',
     tag: 'ONE USE',
   },
   {
     id: 'blackout', name: 'BLACKOUT CHARGE', cost: 14, side: 'black', icon: 'chaff',
     night: true,
-    blurb: 'Puts out every torch and the campfire across the whole island for 45 '
-      + 'seconds. In the dark nobody can read anybody. Sold after dark only.',
+    blurb: 'Puts out every torch and the campfire on the island for 45 seconds. In '
+      + 'the dark nobody can tell who anybody is. Only on the shelf after dark.',
     tag: 'ONE USE',
   },
 

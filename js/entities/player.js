@@ -182,6 +182,12 @@ export class Player {
 
     this.SPEED = 7.0;
     this.SPRINT = 15.5;
+    /* The unencumbered figures, kept so anything that slows you down (the
+       cork vest) has something to restore you to rather than guessing. */
+    this.BASE_SPEED = this.SPEED;
+    this.BASE_SPRINT = this.SPRINT;
+    this.FOV_THIRD = 66;
+    this.FOV_FIRST = 78;
     this.RADIUS = 0.42;
     this.EYE = 1.55;
 
@@ -424,6 +430,8 @@ export class Player {
 
     /* ---------- camera ---------- */
     this.updateCamera(dt, groundOf);
+    if (!this.thirdPerson) { this._buildViewHands(); this.updateViewHands(hspeed); }
+    else if (this.viewHands) this.viewHands.visible = false;
 
     return { sprinting, hspeed };
   }
@@ -565,6 +573,10 @@ export class Player {
         }
       }
 
+      if (cam.fov !== this.FOV_THIRD) {
+        cam.fov = this.FOV_THIRD;
+        cam.updateProjectionMatrix();
+      }
       // snap in fast, ease out slow — avoids nauseating pops
       const k = dist < this.camDistCur ? 1 : Math.min(1, 5 * dt);
       this.camDistCur += (dist - this.camDistCur) * k;
@@ -582,6 +594,13 @@ export class Player {
     } else {
       const bob = Math.sin(this.walkPhase * 2) * 0.035 * (this.grounded ? 1 : 0);
       const j = this.shake > 0 ? this.shake * 0.09 : 0;
+      /* A wider lens in first person. Sixty-six degrees over the shoulder is
+         comfortable; from inside your own head it feels like looking down a
+         tube, and you cannot see your own feet. */
+      if (cam.fov !== this.FOV_FIRST) {
+        cam.fov = this.FOV_FIRST;
+        cam.updateProjectionMatrix();
+      }
       cam.position.set(
         this.pos.x + (j ? Math.sin(this.shake * 47) * j : 0),
         this.pos.y + this.EYE - this.inWater * 0.4 + bob + (j ? Math.sin(this.shake * 31) * j : 0),
@@ -594,9 +613,81 @@ export class Player {
     }
   }
 
+  /**
+   * The hands you see in first person.
+   *
+   * Bolted to the camera and hung mostly off the bottom of the frame — you
+   * should get a suggestion of forearms swinging as you walk, not a pair of
+   * gloves filling the screen. Built on demand and reused.
+   */
+  _buildViewHands() {
+    if (this.viewHands) return this.viewHands;
+    const g = new THREE.Group();
+    const skin = new THREE.MeshLambertMaterial({ color: 0xc4a488 });
+    const cuff = new THREE.MeshLambertMaterial({ color: 0x8a8272 });
+    const arms = [];
+    for (const side of [-1, 1]) {
+      const a = new THREE.Group();
+      // the forearm, angled in toward the middle of the view
+      const fore = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.085, 0.34), skin);
+      fore.position.set(0, 0, -0.17);
+      a.add(fore);
+      // a rolled sleeve at the elbow end
+      const sl = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.105, 0.10), cuff);
+      sl.position.set(0, 0, 0.02);
+      a.add(sl);
+      // the hand: a palm and a thumb, no more than that at this size
+      const palm = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.07, 0.11), skin);
+      palm.position.set(0, 0, -0.39);
+      a.add(palm);
+      const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.05, 0.07), skin);
+      thumb.position.set(side * -0.055, 0.005, -0.37);
+      a.add(thumb);
+
+      /* Just on screen. At 78 degrees the bottom of the frame is about
+         0.34 below the axis at this distance, so this shows the hands and
+         the last few centimetres of forearm and nothing else. */
+      a.position.set(side * 0.40, -0.255, -0.40);
+      a.rotation.set(-0.42, side * 0.30, side * -0.16);
+      g.add(a);
+      arms.push({ a, side });
+    }
+    g.userData.arms = arms;
+    this.viewHands = g;
+    this.camera.add(g);
+    /* Anything parented to the camera only renders if the camera itself is
+       in the scene graph being traversed. Without this the hands existed and
+       were marked visible and were simply never drawn. */
+    return g;
+  }
+
+  /** Swing them with your stride, and keep them out of the way otherwise. */
+  updateViewHands(hspeed = 0) {
+    const g = this.viewHands;
+    if (!g) return;
+    g.visible = !this.thirdPerson && !this.dead;
+    if (!g.visible) return;
+    /* Anything parented to the camera only renders if the camera is in the
+       scene being traversed — and the player moves between the island, the
+       temple, the listening post and the room behind the painting, so the
+       camera has to follow whichever scene its own mesh is in.
+       Without this the hands existed, were visible, and were never drawn. */
+    const sc = this.mesh.parent;
+    if (sc && this.camera.parent !== sc) sc.add(this.camera);
+    const run = Math.min(1.5, hspeed / Math.max(1, this.SPEED));
+    for (const { a, side } of g.userData.arms) {
+      const ph = this.walkPhase + (side > 0 ? Math.PI : 0);
+      a.position.y = -0.255 + Math.sin(ph) * 0.030 * run;
+      a.position.z = -0.40 + Math.cos(ph) * 0.045 * run;
+      a.rotation.x = -0.42 + Math.sin(ph) * 0.11 * run;
+    }
+  }
+
   toggleView() {
     this.thirdPerson = !this.thirdPerson;
     this.mesh.visible = this.thirdPerson;
+    if (!this.thirdPerson) this._buildViewHands();
+    if (this.viewHands) this.viewHands.visible = !this.thirdPerson;
     return this.thirdPerson;
   }
 

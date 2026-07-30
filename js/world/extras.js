@@ -47,12 +47,6 @@ export function buildSyncoin(mats, big = false) {
      and catch the sun on its rim. So: a flat pool below, a soft upright
      gleam that always faces the camera, and four sparkle pips that blink in
      turn. No sphere, and no light. */
-  const glowMat = new THREE.MeshBasicMaterial({
-    color: 0xffd88a, transparent: true, opacity: 0.20,
-    blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
-    side: THREE.DoubleSide,
-  });
-
   // the pool on the ground
   const poolGeo = new THREE.CircleGeometry(0.62 * s, 14);
   poolGeo.rotateX(-Math.PI / 2);
@@ -74,13 +68,35 @@ export function buildSyncoin(mats, big = false) {
   pool.renderOrder = 1;
   g.add(pool);
 
-  // a soft upright gleam, billboarded so it is never seen edge-on
-  const gleam = new THREE.Mesh(new THREE.PlaneGeometry(0.72 * s, 0.72 * s), glowMat);
+  /* A soft upright gleam, billboarded so it is never seen edge-on — and a
+     DISC with a radial fade, not a square. A flat quad with a uniform
+     additive colour is a square of light, which is exactly what it looked
+     like. */
+  const gleamGeo = new THREE.CircleGeometry(0.44 * s, 16);
+  {
+    const gc = gleamGeo.attributes.position;
+    const cols = new Float32Array(gc.count * 4);
+    for (let i = 0; i < gc.count; i++) {
+      const d = Math.hypot(gc.getX(i), gc.getY(i)) / (0.44 * s);
+      cols[i * 4] = 1; cols[i * 4 + 1] = 0.87; cols[i * 4 + 2] = 0.58;
+      // squared falloff, so it has no visible rim at all
+      cols[i * 4 + 3] = Math.pow(Math.max(0, 1 - d), 2.2);
+    }
+    gleamGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
+  }
+  const gleam = new THREE.Mesh(gleamGeo, new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+    side: THREE.DoubleSide,
+  }));
   gleam.renderOrder = 2;
   g.add(gleam);
 
   // four sparkle pips on the rim
+  /* Glints, not squares: a four-point star is two crossed slivers, and at
+     this size that is all the eye needs. */
   const pipGeo = new THREE.PlaneGeometry(0.075 * s, 0.075 * s);
+  pipGeo.rotateZ(Math.PI / 4);
   const pips = [];
   for (let i = 0; i < 4; i++) {
     const m = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({
@@ -110,7 +126,7 @@ export function buildSyncoin(mats, big = false) {
       gleam.rotation.y = Math.atan2(_up.x, _up.z) - g.rotation.y;
       for (const p of pips) gleam.rotation.x = 0;
     }
-    glowMat.opacity = 0.14 + Math.sin(t * 4) * 0.06;
+    gleam.material.opacity = 0.42 + Math.sin(t * 4) * 0.16;
 
     // the pips wink round the rim, one at a time
     const lead = (t * 1.9) % (Math.PI * 2);
