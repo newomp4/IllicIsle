@@ -218,19 +218,77 @@ export class Avatar {
     }
   }
 
+  /**
+   * Everybody else walks the way you do.
+   *
+   * The body is built by the same buildPlayer, so it has the same knees and
+   * elbows — it would be strange to be the only person on the island who
+   * bends their legs. This is the same cycle as Player._walkWeighted,
+   * driven off the interpolated speed off the wire instead of your own.
+   */
   _animate(dt) {
     const p = this.parts;
     const running = THREE.MathUtils.clamp(this.speed / 7, 0, 1.5);
-    this.walkPhase += dt * (4.4 + running * 5) * (this.speed > 0.4 ? 1 : 0);
-    const sw = Math.sin(this.walkPhase) * (0.4 + running * 0.45);
-    p.legs.l.rotation.x = sw;
-    p.legs.r.rotation.x = -sw;
-    p.arms.l.rotation.x = -sw * 0.85;
-    p.arms.r.rotation.x = sw * 0.85;
-    p.arms.l.rotation.z = 0.16;
-    p.arms.r.rotation.z = -0.16;
-    const bob = this.speed > 0.4 ? Math.abs(Math.sin(this.walkPhase)) * 0.045 * running : 0;
-    p.hips.position.y = 0.90 + bob;
+    const moving = this.speed > 0.4;
+    this.walkPhase += dt * (4.4 + running * 5) * (moving ? 1 : 0);
+    const ph = this.walkPhase;
+
+    if (!moving) {
+      const L = (a, b, k = 0.12) => THREE.MathUtils.lerp(a, b, k);
+      const b2 = Math.sin(ph * 0.0 + performance.now() * 0.0017) * 0.02;
+      p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.02);
+      p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.02);
+      if (p.knees) {
+        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.07);
+        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.05);
+      }
+      p.arms.l.rotation.x = L(p.arms.l.rotation.x, 0.06 + b2);
+      p.arms.r.rotation.x = L(p.arms.r.rotation.x, 0.06 - b2);
+      p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.13);
+      p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.13);
+      if (p.elbows) {
+        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.16);
+        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.14);
+      }
+      p.hips.rotation.z = L(p.hips.rotation.z, 0);
+      p.hips.rotation.y = L(p.hips.rotation.y, 0);
+      p.torso.rotation.x = L(p.torso.rotation.x, 0.02);
+      p.torso.rotation.z = L(p.torso.rotation.z, 0);
+      p.torso.rotation.y = L(p.torso.rotation.y, 0);
+      p.hips.position.y = L(p.hips.position.y, 0.90 + b2);
+      return;
+    }
+
+    const amp = 0.52 + running * 0.46;
+    const skew = (a) => Math.sin(a + Math.sin(a) * 0.28);
+    const sl = skew(ph), sr = skew(ph + Math.PI);
+    p.legs.l.rotation.x = sl * amp;
+    p.legs.r.rotation.x = sr * amp;
+    if (p.knees) {
+      const bendL = Math.max(0, -Math.cos(ph * 2 + 0.6));
+      const kAmp = 0.55 + running * 0.75;
+      p.knees.l.rotation.x = (bendL * 0.55 + Math.max(0, -sl) * 0.75) * kAmp;
+      p.knees.r.rotation.x = (bendL * 0.55 + Math.max(0, -sr) * 0.75) * kAmp;
+    }
+    const lag = 0.32;
+    const aL = skew(ph + Math.PI - lag), aR = skew(ph - lag);
+    const aAmp = 0.42 + running * 0.62;
+    p.arms.l.rotation.x = aL * aAmp;
+    p.arms.r.rotation.x = aR * aAmp;
+    p.arms.l.rotation.z = 0.14 + running * 0.06;
+    p.arms.r.rotation.z = -0.14 - running * 0.06;
+    if (p.elbows) {
+      const eAmp = 0.30 + running * 0.55;
+      p.elbows.l.rotation.x = (0.18 + Math.max(0, aL) * 0.9) * eAmp;
+      p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
+    }
+    p.hips.rotation.z = -Math.sin(ph) * (0.045 + running * 0.05);
+    const twist = Math.sin(ph) * (0.06 + running * 0.09);
+    p.hips.rotation.y = twist;
+    p.torso.rotation.y = -twist * 1.9;
+    p.torso.rotation.z = Math.sin(ph) * (0.03 + running * 0.04);
+    p.torso.rotation.x = 0.03 + running * 0.13;
+    p.hips.position.y = 0.90 + Math.cos(ph * 2) * (0.020 + running * 0.030) - 0.012 * running;
   }
 
   /**
@@ -327,6 +385,11 @@ export class Body {
     p.legs.l.rotation.x = -0.5; p.legs.r.rotation.x = 0.3;
     p.arms.l.rotation.x = -1.5; p.arms.r.rotation.x = -0.4;
     p.arms.l.rotation.z = 0.7; p.arms.r.rotation.z = -0.9;
+    // a body on the sand is not laid out straight
+    if (p.knees) { p.knees.l.rotation.x = 0.9; p.knees.r.rotation.x = 0.25; }
+    if (p.elbows) { p.elbows.l.rotation.x = 1.1; p.elbows.r.rotation.x = 0.4; }
+    p.hips.rotation.z = 0; p.hips.rotation.y = 0;
+    p.torso.rotation.x = 0; p.torso.rotation.z = 0;
     p.head.rotation.z = 0.4;
 
     dyeCastaway(this.parts, record.colour || 'red');

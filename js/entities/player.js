@@ -108,17 +108,27 @@ export function buildCastaway(mats) {
     g.position.set(side * 0.255, 0.54, 0);
     hips.add(g);
 
-    const armParts = [];
+    /* The arm is two pieces on a hinge, not one stick. An elbow is the
+       difference between a person walking and a mannequin being carried:
+       the forearm lags the upper arm through the swing and straightens at
+       the back of it. */
+    const upperParts = [];
     const upper = limb([0, 0, 0], [side * 0.03, -0.27, 0], 0.072, 0.062, 'clothTat');
-    tint(upper, SHIRT); armParts.push(upper);
-    const fore = limb([side * 0.03, -0.27, 0], [side * 0.04, -0.52, 0.02], 0.058, 0.05, 'skin');
-    tint(fore, SKIN); armParts.push(fore);
-    const hand = ico(0.062, 0, 'skin', { pos: [side * 0.04, -0.56, 0.02] });
-    tint(hand, SKIN); armParts.push(hand);
+    tint(upper, SHIRT); upperParts.push(upper);
+    g.add(new THREE.Mesh(mergeGeos(upperParts), mats.opaque));
 
-    const mesh = new THREE.Mesh(mergeGeos(armParts), mats.opaque);
-    g.add(mesh);
+    const elbow = new THREE.Group();
+    elbow.position.set(side * 0.03, -0.27, 0);
+    g.add(elbow);
+    const foreParts = [];
+    const fore = limb([0, 0, 0], [side * 0.01, -0.25, 0.02], 0.058, 0.05, 'skin');
+    tint(fore, SKIN); foreParts.push(fore);
+    const hand = ico(0.062, 0, 'skin', { pos: [side * 0.01, -0.29, 0.02] });
+    tint(hand, SKIN); foreParts.push(hand);
+    elbow.add(new THREE.Mesh(mergeGeos(foreParts), mats.opaque));
+
     parts.arms[side < 0 ? 'l' : 'r'] = g;
+    (parts.elbows = parts.elbows || {})[side < 0 ? 'l' : 'r'] = elbow;
   }
 
   /* ---- legs ---- */
@@ -128,17 +138,27 @@ export function buildCastaway(mats) {
     g.position.set(side * 0.115, -0.22, 0);
     hips.add(g);
 
-    const legParts = [];
+    /* Thigh and shin on a knee. Without one, the swinging leg has to pass
+       THROUGH the ground on every stride or the stride has to be tiny —
+       which is why the old walk had to keep its swing down at a quarter of
+       a radian and still read as a shuffle. */
+    const thighParts = [];
     const thigh = limb([0, 0, 0], [side * 0.01, -0.34, 0], 0.095, 0.078, 'skin');
-    tint(thigh, SKIN); legParts.push(thigh);
-    const shin = limb([side * 0.01, -0.34, 0], [side * 0.01, -0.66, 0.01], 0.072, 0.055, 'skin');
-    tint(shin, SKIN); legParts.push(shin);
-    const foot = box(0.11, 0.07, 0.22, 'skin', { pos: [side * 0.01, -0.69, 0.05] });
-    tint(foot, new THREE.Color(0xb08a5e)); legParts.push(foot);
+    tint(thigh, SKIN); thighParts.push(thigh);
+    g.add(new THREE.Mesh(mergeGeos(thighParts), mats.opaque));
 
-    const mesh = new THREE.Mesh(mergeGeos(legParts), mats.opaque);
-    g.add(mesh);
+    const knee = new THREE.Group();
+    knee.position.set(side * 0.01, -0.34, 0);
+    g.add(knee);
+    const shinParts = [];
+    const shin = limb([0, 0, 0], [0, -0.32, 0.01], 0.072, 0.055, 'skin');
+    tint(shin, SKIN); shinParts.push(shin);
+    const foot = box(0.11, 0.07, 0.22, 'skin', { pos: [0, -0.35, 0.05] });
+    tint(foot, new THREE.Color(0xb08a5e)); shinParts.push(foot);
+    knee.add(new THREE.Mesh(mergeGeos(shinParts), mats.opaque));
+
     parts.legs[side < 0 ? 'l' : 'r'] = g;
+    (parts.knees = parts.knees || {})[side < 0 ? 'l' : 'r'] = knee;
   }
 
   root.userData.parts = parts;
@@ -149,6 +169,11 @@ export function buildCastaway(mats) {
    PLAYER
    =========================================================== */
 export class Player {
+  /* 'weighted' is the walk with knees, sway and counter-rotation.
+     'plain' is the original pendulum, kept so it can be switched back to
+     from the settings without going through the history. */
+  static walkStyle = 'weighted';
+
   constructor(scene, mats, camera) {
     this.scene = scene;
     this.camera = camera;
@@ -464,26 +489,9 @@ export class Player {
 
     const running = THREE.MathUtils.clamp(hspeed / this.SPEED, 0, 1.5);
     this.walkPhase += dt * (4.6 + running * 5.2) * (hspeed > 0.4 ? 1 : 0);
-    const ph = this.walkPhase;
 
-    const swing = Math.sin(ph) * (0.45 + running * 0.45);
-    const swing2 = Math.sin(ph + Math.PI) * (0.45 + running * 0.45);
-
-    if (this.grounded) {
-      p.legs.l.rotation.x = swing;
-      p.legs.r.rotation.x = swing2;
-      p.arms.l.rotation.x = swing2 * 0.85;
-      p.arms.r.rotation.x = swing * 0.85;
-      p.arms.l.rotation.z = 0.16;
-      p.arms.r.rotation.z = -0.16;
-    } else {
-      // airborne tuck
-      const t = THREE.MathUtils.clamp(-this.vel.y / 12 + 0.5, 0, 1);
-      p.legs.l.rotation.x = THREE.MathUtils.lerp(p.legs.l.rotation.x, -0.5 + t * 0.7, 0.2);
-      p.legs.r.rotation.x = THREE.MathUtils.lerp(p.legs.r.rotation.x, 0.35 - t * 0.5, 0.2);
-      p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, -1.6, 0.2);
-      p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, -1.6, 0.2);
-    }
+    if (Player.walkStyle === 'plain') this._walkPlain(dt, hspeed, running);
+    else this._walkWeighted(dt, hspeed, running);
 
     // throw pose overrides the right arm
     if (this.throwAnim > 0) {
@@ -491,26 +499,8 @@ export class Player {
       const t = THREE.MathUtils.clamp(this.throwAnim, 0, 1);
       p.arms.r.rotation.x = -Math.PI * 1.05 * t + (1 - t) * 0.5;
       p.arms.r.rotation.z = -0.4 * t;
+      if (p.elbows) p.elbows.r.rotation.x = 0.3 * t;
       p.torso.rotation.y = -0.35 * t;
-    } else {
-      p.torso.rotation.y *= 0.85;
-    }
-
-    // body bob + landing squash
-    const bob = this.grounded ? Math.abs(Math.sin(ph)) * 0.045 * running : 0;
-    this.landSquash *= 0.86;
-    p.hips.position.y = 0.90 + bob - this.landSquash * 0.28;
-    p.hips.scale.y = 1 - this.landSquash * 0.18;
-    p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
-
-    // idle breathing
-    if (hspeed < 0.4 && this.grounded) {
-      const b = Math.sin(this.bobT * 1.7) * 0.02;
-      p.hips.position.y = 0.90 + b;
-      p.legs.l.rotation.x *= 0.85;
-      p.legs.r.rotation.x *= 0.85;
-      p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, 0.06 + b, 0.12);
-      p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, 0.06 - b, 0.12);
     }
 
     // head looks where the camera looks
@@ -524,6 +514,210 @@ export class Player {
     // blink while invulnerable
     const blink = this.invuln > 0 && Math.floor(this.invuln * 14) % 2 === 0;
     this.mesh.visible = this.thirdPerson && !blink;
+  }
+
+  /* ===========================================================
+     THE OLD WALK
+
+     Kept exactly as it was, so it can be switched back to from the
+     settings. It is a pure pendulum: both legs and both arms on one sine,
+     no knees, no weight, and the body bobbing on the absolute value of the
+     same wave.
+     =========================================================== */
+  _walkPlain(dt, hspeed, running) {
+    const p = this.parts;
+    const ph = this.walkPhase;
+    const swing = Math.sin(ph) * (0.45 + running * 0.45);
+    const swing2 = Math.sin(ph + Math.PI) * (0.45 + running * 0.45);
+
+    // the knees and elbows the new cycle uses are simply held straight
+    if (p.knees) { p.knees.l.rotation.x = 0; p.knees.r.rotation.x = 0; }
+    if (p.elbows) { p.elbows.l.rotation.x = 0; p.elbows.r.rotation.x = 0; }
+    p.hips.rotation.z = 0;
+    p.hips.rotation.y = 0;
+    p.torso.rotation.x = 0;
+    p.torso.rotation.z = 0;
+
+    if (this.grounded) {
+      p.legs.l.rotation.x = swing;
+      p.legs.r.rotation.x = swing2;
+      p.arms.l.rotation.x = swing2 * 0.85;
+      p.arms.r.rotation.x = swing * 0.85;
+      p.arms.l.rotation.z = 0.16;
+      p.arms.r.rotation.z = -0.16;
+    } else {
+      const t = THREE.MathUtils.clamp(-this.vel.y / 12 + 0.5, 0, 1);
+      p.legs.l.rotation.x = THREE.MathUtils.lerp(p.legs.l.rotation.x, -0.5 + t * 0.7, 0.2);
+      p.legs.r.rotation.x = THREE.MathUtils.lerp(p.legs.r.rotation.x, 0.35 - t * 0.5, 0.2);
+      p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, -1.6, 0.2);
+      p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, -1.6, 0.2);
+    }
+    if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
+
+    const bob = this.grounded ? Math.abs(Math.sin(ph)) * 0.045 * running : 0;
+    this.landSquash *= 0.86;
+    p.hips.position.y = 0.90 + bob - this.landSquash * 0.28;
+    p.hips.scale.y = 1 - this.landSquash * 0.18;
+    p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
+
+    if (hspeed < 0.4 && this.grounded) {
+      const b = Math.sin(this.bobT * 1.7) * 0.02;
+      p.hips.position.y = 0.90 + b;
+      p.legs.l.rotation.x *= 0.85;
+      p.legs.r.rotation.x *= 0.85;
+      p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, 0.06 + b, 0.12);
+      p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, 0.06 - b, 0.12);
+    }
+  }
+
+  /* ===========================================================
+     THE NEW WALK
+
+     Six things the old one did not do, in rough order of how much each
+     one is worth:
+
+     1. KNEES. The swinging leg bends and the standing leg stays straight.
+        Without this the stride has to be small enough that the foot never
+        goes through the floor, which is why the old one shuffled.
+     2. WEIGHT. The hips drop onto the leg that is taking the load and
+        rise off it — twice a stride, and out of phase with the bob, so
+        the body settles rather than hovering.
+     3. SWAY. The hips roll toward the standing leg. This is the single
+        cue that reads as "there is a person in there".
+     4. COUNTER-ROTATION. The shoulders turn against the hips. Every
+        walking animal does it and it is invisible until it is missing.
+     5. LEAN. You lean into a run, and the faster you go the more.
+     6. AN UNEVEN STRIDE. A leg swings forward faster than it swings back.
+        A plain sine spends equal time either way, which is what makes a
+        pendulum look like a pendulum.
+     =========================================================== */
+  _walkWeighted(dt, hspeed, running) {
+    const p = this.parts;
+    const ph = this.walkPhase;
+    const moving = hspeed > 0.4;
+
+    /* ---- the airborne tuck, which is its own thing ---- */
+    if (!this.grounded) {
+      const t = THREE.MathUtils.clamp(-this.vel.y / 12 + 0.5, 0, 1);
+      const L = (a, b, k = 0.2) => THREE.MathUtils.lerp(a, b, k);
+      p.legs.l.rotation.x = L(p.legs.l.rotation.x, -0.62 + t * 0.8);
+      p.legs.r.rotation.x = L(p.legs.r.rotation.x, 0.30 - t * 0.45);
+      if (p.knees) {
+        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.95 - t * 0.55);
+        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.35 + t * 0.30);
+      }
+      p.arms.l.rotation.x = L(p.arms.l.rotation.x, -1.5);
+      p.arms.r.rotation.x = L(p.arms.r.rotation.x, -1.5);
+      if (p.elbows) {
+        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.55);
+        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.55);
+      }
+      p.hips.rotation.z = L(p.hips.rotation.z, 0);
+      p.torso.rotation.x = L(p.torso.rotation.x, 0.10);
+      p.torso.rotation.z = L(p.torso.rotation.z, 0);
+      this.landSquash *= 0.86;
+      p.hips.position.y = 0.90 - this.landSquash * 0.28;
+      p.hips.scale.y = 1 - this.landSquash * 0.18;
+      p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
+      if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
+      return;
+    }
+
+    /* ---- standing still ---- */
+    if (!moving) {
+      const b = Math.sin(this.bobT * 1.7) * 0.02;
+      const sh = Math.sin(this.bobT * 0.9) * 0.03;
+      const L = (a, b2, k = 0.12) => THREE.MathUtils.lerp(a, b2, k);
+      p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.02);
+      p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.02);
+      if (p.knees) {
+        // never locked straight; a standing person keeps a little bend
+        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.07);
+        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.05);
+      }
+      p.arms.l.rotation.x = L(p.arms.l.rotation.x, 0.06 + b);
+      p.arms.r.rotation.x = L(p.arms.r.rotation.x, 0.06 - b);
+      p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.13);
+      p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.13);
+      if (p.elbows) {
+        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.16);
+        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.14);
+      }
+      // he shifts his weight while he stands there, very slowly
+      p.hips.rotation.z = L(p.hips.rotation.z, sh * 0.5);
+      p.hips.rotation.y = L(p.hips.rotation.y, 0);
+      p.torso.rotation.x = L(p.torso.rotation.x, 0.02);
+      p.torso.rotation.z = L(p.torso.rotation.z, -sh * 0.35);
+      this.landSquash *= 0.86;
+      p.hips.position.y = 0.90 + b - this.landSquash * 0.28;
+      p.hips.scale.y = 1 - this.landSquash * 0.18;
+      p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
+      if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
+      return;
+    }
+
+    /* ---- walking ----
+       `skew` bends the sine so the forward half of the stride happens
+       faster than the back half, which is what a leg actually does. */
+    const amp = 0.52 + running * 0.46;
+    const skew = (a) => Math.sin(a + Math.sin(a) * 0.28);
+    const L = skew(ph);
+    const R = skew(ph + Math.PI);
+
+    p.legs.l.rotation.x = L * amp;
+    p.legs.r.rotation.x = R * amp;
+
+    /* The knee bends on the way THROUGH, not at the ends: it is straight
+       at full stride either way and folded in the middle as the foot
+       passes under the body. cos of twice the phase, clamped to positive,
+       is exactly that shape. */
+    if (p.knees) {
+      const bendL = Math.max(0, -Math.cos(ph * 2 + 0.6));
+      const bendR = Math.max(0, -Math.cos(ph * 2 + 0.6 + Math.PI * 2));
+      const kAmp = 0.55 + running * 0.75;
+      // and the leg that is behind you bends more than the one in front
+      p.knees.l.rotation.x = (bendL * 0.55 + Math.max(0, -L) * 0.75) * kAmp;
+      p.knees.r.rotation.x = (bendR * 0.55 + Math.max(0, -R) * 0.75) * kAmp;
+    }
+
+    /* Arms swing against the legs, and lag them by about a tenth of a
+       stride — an arm is heavier than it looks and does not turn round
+       the instant the leg does. */
+    const lag = 0.32;
+    const aL = skew(ph + Math.PI - lag), aR = skew(ph - lag);
+    const aAmp = 0.42 + running * 0.62;
+    p.arms.l.rotation.x = aL * aAmp;
+    p.arms.r.rotation.x = aR * aAmp;
+    p.arms.l.rotation.z = 0.14 + running * 0.06;
+    p.arms.r.rotation.z = -0.14 - running * 0.06;
+    if (p.elbows) {
+      // the elbow closes as the arm comes forward and opens behind you
+      const eAmp = 0.30 + running * 0.55;
+      p.elbows.l.rotation.x = (0.18 + Math.max(0, aL) * 0.9) * eAmp;
+      p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
+    }
+
+    /* ---- what the body does about all that ---- */
+    // the hips roll toward whichever leg is carrying you
+    p.hips.rotation.z = -Math.sin(ph) * (0.045 + running * 0.05);
+    // and twist with the stride, with the shoulders twisting back
+    const twist = Math.sin(ph) * (0.06 + running * 0.09);
+    p.hips.rotation.y = twist;
+    if (this.throwAnim <= 0) {
+      p.torso.rotation.y = THREE.MathUtils.lerp(p.torso.rotation.y, -twist * 1.9, 0.4);
+    }
+    p.torso.rotation.z = Math.sin(ph) * (0.03 + running * 0.04);
+    // you lean into a run
+    p.torso.rotation.x = 0.03 + running * 0.13;
+
+    /* The body drops onto each foot and rises off it: twice a stride, and
+       lowest just after the foot lands, which is a quarter-stride out of
+       phase with the naive |sin| the old cycle used. */
+    const drop = Math.cos(ph * 2) * (0.020 + running * 0.030);
+    this.landSquash *= 0.86;
+    p.hips.position.y = 0.90 + drop - 0.012 * running - this.landSquash * 0.28;
+    p.hips.scale.y = 1 - this.landSquash * 0.18;
+    p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
   }
 
   updateCamera(dt, groundOf) {

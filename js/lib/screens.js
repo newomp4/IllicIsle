@@ -655,6 +655,8 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
 /* ===========================================================
    SCREEN STACK
    =========================================================== */
+const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false });
+
 export class ScreenStack {
   constructor(game) {
     this.game = game;
@@ -687,12 +689,18 @@ export class ScreenStack {
   replace(name, data) { this.stack.length = 0; return this.push(name, data); }
   has(name) { return this.stack.some((s) => s.name === name); }
 
-  key(code) {
+  /**
+   * `mods` carries shift/ctrl/alt for the few screens that want a chord —
+   * the title's shift+enter into the old single-player story, for one.
+   * Everything else ignores it, and a caller that passes nothing gets an
+   * empty object rather than undefined.
+   */
+  key(code, mods = EMPTY_MODS) {
     const s = this.top;
     if (!s) return false;
     const def = SCREENS[s.name];
     if (!def) return false;
-    return def.key ? def.key(code, s, this.game, this) !== false : false;
+    return def.key ? def.key(code, s, this.game, this, mods) !== false : false;
   }
 
   /** Screen-space click, already converted to canvas pixels. */
@@ -977,10 +985,10 @@ export const SCREENS = {
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'ILLIC ISLE');
       drawText(x, 'CHOOSE A WAY TO PLAY', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
-      const rows = menuList(x, ['SINGLE PLAYER', 'CASTAWAYS  (3-10 PLAYERS)'],
+      const rows = menuList(x, ['CASTAWAYS  (3-10 PLAYERS)', 'THE OLD STORY  (ALONE)'],
         s.sel, W / 2, b.top + 18, t, { width: 180, gap: 16 });
-      const blurb = s.sel === 0
-        ? 'Wash ashore alone. Wake four Pendulums,\nopen the temple, take the Idol.'
+      const blurb = s.sel === 1
+        ? 'Wash ashore alone. Wake four Pendulums,\nopen the temple, take the Idol.\nThe game this was before it was this one.'
         : 'Wash ashore together. Some of you are\nRogue Agents, and nobody knows who.\nDo the work. Watch the paths people take.';
       x.fillStyle = GOLD_DK;
       x.fillRect(W / 2 - 60, b.top + 48, 120, 1);
@@ -993,7 +1001,7 @@ export const SCREENS = {
     },
     key(code, s, g, st) {
       return nav(code, s, 2, (i) => {
-        if (i === 0) { st.clear(); g.beginGame(); }
+        if (i === 1) { st.clear(); g.beginGame(); }
         else st.replace('mpMenu');
       }, () => st.replace('title'));
     },
@@ -1003,14 +1011,20 @@ export const SCREENS = {
   mpMenu: {
     init(s, g) {
       s.who = (localStorage.getItem('illicisle.name') || '').toUpperCase();
-      s.code = '';
-      s.field = 0;           // 0 name, 1 code
+      /* A room code in the address bar fills the box in and puts the caret
+         on your name, which is the only thing left to type. That is what
+         the LINK button in the lobby copies. */
+      const hash = (location.hash || '').replace('#', '').toUpperCase()
+        .replace(/[^A-Z0-9]/g, '').slice(0, 4);
+      s.code = hash;
+      s.field = hash ? 0 : 0;
+      s.invited = !!hash;
       s.busy = false;
       s.err = '';
       s.status = '';
     },
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, 'CASTAWAYS');
+      const b = frame(x, W, H, s.invited ? 'YOU WERE INVITED' : 'CASTAWAYS');
       const caret = (on) => (on && Math.floor(t * 3) % 2 ? '_' : '');
 
       // name
@@ -1121,16 +1135,46 @@ export const SCREENS = {
       const b = frame(x, W, H, 'THE BEACH');
       const players = [...g.mp.view.players.values()];
 
-      // the code, big, because saying it out loud is the whole handshake
+      /* The code, big, with two ways of getting it to somebody: COPY puts
+         the code on the clipboard, LINK puts a whole URL on it that opens
+         the game and fills the code in. Reading four characters down a
+         voice call was the only way to do this and it is the one part of
+         starting a game that people got wrong. */
       const code = g.mp.room || '----';
       const cw = textWidth(code, 3) + 22;
       const cx = Math.round((W - cw) / 2);
       field(x, cx, b.top - 1, cw, 29, true);
       drawText(x, code, { x: W / 2, y: b.top + 3, scale: 3, align: 'center', color: GOLD });
-      drawText(x, 'ROOM CODE - SEND IT TO YOUR FRIENDS',
-        { x: W / 2, y: b.top + 33, scale: 1, align: 'center', color: DIM });
 
-      let y = b.top + 48;
+      const rows = [];
+      {
+        const BW = 54, GAP = 6;
+        const by = b.top + 32;
+        const bx0 = Math.round(W / 2 - (BW * 2 + GAP) / 2);
+        const fresh = s.copied && s.t - s.copied < 1.6;
+        rows.push({
+          ...pressButton(x, bx0, by, BW, fresh && s.copiedWhat === 'code' ? 'COPIED' : 'C  COPY', {
+            hit: fresh && s.copiedWhat === 'code' ? 1 - (s.t - s.copied) / 1.6 : 0,
+          }),
+          copyCode: true,
+        });
+        rows.push({
+          ...pressButton(x, bx0 + BW + GAP, by, BW,
+            fresh && s.copiedWhat === 'link' ? 'COPIED' : 'L  LINK', {
+              hit: fresh && s.copiedWhat === 'link' ? 1 - (s.t - s.copied) / 1.6 : 0,
+            }),
+          copyLink: true,
+        });
+        const failed = fresh && s.copiedWhat === 'failed';
+        drawText(x, failed ? 'THE CLIPBOARD SAID NO - READ IT OUT'
+          : (fresh
+            ? (s.copiedWhat === 'link' ? 'A LINK IS ON YOUR CLIPBOARD' : 'THE CODE IS ON YOUR CLIPBOARD')
+            : 'SEND THIS TO YOUR FRIENDS'),
+        { x: W / 2, y: by + 15, scale: 1, align: 'center',
+          color: failed ? RED : (fresh ? JADE : DIM) });
+      }
+
+      let y = b.top + 62;
       drawText(x, `${players.length} ASHORE`, { x: 30, y, scale: 1, color: DIM });
       y += 12;
       for (const p of players) {
@@ -1146,27 +1190,85 @@ export const SCREENS = {
       const agents = n >= 9 ? 3 : n >= 6 ? 2 : 1;
       if (n >= 3) {
         drawText(x, `${agents} ROGUE AGENT${agents === 1 ? '' : 'S'} AMONG YOU`,
-          { x: W - 30, y: b.top + 48, scale: 1, align: 'right', color: RED });
+          { x: W - 30, y: b.top + 62, scale: 1, align: 'right', color: RED });
       }
 
-      let rows = [];
       if (g.mp.dev) {
-        drawText(x, 'DEV MODE', { x: W / 2, y: b.top + 33, scale: 1, align: 'center', color: JADE });
+        drawText(x, 'DEV MODE', { x: W - 14, y: b.top + 4, scale: 1, align: 'right', color: JADE });
       }
       if (g.isHost) {
         const can = players.length >= (g.mp.dev ? 1 : 3);
-        rows = menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS', 'ROUND SETTINGS'],
-          s.sel, W / 2, b.bottom - 40, t, { width: 150, gap: 15 });
+        rows.push(...menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS', 'ROUND SETTINGS'],
+          s.sel, W / 2, b.bottom - 40, t, { width: 150, gap: 15 }));
         if (!can) drawText(x, 'THREE ASHORE AT LEAST, TEN AT MOST',
           { x: W / 2, y: b.bottom - 52, scale: 1, align: 'center', color: DIM });
       } else {
-        drawText(x, 'WAITING FOR THE HOST', { x: W / 2, y: b.bottom - 22, scale: 1, align: 'center', color: JADE });
+        // something that moves, so a wait does not look like a hang
+        const dots = '.'.repeat(1 + (Math.floor(t * 1.6) % 3));
+        drawText(x, `WAITING FOR THE HOST${dots}`,
+          { x: W / 2, y: b.bottom - 22, scale: 1, align: 'center', color: JADE });
       }
-      footer(x, W, H, g.isHost ? 'UP DOWN CHOOSE   ENTER PICK   ESC LEAVE' : 'ESC LEAVE');
+      footer(x, W, H, g.isHost
+        ? 'C COPY   L LINK   ENTER PICK   ESC LEAVE'
+        : 'C COPY   L LINK   ESC LEAVE');
       return rows;
+    },
+    /**
+     * Put something on the clipboard and say so.
+     *
+     * navigator.clipboard only exists in a secure context, and playing on a
+     * LAN means somebody is on http://192.168.something — where it is not
+     * there at all. So: try the modern one, and fall back to the old
+     * hidden-textarea trick, which works anywhere. If BOTH fail, say so
+     * rather than flashing COPIED at somebody whose clipboard is empty.
+     */
+    _copy(s, g, what) {
+      const code = g.mp.room || '';
+      if (!code) { g.audio?.sfx('deny'); return; }
+      const text = what === 'link'
+        ? `${location.origin}${location.pathname}#${code}`
+        : code;
+
+      const ok = () => { s.copied = s.t; s.copiedWhat = what; g.audio?.sfx('confirm'); };
+      const oldWay = () => {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;top:-999px;opacity:0';
+          document.body.appendChild(ta);
+          ta.select();
+          const done = document.execCommand('copy');
+          document.body.removeChild(ta);
+          if (done) { ok(); return true; }
+        } catch (e) { /* fall through to saying it did not work */ }
+        return false;
+      };
+
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(() => {
+          if (!oldWay()) {
+            s.copied = s.t;
+            s.copiedWhat = 'failed';
+            s.failedText = text;
+            g.audio?.sfx('deny');
+          }
+        });
+        // assume it worked until told otherwise, so the press feels instant
+        ok();
+        return;
+      }
+      if (!oldWay()) {
+        s.copied = s.t;
+        s.copiedWhat = 'failed';
+        s.failedText = text;
+        g.audio?.sfx('deny');
+      }
     },
     key(code, s, g, st) {
       if (code === 'Escape') { location.reload(); return true; }
+      if (code === 'KeyC') { this._copy(s, g, 'code'); return true; }
+      if (code === 'KeyL') { this._copy(s, g, 'link'); return true; }
       if (!g.isHost) return true;
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
@@ -1177,8 +1279,14 @@ export const SCREENS = {
       return true;
     },
     click(row, i, s, g, st) {
-      if (i === 1) { st.push('mpSettings'); return true; }
-      if (g.isHost) g.startMatch();
+      if (row?.copyCode) { this._copy(s, g, 'code'); return true; }
+      if (row?.copyLink) { this._copy(s, g, 'link'); return true; }
+      /* The menu rows are no longer the first thing in the list — the two
+         copy buttons are — so they cannot be found by index any more. */
+      if (!g.isHost) return true;
+      const menuAt = i - 2;
+      if (menuAt === 1) { st.push('mpSettings'); return true; }
+      if (menuAt === 0) g.startMatch();
       return true;
     },
   },
@@ -5669,11 +5777,30 @@ export const SCREENS = {
       if (Math.floor(t * 1.5) % 2 === 0) {
         drawText(x, 'PRESS ENTER', { x: L, y: H - 13, scale: 1, color: GOLD });
       }
+      /* The castaway story is still in here, but it is not the front door
+         any more. Holding shift on PLAY takes you to it, and the hint only
+         appears once you are sitting on PLAY. */
+      if (s.sel === 0) {
+        drawText(x, 'SHIFT+ENTER  THE OLD STORY', {
+          x: L, y: H - 32, scale: 1,
+          color: Math.floor(t * 2) % 2 ? '#6a5c40' : '#4a4030',
+        });
+      }
       return rows;
     },
-    key(code, s, g) {
+    key(code, s, g, st, mods) {
+      /* PLAY is Castaways. That is the game now; the single-player hunt for
+         the Idol is the thing that was here first and it is kept on a key
+         combination rather than given half the front page. */
+      if ((code === 'Enter' || code === 'KeyE' || code === 'Space') && s.sel === 0
+          && mods && mods.shift) {
+        menuFlash();
+        g.screens.clear();
+        g.beginGame();
+        return true;
+      }
       return nav(code, s, 4, (i) => {
-        if (i === 0) g.screens.replace('mode');
+        if (i === 0) g.screens.replace('mpMenu');
         else if (i === 1) g.screens.push('controls');
         else if (i === 2) g.screens.push('options');
         else g.screens.push('lore');
@@ -6250,8 +6377,14 @@ const OPTION_DEFS = [
     get: (g) => g.settings.crt, set: (g, v) => (g.settings.crt = v) },
   { label: 'FOLIAGE', values: [{ v: 0.55, n: 'LOW' }, { v: 1, n: 'NORMAL' }, { v: 1.45, n: 'LUSH' }],
     get: (g) => g.settings.density, set: (g, v) => (g.settings.density = v) },
-  { label: 'DAY LENGTH', values: [{ v: 240, n: '4 MIN' }, { v: 480, n: '8 MIN' }, { v: 99999, n: 'ALWAYS DAY' }],
+  { label: 'DAY LENGTH', values: [{ v: 360, n: '6 MIN' }, { v: 240, n: '4 MIN' }, { v: 600, n: '10 MIN' }, { v: 99999, n: 'ALWAYS DAY' }],
     get: (g) => g.DAY_LEN, set: (g, v) => (g.DAY_LEN = v) },
+  /* The old walk is kept in the code, not just in the history, so it can
+     be put back without a build. WEIGHTED has knees, hip sway and
+     counter-rotation; PLAIN is the original pendulum. */
+  { label: 'WALK CYCLE', values: [{ v: 'weighted', n: 'WEIGHTED' }, { v: 'plain', n: 'PLAIN' }],
+    get: (g) => (g.settings.walk || 'weighted'),
+    set: (g, v) => { g.settings.walk = v; g.applyWalkStyle?.(); } },
   { label: 'AUDIO', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
     get: (g) => g.settings.audio, set: (g, v) => (g.settings.audio = v) },
 ];

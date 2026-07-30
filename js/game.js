@@ -326,7 +326,7 @@ export class Game {
 
     this.settings = {
       res: 224, jitter: true, crt: true, density: 1, audio: true,
-      sens: 1.4, invert: false,
+      sens: 1.4, invert: false, walk: 'weighted',
     };
     this.loadSettings();
 
@@ -438,7 +438,13 @@ export class Game {
     }
   }
 
+  /** Push the chosen walk on to every body in the game. */
+  applyWalkStyle() {
+    Player.walkStyle = this.settings.walk === 'plain' ? 'plain' : 'weighted';
+  }
+
   applySettings() {
+    this.applyWalkStyle();
     this._lastW = this._lastH = -1;          // force the next _resize through
     this.pipeline.setBaseHeight(this.settings.res);
     this.pipeline.setCRT(this.settings.crt);
@@ -1958,7 +1964,8 @@ export class Game {
       }
       if (e.metaKey || e.ctrlKey) return;
       e.preventDefault();
-      this.screens.key(k);
+      // shift is a chord on a couple of screens, so it has to travel with the key
+      this.screens.key(k, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey });
       return;
     }
     switch (k) {
