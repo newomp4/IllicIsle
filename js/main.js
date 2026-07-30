@@ -49,33 +49,43 @@ async function boot() {
     return;
   }
 
+  /* ---- straight in ----
+     There used to be a PRESS ANY KEY here, and it was not a flourish: a
+     browser will not let an AudioContext start without a gesture, so the
+     game had to wait for one before it could have any sound.
+
+     It does not have to wait to be VISIBLE though. The title comes up the
+     moment the loading finishes, and the audio arms itself on the first
+     thing you touch — which is the keystroke that gets you off the title
+     anyway, so nobody ever notices the difference. */
   fill.style.width = '100%';
-  text.textContent = 'PRESS ANY KEY';
-  await waitForGesture();
+  text.textContent = 'READY';
 
-  game.audio.init();
-  game.audio.setEnabled(game.settings.audio);
-  game.audio.resume();
+  const startAudio = () => {
+    window.removeEventListener('keydown', startAudio);
+    window.removeEventListener('mousedown', startAudio);
+    window.removeEventListener('touchstart', startAudio);
+    try {
+      game.audio.init();
+      game.audio.setEnabled(game.settings.audio);
+      game.audio.resume();
+      // whatever the title asked for, now that there is something to play it
+      game.audio.playMusic(game.state === 'title' ? 'title' : null);
+    } catch (e) { /* no sound is not a reason to have no game */ }
+  };
+  window.addEventListener('keydown', startAudio);
+  window.addEventListener('mousedown', startAudio);
+  window.addEventListener('touchstart', startAudio, { passive: true });
 
-  $('loading').classList.add('hidden');
-  if (touchOnly) $('nomobile').classList.remove('hidden');
-
+  /* A beat with the bar sitting at full, then it fades. Cutting straight
+     from a full progress bar to a title screen reads as a glitch; a third
+     of a second reads as the thing finishing. */
   game.startTitle();
   game.loop();
-}
-
-function waitForGesture() {
-  return new Promise((res) => {
-    const go = () => {
-      window.removeEventListener('keydown', go);
-      window.removeEventListener('mousedown', go);
-      window.removeEventListener('touchstart', go);
-      res();
-    };
-    window.addEventListener('keydown', go);
-    window.addEventListener('mousedown', go);
-    window.addEventListener('touchstart', go, { passive: true });
-  });
+  await new Promise((r) => setTimeout(r, 260));
+  $('loading').classList.add('going');
+  setTimeout(() => $('loading').classList.add('hidden'), 400);
+  if (touchOnly) $('nomobile').classList.remove('hidden');
 }
 
 $('nomobile-anyway')?.addEventListener('click', () => {

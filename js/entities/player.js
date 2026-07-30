@@ -644,10 +644,10 @@ export class Player {
         p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.14);
       }
       // he shifts his weight while he stands there, very slowly
-      p.hips.rotation.z = L(p.hips.rotation.z, sh * 0.5);
+      p.hips.rotation.z = L(p.hips.rotation.z, sh * 0.22);
       p.hips.rotation.y = L(p.hips.rotation.y, 0);
       p.torso.rotation.x = L(p.torso.rotation.x, 0.02);
-      p.torso.rotation.z = L(p.torso.rotation.z, -sh * 0.35);
+      p.torso.rotation.z = L(p.torso.rotation.z, -sh * 0.16);
       this.landSquash *= 0.86;
       p.hips.position.y = 0.90 + b - this.landSquash * 0.28;
       p.hips.scale.y = 1 - this.landSquash * 0.18;
@@ -697,23 +697,30 @@ export class Player {
       p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
     }
 
-    /* ---- what the body does about all that ---- */
+    /* ---- what the body does about all that ----
+       Everything here is a THIRD of what it was. The first pass rolled the
+       hips five and a half degrees and twisted them eight and a half, and
+       because the legs and arms hang off the hips the whole body went with
+       it — from behind he looked like he was walking a deck in a swell.
+
+       A real walk has all of these and they are all nearly invisible: you
+       notice them missing, not present. Two degrees of roll is plenty. */
     // the hips roll toward whichever leg is carrying you
-    p.hips.rotation.z = -Math.sin(ph) * (0.045 + running * 0.05);
+    p.hips.rotation.z = -Math.sin(ph) * (0.014 + running * 0.016);
     // and twist with the stride, with the shoulders twisting back
-    const twist = Math.sin(ph) * (0.06 + running * 0.09);
+    const twist = Math.sin(ph) * (0.022 + running * 0.030);
     p.hips.rotation.y = twist;
     if (this.throwAnim <= 0) {
-      p.torso.rotation.y = THREE.MathUtils.lerp(p.torso.rotation.y, -twist * 1.9, 0.4);
+      p.torso.rotation.y = THREE.MathUtils.lerp(p.torso.rotation.y, -twist * 1.6, 0.4);
     }
-    p.torso.rotation.z = Math.sin(ph) * (0.03 + running * 0.04);
-    // you lean into a run
-    p.torso.rotation.x = 0.03 + running * 0.13;
+    p.torso.rotation.z = Math.sin(ph) * (0.010 + running * 0.012);
+    // you lean into a run, but you do not fold over
+    p.torso.rotation.x = 0.02 + running * 0.085;
 
     /* The body drops onto each foot and rises off it: twice a stride, and
        lowest just after the foot lands, which is a quarter-stride out of
        phase with the naive |sin| the old cycle used. */
-    const drop = Math.cos(ph * 2) * (0.020 + running * 0.030);
+    const drop = Math.cos(ph * 2) * (0.013 + running * 0.020);
     this.landSquash *= 0.86;
     p.hips.position.y = 0.90 + drop - 0.012 * running - this.landSquash * 0.28;
     p.hips.scale.y = 1 - this.landSquash * 0.18;

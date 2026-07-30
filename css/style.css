@@ -138,7 +138,14 @@ kbd{
 }
 
 /* ---------- loading ---------- */
-#loading{ background:#000; z-index:60; }
+#loading{
+  background:#000; z-index:60;
+  /* It fades out on its own now rather than being switched off behind a
+     keypress, so the last thing the loading screen does is get out of the
+     way instead of vanishing. */
+  transition: opacity .32s ease-out;
+}
+#loading.going{ opacity:0; pointer-events:none; }
 .load-inner{ width:min(84vw,520px); }
 .load-logo{
   font-family:var(--f-title);

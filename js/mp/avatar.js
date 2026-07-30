@@ -282,13 +282,15 @@ export class Avatar {
       p.elbows.l.rotation.x = (0.18 + Math.max(0, aL) * 0.9) * eAmp;
       p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
     }
-    p.hips.rotation.z = -Math.sin(ph) * (0.045 + running * 0.05);
-    const twist = Math.sin(ph) * (0.06 + running * 0.09);
+    // the same numbers as Player._walkWeighted; see the note there about
+    // why they are a third of what they started at
+    p.hips.rotation.z = -Math.sin(ph) * (0.014 + running * 0.016);
+    const twist = Math.sin(ph) * (0.022 + running * 0.030);
     p.hips.rotation.y = twist;
-    p.torso.rotation.y = -twist * 1.9;
-    p.torso.rotation.z = Math.sin(ph) * (0.03 + running * 0.04);
-    p.torso.rotation.x = 0.03 + running * 0.13;
-    p.hips.position.y = 0.90 + Math.cos(ph * 2) * (0.020 + running * 0.030) - 0.012 * running;
+    p.torso.rotation.y = -twist * 1.6;
+    p.torso.rotation.z = Math.sin(ph) * (0.010 + running * 0.012);
+    p.torso.rotation.x = 0.02 + running * 0.085;
+    p.hips.position.y = 0.90 + Math.cos(ph * 2) * (0.013 + running * 0.020) - 0.010 * running;
   }
 
   /**

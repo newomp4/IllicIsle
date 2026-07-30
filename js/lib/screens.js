@@ -601,26 +601,27 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
   const rows = [];
   // the highlight, drawn once at wherever it has got to
   {
+    /* The highlight used to squash and grow when you chose a row. It reads
+       as a bouncing button on a phone; this is a set from 1998. It flashes
+       and that is all. */
     const hy = Math.round(top + m.at * gap) - 3;
-    const squash = Math.round(m.hit * 2);
-    const hw = w + Math.round(m.hit * 4);
-    const hx = Math.round(cx - hw / 2);
-    x.fillStyle = m.hit > 0 ? '#6a4a18' : '#3a2a10';
-    x.fillRect(hx, hy + squash, hw, 11 - squash * 2);
+    const hx = Math.round(cx - w / 2);
+    x.fillStyle = m.hit > 0.5 ? '#7a5420' : '#3a2a10';
+    x.fillRect(hx, hy, w, 11);
     // the rails either side
-    x.fillStyle = m.hit > 0 ? '#fff3c4' : GOLD;
-    x.fillRect(hx, hy + squash, 1, 11 - squash * 2);
-    x.fillRect(hx + hw - 1, hy + squash, 1, 11 - squash * 2);
+    x.fillStyle = m.hit > 0.5 ? '#fff3c4' : GOLD;
+    x.fillRect(hx, hy, 1, 11);
+    x.fillRect(hx + w - 1, hy, 1, 11);
     /* A band of light running across it. Two seconds apart, a third of a
        second long, and it only touches the highlighted row — which is what
        makes it read as the selection being alive rather than the screen. */
     const sw = (t % 2.2) / 0.34;
     if (sw < 1) {
-      const bx = Math.round(hx + sw * (hw + 16)) - 8;
+      const bx = Math.round(hx + sw * (w + 16)) - 8;
       for (let i = 0; i < 8; i++) {
         const a = (0.13 * (1 - Math.abs(i - 3.5) / 4)).toFixed(3);
         x.fillStyle = `rgba(255,230,150,${a})`;
-        x.fillRect(bx + i, hy + squash + 1, 1, 9 - squash * 2);
+        x.fillRect(bx + i, hy + 1, 1, 9);
       }
     }
   }
@@ -767,31 +768,28 @@ export class ScreenStack {
     if (!def?.draw) return;
 
     /* ---- a screen arriving ----
-       Every interface in the game used to simply BE there on the frame it
-       was pushed. A set that has just been switched on does not do that: it
-       opens out from a line, overshoots a little, and settles. A sixth of a
-       second, so it is felt rather than waited for. */
-    const OPEN = 0.17;
+       This used to squash in from a twelfth of its height with an
+       overshoot on the way, which is a cartoon and read as one. A CRT
+       switching a page in does not bounce; it comes up over a couple of
+       frames with the beam still settling. So: no scaling at all, a very
+       short fade, and one bright line running down the picture as it
+       arrives. Ten frames, and you feel it rather than watch it. */
+    const OPEN = 0.11;
+    this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
     if (s.t < OPEN) {
       const k = s.t / OPEN;
-      const e = 1 - Math.pow(1 - k, 3);
-      const sy = 0.12 + e * 0.88 + Math.sin(k * Math.PI) * 0.05;
-      const sx = 1 + Math.sin(k * Math.PI) * 0.035;
-      x.save();
-      x.translate(W / 2, H / 2);
-      x.scale(sx, sy);
-      x.translate(-W / 2, -H / 2);
-      this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
-      x.restore();
-      // the line of light it opens out of
-      const a = (1 - k) * 0.5;
-      if (a > 0.01) {
-        x.fillStyle = `rgba(255,244,214,${a.toFixed(3)})`;
-        x.fillRect(0, Math.round(H / 2) - 1, W, 2);
-      }
-      return;
+      // the page fading up out of black
+      x.fillStyle = `rgba(4,3,2,${(Math.pow(1 - k, 1.6) * 0.85).toFixed(3)})`;
+      x.fillRect(0, 0, W, H);
+      // and the beam settling: one bright line sweeping down it, once
+      const by = Math.round(k * (H + 12)) - 6;
+      const a = (1 - k) * 0.30;
+      x.fillStyle = `rgba(255,244,214,${a.toFixed(3)})`;
+      x.fillRect(0, by, W, 2);
+      x.fillStyle = `rgba(255,244,214,${(a * 0.4).toFixed(3)})`;
+      x.fillRect(0, by - 3, W, 1);
+      x.fillRect(0, by + 3, W, 1);
     }
-    this._rows = def.draw(x, W, H, s, this.game, this.t) || [];
   }
 }
 
@@ -3557,11 +3555,10 @@ export const SCREENS = {
       const cur = listCursor(`shop:${black ? 'b' : 'o'}`, s.sel, list.length);
       {
         const hy = Math.round(36 + cur.at * ROW) - 1;
-        const bump = Math.round(cur.hit * 3);
-        x.fillStyle = cur.hit > 0 ? (black ? '#6a1a12' : '#6a4a18') : (black ? '#3a0e0b' : '#3a2a10');
-        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
-        x.fillStyle = cur.hit > 0 ? '#fff3c4' : accent;
-        x.fillRect(LX - bump, hy, 2, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? (black ? '#7a2016' : '#7a5420') : (black ? '#3a0e0b' : '#3a2a10');
+        x.fillRect(LX, hy, LW, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? '#fff3c4' : accent;
+        x.fillRect(LX, hy, 2, ROW - 1);
         const sw = (t % 2.4) / 0.36;
         if (sw < 1) {
           const bx2 = Math.round(LX + sw * (LW + 16)) - 8;
@@ -3987,11 +3984,10 @@ export const SCREENS = {
       const cur = listCursor('cathy', s.sel, list.length);
       {
         const hy = Math.round(52 + cur.at * ROW) - 1;
-        const bump = Math.round(cur.hit * 3);
-        x.fillStyle = cur.hit > 0 ? '#6a4a18' : '#3a2a10';
-        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
-        x.fillStyle = cur.hit > 0 ? '#fff3c4' : GOLD;
-        x.fillRect(LX - bump, hy, 2, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? '#7a5420' : '#3a2a10';
+        x.fillRect(LX, hy, LW, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? '#fff3c4' : GOLD;
+        x.fillRect(LX, hy, 2, ROW - 1);
       }
       list.forEach((it, i) => {
         const on = i === s.sel;
@@ -4507,11 +4503,10 @@ export const SCREENS = {
       const cur = listCursor('bar', s.sel, list.length);
       {
         const hy = Math.round(22 + cur.at * ROW) - 1;
-        const bump = Math.round(cur.hit * 3);
-        x.fillStyle = cur.hit > 0 ? '#6a4418' : '#3a2410';
-        x.fillRect(LX - bump, hy, LW + bump * 2, ROW - 1);
-        x.fillStyle = cur.hit > 0 ? '#fff3c4' : '#ffb84a';
-        x.fillRect(LX - bump, hy, 2, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? '#7a5018' : '#3a2410';
+        x.fillRect(LX, hy, LW, ROW - 1);
+        x.fillStyle = cur.hit > 0.5 ? '#fff3c4' : '#ffb84a';
+        x.fillRect(LX, hy, 2, ROW - 1);
       }
       list.forEach((it, i) => {
         const on = i === s.sel;
