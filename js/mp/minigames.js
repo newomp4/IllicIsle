@@ -364,7 +364,7 @@ const splice = {
    =========================================================== */
 const stitch = {
   name: 'PATCH THE SAIL',
-  hint: 'FOLLOW THE TEAR   BOTH SIDES',
+  hint: 'ARROWS MOVE THE NEEDLE   SPACE STITCH',
   init(s, rng) {
     /* Two tears, ten holes, and they alternate sides — so it is a route to
        walk rather than six dots in a row you can sweep through. */
@@ -384,6 +384,13 @@ const stitch = {
     s.order = [];
     for (let i = 0; i < 5; i++) for (let tr = 0; tr < TEARS; tr++) s.order.push([tr, i]);
     s.at = 0; s.wrong = 0; s.pull = 0;
+    /* The needle, in sail space. This game used to be click-only — its key()
+       returned false for everything — so on a keyboard PATCH THE SAIL could
+       not be played at all. You steer the needle now and press to put a
+       stitch in whatever is under it, which works either way. */
+    const first = s.tears[s.order[0][0]][s.order[0][1]];
+    s.nx = first.x; s.ny = first.y;
+    s.miss = 0;
   },
   draw(x, W, H, s, t, dt) {
     if (s.wrong > 0) s.wrong -= dt * 2;
@@ -459,15 +466,39 @@ const stitch = {
       if (!done) rows.push({ x: q.x - 7, y: q.y - 7, w: 15, h: 15, tear, idx });
     });
 
-    // the needle, sitting on the next hole
+    /* ---- the needle you are steering ---- */
+    {
+      const nx2 = Math.round(sx + (s.nx ?? 0.5) * sw);
+      const ny2 = Math.round(sy + (s.ny ?? 0.5) * sh);
+      const bob = Math.round(Math.sin(t * 5) * 2) - Math.round(s.pull * 4);
+      // its shadow on the canvas, which is what puts it above the sail
+      x.fillStyle = 'rgba(60,50,30,.30)';
+      x.fillRect(nx2 + 2, ny2 + 2, 3, 3);
+      // and a ring showing what it would sew
+      const near2 = s.order[s.at] ? P(s.order[s.at][0], s.order[s.at][1]) : null;
+      const over = near2 && Math.hypot(near2.x - nx2, near2.y - ny2) < 9;
+      x.fillStyle = over ? 'rgba(126,200,80,.5)' : (s.miss > 0 ? 'rgba(224,69,58,.5)' : 'rgba(255,210,74,.28)');
+      x.fillRect(nx2 - 5, ny2 - 5, 11, 1);
+      x.fillRect(nx2 - 5, ny2 + 5, 11, 1);
+      x.fillRect(nx2 - 5, ny2 - 5, 1, 11);
+      x.fillRect(nx2 + 5, ny2 - 5, 1, 11);
+      // the needle itself, with thread trailing off it
+      x.fillStyle = '#d8dde0';
+      x.fillRect(nx2 + 4, ny2 - 12 + bob, 1, 9);
+      x.fillRect(nx2 + 3, ny2 - 4 + bob, 3, 2);
+      x.fillStyle = '#8fd8c4';
+      x.fillRect(nx2 + 5, ny2 - 13 + bob, 3, 1);
+      x.fillRect(nx2 + 7, ny2 - 15 + bob, 2, 1);
+    }
+    if (s.miss > 0) s.miss -= dt * 3;
+
+    // and a ghost of the needle over the hole it wants next
     if (nextKey) {
       const q = P(nextKey[0], nextKey[1]);
       const bob = Math.round(Math.sin(t * 5) * 2) - Math.round(s.pull * 4);
-      x.fillStyle = '#d8dde0';
+      x.fillStyle = 'rgba(216,221,224,.35)';
       x.fillRect(q.x + 5, q.y - 12 + bob, 1, 9);
       x.fillRect(q.x + 4, q.y - 4 + bob, 3, 2);
-      x.fillStyle = '#8fd8c4';
-      x.fillRect(q.x + 6, q.y - 13 + bob, 3, 1);
     }
 
     bar(x, 30, H - 40, W - 60, 5, s.at / s.order.length, JADE);
@@ -478,19 +509,44 @@ const stitch = {
     }
     return rows;
   },
-  click(row, i, s) {
-    if (!row || row.idx === undefined) return false;
-    if (row.idx === s.at) {
+  /** One place decides what a stitch does, whichever way you asked for it. */
+  _sew(idx, s) {
+    if (idx === s.at) {
       s.at++; s.pull = 1;
+      // the needle follows the thread to the next hole
+      const nk = s.order[s.at];
+      if (nk) { s.nx = s.tears[nk[0]][nk[1]].x; s.ny = s.tears[nk[0]][nk[1]].y; }
       return s.at >= s.order.length;
     }
     s.wrong = 1;
+    s.miss = 1;
     // drop back to the start of the tear you botched, not the whole sail
     const tear = s.order[s.at]?.[0] ?? 0;
     while (s.at > 0 && s.order[s.at - 1][0] === tear) s.at--;
     return false;
   },
-  key() { return false; },
+  click(row, i, s) {
+    return row?.idx !== undefined ? this._sew(row.idx, s) : false;
+  },
+  key(code, s) {
+    const STEP = 0.035;
+    if (code === 'ArrowLeft' || code === 'KeyA') { s.nx = Math.max(0.02, s.nx - STEP); return false; }
+    if (code === 'ArrowRight' || code === 'KeyD') { s.nx = Math.min(0.98, s.nx + STEP); return false; }
+    if (code === 'ArrowUp' || code === 'KeyW') { s.ny = Math.max(0.02, s.ny - STEP * 1.5); return false; }
+    if (code === 'ArrowDown' || code === 'KeyS') { s.ny = Math.min(0.98, s.ny + STEP * 1.5); return false; }
+    if (code !== 'Space' && code !== 'Enter' && code !== 'KeyE') return false;
+    /* Whatever hole the needle is closest to, if it is close enough. In
+       sail units, since that is what the needle is in. */
+    let best = -1, bestD = 0.055;
+    s.order.forEach(([tear, i], idx) => {
+      if (idx < s.at) return;
+      const p = s.tears[tear][i];
+      const d = Math.hypot(p.x - s.nx, (p.y - s.ny) * 0.62);
+      if (d < bestD) { bestD = d; best = idx; }
+    });
+    if (best < 0) { s.miss = 1; return false; }
+    return this._sew(best, s);
+  },
 };
 
 /* ===========================================================

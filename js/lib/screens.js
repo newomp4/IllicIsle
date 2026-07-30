@@ -78,6 +78,41 @@ function field(x, ox, oy, w, h, active) {
   x.fillRect(ox + w, oy, 1, h);
 }
 
+/**
+ * A counter button that actually goes down when you press it.
+ *
+ * `hit` is 0..1 and decays. At 1 the whole button drops a pixel, loses its
+ * top highlight, gains its bottom shadow and inverts — which is all a
+ * pressed key does, and all it needs to do.
+ */
+function pressButton(x, bx, by, bw, label, opts = {}) {
+  const hit = Math.max(0, Math.min(1, opts.hit || 0));
+  const on = opts.enabled !== false;
+  const accent = opts.accent || GOLD;
+  const down = hit > 0.35 ? 1 : 0;
+  const h = 12;
+  // the shadow it sits on, which is what it drops into
+  x.fillStyle = 'rgba(0,0,0,.55)';
+  x.fillRect(bx, by + 1, bw, h);
+  x.fillStyle = down ? accent : (on ? (opts.fill || '#3a2a10') : '#1a1208');
+  x.fillRect(bx, by + down, bw, h - down);
+  x.fillStyle = on ? accent : '#5a4a30';
+  x.fillRect(bx, by + down, bw, 1);
+  x.fillRect(bx, by + h - 1, bw, 1);
+  x.fillRect(bx, by + down, 1, h - down);
+  x.fillRect(bx + bw - 1, by + down, 1, h - down);
+  if (!down && on) {
+    // a lit top edge while it is up
+    x.fillStyle = 'rgba(255,240,190,.22)';
+    x.fillRect(bx + 1, by + 1, bw - 2, 1);
+  }
+  drawText(x, label, {
+    x: bx + bw / 2, y: by + 3 + down, scale: 1, align: 'center',
+    color: down ? '#160c04' : (on ? (opts.text || GOLD_LT) : '#7a6a4a'),
+  });
+  return { x: bx, y: by, w: bw, h };
+}
+
 function footer(x, W, H, text) {
   drawText(x, text, { x: W / 2, y: H - 17, scale: 1, align: 'center', color: DIM });
 }
@@ -3450,14 +3485,9 @@ export const SCREENS = {
       const label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
         : (afford ? `E   BUY FOR ${dPrice2}` : 'NOT ENOUGH SYNCOIN');
       const bw = RW - 12, bx = RX + 6, byy = RB - (sch ? 32 : 16);
-      x.fillStyle = s.flash > 0 ? accent : (afford && !owned ? (black ? '#3a0e0b' : '#3a2a10') : '#1a1208');
-      x.fillRect(bx, byy, bw, 12);
-      x.fillStyle = afford && !owned ? accent : '#5a4a30';
-      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
-      x.fillRect(bx, byy, 1, 12); x.fillRect(bx + bw - 1, byy, 1, 12);
-      drawText(x, label, {
-        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
-        color: s.flash > 0 ? '#160c04' : (afford && !owned ? GOLD_LT : '#7a6a4a'),
+      pressButton(x, bx, byy, bw, label, {
+        hit: s.flash / 0.3, enabled: afford && !owned, accent,
+        fill: black ? '#3a0e0b' : '#3a2a10',
       });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
 
@@ -3762,14 +3792,7 @@ export const SCREENS = {
       const label = owned ? 'YOU HAVE EATEN THAT'
         : (afford ? `E   BUY FOR ${price}` : 'NOT ENOUGH SYNCOIN');
       const bw = W - 16, bx = 8, byy = H - 16;
-      x.fillStyle = s.flash > 0 ? GOLD : (afford && !owned ? '#3a2a10' : '#1a1208');
-      x.fillRect(bx, byy, bw, 12);
-      x.fillStyle = afford && !owned ? GOLD : '#5a4a30';
-      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
-      drawText(x, label, {
-        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
-        color: s.flash > 0 ? '#160c04' : (afford && !owned ? GOLD_LT : '#7a6a4a'),
-      });
+      pressButton(x, bx, byy, bw, label, { hit: s.flash, enabled: afford && !owned });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
       return rows;
     },
@@ -4066,13 +4089,9 @@ export const SCREENS = {
       const busy = !!s.pour;
       const label = busy ? 'HE IS POURING' : (afford ? `E   ${d.cost} SYNCOIN` : 'NOT ENOUGH SYNCOIN');
       const bw = W - 12, bx = 6, byy = H - 16;
-      x.fillStyle = s.flash > 0 ? '#ffb84a' : (afford && !busy ? '#3a2410' : '#1a1208');
-      x.fillRect(bx, byy, bw, 12);
-      x.fillStyle = afford && !busy ? '#ffb84a' : '#5a4a30';
-      x.fillRect(bx, byy, bw, 1); x.fillRect(bx, byy + 11, bw, 1);
-      drawText(x, label, {
-        x: bx + bw / 2, y: byy + 3, scale: 1, align: 'center',
-        color: s.flash > 0 ? '#160c04' : (afford && !busy ? '#ffd8a0' : '#7a6a4a'),
+      pressButton(x, bx, byy, bw, label, {
+        hit: s.flash / 0.35, enabled: afford && !busy,
+        accent: '#ffb84a', fill: '#3a2410', text: '#ffd8a0',
       });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
       return rows;
