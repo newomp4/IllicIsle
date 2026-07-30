@@ -13,7 +13,7 @@ import { Game, makeGroundWith, setHidden } from '../game.js';
 import { Net, Ticker, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
-import { Avatar, Body, colourHex } from './avatar.js';
+import { Avatar, Body, colourHex, noteSnapshot } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
@@ -21,6 +21,14 @@ import {
   STOCK, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
   itemById, stockFor, VENDOR_IDS,
 } from './market.js';
+
+/* How often the wire carries anything.
+
+   Twenty-five times a second rather than eighteen. The payload is a handful
+   of numbers per player — at ten players that is about seven kilobytes a
+   second — and a shorter interval means the interpolator needs less buffer,
+   which is felt directly as smoother movement. */
+const NET_TICK_MS = 40;
 
 /** Bought and immediately in force; nothing to press. */
 const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
@@ -225,9 +233,10 @@ export class MPGame extends Game {
           t: C.MOVE,
           x: +this.player.pos.x.toFixed(2), y: +this.player.pos.y.toFixed(2),
           z: +this.player.pos.z.toFixed(2), yaw: +this.player.facing.toFixed(2), anim: 0,
+          room: this.roomId,
         });
       }
-    }, 55);
+    }, NET_TICK_MS);
   }
 
   _clientMsg(msg) {
@@ -319,10 +328,26 @@ export class MPGame extends Game {
   _applySnapshot(msg) {
     const M = this.mp;
     const t = now();
-    for (const [id, x, y, z, yaw, anim, alive] of msg.p) {
+    // the interpolation delay is derived from how these actually arrive
+    noteSnapshot(t);
+    const mine = this.roomId;
+    for (const [id, x, y, z, yaw, anim, alive, room] of msg.p) {
       if (id === M.view.selfId) continue;
       const av = M.avatars.get(id);
-      if (av) { av.push(t, x, y, z, yaw, anim); av.alive = !!alive; }
+      if (!av) continue;
+      av.push(t, x, y, z, yaw, anim);
+      av.alive = !!alive;
+      /* Somebody in a different space is not merely far away, they are
+         somewhere else — hide them, and move their body into whichever scene
+         we are looking at when it matches ours. */
+      const theirs = room | 0;
+      av.room = theirs;
+      const together = theirs === mine;
+      av.mesh.visible = together && av.alive !== false;
+      if (together) {
+        const sc = this.scene;
+        if (sc && av.mesh.parent !== sc) sc.add(av.mesh);
+      }
     }
   }
 
@@ -344,13 +369,22 @@ export class MPGame extends Game {
       // everyone else is already ashore
       if (this.state === 'cutscene') this.skipCutscene();
       this.paused = false;
-      this.state = 'island';
-      this.scene = this.islandScene;
+      /* Do NOT drag somebody out of an interior. This used to set the state
+         and the scene unconditionally, so a phase message arriving while you
+         were in the listening post or the room behind the painting left your
+         body in that scene while the camera rendered the island — you were
+         standing in the jungle at the height of the ridge with no way back. */
+      if (!this.inRoom) {
+        this.state = 'island';
+        this.scene = this.islandScene;
+        this.screens.clear();
+        this.ui.show();
+        this._requestLock();
+      }
       setCinemaBars(false);
-      this.screens.clear();
-      this.ui.show();
-      this._requestLock();
     } else if (phase === PHASE.COUNCIL || phase === PHASE.VOTE) {
+      // a council pulls everybody to the fire, wherever they were
+      this.leaveRoom();
       this._teleportToCamp();
       document.exitPointerLock?.();
       if (this.screens.name !== 'mpCouncil') this.screens.replace('mpCouncil', {});
@@ -448,8 +482,10 @@ export class MPGame extends Game {
       ],
       onDone: () => {
         setCinemaBars(false);
-        this.state = 'island';
-        this.scene = this.islandScene;
+        if (!this.inRoom) {
+          this.state = 'island';
+          this.scene = this.islandScene;
+        }
         // whatever is left of the reveal is theirs to sit with the card
         if (this.mp.view.phase === PHASE.REVEAL) {
           if (this.screens.name !== 'mpRole') this.screens.replace('mpRole', {});
@@ -2069,6 +2105,7 @@ export class MPGame extends Game {
     // a moment of black at the bottom of the ladder
     this.pipeline.tint.setHex(0x000000);
     this.pipeline.tintAmt = 0.85;
+    this._rehomeAvatars();
     this.ui.toast('THE LISTENING POST', 'jade', 2600);
   }
 
@@ -2089,9 +2126,10 @@ export class MPGame extends Game {
     this.player.pitch = -0.04;
     this.audio.sfx('door');
     this.audio.sfx('descend');
-    this.audio.playMusic('title');
+    this.audio.playMusic('highroller');
     this.pipeline.tint.setHex(0x000000);
     this.pipeline.tintAmt = 0.8;
+    this._rehomeAvatars();
     this.ui.toast('HIGH ROLLERS', 'gold', 2600);
     setTimeout(() => {
       if (this.state === 'highroller') this.ui.toast('M. BEEF PRESIDING', 'gold', 2600);
@@ -2117,6 +2155,7 @@ export class MPGame extends Game {
       const w = c.localToWorld(new THREE.Vector3(0, 0, 6.4));
       this.player.teleport(w.x, 0.95, w.z, c.rotation.y);
     }
+    this._rehomeAvatars();
     this.audio.sfx('door');
     this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
     this.pipeline.tint.setHex(0xffffff);
@@ -2153,11 +2192,57 @@ export class MPGame extends Game {
     const b = M.bunker;
     if (b) this.player.teleport(b.x + 2.6, heightAt(b.x + 2.6, b.z) + 0.8, b.z, 0);
     M.bunker?.node.userData.setOpen(false);
+    this._rehomeAvatars();
     this.audio.sfx('ladder');
     setTimeout(() => { if (this.state === 'island') this.audio.sfx('hatch'); }, 700);
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.5;
     this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+  }
+
+  /**
+   * Interpolate every avatar and decide whether it can be seen.
+   *
+   * This used to live inside the island branch of update(), after the
+   * interior branches had already returned — so anybody who followed you down
+   * the ladder stood perfectly still, because nothing was advancing their
+   * interpolation.
+   */
+  _updateAvatars(dt) {
+    const M = this.mp;
+    const t = now();
+    const ghost = !this.amAlive;
+    const mine = this.roomId;
+    for (const av of M.avatars.values()) {
+      av.update(dt, t);
+      const rec = M.view.players.get(av.id);
+      // the dead can see the dead; the living cannot — and nobody sees
+      // anybody who is in a different room from them
+      const alive = rec ? (rec.alive !== false || ghost) : true;
+      av.setVisible(alive && (av.room | 0) === mine);
+    }
+  }
+
+  /**
+   * Move every avatar into the scene we are now looking at, or hide it.
+   * Called whenever we cross between the island and an interior.
+   */
+  _rehomeAvatars() {
+    const M = this.mp;
+    const mine = this.roomId;
+    const sc = this.scene;
+    for (const av of M.avatars.values()) {
+      const together = (av.room | 0) === mine;
+      av.mesh.visible = together && av.alive !== false;
+      if (together && sc && av.mesh.parent !== sc) sc.add(av.mesh);
+    }
+    for (const b of M.bodies.values()) {
+      // bodies stay where they fell, which is always the island
+      b.mesh.visible = mine === 0;
+      if (mine === 0 && this.islandScene && b.mesh.parent !== this.islandScene) {
+        this.islandScene.add(b.mesh);
+      }
+    }
   }
 
   /** Positions for the hologram, written into one array that is kept. */
@@ -2261,6 +2346,30 @@ export class MPGame extends Game {
     M.ledgerPending = now();
     if (this.isHost) M.host?._sendLedger('host');
     else this._send({ t: C.LEDGER });
+  }
+
+  /**
+   * Which interior we are standing in. 0 the island, 1 the listening post,
+   * 2 the room behind the painting.
+   *
+   * The rooms are shared: everybody inside one is in the same local
+   * coordinate space, so the ordinary position on the wire is enough to
+   * place them, and this is the one extra number that says which space the
+   * numbers belong to.
+   */
+  /** True while we are inside one of the shared interiors. */
+  get inRoom() { return this.state === 'bunker' || this.state === 'highroller'; }
+
+  /** Come back up, whichever room we happen to be in. */
+  leaveRoom() {
+    if (this.state === 'bunker') this.leaveBunker();
+    else if (this.state === 'highroller') this.leaveHighRoller();
+  }
+
+  get roomId() {
+    if (this.state === 'bunker') return 1;
+    if (this.state === 'highroller') return 2;
+    return 0;
   }
 
   /** Everything the table knows. Deliberately a lot. */
@@ -2619,6 +2728,7 @@ export class MPGame extends Game {
         this.player.updateCamera(dt, hrHeight);
       }
       this.hrScene.userData.tick(this.time, dt);
+      this._updateAvatars(dt);
       this._mpHud();
       const bit2 = froze2 ? null : this.nearestInteractable();
       this.ui.setPrompt(bit2 ? bit2.prompt : null);
@@ -2644,6 +2754,7 @@ export class MPGame extends Game {
         this.mp.view.sabotage?.half || this.mp.sabLog?.[0]?.half || null,
         this.screens.top?.name === 'mpTable'
       );
+      this._updateAvatars(dt);
       this._mpHud();
       const bit = froze ? null : this.nearestInteractable();
       this.ui.setPrompt(bit ? bit.prompt : null);
@@ -2757,6 +2868,25 @@ export class MPGame extends Game {
     });
     if (this.stunnedUntil && now() >= this.stunnedUntil) this.stunnedUntil = 0;
     this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
+    /* Her own music, while you are on her deck. The Flopper is a gambling
+       barge and she should sound like one from the moment you step aboard —
+       and stop the moment you step off. */
+    if (this.state === 'island' && this.casinoPlat) {
+      const pl = this.casinoPlat, pp = this.player.pos;
+      const rx = pp.x - pl.x, rz = pp.z - pl.z;
+      const lx = rx * pl.cos - rz * pl.sin;
+      const lz = rx * pl.sin + rz * pl.cos;
+      const aboard = Math.abs(lx) <= pl.hw + 1.5 && Math.abs(lz) <= pl.hd + 1.5
+        && pp.y > pl.y - 1.2 && this.casinoIn > 0.5;
+      if (aboard && !M.aboard) {
+        M.aboard = true;
+        this.audio.playMusic('flopper');
+      } else if (!aboard && M.aboard) {
+        M.aboard = false;
+        this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+      }
+    }
+
     this._sweepCoins(dt);
 
     /* The one on the treeline. His position comes off the wire at the net
@@ -2869,14 +2999,7 @@ export class MPGame extends Game {
     for (const m of (this.pendulumMeshes || [])) {
       if (m.userData.setNight) m.userData.setNight(this.night || 0);
     }
-    const t = now();
-    const ghost = !this.amAlive;
-    for (const av of M.avatars.values()) {
-      av.update(dt, t);
-      // the dead can see the dead; the living cannot
-      const rec = M.view.players.get(av.id);
-      av.setVisible(rec ? (rec.alive !== false || ghost) : true);
-    }
+    this._updateAvatars(dt);
 
     // HUD
     this._mpHud();

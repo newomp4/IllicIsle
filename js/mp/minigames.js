@@ -60,6 +60,7 @@ const wind = {
     s.spark = [];
     s.ring = -1;          // the shock ring thrown by a good catch
     s.ringX = 0;
+    s.ringY = 100;
     s.shake = 0;
     s.ratchet = 0;        // the escape wheel, one tooth per catch
   },
@@ -81,53 +82,69 @@ const wind = {
     const MAXA = 1.02;                  // radians either side of vertical
     const ang = swing * MAXA;
     const shk = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 2 * s.shake) : 0;
-    const px = W / 2 + shk, py = 34;    // the pivot
+    /* The pivot sits below the frame's title rule, which is at y = 28. The
+       gantry used to be drawn from y = 18 — straight through the title — and
+       its bracing was a row of dots that ran clean across the top of the
+       panel. That was most of what looked broken about this. */
+    const px = W / 2 + shk, py = 50;
     const L = 84;                       // rod length
     const bx = px + Math.sin(ang) * L;
     const by = py + Math.cos(ang) * L;
+    const TOP = 38;                     // the gantry's head beam
+    const FOOT = 152;                   // and where its legs stand
 
-    /* ---- the frame it hangs in ---- */
-    x.fillStyle = '#241708';
-    x.fillRect(px - 84, py - 16, 168, 7);
-    x.fillRect(px - 84, py - 16, 7, 112);
-    x.fillRect(px + 77, py - 16, 7, 112);
-    x.fillStyle = '#3a2a10';
-    for (let i = 0; i < 8; i++) x.fillRect(px - 78 + i * 22, py - 14, 2, 2);
-    // cross-bracing in the corners, so the frame reads as built
-    for (const sx of [-1, 1]) {
-      for (let i = 0; i < 9; i++) {
-        x.fillStyle = '#33240c';
-        x.fillRect(Math.round(px + sx * (77 - i * 2)), py - 9 + i * 2, 2, 2);
+    /* ---- the gantry ---- */
+    {
+      const HW = 86;
+      x.fillStyle = '#241708';
+      x.fillRect(px - HW, TOP, HW * 2, 7);              // head beam
+      x.fillRect(px - HW, TOP, 7, FOOT - TOP);          // legs
+      x.fillRect(px + HW - 7, TOP, 7, FOOT - TOP);
+      x.fillRect(px - HW, FOOT - 6, HW * 2, 6);         // sill
+      // a lit top edge, so it reads as timber rather than a hole
+      x.fillStyle = '#3a2a10';
+      x.fillRect(px - HW, TOP, HW * 2, 1);
+      x.fillRect(px - HW, FOOT - 6, HW * 2, 1);
+      // bolts, four of them, at the joints
+      for (const [rx, ry] of [[px - HW + 2, TOP + 2], [px + HW - 6, TOP + 2],
+        [px - HW + 2, FOOT - 5], [px + HW - 6, FOOT - 5]]) {
+        x.fillStyle = '#8a7a52'; x.fillRect(rx, ry, 4, 4);
+        x.fillStyle = '#241708'; x.fillRect(rx + 1, ry + 1, 2, 2);
+      }
+      /* Diagonal braces in the top corners — drawn as short stepped runs
+         from the beam down to the leg, which is what a brace looks like. */
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 12; i++) {
+          x.fillStyle = '#33240c';
+          x.fillRect(Math.round(px + side * (HW - 7 - i * 2)), TOP + 7 + i * 2, 3, 3);
+        }
       }
     }
 
     /* ---- the arc it travels, drawn as pixels ---- */
-    for (let i = 0; i <= 40; i++) {
-      const a2 = (-1 + (i / 40) * 2) * MAXA;
+    for (let i = 0; i <= 44; i++) {
+      const a2 = (-1 + (i / 44) * 2) * MAXA;
       const tx = Math.round(px + Math.sin(a2) * L);
       const ty = Math.round(py + Math.cos(a2) * L);
       const near = Math.abs(Math.sin(a2) / Math.sin(MAXA)) > s.window;
       x.fillStyle = near
         ? (inWindow ? '#7ec850' : '#c39a2c')
-        : 'rgba(120,96,44,.35)';
+        : 'rgba(120,96,44,.30)';
       x.fillRect(tx - 1, ty - 1, 2, 2);
     }
 
-    /* ---- the catch zones, as wedges at the ends of the arc ---- */
+    /* ---- the catch zones: a thicker band ON the arc at each end ---- */
     for (const side of [-1, 1]) {
       const a0 = Math.asin(Math.max(-1, Math.min(1, s.window))) * (MAXA / (Math.PI / 2));
-      for (let i = 0; i <= 10; i++) {
-        const a2 = side * (a0 + (i / 10) * (MAXA - a0));
+      for (let i = 0; i <= 14; i++) {
+        const a2 = side * (a0 + (i / 14) * (MAXA - a0));
         const tx = Math.round(px + Math.sin(a2) * L);
         const ty = Math.round(py + Math.cos(a2) * L);
-        // a short tick pointing outward from the arc
-        for (let k = 0; k < 5; k++) {
-          x.fillStyle = inWindow ? `rgba(126,200,80,${(0.5 - k * 0.08).toFixed(2)})`
-            : `rgba(195,154,44,${(0.22 - k * 0.03).toFixed(2)})`;
-          x.fillRect(
-            Math.round(tx + Math.sin(a2) * k * 2.4) - 1,
-            Math.round(ty + Math.cos(a2) * k * 2.4) - 1, 2, 2
-          );
+        x.fillStyle = inWindow ? '#7ec850' : '#8a6a2a';
+        x.fillRect(tx - 2, ty - 2, 5, 5);
+        if (inWindow) {
+          x.fillStyle = 'rgba(190,255,180,.35)';
+          x.fillRect(tx - 4, ty - 4, 9, 9);
         }
       }
     }
@@ -142,13 +159,18 @@ const wind = {
       x.fillRect(rx - 1, ry - 1, 2, 2);
     }
 
-    /* ---- a trail: three ghosts of the bob, on the same arc ---- */
-    for (let i = 3; i >= 1; i--) {
-      const a2 = Math.sin(s.phase - i * 0.10) * MAXA;
+    /* ---- the trail: fading dots along the path just travelled ----
+       It used to be three translucent squares the size of the bob, which
+       overlapped into a grey smear trailing off to one side. Small dots on
+       the actual arc read as motion. */
+    for (let i = 1; i <= 7; i++) {
+      const a2 = Math.sin(s.phase - i * 0.055) * MAXA;
       const tx = Math.round(px + Math.sin(a2) * L);
       const ty = Math.round(py + Math.cos(a2) * L);
-      x.fillStyle = `rgba(200,170,80,${(0.10 * (4 - i)).toFixed(2)})`;
-      x.fillRect(tx - 5, ty - 5, 11, 11);
+      const a3 = (0.34 * (1 - i / 8)).toFixed(2);
+      x.fillStyle = inWindow ? `rgba(190,255,180,${a3})` : `rgba(255,226,150,${a3})`;
+      const r2 = i < 3 ? 3 : 2;
+      x.fillRect(tx - r2, ty - r2, r2 * 2, r2 * 2);
     }
 
     /* ---- the pivot: a bearing with an escape wheel behind it ---- */
@@ -194,7 +216,8 @@ const wind = {
       x.fillStyle = `rgba(190,255,210,${a2.toFixed(2)})`;
       for (let i = 0; i < 20; i++) {
         const th = (i / 20) * Math.PI * 2;
-        x.fillRect(Math.round(s.ringX + Math.cos(th) * rr), Math.round(96 + Math.sin(th) * rr * 0.7), 2, 2);
+        x.fillRect(Math.round(s.ringX + Math.cos(th) * rr),
+          Math.round(s.ringY + Math.sin(th) * rr * 0.7), 2, 2);
       }
     }
 
@@ -232,20 +255,21 @@ const wind = {
   key(code, s) {
     if (code !== 'Space' && code !== 'Enter' && code !== 'KeyE') return false;
     const swing = Math.sin(s.phase);
-    const MAXA = 1.02, L = 84;
+    const MAXA = 1.02, L = 84, PY = 50;
     const bx = 160 + Math.sin(swing * MAXA) * L;
     if (Math.abs(swing) > s.window) {
       s.got++;
       s.flash = 1;
       s.ring = 0;
       s.ringX = bx;
+      s.ringY = 50 + Math.cos(swing * MAXA) * L;
       s.ratchet += 0.52;
       // each catch winds it tighter: faster, and a narrower window
       s.speed += 0.34;
       s.window = Math.min(0.965, s.window + 0.016);
       for (let i = 0; i < 9; i++) {
         s.spark.push({
-          x: bx, y: 34 + Math.cos(swing * MAXA) * L, t: 0,
+          x: bx, y: PY + Math.cos(swing * MAXA) * L, t: 0,
           vx: (Math.random() - 0.5) * 110, vy: -30 - Math.random() * 80,
         });
       }

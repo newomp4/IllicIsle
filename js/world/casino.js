@@ -24,104 +24,75 @@ const G = (n) => new THREE.Color(n);
    A lumpy brown mass in a tin, framed and hung above the slots.
    =========================================================== */
 /**
- * The proprietor's portrait, from the photograph.
+ * The proprietor's portrait.
  *
- * A pale bowl seen from above: a grey-white rim, a ring of shadow inside it,
- * a pool the colour of weak tea, and a dark mass sitting slightly high of
- * centre with a tapering streak running down out of it. That is the whole
- * joke and the whole picture — nobody aboard has ever explained why it hangs
- * in a gilt frame with his name under it.
+ * Copied out of the photograph as a pixel map rather than approximated with
+ * ellipses — the shapes in it are irregular in ways a couple of ovals cannot
+ * reproduce, and it is a picture of a specific thing.
+ *
+ * 22 wide by 26 tall, cropped top and bottom the way you would crop it to
+ * hang: the bowl fills the frame and the wall shows at the corners. Each
+ * character is one palette entry.
+ *
+ *   . light wall     , wall shadow      # rim highlight    = rim
+ *   - rim shadow     o inner shadow     y pool             Y pool highlight
+ *   u pool shadow    b mass             B mass highlight   d mass hollow
+ *   s streak
  */
+const FLOPPER_ART = [
+  '.....,,,,,,,,,,,,.....',
+  '...,,============,,...',
+  '..,==##########==-,,..',
+  '.,=####========####=,.',
+  '.=###==oooooooo==###=,',
+  ',=##==oooyyyyoooo==##=',
+  ',=#==ooyyyYYYYyyuoo==#',
+  '=#==ooyddddddddduuoo==',
+  '=#=ooydddbbbbbdddyuo==',
+  '=#=oybbBBbbdbbBBbbbuo=',
+  '=#=obBBbdbbbbbdbBBbuo=',
+  '=#=obbBbbdbbbbdbBbbuo=',
+  '=#=oybbbbbbsbbbbbbyuo=',
+  '=#=ooyybbbbsbbbbyyuo==',
+  '=#==ooyyyysbyyyyuuoo==',
+  '=##=ooyyyysyyyyuuoo=#=',
+  ',=#==oyyyysyyyuuuo==#=',
+  ',==#==oyyysyyuuuo==##,',
+  '.,=#==ooyysyuuuoo==#=,',
+  '.,==#===ooyuuoo===#=,.',
+  '..,==#====oo====#==,..',
+  '...,===##====##===,...',
+  '....,,===######==,,...',
+  '.....,,==========,....',
+  '.......,,,,,,,,,,.....',
+  '.....,,,,,,,,,,,,.....',
+];
+
+const FLOPPER_PAL = {
+  '.': '#d2d4d2', ',': '#b6bab8',
+  '#': '#eef0ee', '=': '#c6cac8', '-': '#a8adac',
+  o: '#8d9391',
+  y: '#b6923c', Y: '#d4b45e', u: '#8a6c26',
+  b: '#433014', B: '#5f4620', d: '#2a1c08',
+  s: '#4c3717',
+};
+
 function flopperPortrait() {
   const c = document.createElement('canvas');
-  c.width = c.height = 128;
+  const COLS = FLOPPER_ART[0].length, ROWS = FLOPPER_ART.length;
+  /* Six screen pixels per art pixel: big enough that the texture is not
+     resampled to mush on the frame, small enough that the blocks stay blocks. */
+  const S = 6;
+  c.width = COLS * S; c.height = ROWS * S;
   const x = c.getContext('2d');
 
-  const CX = 64, CY = 66;
-  /* The photograph is taller than it is wide, so the bowl is an oval on its
-     end rather than a circle. */
-  const RX = 40, RY = 50;
-
-  // ---- the wall behind it: flat, slightly cool, slightly uneven ----
-  x.fillStyle = '#c9cbc9'; x.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 220; i++) {
-    const px = (i * 53) % 128, py = (i * 97) % 128;
-    x.fillStyle = i % 3 ? 'rgba(255,255,255,.22)' : 'rgba(150,155,155,.18)';
-    x.fillRect(px, py, 2, 2);
+  for (let r = 0; r < ROWS; r++) {
+    const row = FLOPPER_ART[r];
+    for (let q = 0; q < COLS; q++) {
+      x.fillStyle = FLOPPER_PAL[row[q]] || '#d2d4d2';
+      x.fillRect(q * S, r * S, S, S);
+    }
   }
-
-  const oval = (rx, ry, fill, dy = 0) => {
-    x.fillStyle = fill;
-    x.beginPath(); x.ellipse(CX, CY + dy, rx, ry, 0, 0, Math.PI * 2); x.fill();
-  };
-
-  // ---- the rim: a pale ring, lit from the upper left ----
-  oval(RX, RY, '#eceeec');
-  // its shadowed side
-  x.save();
-  x.beginPath(); x.ellipse(CX, CY, RX, RY, 0, 0, Math.PI * 2); x.clip();
-  x.fillStyle = 'rgba(120,126,126,.55)';
-  x.beginPath(); x.ellipse(CX + 9, CY + 6, RX, RY, 0, 0, Math.PI * 2); x.fill();
-  x.restore();
-  oval(RX - 3, RY - 4, '#e4e7e6');
-
-  // ---- inside the rim: shadow, then the pool ----
-  oval(RX - 11, RY - 14, '#a9aeae');
-  oval(RX - 13, RY - 16, '#8f9596', 2);
-  // the water: weak tea, brighter where the light falls on it
-  oval(RX - 17, RY - 21, '#b99a52', 3);
-  x.save();
-  x.beginPath(); x.ellipse(CX, CY + 3, RX - 17, RY - 21, 0, 0, Math.PI * 2); x.clip();
-  x.fillStyle = 'rgba(214,186,120,.75)';
-  x.beginPath(); x.ellipse(CX - 4, CY - 6, RX - 20, RY - 26, 0, 0, Math.PI * 2); x.fill();
-  x.fillStyle = 'rgba(120,96,42,.5)';
-  x.beginPath(); x.ellipse(CX + 7, CY + 22, RX - 20, RY - 30, 0, 0, Math.PI * 2); x.fill();
-  x.restore();
-
-  /* ---- the mass ----
-     High of centre, wider than it is tall, with a lumpy top edge and a
-     tapering streak running down out of it into the pool. */
-  const blob = (bx, by, rx, ry, fill) => {
-    x.fillStyle = fill;
-    x.beginPath(); x.ellipse(bx, by, rx, ry, 0, 0, Math.PI * 2); x.fill();
-  };
-  // the streak first, so the body sits on top of it
-  x.fillStyle = '#4a3418';
-  x.beginPath();
-  x.moveTo(CX - 4, CY - 4);
-  x.lineTo(CX + 5, CY - 4);
-  x.lineTo(CX + 3, CY + 22);
-  x.lineTo(CX - 1, CY + 26);
-  x.lineTo(CX - 3, CY + 18);
-  x.closePath();
-  x.fill();
-  x.fillStyle = '#33240f';
-  x.fillRect(CX + 1, CY + 4, 3, 18);
-
-  // the body of it
-  blob(CX - 1, CY - 20, 27, 15, '#3f2c14');
-  blob(CX - 12, CY - 24, 14, 9, '#4a3418');
-  blob(CX + 10, CY - 23, 13, 9, '#463117');
-  blob(CX + 1, CY - 12, 22, 10, '#382611');
-  // and the lumps along the top, catching the light
-  for (const [lx, ly, lr, col] of [
-    [-18, -27, 6, '#5c421f'], [-8, -31, 7, '#66491f'], [4, -30, 6, '#5c421f'],
-    [14, -27, 6, '#513a1a'], [-2, -24, 8, '#59401d'],
-  ]) blob(CX + lx, CY + ly, lr, lr * 0.72, col);
-  // the darkest hollows
-  for (const [lx, ly, lr] of [[-6, -20, 5], [8, -18, 4], [-14, -19, 3]]) {
-    blob(CX + lx, CY + ly, lr, lr * 0.6, 'rgba(24,15,5,.62)');
-  }
-  // one wet highlight, upper left, like the photograph
-  x.fillStyle = 'rgba(196,168,110,.45)';
-  x.beginPath(); x.ellipse(CX - 13, CY - 29, 6, 2.5, -0.3, 0, Math.PI * 2); x.fill();
-
-  // quantise: this is a PS1 texture, not a photograph
-  const img = x.getImageData(0, 0, 128, 128);
-  for (let i = 0; i < img.data.length; i += 4) {
-    for (let k = 0; k < 3; k++) img.data[i + k] = (img.data[i + k] >> 4) << 4;
-  }
-  x.putImageData(img, 0, 0);
 
   const t = new THREE.CanvasTexture(c);
   t.magFilter = THREE.NearestFilter;
@@ -577,7 +548,8 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
      Life-size, in a gilt frame on the cabin front where you cannot miss
      him, with a plaque under it you can walk up and read. */
   const portrait = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.6, 2.6),
+    // taller than it is wide, like the picture
+    new THREE.PlaneGeometry(2.3, 2.72),
     new THREE.MeshLambertMaterial({ map: flopperPortrait() })
   );
   portrait.position.set(0, 3.1, 3.94);
@@ -587,8 +559,8 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
   portrait.rotation.y = Math.PI;
   g.add(portrait);
   const frameParts = [];
-  for (const [fw, fh, fx, fy] of [[3.1, 0.24, 0, 4.52], [3.1, 0.24, 0, 1.68],
-    [0.24, 3.1, -1.43, 3.1], [0.24, 3.1, 1.43, 3.1]]) {
+  for (const [fw, fh, fx, fy] of [[2.8, 0.24, 0, 4.60], [2.8, 0.24, 0, 1.60],
+    [0.24, 3.22, -1.28, 3.1], [0.24, 3.22, 1.28, 3.1]]) {
     frameParts.push(tint(box(fw, fh, 0.16, 'planks', { pos: [fx, fy, 3.92] }), G(0xc39a2c)));
   }
   // a scrolled crest over the top of the frame

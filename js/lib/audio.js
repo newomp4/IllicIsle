@@ -312,9 +312,96 @@ const BUNKER = {
   },
 };
 
+/* ---- FLOPPER: the deck of a gambling barge that has had one idea and has
+   been having it for thirty years. A walking bass, an organ that cannot quite
+   stay in tune, a tambourine, and a hook you will resent. ---- */
+const FLOPPER = {
+  bpm: 116, len: 16, sections: 3,
+  voices: {
+    bass: {
+      layers: [1, 1, 1],
+      notes: [
+        33, _, 40, _, 33, _, 45, _, 38, _, 45, _, 40, _, 38, _,
+      ],
+    },
+    // the organ, in thirds, because it is that kind of establishment
+    stab: {
+      layers: [1, 1, 1],
+      chords: [
+        [57, 60, 64], _, _, [57, 60, 64], _, _, [59, 62, 66], _,
+        [62, 65, 69], _, _, [60, 64, 67], _, _, [57, 60, 64], _,
+      ],
+    },
+    lead: {
+      layers: [0, 1, 1],
+      notes: [
+        72, _, 76, _, 79, _, 76, _, 74, _, 72, _, 69, _, 72, _,
+      ],
+    },
+    bell: {
+      layers: [0, 0, 1],
+      notes: [
+        _, 84, _, 88, _, 84, _, _, _, 86, _, 91, _, 86, _, _,
+      ],
+    },
+    kick:  { layers: [1, 1, 1], hits: 'x...x...x...x...' },
+    snare: { layers: [0, 1, 1], hits: '....x.......x..x' },
+    hat:   { layers: [1, 1, 1], hits: 'x.x.x.x.x.x.x.xx' },
+  },
+};
+
+/* ---- HIGH ROLLERS: a room with one table in it and nobody in a hurry.
+   Brushed hats, a walking double bass that never repeats the same bar twice
+   in a row, and a piano that plays four notes and then thinks about it. It is
+   meant to feel like somebody is playing this in the corner rather than like
+   a soundtrack. ---- */
+const HIGHROLLER = {
+  bpm: 92, len: 32, sections: 4,
+  voices: {
+    // the walk: minor, chromatic on the way up, never quite settling
+    bass: {
+      layers: [1, 1, 1, 1],
+      notes: [
+        33, _, 35, _, 36, _, 38, _, 40, _, 38, _, 36, _, 35, _,
+        33, _, 32, _, 33, _, 36, _, 40, _, 43, _, 40, _, 36, _,
+      ],
+    },
+    // sevenths and ninths, left hanging
+    pad: {
+      layers: [1, 1, 1, 1],
+      chords: [
+        [52, 55, 59, 62], _, _, _, _, _, _, _,
+        [50, 54, 57, 60], _, _, _, _, _, _, _,
+        [48, 52, 55, 59], _, _, _, _, _, _, _,
+        [55, 58, 62, 65], _, _, _, _, _, _, _,
+      ],
+    },
+    // four notes, then it thinks about it
+    lead: {
+      layers: [0, 1, 1, 1],
+      notes: [
+        _, _, 71, _, 74, _, 75, _, 74, _, _, _, _, _, _, _,
+        _, _, 69, _, 72, _, 74, _, 71, _, _, _, _, _, _, _,
+      ],
+    },
+    bell: {
+      layers: [0, 0, 1, 1],
+      notes: [
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, 86, _,
+        _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, 83,
+      ],
+    },
+    // brushes, not sticks
+    kick:  { layers: [1, 1, 1, 1], hits: 'x.......x.......' },
+    snare: { layers: [0, 1, 1, 1], hits: '..x...x...x...x.' },
+    hat:   { layers: [1, 1, 1, 1], hits: 'x.xxx.xxx.xxx.xx' },
+  },
+};
+
 const TRACKS = {
   island: ISLAND, title: TITLE, temple: TEMPLE, boss: BOSS,
   storm: STORM, alarm: ALARM, night: NIGHT, bunker: BUNKER,
+  flopper: FLOPPER, highroller: HIGHROLLER,
 };
 
 export class GameAudio {

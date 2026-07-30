@@ -14,9 +14,46 @@ import * as THREE from 'three';
 import { buildCastaway } from '../entities/player.js';
 import { COLOURS } from '../net/protocol.js';
 
-const INTERP_DELAY = 0.14;      // seconds behind the newest snapshot
-const BUFFER = 16;
-const COAST = 0.22;             // how long we will guess for before giving up
+/* How far behind the newest snapshot we render.
+
+   This used to be a fixed 0.14s against a 55ms send rate — two and a half
+   snapshots of buffer, which is fine on a LAN and far too tight over the
+   internet, where a single 100ms hiccup empties the buffer and the avatar
+   coasts. Coasting reads as stutter, and stutter is what "not smooth with
+   friends" actually is.
+
+   So it adapts: we measure the real arrival interval and its jitter, and sit
+   behind the newest packet by the interval plus a couple of jitters. A good
+   connection gets a short delay and tight, responsive motion; a bad one
+   quietly buys itself more buffer instead of juddering. */
+const DELAY_MIN = 0.09;
+const DELAY_MAX = 0.34;
+const BUFFER = 24;
+const COAST = 0.26;             // how long we will guess for before giving up
+
+/* Arrival statistics, shared by every avatar — snapshots come in one packet,
+   so the timing is a property of the connection, not of any one player. */
+const net = { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14 };
+
+/** Called once per snapshot, from whoever received it. */
+export function noteSnapshot(t) {
+  if (net.last) {
+    const gap = Math.min(0.6, Math.max(0.005, t - net.last));
+    // exponential means: cheap, and they forget a bad patch soon enough
+    net.mean += (gap - net.mean) * 0.12;
+    net.jitter += (Math.abs(gap - net.mean) - net.jitter) * 0.12;
+  }
+  net.last = t;
+  const want = net.mean + net.jitter * 2.5;
+  const clamped = Math.max(DELAY_MIN, Math.min(DELAY_MAX, want));
+  // ease toward it, so the delay itself never jumps and shunts everybody
+  net.delay += (clamped - net.delay) * 0.15;
+}
+
+/** For the HUD and for tests. */
+export function netTiming() {
+  return { mean: net.mean, jitter: net.jitter, delay: net.delay };
+}
 
 export function colourHex(id) {
   return (COLOURS.find((c) => c.id === id) || COLOURS[0]).hex;
@@ -92,7 +129,7 @@ export class Avatar {
   }
 
   update(dt, nowT) {
-    const target = nowT - INTERP_DELAY;
+    const target = nowT - net.delay;
     const b = this.buf;
 
     if (b.length === 0) return;

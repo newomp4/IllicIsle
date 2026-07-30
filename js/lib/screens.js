@@ -1669,8 +1669,11 @@ export const SCREENS = {
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
       /* the cabinet, seen straight on */
-      const CW = 150, CH = 168;
-      const cx0 = Math.round((W - CW) / 2), cy0 = 26;
+      /* The cabinet has to stop far enough up the screen that the message
+         underneath it clears the key hints — at 168 tall the message was
+         printed straight through the footer. */
+      const CW = 150, CH = 156;
+      const cx0 = Math.round((W - CW) / 2), cy0 = 24;
       x.fillStyle = '#1c4034'; x.fillRect(cx0 - 3, cy0 - 3, CW + 6, CH + 6);
       x.fillStyle = '#2a5a4a'; x.fillRect(cx0, cy0, CW, CH);
       x.fillStyle = '#c39a2c';
@@ -1683,7 +1686,7 @@ export const SCREENS = {
       });
 
       /* the window, and the drum turning behind it */
-      const GX = cx0 + 12, GY = cy0 + 27, GW = CW - 24, GH = 92;
+      const GX = cx0 + 12, GY = cy0 + 26, GW = CW - 24, GH = 84;
       x.fillStyle = '#071410'; x.fillRect(GX - 2, GY - 2, GW + 4, GH + 4);
       x.fillStyle = '#12302a'; x.fillRect(GX, GY, GW, GH);
       // the lit interior
@@ -1772,7 +1775,7 @@ export const SCREENS = {
       else if (coins < COST) { msg = 'NOT ENOUGH SYNCOIN'; mcol = RED; }
       else { msg = 'PUT SIX IN'; mcol = GOLD_LT; }
       drawText(x, msg, {
-        x: W / 2, y: cy0 + CH + 8, scale: 2, align: 'center', color: mcol,
+        x: W / 2, y: cy0 + CH + 5, scale: 2, align: 'center', color: mcol,
       });
 
       footer(x, W, H, s.phase === 'turning' ? ''
@@ -3409,12 +3412,14 @@ export const SCREENS = {
           x.fillStyle = (hx / 8) % 2 ? 'rgba(200,160,42,.55)' : 'rgba(120,20,14,.75)';
           x.fillRect(hx, 25, 8, 3);
         }
+        /* On the divider's own row, not over the header. Printed at y = 22 it
+           sat squarely on "N STILL BREATHING" in the top right. */
         if (Math.floor(t * 2) % 2 === 0) {
           const warn = 'THIS ONE ENDS THE ROUND IF IT RUNS OUT';
           const ww = textWidth(warn, 1) + 10;
-          x.fillStyle = 'rgba(12,3,3,.92)';
-          x.fillRect(Math.round(W / 2 - ww / 2), 24, ww, 5);
-          drawText(x, warn, { x: W / 2, y: 22, scale: 1, align: 'center', color: '#ffd24a' });
+          x.fillStyle = 'rgba(12,3,3,.94)';
+          x.fillRect(Math.round(W / 2 - ww / 2), 29, ww, 10);
+          drawText(x, warn, { x: W / 2, y: 31, scale: 1, align: 'center', color: '#ffd24a' });
         }
       }
 

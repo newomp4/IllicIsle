@@ -123,6 +123,10 @@ export class HostSession {
       case C.MOVE: {
         if (!p) break;
         p.x = msg.x; p.y = msg.y; p.z = msg.z; p.yaw = msg.yaw; p.anim = msg.anim;
+        /* Which interior they are standing in, if any. Everyone in the same
+           room shares one local coordinate space, so the position above is
+           all anybody needs to see them down there. */
+        p.room = msg.room | 0;
         break;
       }
       case C.READY: { if (p && p.alive) { p.ready = !!msg.ready; this._roster(); } break; }
@@ -808,7 +812,8 @@ export class HostSession {
   snapshot() {
     const arr = [];
     for (const p of this.players.values()) {
-      arr.push([p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.yaw), p.anim | 0, p.alive ? 1 : 0]);
+      arr.push([p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.yaw), p.anim | 0, p.alive ? 1 : 0,
+        p.room | 0]);
     }
     this.net.broadcast({ t: S.SNAPSHOT, p: arr });
     return arr;

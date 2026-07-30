@@ -431,11 +431,24 @@ export class Hud {
     const t = this._wobble;
 
     const SLOT = 18;
-    if (belt.length) {
-      const w = Math.max(belt.length * SLOT + 4, textWidth('BELT', 1) + 10);
+    /* Nine at most. The keys are 1 to 9, so a tenth slot is a thing you can
+       see and cannot use — and its two-digit number does not fit in the cell
+       beside the count, so it printed over it. Anything past nine is shown
+       as a tally instead. */
+    const MAX = 9;
+    const shown = belt.slice(0, MAX);
+    const spare = belt.length - shown.length;
+    if (shown.length) {
+      const w = Math.max(shown.length * SLOT + 4 + (spare > 0 ? 18 : 0),
+        textWidth('BELT', 1) + 10);
       plate(x, ox, oy - 10, w, SLOT + 16);
       drawText(x, 'BELT', { x: ox + 3, y: oy - 8, scale: 1, color: '#8a7a52' });
-      belt.forEach((sl, i) => {
+      if (spare > 0) {
+        drawText(x, `+${spare}`, {
+          x: ox + w - 4, y: oy - 8, scale: 1, align: 'right', color: '#8a7a52',
+        });
+      }
+      shown.forEach((sl, i) => {
         const sx = ox + 2 + i * SLOT;
         // the well
         x.fillStyle = sl.active ? '#3a2a10' : '#140e06';
@@ -470,7 +483,7 @@ export class Hud {
        and no label — from a distance that reads as one small brown button
        nobody can identify. Labelled and plated now. */
     if (passives.length) {
-      const py = oy + (belt.length ? SLOT + 10 : 0);
+      const py = oy + (shown.length ? SLOT + 10 : 0);
       const pw = Math.max(passives.length * 11 + 6, textWidth('ON YOU', 1) + 10);
       plate(x, ox, py - 10, pw, 21);
       drawText(x, 'ON YOU', { x: ox + 3, y: py - 8, scale: 1, color: '#8a7a52' });

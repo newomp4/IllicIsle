@@ -120,6 +120,24 @@ export function textWidth(text, s = 1, tracking = 1) {
  * @param {CanvasRenderingContext2D} ctx
  * @param {object} o { x, y, scale, color, tracking, align, shadow }
  */
+/* ===========================================================
+   AN OPT-IN RECORDER
+
+   Text drawn on top of other text is the one layout fault a screenshot
+   sweep keeps missing — at a glance a collision just looks like a slightly
+   wrong glyph. So drawText can record the rectangle it occupies, and a test
+   can render a frame and ask which pairs overlap.
+
+   Off unless something turns it on, and one branch when off.
+   =========================================================== */
+export let textBoxes = null;
+
+/** @param {boolean} on @returns {Array|null} the live list */
+export function recordText(on) {
+  textBoxes = on ? [] : null;
+  return textBoxes;
+}
+
 export function drawText(ctx, text, o = {}) {
   const s = o.scale ?? 2;
   const tracking = o.tracking ?? 1;
@@ -129,6 +147,7 @@ export function drawText(ctx, text, o = {}) {
   const y = Math.round(o.y ?? 0);
   if (o.align === 'center') x -= Math.round(w / 2);
   else if (o.align === 'right') x -= Math.round(w);
+  if (textBoxes && str.trim()) textBoxes.push({ x, y, w, h: GLYPH_H * s, t: str });
 
   const cell = (GLYPH_W + tracking) * s;
 
