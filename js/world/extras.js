@@ -48,16 +48,16 @@ export function buildSyncoin(mats, big = false) {
      gleam that always faces the camera, and four sparkle pips that blink in
      turn. No sphere, and no light. */
   // the pool on the ground
-  const poolGeo = new THREE.CircleGeometry(0.62 * s, 14);
+  const poolGeo = new THREE.CircleGeometry(1.15 * s, 22);
   poolGeo.rotateX(-Math.PI / 2);
   {
     // fades to nothing at the rim, so it has no edge
     const pc = poolGeo.attributes.position;
     const cols = new Float32Array(pc.count * 4);
     for (let i = 0; i < pc.count; i++) {
-      const d = Math.hypot(pc.getX(i), pc.getZ(i)) / (0.62 * s);
+      const d = Math.min(1, Math.hypot(pc.getX(i), pc.getZ(i)) / (1.15 * s));
       cols[i * 4] = 1; cols[i * 4 + 1] = 0.86; cols[i * 4 + 2] = 0.55;
-      cols[i * 4 + 3] = Math.pow(1 - d, 1.5);
+      cols[i * 4 + 3] = Math.pow(Math.max(0, 1 - d), 3.2);
     }
     poolGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
   }
@@ -72,20 +72,26 @@ export function buildSyncoin(mats, big = false) {
      DISC with a radial fade, not a square. A flat quad with a uniform
      additive colour is a square of light, which is exactly what it looked
      like. */
-  const gleamGeo = new THREE.CircleGeometry(0.44 * s, 16);
+  /* Wide and very soft. A tight disc with a fast falloff still has a rim,
+     and a rim on a symmetrical shape reads as an orb — which is what it kept
+     looking like. This one reaches nearly three times the coin's radius and
+     is almost entirely gradient: the brightest part is a small core and the
+     rest is a long tail into nothing. Two rings of vertices rather than one
+     so the falloff is a curve rather than a straight ramp. */
+  const GR = 1.25 * s;
+  const gleamGeo = new THREE.CircleGeometry(GR, 28, 0, Math.PI * 2);
   {
     const gc = gleamGeo.attributes.position;
     const cols = new Float32Array(gc.count * 4);
     for (let i = 0; i < gc.count; i++) {
-      const d = Math.hypot(gc.getX(i), gc.getY(i)) / (0.44 * s);
-      cols[i * 4] = 1; cols[i * 4 + 1] = 0.87; cols[i * 4 + 2] = 0.58;
-      // squared falloff, so it has no visible rim at all
-      cols[i * 4 + 3] = Math.pow(Math.max(0, 1 - d), 2.2);
+      const d = Math.min(1, Math.hypot(gc.getX(i), gc.getY(i)) / GR);
+      cols[i * 4] = 1; cols[i * 4 + 1] = 0.88; cols[i * 4 + 2] = 0.62;
+      cols[i * 4 + 3] = Math.pow(Math.max(0, 1 - d), 4.0);
     }
     gleamGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
   }
   const gleam = new THREE.Mesh(gleamGeo, new THREE.MeshBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.55,
+    vertexColors: true, transparent: true, opacity: 0.42,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
     side: THREE.DoubleSide,
   }));
@@ -117,7 +123,7 @@ export function buildSyncoin(mats, big = false) {
 
     // the pool stays on the ground however high the coin is bobbing
     pool.position.y = -bob + 0.05;
-    pool.material.opacity = 0.34 + Math.sin(t * 2.4) * 0.10;
+    pool.material.opacity = 0.26 + Math.sin(t * 2.4) * 0.08;
 
     /* The gleam faces the camera. The group spins, so the billboard has to
        cancel the group's own rotation as well as aim at the eye. */
@@ -126,7 +132,7 @@ export function buildSyncoin(mats, big = false) {
       gleam.rotation.y = Math.atan2(_up.x, _up.z) - g.rotation.y;
       for (const p of pips) gleam.rotation.x = 0;
     }
-    gleam.material.opacity = 0.42 + Math.sin(t * 4) * 0.16;
+    gleam.material.opacity = 0.30 + Math.sin(t * 4) * 0.10;
 
     // the pips wink round the rim, one at a time
     const lead = (t * 1.9) % (Math.PI * 2);

@@ -25,6 +25,7 @@ export const C = {
   PURSE:      'c.purse',      // { coins }      tell the host what you are carrying
   PERK:       'c.perk',       // { perk, on }   something bought that others must see
   LEDGER:     'c.ledger',     // {}             ask what everybody is carrying
+  ASKSTRANGER: 'c.ask',       // {}             speak to the one on the treeline
   SETTINGS:   'c.settings',   // host-only UI echo; ignored from clients
 };
 
@@ -57,6 +58,8 @@ export const S = {
   SABOTAGE:   's.sabotage',   // { kind, endsAt, half }  half = where it came from
   LEDGER:     's.ledger',     // { rows: [[id, coins]] }  PRIVATE, the command table
   BLACKOUT:   's.blackout',   // { secs }        every fire on the island goes out
+  STRANGER:   's.stranger',   // { on, x, z }   where he is, if he is anywhere
+  RIDDLE:     's.riddle',     // { open, text } PRIVATE, what he told you
   FIXPROGRESS: 's.fixprog',   // { kind, done, need }
   FIXED:      's.fixed',      // { kind }
   OVER:       's.over',       // { winner, agents, reason }
@@ -109,4 +112,5 @@ export const DEFAULT_SETTINGS = {
   tasksPerPlayer: 5,
   emergencyPerPlayer: 1,
   nightOnly: false,      // agents can only strike after dark
+  stranger: true,        // the one who is not on the roster comes ashore once
 };

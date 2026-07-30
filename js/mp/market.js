@@ -103,7 +103,7 @@ export const STOCK = [
     tag: 'PASSIVE',
   },
   {
-    id: 'flask', name: "FLOPPER'S FLASK", cost: 2, side: 'open', icon: 'flask',
+    id: 'flask', name: "FLOPPER'S FLASK", cost: 4, side: 'open', icon: 'flask',
     blurb: 'Drink it and the next job you touch completes instantly - no holding, '
       + 'no puzzle. Keeps until you use it.',
     tag: 'ONE USE',

@@ -465,7 +465,7 @@ const stitch = {
    =========================================================== */
 const dials = {
   name: 'SET THE DIALS',
-  hint: 'CLICK A WHEEL   ARROWS TURN IT',
+  hint: 'LEFT RIGHT PICK A WHEEL   UP DOWN TURN IT',
   init(s, rng) {
     const n = s.hard ? 4 : 3;
     s.want = []; s.have = [];
@@ -473,91 +473,212 @@ const dials = {
       s.want.push(1 + ((rng() * 9) | 0));
       s.have.push(1 + ((rng() * 9) | 0));
     }
-    s.sel = 0; s.spin = new Array(n).fill(0);
+    s.sel = 0;
+    /* One float per drum. It is the distance still to roll, in digits, so
+       the wheel visibly turns rather than the number simply changing —
+       which is what made the old one look like a spreadsheet. */
+    s.roll = new Array(n).fill(0);
+    s.lock = new Array(n).fill(0);   // how far each tumbler has dropped
+    s.bolt = 0;                      // the bolt, once they all match
+    s.shake = 0;
     if (s.want.every((v, i) => v === s.have[i])) s.have[0] = (s.have[0] % 9) + 1;
   },
+
   draw(x, W, H, s, t, dt) {
     const rows = [];
     const n = s.have.length;
-    const dw = n > 3 ? 34 : 42, gap = 10;
-    const total = n * dw + (n - 1) * gap;
-    const ox = Math.round((W - total) / 2), oy = 50;
+    if (s.shake > 0) s.shake -= dt * 4;
+    const solved = s.want.every((v, i) => v === s.have[i]);
+    if (solved) s.bolt = Math.min(1, (s.bolt || 0) + dt * 3);
 
-    // a brass housing behind the whole rack
-    x.fillStyle = '#2b2010';
-    x.fillRect(ox - 10, oy - 12, total + 20, 92);
-    ditherRect2(x, ox - 10, oy - 12, total + 20, 92);
+    /* ---- layout, in bands, so nothing can drift into anything ---- */
+    const DW = n > 3 ? 40 : 46, GAP = 8;
+    const TOTAL = n * DW + (n - 1) * GAP;
+    const OX = Math.round((W - TOTAL) / 2) + (s.shake > 0 ? Math.round(Math.sin(s.shake * 60) * 2) : 0);
+    const PLATE_Y = 42;          // the stamped code, clear of the title
+    const PLATE_H = 26;
+    const DRUM_Y = PLATE_Y + PLATE_H + 12;
+    const DRUM_H = 54;
+    const BOLT_Y = DRUM_Y + DRUM_H + 12;
+
+    /* ---- the brass case ---- */
+    const CX0 = OX - 14, CY0 = PLATE_Y - 12;
+    const CW = TOTAL + 28, CH = (BOLT_Y + 20) - CY0;
+    x.fillStyle = '#2b2010'; x.fillRect(CX0, CY0, CW, CH);
+    ditherRect2(x, CX0, CY0, CW, CH);
+    // rolled edges
     x.fillStyle = '#6b5220';
-    x.fillRect(ox - 10, oy - 12, total + 20, 2);
-    x.fillRect(ox - 10, oy + 78, total + 20, 2);
-    for (const rx of [ox - 7, ox + total + 4]) {
-      x.fillStyle = '#8a6a2a'; x.fillRect(rx, oy - 9, 3, 3);
-      x.fillRect(rx, oy + 72, 3, 3);
+    x.fillRect(CX0, CY0, CW, 2); x.fillRect(CX0, CY0 + CH - 2, CW, 2);
+    x.fillRect(CX0, CY0, 2, CH); x.fillRect(CX0 + CW - 2, CY0, 2, CH);
+    x.fillStyle = '#8a6a2a';
+    x.fillRect(CX0 + 1, CY0 + 1, CW - 2, 1);
+    // and its bolts, one at each corner
+    for (const [rx, ry] of [[CX0 + 4, CY0 + 4], [CX0 + CW - 9, CY0 + 4],
+      [CX0 + 4, CY0 + CH - 9], [CX0 + CW - 9, CY0 + CH - 9]]) {
+      x.fillStyle = '#8a6a2a'; x.fillRect(rx, ry, 5, 5);
+      x.fillStyle = '#4a3a1c'; x.fillRect(rx + 1, ry + 1, 3, 3);
+      x.fillStyle = '#c39a2c'; x.fillRect(rx + 1, ry + 1, 3, 1);
     }
 
+    /* ---- the plate: the code, stamped, above the drums ---- */
+    x.fillStyle = '#4a3a18'; x.fillRect(OX - 4, PLATE_Y, TOTAL + 8, PLATE_H);
+    ditherPatch(x, OX - 4, PLATE_Y, TOTAL + 8, PLATE_H);
+    x.fillStyle = '#8a6a2a';
+    x.fillRect(OX - 4, PLATE_Y, TOTAL + 8, 1);
+    x.fillRect(OX - 4, PLATE_Y + PLATE_H - 1, TOTAL + 8, 1);
+    drawText3(x, 'SET TO', OX + TOTAL / 2, PLATE_Y + 3, '#a89050');
     for (let i = 0; i < n; i++) {
-      const bx = ox + i * (dw + gap);
+      const bx = OX + i * (DW + GAP);
       const ok = s.have[i] === s.want[i];
-      if (s.spin[i] > 0) s.spin[i] -= dt * 5;
-
-      // the drum
-      x.fillStyle = '#120c06'; x.fillRect(bx, oy, dw, 48);
-      for (let j = 0; j < 48; j += 2) {
-        const sh = 0.10 + Math.abs(j - 24) / 24 * 0.22;
-        x.fillStyle = `rgba(0,0,0,${sh.toFixed(2)})`;
-        x.fillRect(bx, oy + j, dw, 1);
-      }
-      const off = Math.round((s.spin[i] || 0) * 12);
-      for (const [d, sc, col] of [[-1, 1, '#4a3a1c'], [0, 2, ok ? JADE : GOLD_LT], [1, 1, '#4a3a1c']]) {
-        const v = ((s.have[i] - 1 + d + 9) % 9) + 1;
-        drawBigDigit(x, v, bx + dw / 2, oy + 25 + d * 16 + off, sc, col);
-      }
-      // the window frame over it
-      x.fillStyle = ok ? JADE : '#8a6a2a';
-      x.fillRect(bx, oy + 16, dw, 1); x.fillRect(bx, oy + 32, dw, 1);
-      x.fillStyle = i === s.sel ? GOLD : '#5c3f1c';
-      x.fillRect(bx, oy, dw, 1); x.fillRect(bx, oy + 47, dw, 1);
-      x.fillRect(bx, oy, 1, 48); x.fillRect(bx + dw - 1, oy, 1, 48);
-      if (i === s.sel) {
-        // little arrows showing which way it turns
-        x.fillStyle = GOLD;
-        x.fillRect(bx + dw / 2 - 2, oy - 6, 5, 1);
-        x.fillRect(bx + dw / 2 - 1, oy - 7, 3, 1);
-        x.fillRect(bx + dw / 2 - 2, oy + 52, 5, 1);
-        x.fillRect(bx + dw / 2 - 1, oy + 53, 3, 1);
-      }
-
-      // what it has to read
-      x.fillStyle = ok ? '#14301f' : '#2a1c0c';
-      x.fillRect(bx, oy + 54, dw, 14);
-      x.fillStyle = ok ? JADE : '#5c3f1c';
-      x.fillRect(bx, oy + 54, dw, 1); x.fillRect(bx, oy + 67, dw, 1);
-      drawBigDigit(x, s.want[i], bx + dw / 2, oy + 61, 1, ok ? JADE : '#a89050');
-      rows.push({ x: bx, y: oy, w: dw, h: 48, pick: i });
+      /* One shadow, not two. drawBigDigit goes through the shared text
+         routine, which already lays a shadow down behind every glyph — the
+         extra pass I added on top of it read as a smudge stuck to each
+         figure. */
+      drawBigDigit(x, s.want[i], bx + DW / 2, PLATE_Y + 16, 2, ok ? JADE : '#e8cf9a');
     }
-    drawText3(x, 'MATCH THE PLATE', W / 2, oy + 74, DIM);
+
+    /* ---- the drums ---- */
+    for (let i = 0; i < n; i++) {
+      const bx = OX + i * (DW + GAP);
+      const ok = s.have[i] === s.want[i];
+      const live = i === s.sel;
+
+      // the roll eases out, and the tumbler drops when it lands right
+      if (Math.abs(s.roll[i]) > 0.001) {
+        s.roll[i] -= s.roll[i] * Math.min(1, dt * 11);
+        if (Math.abs(s.roll[i]) < 0.01) s.roll[i] = 0;
+      }
+      s.lock[i] += ((ok ? 1 : 0) - s.lock[i]) * Math.min(1, dt * 8);
+
+      /* the well the drum sits in */
+      x.fillStyle = '#0e0904'; x.fillRect(bx - 2, DRUM_Y - 2, DW + 4, DRUM_H + 4);
+      x.fillStyle = live ? (ok ? '#2f7a60' : '#8a6a2a') : '#3a2a12';
+      x.fillRect(bx - 2, DRUM_Y - 2, DW + 4, 1);
+      x.fillRect(bx - 2, DRUM_Y + DRUM_H + 1, DW + 4, 1);
+      x.fillRect(bx - 2, DRUM_Y - 2, 1, DRUM_H + 4);
+      x.fillRect(bx + DW + 1, DRUM_Y - 2, 1, DRUM_H + 4);
+
+      /* the drum face, curved by shading rather than by geometry */
+      x.fillStyle = ok ? '#0d2a1e' : '#151008';
+      x.fillRect(bx, DRUM_Y, DW, DRUM_H);
+      for (let j = 0; j < DRUM_H; j++) {
+        const k = Math.abs(j - DRUM_H / 2) / (DRUM_H / 2);
+        x.fillStyle = `rgba(0,0,0,${(0.05 + k * k * 0.55).toFixed(3)})`;
+        x.fillRect(bx, DRUM_Y + j, DW, 1);
+      }
+
+      /* the digits, clipped to the window, rolling on the drum */
+      x.save();
+      x.beginPath(); x.rect(bx, DRUM_Y, DW, DRUM_H); x.clip();
+      const STEP = 20;
+      const off = s.roll[i] * STEP;
+      for (let d = -2; d <= 2; d++) {
+        const v = ((s.have[i] - 1 + d + 9) % 9) + 1;
+        const cy = DRUM_Y + DRUM_H / 2 + d * STEP + off;
+        const centre = Math.abs(cy - (DRUM_Y + DRUM_H / 2)) < 5;
+        drawBigDigit(x, v, bx + DW / 2, Math.round(cy), centre ? 2 : 1,
+          centre ? (ok ? '#dfffc4' : GOLD_LT) : '#4a3a1c');
+      }
+      x.restore();
+
+      /* the sight line across the middle of the window */
+      x.fillStyle = ok ? 'rgba(126,200,80,.5)' : 'rgba(195,154,44,.28)';
+      x.fillRect(bx, DRUM_Y + DRUM_H / 2 - 10, DW, 1);
+      x.fillRect(bx, DRUM_Y + DRUM_H / 2 + 10, DW, 1);
+      // notches either side of the sight line, like a real drum window
+      x.fillStyle = ok ? JADE : '#8a6a2a';
+      x.fillRect(bx, DRUM_Y + DRUM_H / 2 - 1, 3, 3);
+      x.fillRect(bx + DW - 3, DRUM_Y + DRUM_H / 2 - 1, 3, 3);
+
+      /* the tumbler above the drum, which drops when it is right */
+      {
+        const dropped = s.lock[i];
+        const ty = DRUM_Y - 10 + Math.round(dropped * 5);
+        x.fillStyle = dropped > 0.6 ? JADE : '#6a5220';
+        x.fillRect(bx + DW / 2 - 2, ty, 5, 8);
+        x.fillStyle = dropped > 0.6 ? '#dfffc4' : '#8a6a2a';
+        x.fillRect(bx + DW / 2 - 2, ty, 5, 2);
+      }
+
+      /* which one you are turning */
+      if (live) {
+        const blink = Math.floor(t * 4) % 2 === 0;
+        x.fillStyle = blink ? GOLD : '#8a6a2a';
+        // arrows above and below, so up and down are obvious
+        for (let k = 0; k < 4; k++) {
+          x.fillRect(bx + DW / 2 - k, DRUM_Y - 8 - k, k * 2 + 1, 1);
+          x.fillRect(bx + DW / 2 - k, DRUM_Y + DRUM_H + 7 + k, k * 2 + 1, 1);
+        }
+        // and a bright frame round the well
+        x.fillStyle = blink ? 'rgba(255,210,74,.55)' : 'rgba(255,210,74,.22)';
+        x.fillRect(bx - 4, DRUM_Y - 4, DW + 8, 1);
+        x.fillRect(bx - 4, DRUM_Y + DRUM_H + 3, DW + 8, 1);
+        x.fillRect(bx - 4, DRUM_Y - 4, 1, DRUM_H + 8);
+        x.fillRect(bx + DW + 3, DRUM_Y - 4, 1, DRUM_H + 8);
+      }
+
+      rows.push({ x: bx - 2, y: DRUM_Y - 2, w: DW + 4, h: DRUM_H + 4, pick: i });
+    }
+
+    /* ---- the bolt strip: what the lock is actually doing ---- */
+    const BW = TOTAL;
+    x.fillStyle = '#120c06'; x.fillRect(OX, BOLT_Y, BW, 12);
+    x.fillStyle = '#4a3a1c'; x.fillRect(OX, BOLT_Y, BW, 1); x.fillRect(OX, BOLT_Y + 11, BW, 1);
+    // the bolt slides across as the drums come right
     const done = s.want.filter((v, i) => v === s.have[i]).length;
-    bar(x, 40, H - 40, W - 80, 5, done / n, JADE);
+    const slide = Math.round((done / n) * (BW - 22) + (s.bolt || 0) * 8);
+    x.fillStyle = solved ? JADE : '#8a6a2a';
+    x.fillRect(OX + 2 + slide, BOLT_Y + 2, 18, 8);
+    x.fillStyle = solved ? '#dfffc4' : '#c39a2c';
+    x.fillRect(OX + 2 + slide, BOLT_Y + 2, 18, 2);
+    // the keep it slides into
+    x.fillStyle = solved ? JADE : '#3a2a12';
+    x.fillRect(OX + BW - 6, BOLT_Y + 1, 4, 10);
+
+    drawText3(x, solved ? 'THE BOLT IS OVER' : `${done} OF ${n}`,
+      W / 2, BOLT_Y + 16, solved ? JADE : DIM);
+
+    /* a wash of green over everything the moment it opens */
+    if (solved && s.bolt < 1) {
+      x.fillStyle = `rgba(126,200,80,${((1 - s.bolt) * 0.22).toFixed(3)})`;
+      x.fillRect(0, 0, W, H);
+    }
     return rows;
   },
+
   _solved(s) { return s.want.every((v, i) => v === s.have[i]); },
+
   _turn(s, dir) {
     const n = 9;
+    const before = s.have[s.sel] === s.want[s.sel];
     s.have[s.sel] = ((s.have[s.sel] - 1 + dir + n) % n) + 1;
-    s.spin[s.sel] = dir > 0 ? 1 : -1;
-    return this._solved(s);
+    // the drum rolls the other way to the digit, which is what a drum does
+    s.roll[s.sel] = -dir;
+    const after = s.have[s.sel] === s.want[s.sel];
+    s.sfx?.('reel');
+    if (after && !before) s.sfx?.('confirm');
+    const solved = this._solved(s);
+    if (solved) { s.sfx?.('door'); s.sfx?.('victory'); }
+    return solved;
   },
+
   key(code, s) {
     const n = s.have.length;
-    if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + n - 1) % n; return false; }
-    if (code === 'ArrowRight' || code === 'KeyD' || code === 'Tab') { s.sel = (s.sel + 1) % n; return false; }
+    if (code === 'ArrowLeft' || code === 'KeyA') {
+      s.sel = (s.sel + n - 1) % n; s.sfx?.('select'); return false;
+    }
+    if (code === 'ArrowRight' || code === 'KeyD' || code === 'Tab') {
+      s.sel = (s.sel + 1) % n; s.sfx?.('select'); return false;
+    }
     if (code === 'ArrowUp' || code === 'KeyW') return this._turn(s, 1);
     if (code === 'ArrowDown' || code === 'KeyS') return this._turn(s, -1);
+    if (code === 'Space' || code === 'Enter' || code === 'KeyE') return this._turn(s, 1);
     return false;
   },
+
   click(row, i, s) {
     if (row?.pick === undefined) return false;
-    if (row.pick !== s.sel) { s.sel = row.pick; return false; }
+    if (row.pick !== s.sel) { s.sel = row.pick; s.sfx?.('select'); return false; }
     return this._turn(s, 1);
   },
 };

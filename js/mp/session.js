@@ -9,6 +9,7 @@
 
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
 import { TASK_DEFS, SABOTAGE_DEFS, dealTasks, taskById, taskSteps } from './tasks.js';
+import { makeClue } from './stranger.js';
 
 const now = () => performance.now() / 1000;
 
@@ -139,6 +140,7 @@ export class HostSession {
          somebody who is really standing in the bunker, so knowing what
          everybody is carrying stays a thing you have to go and earn. */
       case C.LEDGER: { this._sendLedger(from); break; }
+      case C.ASKSTRANGER: { this._askStranger(from); break; }
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
@@ -345,6 +347,9 @@ export class HostSession {
       }
     }
     this.bodies.push({ id: v.id, x: v.x, y: v.y, z: v.z });
+    /* Remember who was standing nearby. The Stranger trades in exactly this
+       sort of thing — not who did it, just who was close enough to have. */
+    this._markNearBody(v.x, v.z, v.id);
     this.net.broadcast({ t: S.KILLED, victimId: v.id, x: v.x, y: v.y, z: v.z });
     this.hooks.onKilled?.(v.id, v.x, v.y, v.z);
     this._roster();
@@ -539,11 +544,132 @@ export class HostSession {
   }
 
   /** Answer one player's request for the ledger. Host-side only. */
+  /** Who was within a dozen metres when somebody last went down. */
+  _markNearBody(x, z, exceptId) {
+    for (const q of this.players.values()) {
+      if (q.id === exceptId) continue;
+      if (Math.hypot((q.x || 0) - x, (q.z || 0) - z) < 12) q.nearBody = true;
+    }
+  }
+
   _sendLedger(id) {
     const rows = [];
     for (const [pid, pl] of this.players) rows.push([pid, Math.max(0, pl.coins | 0)]);
     if (id === 'host') this.hooks.onLedger?.(rows);
     else this.net.sendTo(id, { t: S.LEDGER, rows });
+  }
+
+  /* =========================================================
+     THE ONE WHO IS NOT ON THE ROSTER
+
+     He comes ashore once. The host decides when, walks him through the
+     jungle far faster than anybody can follow, and takes him away again
+     after about a minute whether anybody reached him or not.
+     ========================================================= */
+
+  /** Called every rules tick. Cheap when he is not out. */
+  _tickStranger(dt) {
+    if (!this.settings.stranger) return;
+    if (this.phase !== PHASE.ROAM) return;
+    const t = now();
+    const S2 = this.stranger;
+
+    if (!S2) {
+      /* He waits. Somewhere between two and five minutes in, so he is not
+         part of the opening and not an afterthought either. */
+      /* `== null`, not `!`. Zero is a perfectly good time and treating it as
+         "unset" means anything that pokes this to force him out early just
+         gets a fresh delay instead. */
+      if (this.strangerAt == null) this.strangerAt = t + 120 + this.rng() * 180;
+      if (this.strangerDone || t < this.strangerAt) return;
+      /* Out of the treeline, well away from the camp so finding him is
+         luck rather than a scheduled event. */
+      const a = this.rng() * Math.PI * 2;
+      const r = 70 + this.rng() * 70;
+      this.stranger = {
+        x: Math.cos(a) * r, z: Math.sin(a) * r,
+        // a wandering heading he keeps mostly to
+        head: this.rng() * Math.PI * 2,
+        endsAt: t + 75,
+        spoken: false,
+      };
+      this.net.broadcast({ t: S.STRANGER, on: true, x: this.stranger.x, z: this.stranger.z });
+      this.hooks.onStranger?.(true, this.stranger.x, this.stranger.z);
+      return;
+    }
+
+    if (t >= S2.endsAt) {
+      this.stranger = null;
+      this.strangerDone = true;
+      this.net.broadcast({ t: S.STRANGER, on: false });
+      this.hooks.onStranger?.(false, 0, 0);
+      return;
+    }
+
+    /* He moves fast — about twice a sprint — and turns rather than running
+       in a line, and he will not leave the island.
+
+       But he STOPS when somebody gets close. Twenty-six metres a second is
+       faster than anybody can chase, and a thing you can never reach is
+       decoration rather than a mechanic. So: he runs while nobody is near,
+       and once you are inside twenty metres he turns and waits for you. If
+       you dawdle he loses patience and goes. */
+    let nearest = Infinity, toward = S2.head;
+    for (const q of this.players.values()) {
+      if (!q.alive) continue;
+      const d = Math.hypot((q.x || 0) - S2.x, (q.z || 0) - S2.z);
+      if (d < nearest) {
+        nearest = d;
+        toward = Math.atan2((q.x || 0) - S2.x, (q.z || 0) - S2.z);
+      }
+    }
+    const watching = nearest < 20;
+    if (watching) {
+      // he turns to face you and holds still, and his patience runs down
+      S2.head = toward;
+      S2.waited = (S2.waited || 0) + dt;
+      if (S2.waited > 18) S2.endsAt = Math.min(S2.endsAt, t + 0.5);
+    } else {
+      S2.head += (this.rng() - 0.5) * dt * 2.2;
+      S2.waited = 0;
+    }
+    const SP = watching ? 0 : 26;
+    S2.x += Math.sin(S2.head) * SP * dt;
+    S2.z += Math.cos(S2.head) * SP * dt;
+    const rr = Math.hypot(S2.x, S2.z);
+    if (rr > 160) { S2.head += Math.PI; S2.x *= 160 / rr; S2.z *= 160 / rr; }
+    // the wire only needs him a few times a second; the net timer paces it
+    this.net.broadcast({ t: S.STRANGER, on: true, x: +S2.x.toFixed(1), z: +S2.z.toFixed(1) });
+    this.hooks.onStranger?.(true, S2.x, S2.z);
+  }
+
+  /** Somebody reached him. One clue, then he is gone for good. */
+  _askStranger(id) {
+    const S2 = this.stranger;
+    const p = this.players.get(id);
+    if (!S2 || !p || !p.alive) return;
+    if (Math.hypot((p.x || 0) - S2.x, (p.z || 0) - S2.z) > 7) return;
+
+    const agents = [...this.players.values()]
+      .filter((q) => q.role === ROLE.AGENT && q.alive)
+      .map((q) => ({
+        id: q.id, x: q.x || 0, z: q.z || 0, coins: q.coins | 0, alive: true,
+        nearBody: !!q.nearBody,
+      }));
+    const crew = [...this.players.values()].filter((q) => q.alive).map((q) => ({ coins: q.coins | 0 }));
+    /* An Agent asking gets nothing useful — he knows who they are. */
+    const clue = p.role === ROLE.AGENT
+      ? { text: 'YOU AND I ARE IN THE SAME TRADE. I HAVE NOTHING TO SELL YOU.', about: null }
+      : makeClue({ agents, crew, named: this.hooks.namedSites?.() || {}, rand: () => this.rng() });
+
+    S2.spoken = true;
+    if (id === 'host') this.hooks.onRiddle?.(clue.text);
+    else this.net.sendTo(id, { t: S.RIDDLE, text: clue.text });
+    // and he leaves
+    this.stranger = null;
+    this.strangerDone = true;
+    this.net.broadcast({ t: S.STRANGER, on: false });
+    this.hooks.onStranger?.(false, 0, 0);
   }
 
   _trySabotage(id, kind) {
@@ -635,6 +761,8 @@ export class HostSession {
 
     // a snap vote nobody finished
     if (this.snap && now() >= this.snap.endsAt) this._closeSnap();
+
+    this._tickStranger(dt);
 
     /* Timed perks expire quietly. The roster is what carries them, so when
        one runs out the roster has to go again or a whistle blown once
@@ -775,6 +903,8 @@ export class MirrorSession {
       case S.PURSE: this.hooks.onPurse?.(msg.coins, msg.gained); break;
       case S.LEDGER: this.hooks.onLedger?.(msg.rows); break;
       case S.BLACKOUT: this.hooks.onBlackout?.(msg.secs); break;
+      case S.STRANGER: this.hooks.onStranger?.(msg.on, msg.x, msg.z); break;
+      case S.RIDDLE: this.hooks.onRiddle?.(msg.text); break;
       case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;

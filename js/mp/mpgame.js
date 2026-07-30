@@ -34,6 +34,7 @@ import { buildSyncoin } from '../world/extras.js';
 import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
 import { HR_BOX, HR_COLLIDERS, hrHeight } from '../world/highroller.js';
 import * as BJ from './blackjack.js';
+import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
 import { setTime } from '../lib/ps1.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
@@ -123,6 +124,9 @@ export class MPGame extends Game {
       onPurse: (c, gained) => this._onPurse(c, gained),
       onLedger: (rows) => this._onLedger(rows),
       onBlackout: (secs) => this._onBlackout(secs),
+      onStranger: (on, x, z) => this._onStranger(on, x, z),
+      onRiddle: (text) => this._onRiddle(text),
+      namedSites: () => this.mp.named || {},
       onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
       onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
@@ -241,6 +245,8 @@ export class MPGame extends Game {
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
       case S.LEDGER: this._onLedger(msg.rows); break;
       case S.BLACKOUT: this._onBlackout(msg.secs); break;
+      case S.STRANGER: this._onStranger(msg.on, msg.x, msg.z); break;
+      case S.RIDDLE: this._onRiddle(msg.text); break;
       case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
       case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
       case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
@@ -1207,6 +1213,12 @@ export class MPGame extends Game {
       }
     }
 
+    // the one who is not on the roster
+    if (M.stranger) {
+      const ds = Math.hypot(p.x - M.stranger.x, p.z - M.stranger.z);
+      if (ds < 6.0 && ds < bestD) { bestD = ds; best = { kind: 'mpStranger', prompt: 'SPEAK TO HIM' }; }
+    }
+
     // Ferdi's outlying machines
     for (const v of (this.vendors || [])) {
       const dv = Math.hypot(p.x - v.x, p.z - v.z);
@@ -1331,6 +1343,10 @@ export class MPGame extends Game {
         this.screens.push('mpFlopper', {});
         document.exitPointerLock?.();
         this.audio.sfx('page');
+        break;
+      }
+      case 'mpStranger': {
+        this.askStranger();
         break;
       }
       case 'mpVendor': {
@@ -2164,6 +2180,55 @@ export class MPGame extends Game {
     return out;
   }
 
+  /* =========================================================
+     THE ONE WHO IS NOT ON THE ROSTER
+     ========================================================= */
+
+  /** The host says where he is, or that he has gone. */
+  _onStranger(on, x, z) {
+    const M = this.mp;
+    if (!this.islandScene) return;
+    if (!M.strangerNode) {
+      M.strangerNode = buildStranger(this.propMats);
+      this.islandScene.add(M.strangerNode);
+      this.tickers.push(M.strangerNode);
+    }
+    if (!on) {
+      if (M.stranger) {
+        // he fades rather than blinking out
+        M.strangerGone = now() + 1.2;
+        this.audio.sfx('descend');
+      }
+      M.stranger = null;
+      return;
+    }
+    const first = !M.stranger;
+    M.stranger = { x, z };
+    M.strangerGone = 0;
+    if (first) {
+      /* No marker, no toast telling you where. A shape at the edge of the
+         trees and a sound you cannot place is the whole point of him. */
+      this.audio.sfx('ping');
+      this.ui.toast('SOMETHING MOVED IN THE TREES', 'jade', 2600);
+    }
+  }
+
+  /** What he told you. */
+  _onRiddle(text) {
+    const open = STRANGER_OPENERS[(Math.random() * STRANGER_OPENERS.length) | 0];
+    const close = STRANGER_CLOSERS[(Math.random() * STRANGER_CLOSERS.length) | 0];
+    this.screens.push('mpRiddle', { lines: [open, text, close] });
+    document.exitPointerLock?.();
+    this.audio.sfx('page');
+    this.mp.riddleHeard = text;
+  }
+
+  /** Ask him. He answers once and leaves. */
+  askStranger() {
+    if (this.isHost) this.mp.host?._askStranger('host');
+    else this._send({ t: C.ASKSTRANGER });
+  }
+
   /** Somebody set off a blackout charge. Every fire on the island, out. */
   _onBlackout(secs) {
     this.doused = true;
@@ -2693,6 +2758,32 @@ export class MPGame extends Game {
     if (this.stunnedUntil && now() >= this.stunnedUntil) this.stunnedUntil = 0;
     this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
     this._sweepCoins(dt);
+
+    /* The one on the treeline. His position comes off the wire at the net
+       tick, so it is interpolated here — he moves far too fast for a
+       twenty-hertz stream to look like anything otherwise. */
+    if (M.strangerNode) {
+      const node = M.strangerNode;
+      if (M.stranger) {
+        const gy = heightAt(M.stranger.x, M.stranger.z);
+        if (!node.userData.at) node.userData.at = { x: M.stranger.x, z: M.stranger.z };
+        const at = node.userData.at;
+        at.x += (M.stranger.x - at.x) * Math.min(1, dt * 7);
+        at.z += (M.stranger.z - at.z) * Math.min(1, dt * 7);
+        node.position.set(at.x, gy, at.z);
+        node.rotation.y = Math.atan2(M.stranger.x - at.x, M.stranger.z - at.z) || node.rotation.y;
+        /* He fades with distance as well as time — at forty metres he is a
+           suggestion, and at fifteen he is a person. */
+        const d = Math.hypot(this.player.pos.x - at.x, this.player.pos.z - at.z);
+        const near = 1 - Math.min(1, Math.max(0, (d - 14) / 34));
+        node.userData.setFade(0.25 + near * 0.75);
+      } else if (M.strangerGone && now() < M.strangerGone) {
+        node.userData.setFade(Math.max(0, (M.strangerGone - now()) / 1.2) * 0.8);
+      } else {
+        node.userData.setFade(0);
+        node.userData.at = null;
+      }
+    }
     // a body drops rather than appearing already laid out
     for (const b of M.bodies.values()) {
       if (b.fall === undefined || b.fall >= 1) continue;

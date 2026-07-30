@@ -312,6 +312,77 @@ const BEEF_WINS = [
   'I DID NOT WRITE THE RULES. I JUST NEVER LOSE BY THEM.',
 ];
 
+/**
+ * The host's dials. Each knows how to read itself, how to print itself and
+ * how to step, so the screen that draws them holds no rules at all.
+ */
+const SETTING_ROWS = [
+  {
+    name: 'ROGUE AGENTS',
+    blurb: 'How many of you are working for the other side. Automatic scales with '
+      + 'the size of the lobby: one up to five players, two up to eight, three above that.',
+    get: (S, auto) => (S.agents > 0 ? String(S.agents) : `AUTOMATIC (${auto})`),
+    step: (S, d) => { S.agents = Math.max(0, Math.min(4, (S.agents | 0) + d)); },
+  },
+  {
+    name: 'THE STRANGER',
+    blurb: 'Once a round, somebody who is not on the roster comes out of the trees. '
+      + 'Reach him and he tells you one true thing about a Rogue Agent, in riddles. '
+      + 'Turn him off for a straight game of deduction.',
+    get: (S) => (S.stranger ? 'COMES ASHORE' : 'STAYS AWAY'),
+    step: (S) => { S.stranger = !S.stranger; },
+  },
+  {
+    name: 'KILL COOLDOWN',
+    blurb: 'Seconds an Agent must wait between strikes. Shorter is frantic; longer '
+      + 'gives the Castaways time to notice a pattern.',
+    get: (S) => `${S.killCooldown}S`,
+    step: (S, d) => { S.killCooldown = Math.max(12, Math.min(90, S.killCooldown + d * 4)); },
+  },
+  {
+    name: 'GRACE PERIOD',
+    blurb: 'Seconds at the start of the round in which nobody can be killed. It gives '
+      + 'everybody a chance to build a picture of where people are.',
+    get: (S) => `${S.graceSeconds}S`,
+    step: (S, d) => { S.graceSeconds = Math.max(0, Math.min(240, S.graceSeconds + d * 15)); },
+  },
+  {
+    name: 'COUNCIL LENGTH',
+    blurb: 'Seconds a council runs for. Talking and voting happen together, so this '
+      + 'is the whole meeting.',
+    get: (S) => `${S.councilSeconds}S`,
+    step: (S, d) => { S.councilSeconds = Math.max(20, Math.min(180, S.councilSeconds + d * 10)); },
+  },
+  {
+    name: 'JOBS EACH',
+    blurb: 'How many chores every Castaway is dealt. More jobs is a longer round and '
+      + 'more chances to be caught somewhere you should not be.',
+    get: (S) => String(S.tasksPerPlayer),
+    step: (S, d) => { S.tasksPerPlayer = Math.max(2, Math.min(9, S.tasksPerPlayer + d)); },
+  },
+  {
+    name: 'EMERGENCY MEETINGS',
+    blurb: 'How many times each player may ring the bell at the camp without a body '
+      + 'to report.',
+    get: (S) => String(S.emergencyPerPlayer),
+    step: (S, d) => { S.emergencyPerPlayer = Math.max(0, Math.min(3, S.emergencyPerPlayer + d)); },
+  },
+  {
+    name: 'REVEAL ON EXILE',
+    blurb: 'Whether the island tells you what somebody was after you vote them off. '
+      + 'Hiding it makes every vote a leap.',
+    get: (S) => (S.revealOnExile ? 'YES' : 'NEVER'),
+    step: (S) => { S.revealOnExile = !S.revealOnExile; },
+  },
+  {
+    name: 'AGENTS STRIKE ONLY AT NIGHT',
+    blurb: 'Agents cannot kill in daylight at all. It makes the day safe and the '
+      + 'night unbearable.',
+    get: (S) => (S.nightOnly ? 'YES' : 'ANY TIME'),
+    step: (S) => { S.nightOnly = !S.nightOnly; },
+  },
+];
+
 /** How long the command table takes to wake up. */
 const BOOT_LEN = 1.9;
 
@@ -508,18 +579,105 @@ export const SCREENS = {
       }
       if (g.isHost) {
         const can = players.length >= (g.mp.dev ? 1 : 3);
-        rows = menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS'], s.sel, W / 2, b.bottom - 26, t, { width: 150 });
+        rows = menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS', 'ROUND SETTINGS'],
+          s.sel, W / 2, b.bottom - 40, t, { width: 150, gap: 15 });
         if (!can) drawText(x, 'THREE ASHORE AT LEAST, TEN AT MOST',
-          { x: W / 2, y: b.bottom - 40, scale: 1, align: 'center', color: DIM });
+          { x: W / 2, y: b.bottom - 52, scale: 1, align: 'center', color: DIM });
       } else {
         drawText(x, 'WAITING FOR THE HOST', { x: W / 2, y: b.bottom - 22, scale: 1, align: 'center', color: JADE });
       }
-      footer(x, W, H, g.isHost ? 'ENTER START   ESC LEAVE' : 'ESC LEAVE');
+      footer(x, W, H, g.isHost ? 'UP DOWN CHOOSE   ENTER PICK   ESC LEAVE' : 'ESC LEAVE');
       return rows;
     },
     key(code, s, g, st) {
       if (code === 'Escape') { location.reload(); return true; }
-      if ((code === 'Enter' || code === 'KeyE') && g.isHost) g.startMatch();
+      if (!g.isHost) return true;
+      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        if (s.sel === 1) { st.push('mpSettings'); return true; }
+        g.startMatch();
+      }
+      return true;
+    },
+    click(row, i, s, g, st) {
+      if (i === 1) { st.push('mpSettings'); return true; }
+      if (g.isHost) g.startMatch();
+      return true;
+    },
+  },
+
+  /* ===========================================================
+     ROUND SETTINGS
+
+     The host's dials, before anybody puts to sea. Every one of these
+     changes how the round actually plays, so they are all in one place
+     with what they do written next to them.
+     =========================================================== */
+  mpSettings: {
+    init(s) { s.sel = s.sel || 0; },
+    draw(x, W, H, s, g, t) {
+      const S2 = g.mp.host?.settings;
+      if (!S2) return [];
+      const n = [...g.mp.view.players.values()].length;
+      const auto = n >= 9 ? 3 : n >= 6 ? 2 : 1;
+
+      const b = frame(x, W, H, 'ROUND SETTINGS');
+      const ROWS = SETTING_ROWS;
+      const rows = [];
+      let y = b.top + 4;
+      ROWS.forEach((r, i) => {
+        const on = i === s.sel;
+        const val = r.get(S2, auto);
+        if (on) {
+          x.fillStyle = '#3a2a10';
+          x.fillRect(22, y - 2, W - 44, 13);
+          x.fillStyle = GOLD; x.fillRect(22, y - 2, 2, 13);
+        }
+        drawText(x, r.name, { x: 30, y, scale: 1, color: on ? GOLD_LT : '#c9b98a' });
+        drawText(x, val, {
+          x: W - 30, y, scale: 1, align: 'right',
+          color: on ? GOLD : '#8a7a52',
+        });
+        rows.push({ x: 22, y: y - 2, w: W - 44, h: 12, pick: i });
+        y += 12;
+      });
+
+      /* What the highlighted one does. The row pitch is tight on purpose so
+         there is room for three lines of explanation down here — at fourteen
+         pixels a row the description was clipped to one. */
+      const cur = ROWS[s.sel];
+      x.fillStyle = '#5c3f1c'; x.fillRect(30, y + 2, W - 60, 1);
+      let by = y + 8;
+      for (const ln of wrapText(cur.blurb.toUpperCase(), W - 60, 1, 1)) {
+        if (by > b.bottom - 8) break;
+        drawText(x, ln, { x: 30, y: by, scale: 1, color: DIM });
+        by += 9;
+      }
+
+      footer(x, W, H, 'UP DOWN PICK   LEFT RIGHT CHANGE   ESC BACK TO THE BEACH');
+      return rows;
+    },
+    key(code, s, g, st) {
+      const S2 = g.mp.host?.settings;
+      if (!S2) return true;
+      const ROWS = SETTING_ROWS;
+      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + ROWS.length - 1) % ROWS.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % ROWS.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowLeft' || code === 'KeyA') { ROWS[s.sel].step(S2, -1); g.audio?.sfx('confirm'); return true; }
+      if (code === 'ArrowRight' || code === 'KeyD'
+        || code === 'Enter' || code === 'KeyE' || code === 'Space') {
+        ROWS[s.sel].step(S2, 1); g.audio?.sfx('confirm'); return true;
+      }
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
+      return true;
+    },
+    click(row, i, s, g) {
+      const S2 = g.mp.host?.settings;
+      if (!S2 || row?.pick === undefined) return true;
+      if (row.pick !== s.sel) { s.sel = row.pick; g.audio?.sfx('select'); return true; }
+      SETTING_ROWS[s.sel].step(S2, 1);
+      g.audio?.sfx('confirm');
       return true;
     },
   },
@@ -1398,6 +1556,89 @@ export const SCREENS = {
         }
       }
       if (code === 'Escape' || code === 'Backspace' || code === 'KeyE') {
+        st.pop(); g.afterOverlayClose(); return true;
+      }
+      return true;
+    },
+  },
+
+  /* ===========================================================
+     WHAT HE TOLD YOU
+
+     Three lines, typed out one character at a time, on nothing. No frame,
+     no panel — he is not part of the interface any more than he is part of
+     the roster.
+     =========================================================== */
+  mpRiddle: {
+    init(s) { s.shown = 0; s.line = 0; s.done = false; },
+    draw(x, W, H, s, g, t) {
+      const lines = s.lines || [''];
+
+      // the world dims almost to nothing behind him
+      x.fillStyle = 'rgba(2,4,6,.90)'; x.fillRect(0, 0, W, H);
+      // a slow blue drift, like light through leaves
+      for (let i = 0; i < 5; i++) {
+        const a2 = (0.014 + i * 0.002).toFixed(3);
+        const yy = ((t * 12 + i * 47) % (H + 40)) - 20;
+        x.fillStyle = `rgba(120,200,230,${a2})`;
+        x.fillRect(0, yy, W, 12);
+      }
+
+      /* his eyes, at the top, watching while he talks */
+      {
+        const bx = W / 2, by = 26;
+        const glow = 0.7 + Math.sin(t * 5.3) * 0.3;
+        x.fillStyle = `rgba(140,230,255,${(0.5 + glow * 0.5).toFixed(2)})`;
+        x.fillRect(bx - 9, by, 4, 2);
+        x.fillRect(bx + 5, by, 4, 2);
+        // and the suggestion of a hood round them
+        x.fillStyle = 'rgba(20,28,36,.9)';
+        x.fillRect(bx - 16, by - 10, 32, 8);
+        x.fillRect(bx - 13, by - 4, 26, 3);
+      }
+
+      /* the lines, typed */
+      const SPEED = 34;                       // characters a second
+      let budget = Math.floor((s.t || 0) * SPEED);
+      let y = 52;
+      lines.forEach((ln, i) => {
+        const wrapped = wrapText(String(ln), W - 48, 1, 1);
+        for (const w of wrapped) {
+          const take = Math.max(0, Math.min(w.length, budget));
+          budget -= w.length;
+          if (take <= 0) return;
+          drawText(x, w.slice(0, take), {
+            x: 24, y, scale: 1,
+            color: i === 1 ? '#bdf0ff' : '#6a8a9a',
+          });
+          // a cursor on the line still arriving
+          if (take < w.length && Math.floor(t * 8) % 2 === 0) {
+            x.fillStyle = '#bdf0ff';
+            x.fillRect(24 + textWidth(w.slice(0, take), 1) + 1, y, 4, 7);
+          }
+          y += 11;
+        }
+        y += 6;
+      });
+      s.done = budget >= 0;
+
+      if (s.done) {
+        drawText(x, 'HE IS ALREADY GONE.', {
+          x: W / 2, y: H - 46, scale: 1, align: 'center',
+          color: Math.floor(t * 2) % 2 ? '#4a6a7a' : '#31485a',
+        });
+      }
+      footer(x, W, H, s.done ? 'E  ENOUGH' : '');
+      return [];
+    },
+    key(code, s, g, st) {
+      if (!s.done) {
+        // let people skip the typing
+        s.t = 99;
+        return true;
+      }
+      if (code === 'KeyE' || code === 'Enter' || code === 'Space'
+        || code === 'Escape' || code === 'Backspace') {
         st.pop(); g.afterOverlayClose(); return true;
       }
       return true;
@@ -2710,6 +2951,7 @@ export const SCREENS = {
 
       let rows = [];
       if (!s.done) {
+        s.sfx = s.sfx || ((n) => g.audio?.sfx(n));
         rows = G.draw.call(G, x, W, H, s, t, dt) || [];
         footer(x, W, H, `${G.hint}   ESC WALK AWAY`);
       } else {
@@ -2740,12 +2982,16 @@ export const SCREENS = {
       if (s.done) return true;
       if (code === 'Escape') { st.pop(); g.afterOverlayClose(); g.cancelMinigame?.(); return true; }
       const G = MINIGAMES[s.game];
+      /* Minigames get a way to make a noise. They should not know about the
+         game object, so they are handed one function. */
+      s.sfx = s.sfx || ((n) => g.audio?.sfx(n));
       if (G?.key && G.key.call(G, code, s)) this._win(s, g, st);
       return true;
     },
     click(row, i, s, g, st) {
       if (s.done) return true;
       const G = MINIGAMES[s.game];
+      s.sfx = s.sfx || ((n) => g.audio?.sfx(n));
       if (G?.click && G.click.call(G, row, i, s)) this._win(s, g, st);
       return true;
     },
