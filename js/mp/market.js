@@ -170,20 +170,22 @@ export const STOCK = [
     /* The mast came with four. These are yours, they go where you decide,
        and they join the same feed — which is the whole of it: the four that
        were already up are watching what somebody else thought mattered. */
-    id: 'camera', name: 'RELAY CAMERA', cost: 11, side: 'open', icon: 'cctv',
-    blurb: 'One more eye on the mast\'s feed. Press V to hang it where you are '
-      + 'standing, aimed where you are looking. It shows up on the terminal at '
-      + 'the top of the ladder the moment it is up.',
-    tag: 'PRESS V',
+    id: 'camera', name: 'RELAY CAMERAS X3', cost: 6, side: 'open', icon: 'cctv',
+    blurb: 'Three cameras in a box, 6 Syncoin for the three. Press V to hang one '
+      + 'where you are standing, aimed where you are looking. Each one joins the '
+      + 'terminal at the top of the mast the moment it is up. The relay takes 10 '
+      + 'in total and 4 are already fitted, so there is room for 6 of yours.',
+    tag: '3 FOR 6',
   },
   {
     /* The one thing that will find the Stranger. He comes ashore once, he
        stands in the trees, and without this you find him by walking into
        him — which is not a mechanic, it is a coincidence. */
-    id: 'scanner', name: 'SIGNAL SCANNER', cost: 15, side: 'open', icon: 'scanner',
-    blurb: 'A handheld set that hears one thing: whoever is transmitting from the '
-      + 'treeline. Switch it on and it sweeps. It gives you a bearing, not a '
-      + 'position - wide when he is far off, tight when he is near.',
+    id: 'scanner', name: 'SIGNAL SCANNER', cost: 8, side: 'open', icon: 'scanner',
+    blurb: 'A handheld set that reads the whole band: the mast, the real listening '
+      + 'post, every camera that is up, and any heat signature that is not on the '
+      + 'roster. Lock one and it steers you - which way to turn and how many '
+      + 'metres are left. B steps to the next signal.',
     tag: 'BELT',
   },
   {

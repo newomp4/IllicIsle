@@ -48,8 +48,7 @@ import {
   BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_DOOR,
 } from '../world/bar.js';
 import {
-  buildCamera, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y,
-  CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS,
+  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y, CAMERA_BUNDLE,
 } from '../world/tower.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
@@ -1917,8 +1916,20 @@ export class MPGame extends Game {
     /* A camera is not carried on the belt and is not eaten: buying one
        hands it straight to the relay's spare count and you set it with V. */
     if (id === 'camera') {
-      if (!this.gainCamera()) { this.coins += price; this.audio.sfx('deny'); return false; }
-      this.ui.showPopup(it.name, 'PRESS V WHERE YOU WANT IT', 'coin', 'FERDI SAYS');
+      /* A box of three. If the relay only has room for one or two left you
+         get those and pay for those — nobody should be charged six coins
+         for a box that half of will not fit. */
+      const got = this.gainCamera(CAMERA_BUNDLE);
+      if (!got) { this.coins += price; this.audio.sfx('deny'); return false; }
+      if (got < CAMERA_BUNDLE) {
+        const back = Math.round(price * (1 - got / CAMERA_BUNDLE));
+        this.coins += back;
+        this._send({ t: C.PURSE, coins: this.coins });
+        this.ui.showPopup(`${got} CAMERA${got === 1 ? '' : 'S'}`,
+          `THE RELAY ONLY HAD ROOM FOR ${got} - ${back} BACK`, 'coin', 'FERDI SAYS');
+        return true;
+      }
+      this.ui.showPopup(it.name, 'PRESS V WHERE YOU WANT EACH ONE', 'coin', 'FERDI SAYS');
       return true;
     }
 
@@ -2479,163 +2490,6 @@ export class MPGame extends Game {
   }
 
   /* =========================================================
-     THE CAMERAS
-
-     Four of them, and they start in the hut. You take them out, you put
-     them where you think somebody will walk, and the terminal shows you
-     what they see. A camera nobody has found is worth more than any
-     amount of standing about watching a corridor.
-     ========================================================= */
-  /* Built at world-build time, not on first use: a material that arrives
-     in the middle of a round compiles a program in the middle of a round,
-     and that is a freeze. They are hidden until they are placed, and the
-     load-time warm-up reveals hidden objects before it compiles. */
-  _initCameras() {
-    if (this.cams) return;
-    this.cams = [];
-    const add = (name, fitted) => {
-      const i = this.cams.length;
-      const node = buildCamera(this.propMats);
-      node.userData.phase = i * 0.53;
-      node.visible = false;
-      this.islandScene.add(node);
-      this.tickers.push(node);
-      const c = { i, node, placed: false, fitted, x: 0, y: 0, z: 0, yaw: 0, name };
-      this.cams.push(c);
-      return c;
-    };
-
-    /* The four that came with the mast, already up and already on the feed.
-       A terminal that boots to four dead channels tells you nothing and is
-       not worth the climb; these are watching the ways on to the island. */
-    for (const f of FITTED_CAMS) {
-      const c = add(f.name, true);
-      let [ax, az] = f.at;
-      let [lx, lz] = f.look;
-      // CAM 4 watches the temple door, which is not at a fixed spot
-      if (f.name.endsWith('TEMPLE') && this.templeDoorPos) {
-        const d = this.templeDoorPos;
-        lx = d.x; lz = d.z;
-        const a = Math.atan2(d.x, d.z);
-        ax = d.x - Math.sin(a) * 13; az = d.z - Math.cos(a) * 13;
-      }
-      c.x = ax; c.z = az;
-      c.y = heightAt(ax, az) + 3.4;      // up a trunk, looking down
-      c.yaw = Math.atan2(lx - ax, lz - az);
-      c.placed = true;
-      c.node.position.set(c.x, c.y, c.z);
-      c.node.rotation.y = c.yaw;
-      c.node.rotation.x = 0.16;
-      c.node.visible = true;
-    }
-    // and room for the ones you buy
-    for (let i = 0; i < CAMERA_MAX - CAMERA_FITTED; i++) {
-      add(`CAM ${CAMERA_FITTED + i + 1}`, false);
-    }
-    this.camsHeld = 0;                    // you start with none of your own
-  }
-
-  /** Ferdi sells them. One bought is one you can set, wherever you like. */
-  gainCamera() {
-    this._initCameras();
-    const spare = this.cams.some((c) => !c.placed);
-    if (!spare) {
-      this.ui.toast('THE RELAY WILL NOT TAKE ANOTHER', 'bad', 2400);
-      return false;
-    }
-    this.camsHeld = (this.camsHeld || 0) + 1;
-    this.ui.toast(`${this.camsHeld} CAMERA${this.camsHeld === 1 ? '' : 'S'} IN HAND - V TO SET`,
-      'jade', 3600);
-    return true;
-  }
-
-  /**
-   * Point a real camera at what camera `i` can see and render it.
-   *
-   * Called once a frame by the terminal, for the ONE feed you are looking
-   * at — four live feeds is four extra passes and the other three are
-   * thumbnails nobody is reading. The result is read back as pixels so the
-   * interface, which is a 2D canvas, can draw it with everything else.
-   */
-  feedPixels(i) {
-    const cam = this.cams?.[i];
-    if (!cam || !cam.placed) return null;
-    if (!this._feedCam) {
-      this._feedCam = new THREE.PerspectiveCamera(62, 128 / 88, 0.4, 220);
-    }
-    const fc = this._feedCam;
-    fc.position.set(cam.x, cam.y, cam.z);
-    fc.rotation.set(0, 0, 0);
-    fc.rotateY(cam.yaw);
-    fc.rotateX(-0.10);                    // they all look slightly down
-    fc.updateMatrixWorld(true);
-
-    /* The island keeps running whether or not anybody is in it, so this
-       renders the live scene — bodies, avatars, the lot. */
-    this.pipeline.renderFeed(this.islandScene, fc);
-    this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
-    return this._feedBuf;
-  }
-
-  /** Who camera `i` can actually see, for the contact list under the feed. */
-  feedContacts(i, out = []) {
-    out.length = 0;
-    const cam = this.cams?.[i];
-    if (!cam || !cam.placed) return out;
-    const M = this.mp;
-    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
-    const look = (x, z, name, colour) => {
-      const dx = x - cam.x, dz = z - cam.z;
-      const d = Math.hypot(dx, dz);
-      if (d > 46) return;
-      // 62 degrees across, so a little over half a radian either side
-      const dot = (dx * fwdX + dz * fwdZ) / (d || 1);
-      if (dot < 0.55) return;
-      out.push({ name, colour, dist: Math.round(d) });
-    };
-    for (const av of M.avatars.values()) {
-      const rec = M.view.players.get(av.id);
-      if (rec?.alive === false) continue;
-      if ((av.room | 0) !== 0) continue;          // only what is on the island
-      look(av.pos.x, av.pos.z, av.name || '?', av.colour);
-    }
-    // and you, if you are somehow in your own shot
-    if (this.state === 'island' && this.amAlive) {
-      look(this.player.pos.x, this.player.pos.z, 'YOU', null);
-    }
-    for (const b of M.bodies.values()) look(b.mesh.position.x, b.mesh.position.z, 'A BODY', 'red');
-    out.sort((a, b) => a.dist - b.dist);
-    return out;
-  }
-
-  /** Put one down where you are standing, aimed the way you are facing. */
-  placeCamera() {
-    this._initCameras();
-    if (this.state !== 'island') { this.audio.sfx('deny'); return; }
-    const cam = this.cams.find((c) => !c.placed);
-    if (!cam || !this.camsHeld) {
-      this.audio.sfx('deny');
-      this.ui.toast('NO CAMERA IN HAND', 'bad', 1800);
-      return;
-    }
-    const p = this.player.pos;
-    /* A little forward of you and at head height, looking where you are
-       looking — you are hanging it on whatever is in front of you. */
-    const f = this.player.facing;
-    cam.x = p.x + Math.sin(f) * 0.5;
-    cam.z = p.z + Math.cos(f) * 0.5;
-    cam.y = heightAt(cam.x, cam.z) + 1.85;
-    cam.yaw = f;
-    cam.placed = true;
-    cam.node.position.set(cam.x, cam.y, cam.z);
-    cam.node.rotation.y = f;
-    cam.node.visible = true;
-    this.camsHeld--;
-    this.audio.sfx('terminal');
-    this.ui.toast(`${cam.name} SET - ${this.camsHeld} LEFT`, 'jade', 2600);
-  }
-
-  /* =========================================================
      THE SIGNAL SCANNER
 
      The first version of this was a sonar sweep looking for exactly one
@@ -2687,7 +2541,7 @@ export class MPGame extends Game {
       push('cam', c.name, c.x, c.z, 0.50 + (c.i % 10) * 0.028, 110);
     }
     // and him, when he is out there
-    if (M.stranger) push('him', 'UNLISTED SET', M.stranger.x, M.stranger.z, 0.86, 260);
+    if (M.stranger) push('him', 'UNKNOWN HEAT', M.stranger.x, M.stranger.z, 0.86, 260);
     out.sort((a, b) => a.band - b.band);
     return out;
   }
@@ -2696,39 +2550,55 @@ export class MPGame extends Game {
     if (!this.scannerOn) { this.scanLock = null; return; }
     if (!this.hasItem('scanner')) { this.scannerOn = false; return; }
 
-    const t = now();
     this.scanT = (this.scanT || 0) + dt;
     const list = this._scanSources(this.scanList || (this.scanList = []));
 
     /* Which carrier you are locked to. It stays put unless it goes away,
        so the display does not jump about under you while you are walking
-       toward something. The Stranger, though, takes the lock the moment he
-       appears — that is what you bought this for. */
+       toward something. The Stranger takes the lock the FIRST time he
+       appears — that is what you bought this for — but only once, so if
+       you step off him deliberately the set stays where you put it. */
     let lock = list.find((q) => q.kind === this.scanKind && q.name === this.scanName);
     const him = list.find((q) => q.kind === 'him');
-    if (him && this.scanKind !== 'him') lock = him;
+    if (him && !this._scanSaidHim) lock = him;
     if (!lock) lock = list[0] || null;
     if (lock) { this.scanKind = lock.kind; this.scanName = lock.name; }
 
     if (!lock) { this.scanLock = null; return; }
 
-    /* The bearing is wrong by a margin that closes as you get nearer, and
-       it wanders on its own slow clock rather than jittering — a needle
-       that jitters is one you learn to average out. */
+    /* The bearing is TRUE, every frame, with nothing wandering on top of
+       it. The old version added a slow drift of up to a third of a radian
+       and it read exactly like a fault: you would face the thing dead on
+       and the needle would sit off to one side and stay there.
+       The doubt is still modelled — it is drawn as a band either side of
+       the needle instead, so the set tells you how sure it is without ever
+       telling you something untrue. */
     const dx = lock.x - this.player.pos.x, dz = lock.z - this.player.pos.z;
-    const trueB = Math.atan2(dx, dz);
-    const far = THREE.MathUtils.clamp((lock.dist - 15) / 120, 0, 1);
-    const spread = 0.05 + far * 0.55;
-    const drift = Math.sin(t * 0.27) * 0.62 + Math.sin(t * 0.13 + 1.9) * 0.38;
+    const bearing = Math.atan2(dx, dz);
+    const far = THREE.MathUtils.clamp((lock.dist - 12) / 130, 0, 1);
+    const spread = 0.03 + far * 0.42;
+
+    /* The range is rounded coarsely at distance and finely up close, which
+       is the honest way to be vague: 180M, 140M, 96M, 41M, 12M. A number
+       that flickers between 137 and 138 while you stand still is the other
+       thing that read as glitchy. */
+    const step = lock.dist > 100 ? 20 : lock.dist > 40 ? 5 : 1;
+    const shown = Math.max(step, Math.round(lock.dist / step) * step);
 
     this.scanLock = {
       kind: lock.kind,
       name: lock.name,
+      note: lock.kind === 'him' ? 'HUMANOID HEAT'
+        : lock.kind === 'cam' ? 'RELAY CAMERA'
+          : lock.kind === 'mast' ? 'THE MAST' : 'BURIED SET',
       dist: lock.dist,
+      shown,
       strength: lock.strength,
       band: lock.band,
-      bearing: trueB + drift * spread,
+      bearing,
       spread,
+      count: list.length,
+      index: list.indexOf(lock) + 1,
     };
 
     /* It clicks faster the closer you are, like a geiger counter — which
@@ -2742,12 +2612,12 @@ export class MPGame extends Game {
     }
 
     // and a warble when he first turns up, so you know without looking
-    if (lock.kind === 'him' && !this._scanSaidHim) {
+    if (him && !this._scanSaidHim) {
       this._scanSaidHim = true;
       this.audio.sfx('alert');
-      this.ui.toast('AN UNLISTED SET IS TRANSMITTING', 'gold', 4000);
+      this.ui.toast('UNKNOWN HUMANOID HEAT SIGNATURE DETECTED', 'gold', 4500);
     }
-    if (lock.kind !== 'him') this._scanSaidHim = false;
+    if (!him) this._scanSaidHim = false;
   }
 
   /** Step the lock on to the next carrier along the band. */
@@ -4116,7 +3986,11 @@ export class MPGame extends Game {
       const sc = (d.scanner = d.scanner || { bars: [] });
       sc.on = true;
       sc.t = this.scanT || 0;
-      sc.facing = this.player?.facing || 0;
+      /* The camera yaw, NOT the body yaw. The body lerps toward wherever
+         you are walking and does not move at all when you stand still and
+         look around — which is why the steer used to lag a fast turn by
+         the best part of a second, or not follow it at all. */
+      sc.facing = this.player?.yaw ?? this.player?.facing ?? 0;
       // the whole band, so the panel can draw every carrier on it
       sc.bars.length = 0;
       for (const q of (this.scanList || [])) {
@@ -4125,9 +3999,11 @@ export class MPGame extends Game {
       const L = this.scanLock;
       sc.lock = !!L;
       if (L) {
-        sc.kind = L.kind; sc.name = L.name; sc.dist = L.dist;
+        sc.kind = L.kind; sc.name = L.name; sc.note = L.note;
+        sc.dist = L.dist; sc.shown = L.shown;
         sc.strength = L.strength; sc.band = L.band;
         sc.bearing = L.bearing; sc.spread = L.spread;
+        sc.index = L.index; sc.count = L.count;
       }
     } else if (d.scanner) {
       d.scanner.on = false;

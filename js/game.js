@@ -42,6 +42,7 @@ import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
 import {
   buildTower, buildCab, buildCamera, TOWER_SPOT, TOWER_H, CAB_Y,
   CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight,
+  CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS, FEED_W, FEED_H, THUMB_W, THUMB_H,
 } from './world/tower.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
@@ -2983,6 +2984,289 @@ I have snacks."`);
       case 'takeIdol': this.takeIdol(); break;
     }
   }
+
+  /* =========================================================
+     THE CAMERAS
+
+     Four are already fitted when the mast goes up, watching the ways on
+     to the island. The rest you buy, put where you think somebody will
+     walk, and read off the terminal at the top of the ladder. A camera
+     nobody has found is worth more than any amount of standing about
+     watching a corridor.
+
+     These live on Game rather than on MPGame because the MAST lives on
+     Game — single player climbs the same thirty-eight metres, and a
+     terminal at the top of it with nothing on any channel is not worth
+     the ladder.
+     ========================================================= */
+  /* Built at world-build time, not on first use: a material that arrives
+     in the middle of a round compiles a program in the middle of a round,
+     and that is a freeze. They are hidden until they are placed, and the
+     load-time warm-up reveals hidden objects before it compiles. */
+  _initCameras() {
+    if (this.cams) return;
+    this.cams = [];
+    const add = (name, fitted, short) => {
+      const i = this.cams.length;
+      const node = buildCamera(this.propMats);
+      node.userData.phase = i * 0.53;
+      node.visible = false;
+      this.islandScene.add(node);
+      this.tickers.push(node);
+      /* `short` is what the channel strip prints. The strip is 58 pixels
+         wide now so it gets five characters; the full name is the caption
+         burned into the picture itself, where there is room for it. */
+      const c = { i, node, placed: false, fitted, x: 0, y: 0, z: 0, yaw: 0, name, short };
+      this.cams.push(c);
+      return c;
+    };
+
+    /* The four that came with the mast, already up and already on the feed.
+       A terminal that boots to four dead channels tells you nothing and is
+       not worth the climb; these are watching the ways on to the island. */
+    for (const f of FITTED_CAMS) {
+      const c = add(f.name, true, f.short);
+      let [ax, az] = f.at;
+      let [lx, lz] = f.look;
+      // CAM 4 watches the temple door, which is not at a fixed spot
+      if (f.name.endsWith('TEMPLE') && this.templeDoorPos) {
+        const d = this.templeDoorPos;
+        lx = d.x; lz = d.z;
+        const a = Math.atan2(d.x, d.z);
+        ax = d.x - Math.sin(a) * 13; az = d.z - Math.cos(a) * 13;
+      }
+      c.x = ax; c.z = az;
+      c.y = heightAt(ax, az) + 3.4;      // up a trunk, looking down
+      c.yaw = Math.atan2(lx - ax, lz - az);
+      c.placed = true;
+      c.node.position.set(c.x, c.y, c.z);
+      c.node.rotation.y = c.yaw;
+      c.node.rotation.x = 0.16;
+      c.node.visible = true;
+    }
+    // and room for the ones you buy
+    for (let i = 0; i < CAMERA_MAX - CAMERA_FITTED; i++) {
+      const n = CAMERA_FITTED + i + 1;
+      add(`CAM ${n}  YOURS`, false, `CH${n}`);
+    }
+    this.camsHeld = 0;                    // you start with none of your own
+  }
+
+  /**
+   * Ferdi sells them by the box. Returns how many you actually got, which
+   * is however many empty channels the relay still has — it has ten and
+   * four came with the mast, so six of yours is the ceiling.
+   */
+  gainCamera(n = 1) {
+    this._initCameras();
+    const spare = this.cams.filter((c) => !c.placed).length - (this.camsHeld || 0);
+    const got = Math.min(n, Math.max(0, spare));
+    if (got <= 0) {
+      this.ui.toast('THE RELAY WILL NOT TAKE ANOTHER', 'bad', 2400);
+      return 0;
+    }
+    this.camsHeld = (this.camsHeld || 0) + got;
+    this.ui.toast(`${this.camsHeld} CAMERA${this.camsHeld === 1 ? '' : 'S'} IN HAND - V TO SET`,
+      'jade', 3600);
+    return got;
+  }
+
+  /**
+   * Point a real camera at what camera `i` can see and render it.
+   *
+   * Called once a frame by the terminal, for the ONE feed you are looking
+   * at — four live feeds is four extra passes and the other three are
+   * thumbnails nobody is reading. The result is read back as pixels so the
+   * interface, which is a 2D canvas, can draw it with everything else.
+   */
+  /** Put the borrowed camera where camera `i` is and point it that way. */
+  _aimFeedCam(cam) {
+    if (!this._feedCam) {
+      this._feedCam = new THREE.PerspectiveCamera(62, FEED_W / FEED_H, 0.4, 220);
+    }
+    const fc = this._feedCam;
+    fc.position.set(cam.x, cam.y, cam.z);
+    fc.rotation.set(0, 0, 0);
+    fc.rotateY(cam.yaw);
+    fc.rotateX(-0.10);                    // they all look slightly down
+    fc.updateMatrixWorld(true);
+    fc.updateProjectionMatrix();
+    return fc;
+  }
+
+  feedPixels(i) {
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return null;
+    const fc = this._aimFeedCam(cam);
+
+    /* The island keeps running whether or not anybody is in it, so this
+       renders the live scene — bodies, avatars, the lot. */
+    this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
+    this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
+    return this._feedBuf;
+  }
+
+  /**
+   * A postage stamp of channel `i` for the strip down the side.
+   *
+   * Brightness only, one byte a pixel, top row first — the strip draws
+   * them three pixels square and there is no sense reading back colour it
+   * is going to throw away. Its own render target, so asking for a stamp
+   * does not resize the target the big picture is using.
+   */
+  thumbPixels(i) {
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return null;
+    const fc = this._aimFeedCam(cam);
+    const w = THUMB_W, h = THUMB_H;
+    fc.aspect = w / h;
+    fc.updateProjectionMatrix();
+    this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
+    const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
+    fc.aspect = FEED_W / FEED_H;              // put it back for the big one
+    fc.updateProjectionMatrix();
+    if (!got) return null;
+    this._thumbRaw = got.buf;
+    const out = new Uint8Array(w * h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const o = ((h - 1 - py) * w + px) * 4;         // read back is bottom-up
+        out[py * w + px] = Math.min(255,
+          (got.buf[o] * 0.3 + got.buf[o + 1] * 0.6 + got.buf[o + 2] * 0.1) * 2.1);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Who camera `i` can actually see, for the contact list under the feed
+   * and for the thermal overlay drawn on top of it.
+   *
+   * Each contact carries where it lands in the picture (`sx`, `sy`, both
+   * nought to one) and how big it should read, because thermal draws a hot
+   * blob over the body rather than trying to work out its temperature from
+   * a picture that has already been flattened to brightness.
+   *
+   * Line of sight is tested against the ground, so somebody on the far side
+   * of a hill is not a contact. Thermal will not see through a hill either;
+   * a bush is another matter and it is allowed through one, which is most
+   * of why the thermal channel is worth having at all.
+   */
+  feedContacts(i, out = []) {
+    out.length = 0;
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return out;
+    const M = this.mp;                    // no session at all in single player
+    const fc = this._aimFeedCam(cam);
+    const v = this._feedV || (this._feedV = new THREE.Vector3());
+    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
+
+    /* Can the camera see that spot, or is there ground in the way? Eight
+       samples along the line, each asking whether the terrain has risen
+       above the straight line between the lens and the target. */
+    const clear = (x, z, y) => {
+      for (let k = 1; k < 8; k++) {
+        const f = k / 8;
+        const px = cam.x + (x - cam.x) * f;
+        const pz = cam.z + (z - cam.z) * f;
+        const line = cam.y + (y - cam.y) * f;
+        if (heightAt(px, pz) > line + 0.5) return false;
+      }
+      return true;
+    };
+
+    const look = (x, z, name, colour, heat) => {
+      const dx = x - cam.x, dz = z - cam.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 46) return;
+      // 62 degrees across, so a little over half a radian either side
+      const dot = (dx * fwdX + dz * fwdZ) / (d || 1);
+      if (dot < 0.55) return;
+      const gy = heightAt(x, z);
+      if (!clear(x, z, gy + 0.9)) return;
+      // where the chest lands in the picture
+      v.set(x, gy + 0.95, z).project(fc);
+      out.push({
+        name, colour, heat, dist: Math.round(d),
+        sx: (v.x + 1) / 2,
+        sy: (1 - v.y) / 2,
+        /* How much of the frame HEIGHT a person fills. The lens is 62
+           degrees vertical, so the frame is 2*d*tan(31) metres tall and a
+           body is 1.8 of them — about a seventh of the picture at ten
+           metres. The first version of this had a constant seventeen times
+           too big and painted one man across half the screen. */
+        size: THREE.MathUtils.clamp(1.5 / Math.max(2.5, d), 0.012, 0.62),
+      });
+    };
+
+    for (const av of (M ? M.avatars.values() : [])) {
+      const rec = M.view.players.get(av.id);
+      if (rec?.alive === false) continue;
+      if ((av.room | 0) !== 0) continue;          // only what is on the island
+      look(av.pos.x, av.pos.z, av.name || '?', av.colour, 1);
+    }
+    // and you, if you are somehow in your own shot
+    if (this.state === 'island' && this.amAlive !== false) {
+      look(this.player.pos.x, this.player.pos.z, 'YOU', null, 1);
+    }
+    // he is warm too, and thermal is the one channel he does not dodge
+    if (M?.stranger) look(M.stranger.x, M.stranger.z, 'UNKNOWN', 'gold', 1.15);
+    // a body has been cooling since it went down: warm, but not alive-warm
+    for (const b of (M ? M.bodies.values() : [])) {
+      look(b.mesh.position.x, b.mesh.position.z, 'A BODY', 'red', 0.45);
+    }
+    out.sort((a, b) => a.dist - b.dist);
+    return out;
+  }
+
+  /** The fire, if this camera is looking at it — the one hot thing that is not a person. */
+  feedFire(i) {
+    const cam = this.cams?.[i];
+    const f = this.campfirePos;
+    if (!cam || !cam.placed || !f) return null;
+    const dx = f.x - cam.x, dz = f.z - cam.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 50) return null;
+    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
+    if ((dx * fwdX + dz * fwdZ) / (d || 1) < 0.5) return null;
+    const fc = this._aimFeedCam(cam);
+    const v = this._feedV || (this._feedV = new THREE.Vector3());
+    v.set(f.x, heightAt(f.x, f.z) + 0.5, f.z).project(fc);
+    return {
+      sx: (v.x + 1) / 2,
+      sy: (1 - v.y) / 2,
+      // a fire is about a metre across and glows further than that
+      size: THREE.MathUtils.clamp(2.6 / Math.max(2.5, d), 0.02, 0.8),
+    };
+  }
+
+  /** Put one down where you are standing, aimed the way you are facing. */
+  placeCamera() {
+    this._initCameras();
+    if (this.state !== 'island') { this.audio.sfx('deny'); return; }
+    const cam = this.cams.find((c) => !c.placed);
+    if (!cam || !this.camsHeld) {
+      this.audio.sfx('deny');
+      this.ui.toast('NO CAMERA IN HAND', 'bad', 1800);
+      return;
+    }
+    const p = this.player.pos;
+    /* A little forward of you and at head height, looking where you are
+       looking — you are hanging it on whatever is in front of you. */
+    const f = this.player.facing;
+    cam.x = p.x + Math.sin(f) * 0.5;
+    cam.z = p.z + Math.cos(f) * 0.5;
+    cam.y = heightAt(cam.x, cam.z) + 1.85;
+    cam.yaw = f;
+    cam.placed = true;
+    cam.node.position.set(cam.x, cam.y, cam.z);
+    cam.node.rotation.y = f;
+    cam.node.visible = true;
+    this.camsHeld--;
+    this.audio.sfx('terminal');
+    this.ui.toast(`${cam.name} SET - ${this.camsHeld} LEFT`, 'jade', 2600);
+  }
+
 
   shopStock() {
     return SHOP.map((it) => ({

@@ -121,7 +121,9 @@ export class Hud {
       this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
       this._mpBelt(4, H - 52, d.mp);
-      if (d.mp.scanner?.on) this._scanner(4, 66, d.mp.scanner);
+      /* Clear of the toast stack above it (two at 13 apiece from 58, so
+         84 at the worst) and clear of the belt caption below it at 164. */
+      if (d.mp.scanner?.on) this._scanner(4, 86, d.mp.scanner);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       /* An Agent has a knife panel in the bottom right corner, and a long
          prompt centred on the screen runs straight into it — "QUEZETRIEL
@@ -260,7 +262,7 @@ export class Hud {
      =========================================================== */
   _scanner(ox, oy, sc) {
     const x = this.x;
-    const W = 92, H = 78;
+    const W = 98, H = 76;
 
     /* ---- the case ---- */
     x.fillStyle = 'rgba(6,8,6,.92)'; x.fillRect(ox - 1, oy - 1, W + 2, H + 2);
@@ -274,7 +276,7 @@ export class Hud {
     }
 
     /* ---- the band: a spectrum with one peak per transmitter ---- */
-    const BX = ox + 5, BY = oy + 6, BW = W - 10, BH = 26;
+    const BX = ox + 5, BY = oy + 4, BW = W - 10, BH = 21;
     x.fillStyle = '#04120a'; x.fillRect(BX, BY, BW, BH);
     // the graticule
     x.fillStyle = 'rgba(90,220,130,.13)';
@@ -316,65 +318,107 @@ export class Hud {
     x.fillStyle = '#1e7a4a';
     x.fillRect(BX, BY, BW, 1); x.fillRect(BX, BY + BH - 1, BW, 1);
     x.fillRect(BX, BY, 1, BH); x.fillRect(BX + BW - 1, BY, 1, BH);
+    // which of the carriers on the band you are on, in the corner of the graph
+    if (sc.lock && sc.count > 1) {
+      drawText(x, `${sc.index}/${sc.count}`, {
+        x: BX + BW - 3, y: BY + 2, scale: 1, align: 'right', color: '#3e8a5c',
+      });
+    }
 
     /* ---- what is locked ---- */
-    const NY = oy + 35;
+    const NY = oy + 27;
     if (!sc.lock) {
       drawText(x, 'BAND CLEAR', {
-        x: ox + W / 2, y: NY + 8, scale: 1, align: 'center', color: '#4a7a5c',
+        x: ox + W / 2, y: NY + 10, scale: 1, align: 'center', color: '#4a7a5c',
       });
-      drawText(x, 'B  STEP', {
-        x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center', color: '#2e5a42',
+      drawText(x, 'NOTHING TRANSMITTING', {
+        x: ox + W / 2, y: NY + 20, scale: 1, align: 'center', color: '#2e5a42',
       });
       return;
     }
     const him = sc.kind === 'him';
-    drawText(x, sc.name.slice(0, 15), {
+    /* The whole line is the name. Where you are on the band goes in the
+       corner of the graph instead — sharing this line with it cut
+       "UNKNOWN HEAT" down to "UNKNOWN HEA", and a set that cannot print
+       the name of the thing it found is not much of a set. */
+    drawText(x, sc.name.slice(0, 14), {
       x: BX, y: NY, scale: 1, color: him ? '#ffd24a' : '#8fe8a0',
     });
 
     /* ---- THE STEER ----
-       A bar with a marker that centres when you are facing it. Turn until
-       it is in the middle, then walk. The band of doubt is drawn round the
-       marker so you can see how much the set is guessing. */
-    const SY = NY + 11;
-    x.fillStyle = '#04120a'; x.fillRect(BX, SY, BW, 13);
+       A tape with a marker that centres when you are facing it. Turn until
+       it is in the middle, then walk.
+
+       Two things were wrong with the old one. It steered off the BODY yaw,
+       which lags a turn and does not move at all if you stand still and
+       look around, so a fast turn simply did not register. And the tape
+       only covered a hundred and nine degrees either side, so anything
+       behind you pinned the marker to the edge and left it there — which
+       is the same picture whether the thing is at your four o'clock or
+       directly behind you.
+
+       It covers a quarter turn each way now and everything outside that is
+       a solid arrowhead at the edge with the angle printed on it, so you
+       always know which way to turn AND how far. */
+    const SY = NY + 10;
+    const SH = 15;
+    x.fillStyle = '#04120a'; x.fillRect(BX, SY, BW, SH);
     // how far off your heading the bearing is, wrapped to +/- pi
     let rel = sc.bearing - sc.facing;
-    rel = ((rel % 6.283) + 9.4248) % 6.283 - 3.1416;
-    const HALF = 1.9;                      // what the bar covers, either side
-    const px2 = BX + BW / 2 + Math.max(-BW / 2 + 3, Math.min(BW / 2 - 3, (rel / HALF) * (BW / 2)));
+    rel = ((rel % 6.283185) + 9.424778) % 6.283185 - 3.141593;
+    const HALF = 1.5708;                   // a quarter turn, either side
+    const mid = BX + BW / 2;
+    const off = Math.abs(rel) > HALF;
+    const px2 = mid + Math.max(-BW / 2 + 4, Math.min(BW / 2 - 4, (rel / HALF) * (BW / 2)));
+    const on = Math.abs(rel) < 0.14;
+
     // the doubt, either side of the marker
-    const sw = Math.min(BW / 2, (sc.spread / HALF) * (BW / 2));
-    x.fillStyle = him ? 'rgba(255,210,74,.16)' : 'rgba(90,220,130,.14)';
-    x.fillRect(Math.round(px2 - sw), SY + 1, Math.round(sw * 2), 11);
-    // the centre line: this is the "you are facing it" mark
-    x.fillStyle = 'rgba(200,255,220,.34)';
-    x.fillRect(BX + Math.round(BW / 2), SY, 1, 13);
-    // ticks either side, so the bar has a scale
-    x.fillStyle = 'rgba(90,220,130,.22)';
-    for (const f of [0.25, 0.5, 0.75]) {
-      x.fillRect(BX + Math.round(BW / 2 * (1 - f)), SY + 10, 1, 3);
-      x.fillRect(BX + Math.round(BW / 2 * (1 + f)), SY + 10, 1, 3);
+    if (!off) {
+      const sw = Math.max(2, Math.min(BW / 2, (sc.spread / HALF) * (BW / 2)));
+      x.fillStyle = him ? 'rgba(255,210,74,.16)' : 'rgba(90,220,130,.14)';
+      x.fillRect(Math.round(px2 - sw), SY + 2, Math.round(sw * 2), SH - 4);
     }
-    // the marker itself
-    const on = Math.abs(rel) < 0.16;
-    x.fillStyle = on ? '#fff3c4' : (him ? '#ffd24a' : '#8fe8a0');
-    x.fillRect(Math.round(px2) - 1, SY + 1, 3, 11);
-    for (let r = 0; r < 3; r++) x.fillRect(Math.round(px2) - r, SY + 1 + r, r * 2 + 1, 1);
-    // and which way to turn, in words, when you are well off
-    if (Math.abs(rel) > 0.5) {
-      drawText(x, rel > 0 ? '>>' : '<<', {
-        x: rel > 0 ? BX + BW - 10 : BX + 2, y: SY + 3, scale: 1,
-        color: Math.floor(sc.t * 4) % 2 ? '#fff3c4' : '#4a8a64',
+    // the centre gate: two posts, so "in the middle" is a place and not a line
+    x.fillStyle = on ? 'rgba(255,243,196,.55)' : 'rgba(200,255,220,.26)';
+    x.fillRect(mid - 4, SY + 1, 1, SH - 2);
+    x.fillRect(mid + 4, SY + 1, 1, SH - 2);
+    // ticks, so the tape has a scale you can read a turn against
+    x.fillStyle = 'rgba(90,220,130,.22)';
+    for (const f of [0.33, 0.66, 1]) {
+      x.fillRect(BX + Math.round(BW / 2 * (1 - f)), SY + SH - 4, 1, 3);
+      x.fillRect(BX + Math.round(BW / 2 * (1 + f)) - 1, SY + SH - 4, 1, 3);
+    }
+
+    if (off) {
+      /* Behind you. A solid arrowhead at the edge it is nearer, and the
+         angle, so a hundred and eighty is plainly not the same as ninety
+         five. It does not blink: a blinking arrow reads as a fault. */
+      const right = rel > 0;
+      const ax = right ? BX + BW - 3 : BX + 2;
+      x.fillStyle = him ? '#ffd24a' : '#8fe8a0';
+      for (let r = 0; r < 7; r++) {
+        const h = 13 - r * 2;
+        if (h < 1) break;
+        x.fillRect(right ? ax - r : ax + r, SY + 1 + ((13 - h) >> 1), 1, h);
+      }
+      /* One string, centred, clear of both edges — a separate degree
+         readout on the right ran straight into the arrowhead. */
+      drawText(x, `${right ? 'RIGHT' : 'LEFT'} ${Math.round(Math.abs(rel) * 57.3)}`, {
+        x: mid, y: SY + 4, scale: 1, align: 'center', color: '#8ad8a8',
       });
+    } else {
+      // the marker itself: a plumb bob, so the point is unambiguous
+      x.fillStyle = on ? '#fff3c4' : (him ? '#ffd24a' : '#8fe8a0');
+      const mx = Math.round(px2);
+      for (let r = 0; r < 4; r++) x.fillRect(mx - r, SY + 1 + r, r * 2 + 1, 1);
+      x.fillRect(mx - 1, SY + 5, 3, SH - 7);
     }
     x.fillStyle = '#1e7a4a';
-    x.fillRect(BX, SY, BW, 1); x.fillRect(BX, SY + 12, BW, 1);
+    x.fillRect(BX, SY, BW, 1); x.fillRect(BX, SY + SH - 1, BW, 1);
 
     /* ---- range, and how good the signal is ---- */
-    const RY = SY + 16;
-    drawText(x, `${Math.round(sc.dist)}M`, {
+    const RY = SY + SH + 2;
+    drawText(x, `${sc.shown ?? Math.round(sc.dist)}M`, {
       x: BX, y: RY, scale: 1, color: on ? '#fff3c4' : '#8fe8a0',
     });
     // a strength bar, which also tells you it is getting better as you walk
@@ -385,9 +429,13 @@ export class Hud {
       x.fillStyle = i > gw * 0.75 ? '#fff3c4' : (him ? '#ffd24a' : '#5ae08a');
       x.fillRect(BX + 32 + i, RY + 2, 1, 3);
     }
-    drawText(x, on ? 'ON THE NOSE' : 'B  STEP', {
+
+    /* ---- what the thing actually is ---- */
+    /* Fourteen characters: any wider and a centred line runs under the
+       screws in the bottom corners of the case. */
+    drawText(x, on ? 'ON THE NOSE' : (sc.note || 'B  STEP').slice(0, 14), {
       x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center',
-      color: on ? '#8fe8a0' : '#2e5a42',
+      color: on ? '#8fe8a0' : (him ? '#c09a3a' : '#2e6a48'),
     });
   }
 
@@ -498,8 +546,12 @@ export class Hud {
     const numCol = kick > 0
       ? (gain ? (Math.floor(this._wobble * 14) % 2 ? GOLD_LT : GOLD) : RED)
       : (coins > 0 ? GOLD : '#6a5c40');
+    /* The figure sits directly under SYNCOIN with no gap to spare, so the
+       kick is a colour flash and the floating delta below — it used to
+       lift the number two pixels and at three digits or more that put it
+       through the label. */
     drawText(x, String(coins), {
-      x: ox - 4, y: oy + 8 - Math.round(kick * 2), scale: 2, align: 'right', color: numCol,
+      x: ox - 4, y: oy + 8, scale: 2, align: 'right', color: numCol,
     });
     /* What just happened to it, floating clear of the plate rather than
        printing on top of the figure — over it you got "9090/919". */
@@ -922,7 +974,11 @@ export class Hud {
   _toasts(cx, oy) {
     const x = this.x;
     let y = oy;
-    for (const t of this.data.toasts) {
+    /* Two at a time, newest kept. An uncapped stack grows down the
+       middle of the screen and there is no panel you can put anywhere
+       below it that a tall enough stack will not eventually reach — the
+       scanner sits under this and was getting walked on. */
+    for (const t of this.data.toasts.slice(-2)) {
       const w = textWidth(t.text, 1, 1) + 12;
       const left = Math.round(cx - w / 2);
       const fade = Math.min(1, t.life * 3);

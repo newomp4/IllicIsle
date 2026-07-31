@@ -18,6 +18,7 @@ import * as DARTS from '../mp/darts.js';
 import {
   STOCK, FOOD, DRINKS, stockFor, shelf, SANCTUARY_R, VENDOR_IDS, SCHLARNA_N,
 } from '../mp/market.js';
+import { FEED_H, FEED_W, THUMB_H, THUMB_W } from '../world/tower.js';
 
 // the minigames borrow the one font everything else is set in
 bindText(drawText);
@@ -30,6 +31,83 @@ function mulberryLocal(a) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/* ===========================================================
+   THE CCTV PICTURE
+
+   A camera feed comes back from the GPU as a raw RGBA buffer and has to
+   land on this canvas. It used to be painted one fillRect per pixel, which
+   was eleven thousand calls a frame at the old feed size; at the size the
+   terminal runs now it would be thirty-six thousand, which is not a thing
+   anybody can do sixty times a second.
+
+   So: convert into an ImageData through a lookup table, put it on a small
+   offscreen canvas, and blit that once. Two surfaces, because the terminal
+   draws one big picture and ten postage stamps and they are different
+   sizes.
+   =========================================================== */
+function makeSurface(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const cx = c.getContext('2d');
+  return { c, cx, img: cx.createImageData(w, h) };
+}
+let _bigSurf = null, _thumbSurf = null;
+function feedSurface(w, h) {
+  if (!_bigSurf || _bigSurf.c.width !== w || _bigSurf.c.height !== h) _bigSurf = makeSurface(w, h);
+  return _bigSurf;
+}
+function thumbSurface(w, h) {
+  if (!_thumbSurf || _thumbSurf.c.width !== w || _thumbSurf.c.height !== h) {
+    _thumbSurf = makeSurface(w, h);
+  }
+  return _thumbSurf;
+}
+
+/* Green phosphor. A monitor of this vintage had no colour and the
+   brightness is what matters; the gamma is baked into the table so the
+   inner loop is two array reads and no maths. */
+let _phos = null;
+function phosphorLut() {
+  if (_phos) return _phos;
+  _phos = new Uint8Array(256 * 3);
+  for (let k = 0; k < 256; k++) {
+    const q = Math.pow(k / 255, 0.78);
+    _phos[k * 3] = q * 60; _phos[k * 3 + 1] = q * 245; _phos[k * 3 + 2] = q * 135;
+  }
+  return _phos;
+}
+
+/* Ironbow, which is what a thermal set of this age put on a screen: cold
+   is deep blue, body heat is orange, the hottest thing in shot is white.
+   The scene itself is mapped into the bottom third of the ramp — the
+   ground and the trees are cold, and every warm thing is painted on top
+   of them afterwards. */
+const IRON = [
+  [0.00, 3, 5, 26], [0.20, 28, 22, 92], [0.40, 96, 34, 124],
+  [0.58, 172, 48, 92], [0.74, 228, 100, 34], [0.88, 250, 192, 52],
+  [1.00, 255, 255, 240],
+];
+let _iron = null;
+function ironLut() {
+  if (_iron) return _iron;
+  _iron = new Uint8Array(256 * 3);
+  for (let k = 0; k < 256; k++) {
+    /* The scene never gets above a quarter of the ramp, so the ground and
+       the trees stay in the blues and every warm thing painted over the
+       top has somewhere to be. Letting it reach a third put the whole
+       picture in the magentas and a body had nothing to stand out from. */
+    const v = 0.02 + Math.pow(k / 255, 1.15) * 0.235;
+    let i = 1;
+    while (i < IRON.length - 1 && v > IRON[i][0]) i++;
+    const a = IRON[i - 1], b = IRON[i];
+    const f = (v - a[0]) / (b[0] - a[0] || 1);
+    _iron[k * 3] = a[1] + (b[1] - a[1]) * f;
+    _iron[k * 3 + 1] = a[2] + (b[2] - a[2]) * f;
+    _iron[k * 3 + 2] = a[3] + (b[3] - a[3]) * f;
+  }
+  return _iron;
 }
 
 /** Hex string for a player colour id, for the lobby and council lists. */
@@ -3591,7 +3669,12 @@ export const SCREENS = {
         const onSale = price < it.cost;
         const right = held ? 'HELD'
           : (n > 1 ? `x${n}  ${price}` : (n === 1 ? `. ${price}` : String(price)));
-        const room = LW - 26 - textWidth(right, 1) - 6;
+        /* A marked-down line prints the old price, struck through, to the
+           LEFT of the new one — so the name has that much less room again.
+           Leaving it out is why "VENDING MACHINE MAP" ran into its own
+           crossed-out 10 the moment the map came up in a sale. */
+        const room = LW - 26 - textWidth(right, 1) - 6
+          - (onSale && !held ? textWidth(String(it.cost), 1) + 5 : 0);
         let nm = it.name;
         while (nm.length > 3 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
         if (nm !== it.name) nm = nm.slice(0, -1) + '.';
@@ -4091,30 +4174,73 @@ export const SCREENS = {
   },
 
   /* ---------------- THE MAST TERMINAL ----------------
-     Four feeds off four cameras you placed yourself. The one you are
-     looking at is rendered live, every frame, from a real camera standing
-     where you left it — so what is on it is what is actually happening,
-     bodies and all. The other three are stills, refreshed one at a time on
-     a rotation, which is exactly how a four-channel multiplexer worked and
-     is also the only honest way to afford four extra render passes.
+     Ten channels. The one you are looking at is rendered live, every
+     frame, from a real camera standing where you left it — so what is on
+     it is what is actually happening, bodies and all. The rest are stills
+     refreshed one at a time on a rotation, which is exactly how a
+     multiplexer worked and is also the only honest way to afford ten extra
+     render passes.
+
+     Three things were wrong with the first version of this screen. The
+     picture was 128x88 blown up into a 180x124 window, so every camera
+     pixel covered two screen pixels and it was a mosaic. The channel strip
+     was 120 pixels wide — more than a third of the screen — for ten rows
+     of a name and a word. And the strip laid those rows out at 27 pixels
+     each from y=20, which runs off the bottom of a 224-pixel screen at the
+     eighth one, so channels 9 and 10 and the count of what you were
+     carrying were simply not on the display.
+
+     It is 242x150 at one screen pixel per camera pixel now, the strip is
+     58 wide, and all ten channels fit with room under them.
 
      Everything on this screen is either a control or a fact. */
   mpCams: {
     init(s, g) {
+      const n = (g.cams || []).length || 10;
       if (s.sel === undefined) s.sel = 0;
       s.boot = 0;
-      s.rot = 0;              // which thumbnail gets refreshed next
-      s.thumbs = [null, null, null, null];
+      s.thumbs = new Array(n).fill(null);
+      s.thumbNext = 0;
+      s.thumbT = 0;
       s.contacts = [];
       s.glitch = 0;
       s.rec = 0;
       s.log = [];
       s.lastSeen = '';
+      s.flip = 0;             // the wipe when you change channel
+      s.feedT = 9;            // due immediately
+      s.hasPic = false;
     },
     tick(s, g, dt, t) {
       s.boot = Math.min(1, s.boot + dt * 0.9);
       s.rec = (s.rec + dt) % 2;
       if (s.glitch > 0) s.glitch = Math.max(0, s.glitch - dt * 3);
+      if (s.flip > 0) s.flip = Math.max(0, s.flip - dt * 5.5);
+
+      /* The big picture is a whole extra pass over the island plus a read
+         back off the GPU, and doing that sixty times a second to watch a
+         path nobody is on is a waste of a frame. Twenty is what a relay of
+         this kind managed anyway, and it looks more like CCTV for it. */
+      s.feedT += dt;
+      if (s.feedT >= 0.05) { s.feedT = 0; s.wantFeed = true; }
+
+      /* The stills. One channel every third of a second, skipping the one
+         that is already live in the big window — a multiplexer only ever
+         had one tuner and this is that, at that speed. */
+      const cams = g.cams || [];
+      if (cams.length && s.boot >= 1) {
+        s.thumbT += dt;
+        if (s.thumbT > 0.32) {
+          s.thumbT = 0;
+          for (let k = 0; k < cams.length; k++) {
+            const i = (s.thumbNext + k) % cams.length;
+            if (i === s.sel || !cams[i].placed) continue;
+            s.thumbs[i] = g.thumbPixels?.(i) || null;
+            s.thumbNext = (i + 1) % cams.length;
+            break;
+          }
+        }
+      }
 
       /* Who the selected camera can see, and a line in the log when that
          changes — the log is what makes this a tool rather than a window. */
@@ -4122,10 +4248,10 @@ export const SCREENS = {
       g.feedContacts?.(s.sel, s.contacts);
       const nowSeen = s.contacts.map((c) => c.name).join(',');
       if (nowSeen && nowSeen !== before) {
-        const cam = g.cams?.[s.sel];
+        const cam = cams[s.sel];
         for (const c of s.contacts) {
           if (before.includes(c.name)) continue;
-          s.log.unshift({ t: s.t, cam: cam ? cam.name : '?', who: c.name, d: c.dist });
+          s.log.unshift({ t: s.t, cam: cam ? cam.short || cam.name : '?', who: c.name, d: c.dist });
         }
         if (s.log.length > 6) s.log.length = 6;
         s.glitch = 0.5;
@@ -4137,19 +4263,21 @@ export const SCREENS = {
       const cams = g.cams || [];
       const rows = [];
       const boot = s.boot;
+      const therm = !!g.camTherm;
 
       /* ---- the set itself ---- */
       x.fillStyle = '#080b09'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#080b09', '#0e130f', 0.5, 2);
 
       /* ---- the header ---- */
-      x.fillStyle = '#0d1a12'; x.fillRect(0, 0, W, 15);
-      x.fillStyle = '#1e7a4a'; x.fillRect(0, 15, W, 1);
-      drawText(x, 'ISLE RELAY', { x: 6, y: 4, scale: 1, color: '#5ae08a' });
+      const hot = therm ? '#ffb04a' : '#5ae08a';
+      x.fillStyle = therm ? '#1c1206' : '#0d1a12'; x.fillRect(0, 0, W, 15);
+      x.fillStyle = therm ? '#a0632a' : '#1e7a4a'; x.fillRect(0, 15, W, 1);
+      drawText(x, 'ISLE RELAY', { x: 6, y: 4, scale: 1, color: hot });
       const live = cams.filter((c) => c.placed).length;
       drawText(x, `${live}/${cams.length} ONLINE`, {
         x: W - 6, y: 4, scale: 1, align: 'right',
-        color: live ? '#5ae08a' : '#c04a3a',
+        color: live ? hot : '#c04a3a',
       });
       /* The recording pip lives on the LEFT, beside the name. On the right
          it sat inside "4/4 ONLINE", which is right-aligned and grows to the
@@ -4159,17 +4287,24 @@ export const SCREENS = {
         x.fillRect(72, 5, 4, 4);
         drawText(x, 'REC', { x: 79, y: 4, scale: 1, color: '#e05a4a' });
       }
+      /* Which way the set is looking at the world, in a word. The key that
+         changes it is in the footer with the other keys — a lone T beside
+         the word read as part of it. */
+      drawText(x, therm ? 'THERMAL' : 'OPTICAL', {
+        x: 112, y: 4, scale: 1, color: therm ? '#ffd24a' : '#3e8a5c',
+      });
 
       /* ---- the big feed ---- */
-      const FX = 6, FY = 20, FW = 180, FH = 124;
+      const FX = 6, FY = 20, FW = FEED_W, FH = FEED_H;
       x.fillStyle = '#000'; x.fillRect(FX - 2, FY - 2, FW + 4, FH + 4);
-      x.fillStyle = '#1e7a4a'; x.fillRect(FX - 2, FY - 2, FW + 4, 1);
+      x.fillStyle = therm ? '#a0632a' : '#1e7a4a';
+      x.fillRect(FX - 2, FY - 2, FW + 4, 1);
       x.fillRect(FX - 2, FY + FH + 1, FW + 4, 1);
 
       const sel = cams[s.sel];
       if (!sel || !sel.placed) {
         // a dead channel: noise, and it says why
-        for (let i = 0; i < 900; i++) {
+        for (let i = 0; i < 1400; i++) {
           const px = FX + ((i * 37 + Math.floor(t * 190)) % FW);
           const py = FY + ((i * 53 + Math.floor(t * 97)) % FH);
           const v = ((i * 29 + Math.floor(t * 60)) % 5) * 14;
@@ -4179,18 +4314,23 @@ export const SCREENS = {
         drawText(x, 'NO CAMERA ON THIS CHANNEL', {
           x: FX + FW / 2, y: FY + FH / 2 - 8, scale: 1, align: 'center', color: '#5ae08a',
         });
-        drawText(x, 'TAKE ONE FROM THE SHELF AND SET IT', {
-          x: FX + FW / 2, y: FY + FH / 2 + 2, scale: 1, align: 'center', color: '#2e6a48',
+        drawText(x, 'BUY A BOX FROM FERDI AND PRESS V TO HANG ONE', {
+          x: FX + FW / 2, y: FY + FH / 2 + 4, scale: 1, align: 'center', color: '#2e6a48',
         });
       } else {
-        /* The live pass. It comes back as a flipped RGBA buffer, and it is
-           drawn a pixel at a time into the same canvas as everything else
-           so it picks up the dither, the scanlines and the barrel curve
+        /* The live pass. It comes back as a flipped RGBA buffer and goes
+           through an ImageData and a single drawImage — it used to be one
+           fillRect per pixel, which was eleven thousand calls a frame at
+           the old size and would be thirty-six thousand at this one.
+
+           The result lands on the same canvas as everything else, so it
+           still picks up the dither, the scanlines and the barrel curve
            with the rest of the interface. */
-        const feed = g.feedPixels?.(s.sel);
+        const due = s.wantFeed || !s.hasPic || s.picOf !== s.sel || s.picTherm !== therm;
+        const feed = due ? g.feedPixels?.(s.sel) : null;
         if (feed) {
+          s.wantFeed = false; s.picOf = s.sel; s.picTherm = therm;
           const { buf, w, h } = feed;
-          const sx = FW / w, sy = FH / h;
           /* AUTO-GAIN. A camera under a tree at dusk sees almost nothing,
              and a straight luminance conversion of that is a black
              rectangle — which is exactly what this was. Every camera of
@@ -4199,33 +4339,117 @@ export const SCREENS = {
              around 0.42, and clamp how far it is allowed to push so a
              genuinely dark shot still reads as a dark shot. */
           let sum = 0;
-          for (let k = 0; k < buf.length; k += 16) {
+          for (let k = 0; k < buf.length; k += 64) {
             sum += buf[k] * 0.3 + buf[k + 1] * 0.6 + buf[k + 2] * 0.1;
           }
-          const mean = (sum / (buf.length / 16)) / 255 || 0.01;
-          const gain = THREE_CLAMP(0.42 / Math.max(0.02, mean), 0.8, 5.5);
-          s.gain = s.gain === undefined ? gain : s.gain + (gain - s.gain) * 0.10;
+          const mean = (sum / Math.ceil(buf.length / 64)) / 255 || 0.01;
+          const want = THREE_CLAMP(0.42 / Math.max(0.02, mean), 0.8, 5.5);
+          s.gain = s.gain === undefined ? want : s.gain + (want - s.gain) * 0.10;
+          // a thermal picture is meant to sit darker, so heat has room above it
+          const gain = therm ? s.gain * 0.8 : s.gain;
 
+          const surf = feedSurface(w, h);
+          const px = surf.img.data;
+          const lut = therm ? ironLut() : phosphorLut();
           for (let py = 0; py < h; py++) {
-            for (let px = 0; px < w; px++) {
-              // readRenderTargetPixels gives bottom-up rows
-              const o = ((h - 1 - py) * w + px) * 4;
-              /* Green phosphor: a security monitor of this vintage did not
-                 have colour, and the brightness is what matters. */
-              const lum = (buf[o] * 0.3 + buf[o + 1] * 0.6 + buf[o + 2] * 0.1) / 255;
-              const q = Math.min(1, Math.pow(lum * s.gain, 0.78));
-              x.fillStyle = `rgb(${Math.round(q * 60)},${Math.round(q * 245)},${Math.round(q * 135)})`;
-              x.fillRect(FX + Math.floor(px * sx), FY + Math.floor(py * sy),
-                Math.ceil(sx), Math.ceil(sy));
+            const src = (h - 1 - py) * w * 4;          // read back is bottom-up
+            let dst = py * w * 4;
+            for (let i = 0; i < w; i++) {
+              const o = src + i * 4;
+              const l = (buf[o] * 0.3 + buf[o + 1] * 0.6 + buf[o + 2] * 0.1) * gain;
+              const q = (l > 255 ? 255 : l | 0) * 3;
+              px[dst++] = lut[q]; px[dst++] = lut[q + 1]; px[dst++] = lut[q + 2];
+              px[dst++] = 255;
             }
           }
+          surf.cx.putImageData(surf.img, 0, 0);
+          s.hasPic = true;
         }
+        /* The picture is redrawn from the offscreen surface every frame
+           whether or not it was refreshed this one, so the scanlines, the
+           roll bar and the heat over the top all still run at full rate. */
+        if (s.hasPic) {
+          x.imageSmoothingEnabled = false;
+          x.drawImage(feedSurface(FEED_W, FEED_H).c, FX, FY, FW, FH);
+        }
+
+        /* ---- what is warm, drawn on top ----
+           A thermal set does not work out a temperature from a picture
+           that has already been flattened to brightness, and neither can
+           this. What it does have is the list of who is in shot and where
+           they land in the frame, so the bodies are painted as heat over a
+           deliberately cold scene. That is the point of the channel:
+           somebody standing still in a black bush at midnight is invisible
+           on the optical feed and is a bright blob on this one. */
+        if (therm) {
+          const prevOp = x.globalCompositeOperation;
+          x.globalCompositeOperation = 'lighter';
+          const fire = g.feedFire?.(s.sel);
+          if (fire) {
+            const cx2 = FX + fire.sx * FW, cy2 = FY + fire.sy * FH;
+            const rr = Math.max(6, fire.size * FH * 0.9);
+            const gr = x.createRadialGradient(cx2, cy2, 0, cx2, cy2, rr);
+            gr.addColorStop(0, 'rgba(255,255,240,.95)');
+            gr.addColorStop(0.35, 'rgba(255,200,70,.60)');
+            gr.addColorStop(0.7, 'rgba(190,60,20,.26)');
+            gr.addColorStop(1, 'rgba(60,10,0,0)');
+            x.fillStyle = gr;
+            x.fillRect(cx2 - rr, cy2 - rr, rr * 2, rr * 2);
+          }
+          for (const c of s.contacts) {
+            if (c.sx === undefined) continue;
+            const cx2 = FX + c.sx * FW, cy2 = FY + c.sy * FH;
+            if (cx2 < FX - 20 || cx2 > FX + FW + 20) continue;
+            const rr = Math.max(3, c.size * FH * 0.55);
+            const heat = c.heat === undefined ? 1 : c.heat;
+            x.save();
+            x.translate(cx2, cy2);
+            x.scale(0.58, 1);            // a person is taller than they are wide
+            const gr = x.createRadialGradient(0, 0, 0, 0, 0, rr);
+            gr.addColorStop(0, `rgba(255,255,235,${(0.92 * heat).toFixed(2)})`);
+            gr.addColorStop(0.3, `rgba(255,196,64,${(0.72 * heat).toFixed(2)})`);
+            gr.addColorStop(0.62, `rgba(210,70,30,${(0.34 * heat).toFixed(2)})`);
+            gr.addColorStop(1, 'rgba(70,14,60,0)');
+            x.fillStyle = gr;
+            x.fillRect(-rr, -rr, rr * 2, rr * 2);
+            x.restore();
+          }
+          x.globalCompositeOperation = prevOp;
+          /* And a name on each one, because a blob you cannot identify is
+             a rumour. Two people standing together put their labels in the
+             same place, so each one drops below the last if it would land
+             on top of it — a stack of four names is readable and four
+             names printed through each other is not. */
+          const taken = [];
+          for (const c of s.contacts) {
+            if (c.sx === undefined) continue;
+            const cx2 = FX + c.sx * FW, cy2 = FY + c.sy * FH;
+            if (cx2 < FX + 8 || cx2 > FX + FW - 8) continue;
+            const rr = Math.max(3, c.size * FH * 0.55);
+            const lab = `${c.name} ${c.dist}M`;
+            const lw = textWidth(lab, 1);
+            let ly2 = Math.min(FY + FH - 10, cy2 + rr + 3);
+            for (let guard = 0; guard < 8; guard++) {
+              const clash = taken.some((q) => Math.abs(q.y - ly2) < 8
+                && Math.abs(q.x - cx2) < (q.w + lw) / 2 + 3);
+              if (!clash) break;
+              ly2 += 8;
+            }
+            if (ly2 > FY + FH - 10) continue;      // no room left; leave it as a blob
+            taken.push({ x: cx2, y: ly2, w: lw });
+            drawText(x, lab, {
+              x: cx2, y: ly2, scale: 1,
+              align: 'center', color: c.heat > 0.8 ? '#ffe8a0' : '#c08050',
+            });
+          }
+        }
+
         // scanlines and a roll bar over the top of it
         for (let yy = 0; yy < FH; yy += 2) {
-          x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(FX, FY + yy, FW, 1);
+          x.fillStyle = 'rgba(0,0,0,.26)'; x.fillRect(FX, FY + yy, FW, 1);
         }
         const roll = Math.round(((t * 0.22) % 1) * FH);
-        x.fillStyle = 'rgba(150,255,190,.05)';
+        x.fillStyle = therm ? 'rgba(255,220,180,.045)' : 'rgba(150,255,190,.05)';
         x.fillRect(FX, FY + roll, FW, 6);
         if (s.glitch > 0) {
           // a tear across the picture when something walks into shot
@@ -4235,86 +4459,133 @@ export const SCREENS = {
           x.fillStyle = 'rgba(0,0,0,.5)';
           x.fillRect(FX, FY + gy + 3, FW, 2);
         }
+        // the wipe when you change channel, so the cut reads as a cut
+        if (s.flip > 0) {
+          const k = s.flip;
+          x.fillStyle = `rgba(0,0,0,${(k * 0.85).toFixed(2)})`;
+          x.fillRect(FX, FY, FW, FH * k);
+          x.fillStyle = 'rgba(200,255,220,.5)';
+          x.fillRect(FX, FY + Math.round(FH * k) - 1, FW, 1);
+        }
         // the burned-in caption every camera has
-        drawText(x, sel.name, { x: FX + 4, y: FY + 3, scale: 1, color: '#a8ffc8' });
+        drawText(x, sel.name, { x: FX + 4, y: FY + 4, scale: 1, color: therm ? '#ffe0a8' : '#a8ffc8' });
         const clock = `${String(Math.floor(g.clock24 / 60) % 24).padStart(2, '0')}:`
           + `${String(Math.floor(g.clock24) % 60).padStart(2, '0')}`;
         drawText(x, clock, {
-          x: FX + FW - 4, y: FY + 3, scale: 1, align: 'right', color: '#a8ffc8',
+          x: FX + FW - 4, y: FY + 4, scale: 1, align: 'right',
+          color: therm ? '#ffe0a8' : '#a8ffc8',
         });
         drawText(x, `${Math.round(sel.x)} ${Math.round(sel.z)}`, {
-          x: FX + 4, y: FY + FH - 10, scale: 1, color: '#5ae08a',
+          x: FX + 4, y: FY + FH - 10, scale: 1, color: therm ? '#c08050' : '#5ae08a',
+        });
+        drawText(x, therm ? 'IR 8-14UM' : 'CH ' + (s.sel + 1), {
+          x: FX + FW - 4, y: FY + FH - 10, scale: 1, align: 'right',
+          color: therm ? '#c08050' : '#3e8a5c',
         });
         // crosshair, because every one of these had one
-        x.fillStyle = 'rgba(168,255,200,.30)';
-        x.fillRect(FX + FW / 2 - 4, FY + FH / 2, 9, 1);
-        x.fillRect(FX + FW / 2, FY + FH / 2 - 4, 1, 9);
+        x.fillStyle = therm ? 'rgba(255,220,170,.26)' : 'rgba(168,255,200,.30)';
+        x.fillRect(FX + FW / 2 - 5, FY + FH / 2, 11, 1);
+        x.fillRect(FX + FW / 2, FY + FH / 2 - 5, 1, 11);
       }
 
-      /* ---- the channel strip down the right ---- */
+      /* ---- the channel strip down the right ----
+         Fifty-eight wide and sixteen to a row, which is what makes room
+         for the picture. All ten fit between the header and the count of
+         what is still in your hands. */
       const CX = FX + FW + 8, CW2 = W - CX - 6;
+      const ROW = 16, TOP = 19;
       for (let i = 0; i < cams.length; i++) {
         const c = cams[i];
-        const cy = 20 + i * 27;
+        const cy = TOP + i * ROW;
         const on = i === s.sel;
-        x.fillStyle = on ? '#12301e' : '#0c1610';
-        x.fillRect(CX, cy, CW2, 24);
-        x.fillStyle = on ? '#5ae08a' : '#1e4a32';
-        x.fillRect(CX, cy, CW2, 1); x.fillRect(CX, cy + 23, CW2, 1);
-        x.fillRect(CX, cy, 1, 24); x.fillRect(CX + CW2 - 1, cy, 1, 24);
-        // a thumbnail: a still, kept from the last time it was refreshed
-        const tw = 30, th = 20;
-        x.fillStyle = '#000'; x.fillRect(CX + 2, cy + 2, tw, th);
-        const th2 = s.thumbs[i];
-        if (c.placed && th2) {
-          for (let k = 0; k < th2.length; k++) {
-            const q = th2[k] / 255;
-            x.fillStyle = `rgb(${Math.round(q * 60)},${Math.round(q * 210)},${Math.round(q * 115)})`;
-            x.fillRect(CX + 2 + (k % 10) * 3, cy + 2 + ((k / 10) | 0) * 3, 3, 3);
+        x.fillStyle = on ? (therm ? '#2a1a08' : '#12301e') : '#0c1610';
+        x.fillRect(CX, cy, CW2, ROW - 1);
+        x.fillStyle = on ? hot : '#1e4a32';
+        x.fillRect(CX, cy, CW2, 1); x.fillRect(CX, cy + ROW - 2, CW2, 1);
+        x.fillRect(CX, cy, 1, ROW - 1); x.fillRect(CX + CW2 - 1, cy, 1, ROW - 1);
+
+        // the still, kept from the last time the rotation reached it
+        const tw = THUMB_W, th = THUMB_H;
+        x.fillStyle = '#000'; x.fillRect(CX + 2, cy + 1, tw, th);
+        const still = s.thumbs[i];
+        if (c.placed && (on || still)) {
+          if (on) {
+            /* The live one: a lit block with a moving bar, because the
+               picture itself is already in the big window and a second
+               copy of it here is a wasted render pass. */
+            x.fillStyle = therm ? '#3a2410' : '#123a22';
+            x.fillRect(CX + 2, cy + 1, tw, th);
+            x.fillStyle = therm ? '#ffb04a' : '#7affa8';
+            x.fillRect(CX + 2, cy + 1 + Math.floor(((t * 0.6) % 1) * (th - 1)), tw, 1);
+          } else {
+            const surf = thumbSurface(tw, th);
+            const px = surf.img.data;
+            const lut = therm ? ironLut() : phosphorLut();
+            for (let k = 0; k < tw * th; k++) {
+              const q = still[k] * 3;
+              px[k * 4] = lut[q]; px[k * 4 + 1] = lut[q + 1];
+              px[k * 4 + 2] = lut[q + 2]; px[k * 4 + 3] = 255;
+            }
+            surf.cx.putImageData(surf.img, 0, 0);
+            x.imageSmoothingEnabled = false;
+            x.drawImage(surf.c, CX + 2, cy + 1, tw, th);
           }
           // the one being refreshed right now gets a corner mark
-          if (s.thumbNext === i) { x.fillStyle = '#a8ffc8'; x.fillRect(CX + 2, cy + 2, 2, 2); }
+          if (s.thumbNext === i) { x.fillStyle = '#a8ffc8'; x.fillRect(CX + 2, cy + 1, 2, 2); }
         } else if (c.placed) {
-          x.fillStyle = '#0e2a1a'; x.fillRect(CX + 2, cy + 2, tw, th);
+          // up, but the rotation has not reached it yet
+          x.fillStyle = '#0e2a1a'; x.fillRect(CX + 2, cy + 1, tw, th);
+          x.fillStyle = '#1e4a32';
+          for (let k = 0; k < 3; k++) x.fillRect(CX + 6 + k * 5, cy + 1 + (th >> 1), 2, 2);
         } else {
-          for (let k = 0; k < 40; k++) {
+          for (let k = 0; k < tw * th; k += 3) {
             const v = ((k * 31 + Math.floor(t * 40) + i * 7) % 4) * 16;
             x.fillStyle = `rgb(${v},${v + 4},${v})`;
-            x.fillRect(CX + 2 + (k % 10) * 3, cy + 2 + ((k / 10) | 0) * 5, 3, 5);
+            x.fillRect(CX + 2 + (k % tw), cy + 1 + ((k / tw) | 0), 2, 1);
           }
         }
-        drawText(x, c.name, {
-          x: CX + 36, y: cy + 4, scale: 1, color: on ? '#a8ffc8' : '#4a8a64',
+        /* One line of text and a lamp, not two lines. Ten rows of two
+           lines does not fit between the header and the bottom of a
+           224-pixel screen at any spacing that keeps them apart, and the
+           version that tried had the name and the word LIVE touching. */
+        const lamp = c.placed
+          ? (Math.floor(t * 2) % 2 ? (therm ? '#ffb04a' : '#7affa8') : '#2e7a4a')
+          : '#7a2a1a';
+        x.fillStyle = '#050a07'; x.fillRect(CX + tw + 4, cy + 5, 5, 5);
+        x.fillStyle = lamp; x.fillRect(CX + tw + 5, cy + 6, 3, 3);
+        drawText(x, (c.short || c.name).slice(0, 4), {
+          x: CX + tw + 12, y: cy + 4, scale: 1,
+          color: on ? '#a8ffc8' : (c.placed ? '#4a8a64' : '#6a5a4a'),
         });
-        drawText(x, c.placed ? 'LIVE' : 'NO SIG', {
-          x: CX + 36, y: cy + 14, scale: 1,
-          color: c.placed ? (Math.floor(t * 2) % 2 ? '#5ae08a' : '#2e7a4a') : '#8a4a3a',
-        });
-        rows.push({ x: CX, y: cy, w: CW2, h: 24, pick: i });
+        rows.push({ x: CX, y: cy, w: CW2, h: ROW - 1, pick: i });
       }
       // how many are still in your hands
       {
-        const hy = 20 + cams.length * 27 + 2;
+        const hy = TOP + cams.length * ROW + 4;
         const held = g.camsHeld || 0;
-        drawText(x, `${held} IN HAND`, {
-          x: CX, y: hy, scale: 1, color: held ? '#5ae08a' : '#2e6a48',
+        x.fillStyle = '#1e4a32'; x.fillRect(CX, hy - 3, CW2, 1);
+        drawText(x, held ? `${held} IN HAND` : 'NONE HELD', {
+          x: CX, y: hy, scale: 1, color: held ? hot : '#2e6a48',
         });
-        drawText(x, 'V TO SET ONE', { x: CX, y: hy + 9, scale: 1, color: '#2e6a48' });
+        // no point telling you the key when you have nothing to press it on
+        if (held) drawText(x, 'V TO SET', { x: CX, y: hy + 9, scale: 1, color: '#2e6a48' });
       }
 
       /* ---- what the selected camera can see, and the log ---- */
-      const LY = FY + FH + 6;
-      x.fillStyle = '#0c1610'; x.fillRect(FX - 2, LY, FW + 4, H - LY - 14);
+      const LY = FY + FH + 5;
+      const LH = H - LY - 20;
+      x.fillStyle = '#0c1610'; x.fillRect(FX - 2, LY, FW + 4, LH);
       x.fillStyle = '#1e4a32'; x.fillRect(FX - 2, LY, FW + 4, 1);
       if (s.contacts.length) {
-        drawText(x, 'IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#5ae08a' });
-        let cx2 = FX + 44;
-        for (const c of s.contacts.slice(0, 3)) {
+        drawText(x, 'IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: hot });
+        let cx2 = FX + 48;
+        for (const c of s.contacts.slice(0, 4)) {
           const col = c.colour ? colourOf(c.colour) : '#a8ffc8';
           x.fillStyle = col; x.fillRect(cx2, LY + 3, 5, 5);
-          drawText(x, `${c.name} ${c.dist}M`, { x: cx2 + 8, y: LY + 3, scale: 1, color: '#a8ffc8' });
-          cx2 += 12 + textWidth(`${c.name} ${c.dist}M`, 1);
-          if (cx2 > FX + FW - 30) break;
+          const lab = `${c.name} ${c.dist}M`;
+          drawText(x, lab, { x: cx2 + 8, y: LY + 3, scale: 1, color: '#a8ffc8' });
+          cx2 += 14 + textWidth(lab, 1);
+          if (cx2 > FX + FW - 34) break;
         }
       } else {
         drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#2e6a48' });
@@ -4349,27 +4620,38 @@ export const SCREENS = {
         });
       }
 
-      footer(x, W, H, 'UP DOWN CHANNEL   V SET A CAMERA   ESC AWAY');
+      /* Kept short on purpose: the strip starts at x=256 and a longer line
+         centred on 160 runs under it. */
+      footer(x, W, H, 'W S CHANNEL   T THERMAL   ESC');
       return rows;
     },
     key(code, s, g, st) {
       const n = (g.cams || []).length || 1;
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
       if (code === 'ArrowUp' || code === 'KeyW') {
-        s.sel = (s.sel + n - 1) % n; s.glitch = 0.6; g.audio?.sfx('select'); return true;
+        s.sel = (s.sel + n - 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
       }
       if (code === 'ArrowDown' || code === 'KeyS') {
-        s.sel = (s.sel + 1) % n; s.glitch = 0.6; g.audio?.sfx('select'); return true;
+        s.sel = (s.sel + 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
       }
-      if (/^Digit[1-9]$/.test(code)) {
-        const i = +code.slice(5) - 1;
-        if (i < n) { s.sel = i; s.glitch = 0.6; g.audio?.sfx('select'); }
+      if (code === 'KeyT') {
+        g.camTherm = !g.camTherm;
+        g.audio?.sfx('terminal');
+        return true;
+      }
+      // 1 to 9 pick a channel, 0 picks the tenth
+      if (/^Digit[0-9]$/.test(code)) {
+        const d = +code.slice(5);
+        const i = d === 0 ? 9 : d - 1;
+        if (i < n) { s.sel = i; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); }
         return true;
       }
       return true;
     },
     click(row, i, s, g) {
-      if (row?.pick !== undefined) { s.sel = row.pick; s.glitch = 0.6; g.audio?.sfx('select'); }
+      if (row?.pick !== undefined) {
+        s.sel = row.pick; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select');
+      }
       return true;
     },
   },

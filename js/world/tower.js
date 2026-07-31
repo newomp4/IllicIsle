@@ -35,6 +35,21 @@ export const CAB_Y = 15.5;            // the hut, up the ladder
 /** How many are already up when you get there, and how many you may own. */
 export const CAMERA_FITTED = 4;
 export const CAMERA_MAX = 10;
+/* Ferdi sells them three to a box. Six of the ten channels are yours, so
+   two boxes fills the relay and there is no third box worth buying. */
+export const CAMERA_BUNDLE = 3;
+
+/* What the terminal renders a feed at. It was 128x88 drawn into a 180x124
+   window, so every camera pixel covered about two screen pixels and the
+   picture was a mosaic. This is the size of the window itself, which makes
+   it one for one and as sharp as the interface canvas can be. */
+export const FEED_W = 242;
+export const FEED_H = 150;
+
+/* And the postage stamps down the side of the terminal, at the size the
+   strip actually draws them. */
+export const THUMB_W = 20;
+export const THUMB_H = 13;
 
 /* Where the four that came with the mast are pointing.
 
@@ -44,10 +59,10 @@ export const CAMERA_MAX = 10;
    they are the reason the terminal is worth finding at all — a bank of
    dead channels tells you nothing. */
 export const FITTED_CAMS = [
-  { at: [-46, 140], look: [-46, 154], name: 'CAM 1  CAMP' },
-  { at: [-30, 34], look: [-30, 46], name: 'CAM 2  SHOP' },
-  { at: [-118, 96], look: [-132, 110], name: 'CAM 3  PIER' },
-  { at: [0, 0], look: [0, 0], name: 'CAM 4  TEMPLE' },
+  { at: [-46, 140], look: [-46, 154], name: 'CAM 1  CAMP', short: 'CAMP' },
+  { at: [-30, 34], look: [-30, 46], name: 'CAM 2  SHOP', short: 'SHOP' },
+  { at: [-118, 96], look: [-132, 110], name: 'CAM 3  PIER', short: 'PIER' },
+  { at: [0, 0], look: [0, 0], name: 'CAM 4  TEMPLE', short: 'TMPL' },
 ];
 
 /* The room at the head of the ladder.
