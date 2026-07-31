@@ -16,7 +16,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { mergeGeos, box, cyl, sphere, tint, blankUV } from '../lib/geo.js';
+import { mergeGeos, box, cyl, sphere, tint } from '../lib/geo.js';
 import { drawText, textWidth } from '../lib/bitfont.js';
 
 const G = (n) => new THREE.Color(n);

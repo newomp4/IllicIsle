@@ -8,7 +8,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { mergeGeos, box, cyl, ico, sphere, tint, blankUV } from '../lib/geo.js';
+import { mergeGeos, box, cyl, ico, sphere, tint } from '../lib/geo.js';
 import { buildSignTexture } from '../lib/textures.js';
 
 const G = (n) => new THREE.Color(n);

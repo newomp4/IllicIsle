@@ -8,7 +8,7 @@
    =========================================================== */
 
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
-import { TASK_DEFS, SABOTAGE_DEFS, dealTasks, taskById, taskSteps } from './tasks.js';
+import { SABOTAGE_DEFS, dealTasks, taskSteps } from './tasks.js';
 import { makeClue } from './stranger.js';
 
 const now = () => performance.now() / 1000;
@@ -196,6 +196,40 @@ export class HostSession {
   canStart() {
     // the workshop runs with one
     return this.players.size >= (this.dev ? 1 : 3) && this.phase === PHASE.LOBBY;
+  }
+
+  /**
+   * Back to the lobby for another round.
+   *
+   * There was no way back at all: once a round was over the session sat
+   * in PHASE.OVER for ever, and the button on the results card labelled
+   * PLAY AGAIN called the SINGLE-PLAYER start — so finishing a game of
+   * Castaways with five other people quietly dropped you, alone, onto a
+   * different island.
+   */
+  toLobby() {
+    this.phase = PHASE.LOBBY;
+    this.over = null;
+    this.sabotage = null;
+    this.cool = {};
+    this.bodies = [];
+    this.tasksDone = 0;
+    this.tasksTotal = 0;
+    for (const p of this.players.values()) {
+      p.alive = true;
+      p.role = null;
+      p.tasks = [];
+      p.doneTasks = new Set();
+      p.step = {};
+      p.ready = false;
+      p.quiet = false; p.vest = false;
+      p.coins = 0;
+      p.emergencies = this.settings.emergencyPerPlayer;
+    }
+    this.net.broadcast({ t: S.PHASE, phase: PHASE.LOBBY, endsAt: 0 });
+    this.hooks.onPhase?.(PHASE.LOBBY, 0, null);
+    this._roster();
+    return true;
   }
 
   start() {

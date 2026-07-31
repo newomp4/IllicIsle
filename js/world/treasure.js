@@ -12,7 +12,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { mergeGeos, box, cyl, sphere, tint, blankUV } from '../lib/geo.js';
+import { mergeGeos, box, cyl, sphere, tint } from '../lib/geo.js';
 
 const G = (n) => new THREE.Color(n);
 

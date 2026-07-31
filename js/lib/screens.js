@@ -9,14 +9,14 @@
    pixelate, dither, band and curve exactly like the world does.
    =========================================================== */
 
-import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
+import { drawText, textWidth, wrapText, panel, ditherRect } from './bitfont.js';
 import { drawRelicIcon, drawShopIcon } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
 import * as DARTS from '../mp/darts.js';
 import {
-  STOCK, FOOD, DRINKS, stockFor, shelf, SANCTUARY_R, VENDOR_IDS, SCHLARNA_N,
+  STOCK, FOOD, DRINKS, shelf, VENDOR_IDS, SCHLARNA_N,
 } from '../mp/market.js';
 import { FEED_H, FEED_W, THUMB_H, THUMB_W } from '../world/tower.js';
 
@@ -2892,7 +2892,6 @@ export const SCREENS = {
       // the arc of the table edge, and the gilt rail on it
       x.fillStyle = '#5a2418'; x.fillRect(10, TY - 3, W - 20, 3);
       x.fillStyle = '#c39a2c'; x.fillRect(10, TY - 4, W - 20, 1);
-
 
       /* ---- a card ----
          Cards are dealt, not placed. Each one flies out of the shoe at the
@@ -6477,14 +6476,23 @@ export const SCREENS = {
         y += 10;
       }
 
-      const rows = menuList(x, ['BACK TO THE BEACH'], s.sel, W / 2, H - 34, t, { width: 150 });
+      /* Another round without losing the lobby.
+         The only way on from here used to be a page reload, which throws
+         the whole session away: everybody types the code in again to play
+         a game they were already in. The host can put the lobby back
+         together instead; leaving for good is still one keypress. */
+      const canHost = !!g.mp?.host;
+      const rows = menuList(x, [canHost ? 'ANOTHER ROUND' : 'WAIT FOR ANOTHER ROUND',
+        'BACK TO THE BEACH'], s.sel, W / 2, H - 42, t, { width: 160 });
       return rows;
     },
     key(code, s, g, st) {
-      return nav(code, s, 1, () => location.reload());
+      return nav(code, s, 2, (i) => {
+        if (i === 0) g.playAgain();
+        else location.reload();
+      });
     },
   },
-
 
   /* ---------------- TITLE ---------------- */
   title: {
@@ -7044,7 +7052,8 @@ export const SCREENS = {
     },
     key(code, s, g, st) {
       return nav(code, s, 3, (i) => {
-        if (i === 0) g.beginGame();
+        // PLAY AGAIN means another round of THIS, not a solo game
+        if (i === 0) g.playAgain();
         else if (i === 1) g.copyBrag();
         else g.quitToTitle();
       });

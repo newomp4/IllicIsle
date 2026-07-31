@@ -9,7 +9,7 @@
    because a PSX framebuffer was never perfectly still.
    =========================================================== */
 
-import { drawText, textWidth, wrapText, panel, ditherRect, normalize, GLYPH_H } from './bitfont.js';
+import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
 import { COLOURS } from '../net/protocol.js';
 
 /** id -> 6-digit hex, for the Castaways roster pips. */

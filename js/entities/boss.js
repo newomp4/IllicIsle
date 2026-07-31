@@ -7,8 +7,7 @@
 
 import * as THREE from 'three';
 import {
-  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint,
-  limb, jitterVerts, facePatch,
+  mergeGeos, box, cyl, ico, sphere, plane, place, tint, limb, jitterVerts, facePatch,
 } from '../lib/geo.js';
 import { applyRegion, applyCell, CELLS, makeRng } from '../lib/textures.js';
 

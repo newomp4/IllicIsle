@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import {
-  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify, blankUV,
+  mergeGeos, box, cyl, cone, ico, sphere, plane, tint, limb, lumpify, blankUV,
 } from '../lib/geo.js';
 import { applyCell, buildSignTexture } from '../lib/textures.js';
 import { drawText } from '../lib/bitfont.js';

@@ -10,16 +10,16 @@
 
 import * as THREE from 'three';
 import { Game, makeGroundWith, setHidden } from '../game.js';
-import { Net, Ticker, makeRoomCode } from '../net/net.js';
-import { C, S, PHASE, ROLE, COLOURS } from '../net/protocol.js';
+import { Net, makeRoomCode } from '../net/net.js';
+import { C, S, PHASE, ROLE } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
 import { Avatar, Body, colourHex, noteSnapshot } from './avatar.js';
 import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } from './tasks.js';
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import {
-  STOCK, FOOD, DRINKS, STAGE_PAY_MIN, STAGE_PAY_MAX, LOOT_SHARE, SANCTUARY_R,
-  itemById, stockFor, VENDOR_IDS, SCHLARNA_UP, SCHLARNA_N, drinkById,
+  STOCK, FOOD, STAGE_PAY_MIN, STAGE_PAY_MAX, SANCTUARY_R, itemById, VENDOR_IDS,
+  SCHLARNA_UP, SCHLARNA_N, drinkById,
 } from './market.js';
 
 /* How often the wire carries anything.
@@ -40,7 +40,7 @@ import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
 import { DIG_SECONDS } from '../world/treasure.js';
-import { BUNKER_SPOTS, BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
+import { BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
 import {
   HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
 } from '../world/highroller.js';
@@ -48,7 +48,7 @@ import {
   BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_DOOR,
 } from '../world/bar.js';
 import {
-  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y, CAMERA_BUNDLE,
+  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAMERA_BUNDLE,
 } from '../world/tower.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
@@ -401,6 +401,37 @@ export class MPGame extends Game {
       if (this.screens.name !== 'mpCouncil') this.screens.replace('mpCouncil', {});
     } else if (phase === PHASE.RESULT) {
       // the exile card is pushed by _onExile
+    } else if (phase === PHASE.LOBBY) {
+      /* Another round. Everything the last one left on the island comes
+         off, and everybody goes back to the list of names. */
+      M.started = false;
+      this.leaveRoom?.();
+      this._clearBodies();
+      this.paused = false;
+      this.state = 'title';
+      document.exitPointerLock?.();
+      this.ui.hide();
+      this.screens.replace('mpLobby', {});
+    }
+  }
+
+  /**
+   * PLAY AGAIN, from the results card.
+   *
+   * It used to call beginGame(), which is the SINGLE-PLAYER start — so
+   * the button offered at the end of every game of Castaways quietly put
+   * you on your own. The host puts the session back in the lobby and
+   * everybody follows; a guest waits for them to do it.
+   */
+  playAgain() {
+    const M = this.mp;
+    if (!M.active) { this.beginGame(); return; }
+    if (M.host) {
+      this.audio.sfx('confirm');
+      M.host.toLobby();
+    } else {
+      this.audio.sfx('select');
+      this.ui.toast('WAITING FOR THE HOST TO SET ANOTHER ROUND', 'jade', 3200);
     }
   }
 
@@ -986,6 +1017,7 @@ export class MPGame extends Game {
     M2.sabLog = [];
     M2.ledger = null;
     M2.ledgerPending = 0;
+    for (const d of (M2.drops || [])) this._retireDrop(d);
     M2.drops = [];
     M2.chaffUntil = 0;
     M2.speaker = null;
@@ -1001,6 +1033,18 @@ export class MPGame extends Game {
     this.carry = [];
     // she keeps her own hours; start her wherever the clock says she is
     if (this.casinoDock) this.casinoIn = this.night > 0.34 ? 1 : 0;
+    /* The relay, back to how it was fitted. `_initCameras` builds once and
+       returns early ever after, so without this a rematch began with last
+       round's cameras still up, still on the feed, still pointing wherever
+       somebody left them — and with however many were in your hands. */
+    for (const c of (this.cams || [])) {
+      if (c.fitted) { c.pan = 0; c.tilt = 0; c.zoom = 1; c.node.rotation.y = c.yaw; c.node.rotation.x = 0.16; continue; }
+      c.placed = false;
+      c.pan = 0; c.tilt = 0; c.zoom = 1;
+      c.node.visible = false;
+    }
+    this.camsHeld = 0;
+    this.receipts = [];
     M2.sale = null;
     M2.saleDay = 0;
     this._lastDawn = 0;
@@ -1751,10 +1795,27 @@ export class MPGame extends Game {
     }
   }
 
+  /**
+   * Take a purse off the ground and off the books.
+   *
+   * Hiding the mesh was not enough: it stayed parented to the scene and
+   * stayed in `tickers`, so every purse ever dropped went on being walked
+   * and spun for the rest of the session, invisible. A long round with a
+   * busy Agent left dozens of them, and a rematch cleared the LIST and
+   * left the meshes behind.
+   */
+  _retireDrop(d) {
+    if (!d || !d.mesh) return;
+    d.mesh.visible = false;
+    d.mesh.removeFromParent();
+    const i = this.tickers.indexOf(d.mesh);
+    if (i >= 0) this.tickers.splice(i, 1);
+    d.mesh = null;
+  }
+
   _takePurse(d) {
     if (d.taken) return;
     d.taken = true;
-    d.mesh.visible = false;
     const got = this.doubleCoins ? d.coins * 2 : d.coins;
     this.coins = (this.coins || 0) + got;
     this._send({ t: C.PURSE, coins: this.coins });
@@ -1763,6 +1824,7 @@ export class MPGame extends Game {
     this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
     this.player.punch?.(0.2);
     this._payInstalment();
+    this._retireDrop(d);
   }
 
   _takeCoin(c) {
@@ -2943,17 +3005,44 @@ export class MPGame extends Game {
    */
   _backOnDeck(lz = -1.2) {
     const plat = this.casinoPlat;
-    if (!plat) {
-      // no boat: the pier head, which is the only other place that makes sense
-      const sh = this.casinoShore;
-      if (sh) this.player.teleport(sh.x, heightAt(sh.x, sh.z) + 0.8, sh.z, 0);
+    /* SHE MAY HAVE SAILED.
+       The deck follows the boat, and the boat leaves at dawn. Stepping
+       out of the room onto the spot where the deck used to be is a
+       hundred-metre fall into deep water — and if she is halfway out you
+       ride with her past the edge of the playable sea and get dropped
+       anyway. If she is not properly alongside you get off at the pier,
+       which is where somebody who missed the boat would be. */
+    const alongside = plat && (this.casinoIn ?? 1) > 0.9;
+    if (plat && alongside) {
+      const wx = plat.x + lz * plat.sin;
+      const wz = plat.z + lz * plat.cos;
+      // facing forward, down the open deck at the water, cabin behind
+      this.player.teleport(wx, plat.y + 0.35, wz, Math.atan2(-plat.sin, -plat.cos));
+      this.player.pitch = 0;
       return;
     }
-    const wx = plat.x + lz * plat.sin;
-    const wz = plat.z + lz * plat.cos;
-    // facing forward, down the open deck at the water, with the cabin behind
-    this.player.teleport(wx, plat.y + 0.35, wz, Math.atan2(-plat.sin, -plat.cos));
+    this._putAshore('SHE SAILED WITHOUT YOU');
+  }
+
+  /**
+   * The shore end of her bridge, on ground you can actually stand on.
+   *
+   * The pier head is worked out from the boat's mooring and is not
+   * guaranteed to be above water, so this walks inland until the terrain
+   * is properly dry rather than trusting the arithmetic.
+   */
+  _putAshore(why) {
+    const sh = this.casinoShore;
+    let x = sh ? sh.x : 0, z = sh ? sh.z : 0;
+    const d0 = Math.hypot(x, z) || 1;
+    for (let k = 0; k < 40; k++) {
+      if (heightAt(x, z) > 0.8) break;
+      // straight at the middle of the island, two metres at a time
+      x -= (x / d0) * 2; z -= (z / d0) * 2;
+    }
+    this.player.teleport(x, Math.max(heightAt(x, z), 0.6) + 0.6, z, Math.atan2(-x, -z));
     this.player.pitch = 0;
+    if (why) this.ui?.toast?.(why, 'gold', 3000);
   }
 
   /** In a round there is paid work, so the burger is on the counter too. */

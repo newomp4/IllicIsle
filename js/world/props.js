@@ -11,10 +11,9 @@
 import * as THREE from 'three';
 import { ps1ify } from '../lib/ps1.js';
 import {
-  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint,
-  limb, jitterVerts, lumpify, bendY, taper,
+  mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify, bendY, taper,
 } from '../lib/geo.js';
-import { buildSandWritingTexture, buildSignTexture, applyCell } from '../lib/textures.js';
+import { buildSandWritingTexture, applyCell } from '../lib/textures.js';
 import { heightAt, slopeAt, biomeAt, vegetationDensity, ISLAND } from './terrain.js';
 
 export const PLAYER_HEIGHT = 1.75;

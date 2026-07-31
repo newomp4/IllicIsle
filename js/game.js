@@ -12,14 +12,14 @@ import { UI } from './ui.js';
 import { ScreenStack, GLYPH_NAMES } from './lib/screens.js';
 
 import {
-  buildTerrain, buildOcean, buildSurf, buildSky, buildClouds,
-  heightAt, slopeAt, biomeAt, findBeach, ISLAND, setCarves,
+  buildTerrain, buildOcean, buildSurf, buildSky, buildClouds, heightAt, slopeAt, findBeach,
+  ISLAND, setCarves,
 } from './world/terrain.js';
 import {
   buildPropMaterials, scatterIsland, LANDMARKS, findGround, findFlatGround, buildDirtPath,
-  buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting,
-  buildRoguePendulum, buildCoconutPile, buildCoconutMesh, buildSatchel,
-  buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS, cullScatter,
+  buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting, buildRoguePendulum,
+  buildCoconutPile, buildCoconutMesh, buildSatchel, buildBirdFlock, buildCritters,
+  buildFlameCluster, cullScatter,
 } from './world/props.js';
 import {
   buildSyncoin, buildRelic, buildFerdiHut, buildBeacon, buildStorm, buildTikiTorch,
@@ -29,20 +29,19 @@ import { buildIdolMaterials, buildIdol, buildIdolShrine } from './world/idol.js'
 import { buildTemple, templeHeight, TEMPLE } from './world/temple.js';
 import { buildCasinoBoat, buildBoatBridge, buildVendingMachine } from './world/casino.js';
 import {
-  BUNKER_SPOTS, buildHatch, buildBunkerRoom, BUNKER_ENTRY, BUNKER_BOX, bunkerHeight,
+  BUNKER_SPOTS, buildHatch, buildBunkerRoom,
 } from './world/bunker.js';
 import {
-  buildHighRoller, HR_ENTRY, HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
+  buildHighRoller,
 } from './world/highroller.js';
 import {
-  buildBar, BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_BOARD,
+  buildBar,
 } from './world/bar.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
 import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
 import {
-  buildTower, buildCab, buildCamera, TOWER_SPOT, TOWER_H, CAB_Y,
-  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight,
-  CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS, FEED_W, FEED_H, THUMB_W, THUMB_H,
+  buildTower, buildCab, buildCamera, TOWER_SPOT, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY,
+  cabHeight, CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS, FEED_W, FEED_H, THUMB_W, THUMB_H,
 } from './world/tower.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
@@ -605,7 +604,13 @@ export class Game {
          anything else placed later has to keep off it — the collider list
          alone is not enough, because a small rock gets no collider so you
          can step over it, and a coin was landing on one. */
-      this.scattered = scattered.placed || [];
+      /* NOT `this.scattered` — that name already belongs to the scatter
+         sabotage's boolean over in mpgame, and the round reset sets it to
+         false. Sharing it meant the footprint list was wiped at the start
+         of every round: from the second one on, `clearOfSolids` could see
+         no small rocks at all and coins and dropped purses went straight
+         back to landing inside them. */
+      this.scatterSpots = scattered.placed || [];
       /* The instanced scenery, kept so its instance buffers can be
          repacked to what is actually in front of the camera. This is the
          single biggest thing in a frame. */
@@ -1385,7 +1390,6 @@ export class Game {
       this.tickers.push(coin);
       this.syncoins.push({ mesh: coin, x: g.x, z: g.z, taken: false });
     }
-
 
     /* ---- the storm, dormant until the Pendulums are read ---- */
     this.storm = buildStorm(scene);
@@ -3056,7 +3060,7 @@ I have snacks."`);
     /* And every rock, log and shell the scatter dropped, collider or not
        — the small ones are given no collider by design, and they are
        exactly the ones a coin disappears into. */
-    for (const q of (this.scattered || [])) {
+    for (const q of (this.scatterSpots || [])) {
       const rr = q.r + need;
       if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
     }
@@ -3452,7 +3456,6 @@ I have snacks."`);
     this.audio.sfx('terminal');
     this.ui.toast(`${cam.name} SET - ${this.camsHeld} LEFT`, 'jade', 2600);
   }
-
 
   shopStock() {
     return SHOP.map((it) => ({

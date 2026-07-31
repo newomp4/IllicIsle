@@ -3,9 +3,9 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { mergeGeos, box, cyl, ico, sphere, plane, place, tint, limb, facePatch } from '../lib/geo.js';
+import { mergeGeos, box, cyl, ico, sphere, plane, place, tint, limb } from '../lib/geo.js';
 import { applyRegion, CELLS, makeRng } from '../lib/textures.js';
-import { heightAt, slopeAt, biomeAt } from '../world/terrain.js';
+import { heightAt, biomeAt } from '../world/terrain.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 

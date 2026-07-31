@@ -239,7 +239,24 @@ export class Gore {
     }
     pos.needsUpdate = true; uv.needsUpdate = true;
     g.setDrawRange(0, v);
-    g.computeBoundingSphere();
+    /* The sphere by hand, over the vertices actually IN USE.
+       computeBoundingSphere reads the whole attribute and ignores the
+       draw range, so a mesh recycled from a bigger kill somewhere else
+       would carry a sphere spanning both places and stop being culled. */
+    {
+      let cx = 0, cz = 0, cy = 0;
+      for (let i = 0; i < v; i++) { cx += P[i * 3]; cy += P[i * 3 + 1]; cz += P[i * 3 + 2]; }
+      cx /= v || 1; cy /= v || 1; cz /= v || 1;
+      let r2 = 0;
+      for (let i = 0; i < v; i++) {
+        const dx = P[i * 3] - cx, dy = P[i * 3 + 1] - cy, dz = P[i * 3 + 2] - cz;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > r2) r2 = d2;
+      }
+      g.boundingSphere = g.boundingSphere || new THREE.Sphere();
+      g.boundingSphere.center.set(cx, cy, cz);
+      g.boundingSphere.radius = Math.sqrt(r2) + 0.5;
+    }
     s.mat.color.copy(blood);
     s.mat.opacity = 0.92;
     s.mesh.position.set(0, 0, 0);
