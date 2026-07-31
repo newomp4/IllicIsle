@@ -166,6 +166,175 @@ export function buildCastaway(mats) {
 }
 
 /* ===========================================================
+   WHAT IS LEFT OF SOMEBODY
+
+   A body used to be the castaway model lying on its side, which reads as
+   a person having a nap. This is bones — but bones still wearing their
+   shirt, because a skeleton with nothing on it is a skeleton nobody can
+   identify, and knowing WHOSE body you have found is most of the game.
+
+   The part names are the same as the living rig on purpose: hips, torso,
+   head, arms and elbows, legs and knees. The slump the Body applies works
+   on either without knowing which it has.
+   =========================================================== */
+export function buildSkeleton(mats, shirtHex = 0xc9bda0) {
+  const rng = makeRng(1717);
+  const root = new THREE.Group();
+  const parts = {};
+
+  const BONE = new THREE.Color(0xd9d3bd);
+  const DARK = new THREE.Color(0x6e6754);          // sockets, seams, gaps
+  const SHIRT = new THREE.Color(shirtHex);
+
+  const hips = new THREE.Group();
+  hips.position.y = 0.90;
+  root.add(hips);
+  parts.hips = hips;
+
+  /* ---- pelvis, spine, ribs, and the rag over them ---- */
+  const trunk = [];
+  const pelvis = cyl(0.20, 0.16, 0.14, 6, 'stone', { pos: [0, -0.10, 0] });
+  pelvis.scale(1.15, 1, 0.72);
+  tint(pelvis, BONE); trunk.push(pelvis);
+  // the spine, a stack of small blocks
+  for (let i = 0; i < 6; i++) {
+    const v = box(0.075, 0.055, 0.07, 'stone', { pos: [0, 0.02 + i * 0.095, -0.01] });
+    tint(v, i % 2 ? BONE : DARK); trunk.push(v);
+  }
+  // the ribs: five pairs, each swept round from the spine
+  for (let i = 0; i < 5; i++) {
+    const y = 0.16 + i * 0.093;
+    const w = 0.235 - Math.abs(i - 1.6) * 0.022;
+    for (const side of [-1, 1]) {
+      const rib = cyl(0.019, 0.019, w * 1.7, 4, 'stone', {
+        pos: [side * w * 0.52, y, 0.02],
+        rot: [0.12, 0, Math.PI / 2 - side * 0.30],
+      });
+      tint(rib, BONE); trunk.push(rib);
+    }
+  }
+  // collar bones and the shoulder blades behind them
+  for (const side of [-1, 1]) {
+    const cl = cyl(0.02, 0.02, 0.26, 4, 'stone', {
+      pos: [side * 0.13, 0.60, 0.06], rot: [0, 0, Math.PI / 2 - side * 0.18],
+    });
+    tint(cl, BONE); trunk.push(cl);
+  }
+  const ribs = new THREE.Mesh(mergeGeos(trunk), mats.opaque);
+  hips.add(ribs);
+
+  /* The shirt, hanging off the ribs in strips. This is `torso`, so the
+     one thing the colour code paints is the one thing that should be
+     coloured. */
+  const rag = [];
+  const vest = cyl(0.255, 0.235, 0.34, 8, 'clothTat', { pos: [0, 0.30, 0] });
+  vest.scale(1.06, 1, 0.74);
+  tint(vest, SHIRT); rag.push(vest);
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2;
+    const f = box(0.085, 0.09 + rng() * 0.10, 0.045, 'clothTat', {
+      pos: [Math.cos(a) * 0.235, 0.10 - rng() * 0.05, Math.sin(a) * 0.17],
+      rot: [(rng() - 0.5) * 0.5, -a, 0],
+    });
+    tint(f, SHIRT); rag.push(f);
+  }
+  const torso = new THREE.Mesh(mergeGeos(rag), mats.opaque);
+  hips.add(torso);
+  parts.torso = torso;
+
+  /* ---- skull ---- */
+  const headGroup = new THREE.Group();
+  headGroup.position.y = 0.70;
+  hips.add(headGroup);
+  parts.head = headGroup;
+
+  const sk = [];
+  const cranium = sphere(0.155, 7, 5, 'stone');
+  cranium.scale(1, 1.06, 1.02);
+  tint(cranium, BONE); sk.push(cranium);
+  const neck = cyl(0.05, 0.058, 0.13, 5, 'stone', { pos: [0, -0.17, 0] });
+  tint(neck, BONE); sk.push(neck);
+  // two sockets and a nose, all just holes
+  for (const side of [-1, 1]) {
+    const eye = box(0.056, 0.052, 0.05, 'stone', { pos: [side * 0.062, 0.01, 0.125] });
+    tint(eye, DARK); sk.push(eye);
+  }
+  const nose = box(0.036, 0.05, 0.05, 'stone', { pos: [0, -0.06, 0.135] });
+  tint(nose, DARK); sk.push(nose);
+  // the jaw, with teeth
+  const jaw = box(0.17, 0.075, 0.15, 'stone', { pos: [0, -0.125, 0.05] });
+  tint(jaw, BONE); sk.push(jaw);
+  for (let i = 0; i < 5; i++) {
+    const t2 = box(0.022, 0.03, 0.03, 'stone', { pos: [-0.055 + i * 0.028, -0.10, 0.115] });
+    tint(t2, i % 2 ? BONE : DARK); sk.push(t2);
+  }
+  headGroup.add(new THREE.Mesh(mergeGeos(sk), mats.opaque));
+
+  /* ---- arms: two bones and a handful of fingers ---- */
+  parts.arms = {};
+  for (const side of [-1, 1]) {
+    const g = new THREE.Group();
+    g.position.set(side * 0.235, 0.54, 0);
+    hips.add(g);
+    const up = limb([0, 0, 0], [side * 0.03, -0.27, 0], 0.036, 0.030, 'stone');
+    tint(up, BONE);
+    g.add(new THREE.Mesh(mergeGeos([up]), mats.opaque));
+
+    const elbow = new THREE.Group();
+    elbow.position.set(side * 0.03, -0.27, 0);
+    g.add(elbow);
+    const fore = [];
+    // radius and ulna, side by side, because that is what is down there
+    for (const off of [-0.018, 0.018]) {
+      const f = limb([off, 0, 0], [side * 0.01 + off, -0.25, 0.02], 0.024, 0.020, 'stone');
+      tint(f, BONE); fore.push(f);
+    }
+    for (let i = 0; i < 4; i++) {
+      const fg = box(0.018, 0.055, 0.02, 'stone', {
+        pos: [side * 0.01 - 0.03 + i * 0.02, -0.31, 0.03], rot: [0.3, 0, 0],
+      });
+      tint(fg, BONE); fore.push(fg);
+    }
+    elbow.add(new THREE.Mesh(mergeGeos(fore), mats.opaque));
+    parts.arms[side < 0 ? 'l' : 'r'] = g;
+    (parts.elbows = parts.elbows || {})[side < 0 ? 'l' : 'r'] = elbow;
+  }
+
+  /* ---- legs ---- */
+  parts.legs = {};
+  for (const side of [-1, 1]) {
+    const g = new THREE.Group();
+    g.position.set(side * 0.105, -0.20, 0);
+    hips.add(g);
+    const thigh = limb([0, 0, 0], [side * 0.01, -0.34, 0], 0.050, 0.040, 'stone');
+    tint(thigh, BONE);
+    g.add(new THREE.Mesh(mergeGeos([thigh]), mats.opaque));
+
+    const knee = new THREE.Group();
+    knee.position.set(side * 0.01, -0.34, 0);
+    g.add(knee);
+    const shin = [];
+    const tib = limb([0, 0, 0], [0, -0.32, 0.01], 0.040, 0.030, 'stone');
+    tint(tib, BONE); shin.push(tib);
+    const fib = limb([side * 0.028, -0.02, 0], [side * 0.022, -0.30, 0.01], 0.018, 0.015, 'stone');
+    tint(fib, BONE); shin.push(fib);
+    const foot = box(0.09, 0.05, 0.19, 'stone', { pos: [0, -0.35, 0.05] });
+    tint(foot, BONE); shin.push(foot);
+    for (let i = 0; i < 3; i++) {
+      const t2 = box(0.022, 0.03, 0.035, 'stone', { pos: [-0.026 + i * 0.026, -0.35, 0.145] });
+      tint(t2, i % 2 ? DARK : BONE); shin.push(t2);
+    }
+    knee.add(new THREE.Mesh(mergeGeos(shin), mats.opaque));
+    parts.legs[side < 0 ? 'l' : 'r'] = g;
+    (parts.knees = parts.knees || {})[side < 0 ? 'l' : 'r'] = knee;
+  }
+
+  root.userData.parts = parts;
+  root.userData.isSkeleton = true;
+  return root;
+}
+
+/* ===========================================================
    PLAYER
    =========================================================== */
 export class Player {

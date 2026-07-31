@@ -1636,17 +1636,21 @@ export class MPGame extends Game {
           ...((this.knowsBunker && M.bunker)
             ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true }]
             : []),
-          ...(this.hasItem('rounds')
-            ? (this.vendors || []).filter((v) => !v.spent)
-              .map((v) => ({ x: v.x, z: v.z, label: 'MACHINE', found: true }))
-            : []),
         ],
+        /* The machines get their own picture rather than a red cross
+           labelled MACHINE, and only once you have paid for the map that
+           shows them. */
+        vendors: this.hasItem('rounds')
+          ? (this.vendors || []).filter((v) => !v.spent).map((v) => ({ x: v.x, z: v.z }))
+          : [],
         // named, so zooming in tells you which job is which
         jobs: jobs.map((j) => ({
           x: j.site.x, z: j.site.z, done: j.done,
           name: this._taskStage(j.id).name,
         })),
         temple: this.templeDoorPos,
+        fire: this.campfirePos || this.spawn || null,
+        tower: this.tower ? { x: this.tower.x, z: this.tower.z } : null,
         casino: this.casinoIn > 0.5 ? this.casinoPos : null,
         player: this.player.pos,
         facing: this.player.facing,

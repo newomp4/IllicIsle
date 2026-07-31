@@ -7253,6 +7253,99 @@ export function drawGlyphPixels(x, name, ox, oy, size, color) {
  * @param {object} data  needs heightAt and radius; everything else optional.
  *   `zoom` (1..4) and `cx`/`cz` (the world point at the centre) pan it.
  */
+/* ===========================================================
+   MAP ICONS
+
+   Everything worth walking to used to be a scribble with its name
+   printed under it, and eight names on a chart this size is a wall of
+   text with an island somewhere behind it. These are little coloured
+   sprites instead — read at a glance, take no room, and do not have to
+   be nudged around each other to stop them colliding.
+
+   Each is a short list of [x, y, w, h, colour] laid out on a grid whose
+   origin is the middle of the icon, so they can be drawn at any point on
+   the chart without thinking about it.
+   =========================================================== */
+const MAP_ICONS = {
+  // Ferdi's: a striped awning over a counter with a coin on it
+  shop: [
+    [-7, 0, 14, 6, '#6b4626'], [-6, 2, 12, 1, '#4a2f18'],
+    [-8, -4, 16, 4, '#c4442e'],
+    [-5, -4, 3, 4, '#e8dcc0'], [1, -4, 3, 4, '#e8dcc0'],
+    [-1, 1, 3, 3, '#ffd24a'], [0, 2, 1, 1, '#8a6a20'],
+  ],
+  // Cathy's: a red parasol over a griddle, with a burger under it
+  cathy: [
+    [-8, -3, 16, 3, '#c4402e'], [-5, -3, 3, 3, '#f0e4c4'], [2, -3, 3, 3, '#f0e4c4'],
+    [-1, -1, 2, 4, '#7a5a2a'],
+    [-6, 3, 12, 4, '#5a4020'],
+    [-4, 0, 8, 1, '#e8b04a'], [-4, 1, 8, 1, '#7a3a20'], [-4, 2, 8, 1, '#c98a3a'],
+  ],
+  // the Lucky Flopper: a hull, a wheelhouse and a sign that blinks
+  flopper: [
+    [-9, 1, 18, 4, '#4a2438'], [-7, 5, 14, 2, '#31182a'],
+    [-4, -3, 8, 4, '#6b3352'], [-2, -2, 2, 2, '#ffd24a'], [1, -2, 2, 2, '#ffd24a'],
+    [-3, -6, 6, 2, 'BLINK'],
+  ],
+  // the campfire: logs and a flame
+  fire: [
+    [-7, 3, 14, 3, '#5a3a1e'], [-5, 1, 10, 2, '#6b4626'],
+    [-3, -3, 6, 4, '#e06a1a'], [-2, -6, 4, 3, '#f0a020'],
+    [-1, -8, 2, 2, '#ffe07a'], [-1, -1, 2, 2, '#fff0b0'],
+  ],
+  // the mast: a lattice tower with a light on top
+  tower: [
+    [-1, -6, 2, 12, '#8a8478'], [-4, 6, 8, 2, '#6a6458'],
+    [-3, 2, 6, 1, '#8a8478'], [-2, -1, 4, 1, '#8a8478'],
+    [-5, 5, 10, 1, '#8a8478'],
+    [-2, -9, 4, 3, 'BLINK'],
+    [-4, -8, 2, 1, '#6a6458'], [2, -8, 2, 1, '#6a6458'],
+  ],
+  // a vending machine: a lit cabinet with a slot
+  vendor: [
+    [-5, -7, 10, 14, '#2e4a5a'], [-4, -6, 8, 7, '#7ad0e0'],
+    [-3, -5, 2, 2, '#e8f4f8'], [0, -5, 2, 2, '#e8f4f8'], [-3, -2, 2, 2, '#e8f4f8'],
+    [0, -2, 2, 2, '#e8f4f8'],
+    [-3, 2, 6, 1, '#1a2a34'], [-2, 4, 4, 2, '#c9b98a'],
+  ],
+  // the temple: steps and a black doorway
+  temple: [
+    [-8, 2, 16, 5, '#5a4a28'], [-6, -1, 12, 3, '#6a5a34'], [-4, -4, 8, 3, '#7a6a44'],
+    [-2, -7, 4, 3, '#8a7a54'],
+    [-2, 2, 4, 5, '#150f06'],
+  ],
+  // the wreck: a broken fuselage half in the sand
+  wreck: [
+    [-9, 0, 15, 5, '#7a6a58'], [-9, 0, 15, 1, '#a09080'],
+    [4, -3, 5, 5, '#6a5a48'],
+    [-6, -4, 3, 4, '#8a7a68'],
+    [-2, 1, 3, 3, '#2a2018'], [2, 1, 2, 3, '#2a2018'],
+  ],
+  // the hut, shut up: boarded over
+  shut: [
+    [-7, -1, 14, 7, '#6a5a48'], [-8, -4, 16, 3, '#5a4a38'],
+    [-6, -1, 2, 7, '#3a2f22'], [-1, -1, 2, 7, '#3a2f22'], [4, -1, 2, 7, '#3a2f22'],
+  ],
+};
+
+/**
+ * Draw one of them, centred, with a pale halo so it never disappears
+ * into the parchment or into a contour line.
+ */
+function mapIcon(x, kind, cx, cy, t) {
+  const spec = MAP_ICONS[kind];
+  if (!spec) return;
+  const px = Math.round(cx), py = Math.round(cy);
+  // the halo: the same shapes, one pixel out in every direction
+  x.fillStyle = 'rgba(232,220,186,.75)';
+  for (const [dx, dy, w, h] of spec) x.fillRect(px + dx - 1, py + dy - 1, w + 2, h + 2);
+  const blink = Math.floor(t * 3) % 2 ? '#ff5aa8' : '#8a3a68';
+  for (const [dx, dy, w, h, col] of spec) {
+    x.fillStyle = col === 'BLINK' ? blink : col;
+    x.fillRect(px + dx, py + dy, w, h);
+  }
+}
+
 export function drawChart(x, ox, oy, S, data, t) {
   if (!data) return;
   const R = data.radius;
@@ -7342,39 +7435,35 @@ export function drawChart(x, ox, oy, S, data, t) {
     labels.push({ txt, x: sx, y: sy, col: col || '#3f2f14' });
   };
 
-  if (data.wreck) {
-    const [sx, sy] = toPx(data.wreck.x, data.wreck.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#5a3a18';
-      x.fillRect(sx - 4, sy, 9, 2); x.fillRect(sx + 1, sy - 4, 2, 5);
-      label('WRECK', sx, sy + 5);
+  /* The landmarks, as little sprites rather than scribbles with their
+     names printed underneath. Eight names on a chart this size is a wall
+     of text with an island somewhere behind it; a picture of a shop is
+     read in one glance and takes no room at all. */
+  const iconsAt = [];
+  const put = (kind, spot) => {
+    if (!spot) return;
+    const [sx, sy] = toPx(spot.x, spot.z);
+    if (!onMap(sx, sy)) return;
+    /* Two landmarks twenty metres apart are nine pixels apart on a chart
+       this size, and two sixteen-pixel sprites nine pixels apart is one
+       unreadable smudge. Anything that lands on top of something already
+       drawn is lifted clear — it is a chart, not a survey. */
+    let ny = sy;
+    for (let tries = 0; tries < 4; tries++) {
+      const clash = iconsAt.some((q) => Math.abs(q.x - sx) < 15 && Math.abs(q.y - ny) < 13);
+      if (!clash) break;
+      ny -= 14;
     }
-  }
-  // Ferdi's, marked as a shop rather than a place name
-  if (data.shop) {
-    const [sx, sy] = toPx(data.shop.x, data.shop.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#5a3a18';
-      x.fillRect(sx - 6, sy - 2, 13, 7);
-      x.fillStyle = '#8a5a24';
-      x.fillRect(sx - 7, sy - 5, 15, 3);
-      x.fillStyle = '#ffd24a';
-      x.fillRect(sx - 2, sy, 5, 5);
-      x.fillStyle = '#3a2410';
-      x.fillRect(sx - 1, sy + 1, 3, 3);
-      label("FERDI'S", sx, sy + 8, '#5a3a18');
-    }
-  }
-  if (data.hut && !data.shop) {
-    const [sx, sy] = toPx(data.hut.x, data.hut.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#6a5a48';
-      x.fillRect(sx - 6, sy - 2, 13, 7); x.fillRect(sx - 7, sy - 5, 15, 3);
-      x.fillStyle = '#3a2f22';
-      for (let i = -6; i < 7; i += 3) x.fillRect(sx + i, sy - 2, 2, 7);
-      label('SHUT', sx, sy + 8, '#6a5a48');
-    }
-  }
+    if (!onMap(sx, ny)) ny = sy;
+    iconsAt.push({ x: sx, y: ny });
+    mapIcon(x, kind, sx, ny, t);
+  };
+  put('wreck', data.wreck);
+  put('shop', data.shop);
+  if (data.hut && !data.shop) put('shut', data.hut);
+  put('fire', data.fire);
+  put('tower', data.tower);
+  for (const v of (data.vendors || [])) put('vendor', v);
   /* The X, once somebody has found it. It is not on the chart before that:
      the whole thing is walking into it. */
   if (data.buried) {
@@ -7390,34 +7479,9 @@ export function drawChart(x, ox, oy, S, data, t) {
     }
   }
 
-  /* Cathy's stall. She is out on her own on the far side, so the map is the
-     only reasonable way to find her — a striped parasol over a counter. */
-  if (data.cathy) {
-    const [sx, sy] = toPx(data.cathy.x, data.cathy.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#5a4020';
-      x.fillRect(sx - 5, sy, 11, 3);              // the counter
-      x.fillStyle = '#a83c34';
-      x.fillRect(sx - 6, sy - 4, 13, 2);          // the parasol
-      x.fillStyle = '#e0d4b0';
-      x.fillRect(sx - 3, sy - 4, 2, 2); x.fillRect(sx + 2, sy - 4, 2, 2);
-      x.fillStyle = '#5a4020';
-      x.fillRect(sx, sy - 3, 1, 3);               // its pole
-      label('CATHY', sx, sy + 6, '#8a2a22');
-    }
-  }
-  // the Lucky Flopper, and her pier
-  if (data.casino) {
-    const [sx, sy] = toPx(data.casino.x, data.casino.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#5a2a44';
-      x.fillRect(sx - 6, sy - 1, 13, 4);
-      x.fillRect(sx - 3, sy - 5, 7, 4);
-      x.fillStyle = Math.floor(t * 3) % 2 ? '#ff5aa8' : '#8a3a68';
-      x.fillRect(sx - 2, sy - 7, 5, 2);
-      label('FLOPPER', sx, sy + 6, '#7a2a54');
-    }
-  }
+  // Cathy is out on her own on the far side; the map is how you find her
+  put('cathy', data.cathy);
+  put('flopper', data.casino);
   if (data.rogue) {
     const [sx, sy] = toPx(data.rogue.x, data.rogue.z);
     if (onMap(sx, sy)) label('"ROGUE"', sx, sy, '#7a2418');
@@ -7447,15 +7511,7 @@ export function drawChart(x, ox, oy, S, data, t) {
       x.fillRect(sx - 1, sy + 1, 3, 2); x.fillRect(sx - 1, sy + 4, 3, 2);
     }
   }
-  if (data.temple) {
-    const [sx, sy] = toPx(data.temple.x, data.temple.z);
-    if (onMap(sx, sy)) {
-      x.fillStyle = '#4a3a1a';
-      x.fillRect(sx - 6, sy - 1, 13, 6); x.fillRect(sx - 4, sy - 4, 9, 3); x.fillRect(sx - 2, sy - 6, 5, 2);
-      x.fillStyle = '#1a1206'; x.fillRect(sx - 1, sy + 1, 3, 4);
-      label('TEMPLE', sx, sy + 8);
-    }
-  }
+  put('temple', data.temple);
   /* Castaways: your own chores, ticked as you go, and named once you are
      zoomed in far enough for the name to fit. */
   for (const j of (data.jobs || [])) {

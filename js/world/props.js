@@ -493,16 +493,43 @@ class Batcher {
     this.variants.set(key, { built, mats: [materialKey, cutoutKey], list: [] });
   }
   add(key, m) { this.variants.get(key).list.push(m.clone()); }
+
+  /**
+   * One InstancedMesh per variant, and the instances themselves culled.
+   *
+   * Every palm on the island used to be submitted every frame no matter
+   * where you stood or which way you faced: 949,000 triangles out of the
+   * 1,052,000 in a frame — ninety per cent of the render, permanently.
+   * That is why a small room feels smoother than the beach.
+   *
+   * Ordinary frustum culling cannot help, because one mesh holding
+   * scenery spread over a three-hundred-metre island has a
+   * three-hundred-metre bounding sphere and a sphere that big is always
+   * on screen. Splitting each variant into tiles of ground does fix the
+   * triangles — I tried it — but with seventy-eight variants it turns 115
+   * draw calls into 825, and seven times the draw calls is a worse
+   * stutter than the triangles ever were.
+   *
+   * So: keep one mesh per variant, and repack its instance buffer with
+   * only the ones actually in view. `cullScatter` below does the work,
+   * and only when the camera has moved enough to change the answer.
+   */
   build(scene) {
     const meshes = [];
     for (const [key, v] of this.variants) {
       if (!v.list.length) continue;
       const mk = (geo, mat) => {
         const im = new THREE.InstancedMesh(geo, mat, v.list.length);
-        v.list.forEach((m, i) => im.setMatrixAt(i, m));
+        for (let i = 0; i < v.list.length; i++) im.setMatrixAt(i, v.list[i]);
         im.instanceMatrix.needsUpdate = true;
-        im.frustumCulled = false;
+        im.frustumCulled = false;             // we do it per instance instead
         im.name = key;
+        geo.computeBoundingSphere();
+        /* The full set, kept aside, plus where each one stands and how
+           big it is. The buffer below gets rewritten from this. */
+        im.userData.all = v.list;
+        im.userData.reach = geo.boundingSphere ? geo.boundingSphere.radius : 4;
+        im.userData.shown = -1;
         scene.add(im);
         meshes.push(im);
       };
@@ -511,6 +538,70 @@ class Batcher {
     }
     return meshes;
   }
+}
+
+/* ===========================================================
+   INSTANCE CULLING
+
+   Rewrite each scatter mesh's instance buffer with the instances that are
+   actually in front of the camera, and tell it to draw that many.
+
+   It runs when the camera has moved three metres or turned a tenth of a
+   radian, not every frame, and every instance is tested with a generous
+   slack so nothing appears at the edge of the screen between repacks.
+   =========================================================== */
+const _frustum = new THREE.Frustum();
+const _pv = new THREE.Matrix4();
+const _sph = new THREE.Sphere();
+const _lastEye = new THREE.Vector3(1e9, 1e9, 1e9);
+const _dir = new THREE.Vector3();
+const _lastDir = new THREE.Vector3(0, 0, 0);
+let _haveDir = false;
+
+export function cullScatter(meshes, camera, force = false) {
+  if (!meshes || !meshes.length) return 0;
+  const eye = camera.position;
+  camera.getWorldDirection(_dir);
+  if (!force) {
+    const moved = _lastEye.distanceToSquared(eye) > 9;        // three metres
+    const turned = !_haveDir || _lastDir.dot(_dir) < 0.995;   // about six degrees
+    if (!moved && !turned) return 0;
+  }
+  _lastEye.copy(eye);
+  _lastDir.copy(_dir);
+  _haveDir = true;
+
+  camera.updateMatrixWorld();
+  _pv.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  _frustum.setFromProjectionMatrix(_pv);
+
+  let drawn = 0;
+  for (const im of meshes) {
+    const all = im.userData.all;
+    if (!all) continue;
+    /* Eight metres of slack on top of the object's own size: the repack
+       is not every frame, so anything about to come round the edge of the
+       screen has to already be in the buffer when it does. */
+    const r = im.userData.reach + 8;
+    const arr = im.instanceMatrix.array;
+    let n = 0;
+    for (let i = 0; i < all.length; i++) {
+      const e = all[i].elements;
+      _sph.center.set(e[12], e[13], e[14]);
+      _sph.radius = r;
+      if (!_frustum.intersectsSphere(_sph)) continue;
+      arr.set(e, n * 16);
+      n++;
+    }
+    /* Always re-upload: turning can swap which instances survive without
+       changing how many, and a buffer that is only refreshed when the
+       COUNT changes shows the wrong trees in the right number. */
+    im.userData.shown = n;
+    im.count = n;
+    im.instanceMatrix.needsUpdate = true;
+    drawn += n;
+  }
+  return drawn;
 }
 
 /* Named landmarks — all verified against the height function. */

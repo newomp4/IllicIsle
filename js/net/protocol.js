@@ -100,7 +100,13 @@ export const COLOURS = [
 
 export const DEFAULT_SETTINGS = {
   agents: 0,          // 0 = scale with the size of the lobby
-  killCooldown: 32,
+  /* Long enough that a kill is a decision rather than a rhythm. At 32 an
+     Agent could clear a corner of the island in a couple of minutes and
+     nobody could build a picture of anything; three quarters of a minute
+     means each one has to be worth it, and it gives the Castaways time to
+     notice somebody is missing before the next one goes. Adjustable from
+     12 to 90 in the round settings. */
+  killCooldown: 45,
   /* Nobody dies in the first two minutes. It gives the Castaways a chance
      to build a picture of where people are before that picture starts
      being worth lying about — and it gives the Agents time to be seen

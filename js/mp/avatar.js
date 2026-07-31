@@ -11,7 +11,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { buildCastaway } from '../entities/player.js';
+import { buildCastaway, buildSkeleton } from '../entities/player.js';
 import { COLOURS } from '../net/protocol.js';
 
 /* How far behind the newest snapshot we render.
@@ -374,7 +374,12 @@ export class Body {
   constructor(scene, mats, record, x, y, z) {
     this.id = record.id;
     this.name = record.name || '';
-    this.mesh = buildCastaway(mats);
+    /* Bones, in their own shirt. A body that is just the living model
+       lying down reads as somebody having a nap, and from any distance at
+       all you cannot tell it from a player sitting still. This cannot be
+       anything else — and it still carries their colour on the rag, which
+       is how you know who you have found. */
+    this.mesh = buildSkeleton(mats, colourHex(record.colour || 'red'));
     this.parts = this.mesh.userData.parts;
     scene.add(this.mesh);
 
@@ -393,8 +398,7 @@ export class Body {
     p.hips.rotation.z = 0; p.hips.rotation.y = 0;
     p.torso.rotation.x = 0; p.torso.rotation.z = 0;
     p.head.rotation.z = 0.4;
-
-    dyeCastaway(this.parts, record.colour || 'red');
+    // the shirt was tinted when the bones were built; nothing else to paint
   }
   dispose() { this.mesh.removeFromParent(); }
 }

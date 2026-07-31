@@ -19,7 +19,7 @@ import {
   buildPropMaterials, scatterIsland, LANDMARKS, findGround, findFlatGround, buildDirtPath,
   buildShipwreck, buildCampfire, buildCastawayCamp, buildSandWriting,
   buildRoguePendulum, buildCoconutPile, buildCoconutMesh, buildSatchel,
-  buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS,
+  buildBirdFlock, buildCritters, buildFlameCluster, GLYPHS, cullScatter,
 } from './world/props.js';
 import {
   buildSyncoin, buildRelic, buildFerdiHut, buildBeacon, buildStorm, buildTikiTorch,
@@ -606,6 +606,10 @@ export class Game {
          alone is not enough, because a small rock gets no collider so you
          can step over it, and a coin was landing on one. */
       this.scattered = scattered.placed || [];
+      /* The instanced scenery, kept so its instance buffers can be
+         repacked to what is actually in front of the camera. This is the
+         single biggest thing in a frame. */
+      this.scatterMeshes = scattered.meshes || [];
     });
 
     await step('RAISING THE PENDULUMS', 0.62, () => this._buildLandmarks());
@@ -2822,6 +2826,9 @@ I have snacks."`);
         rogue: this.rogueSandPos,
         hut: this.hutPos,
         cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
+        // the fire and the mast are the two things you navigate by
+        fire: this.campfirePos || this.spawn || null,
+        tower: this.tower ? { x: this.tower.x, z: this.tower.z } : null,
         buried: (this.foundX && this.buried)
           ? { x: this.buried.x, z: this.buried.z, taken: this.buried.state.taken } : null,
         // relics get a "?" on the chart until you pick them up — without
@@ -3252,9 +3259,25 @@ I have snacks."`);
 
     /* The island keeps running whether or not anybody is in it, so this
        renders the live scene — bodies, avatars, the lot. */
+    this._cullFor(fc);
     this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
     this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
+    this._cullBack();
     return this._feedBuf;
+  }
+
+  /**
+   * The scenery's instance buffers are packed for whatever camera last
+   * asked. A security camera looking somewhere else has to repack them
+   * for its own view or its picture is missing every tree that happens to
+   * be behind YOU — and then put them back, or your own view is.
+   */
+  _cullFor(cam) {
+    if (this.scatterMeshes) cullScatter(this.scatterMeshes, cam, true);
+  }
+
+  _cullBack() {
+    if (this.scatterMeshes) cullScatter(this.scatterMeshes, this.camera, true);
   }
 
   /**
@@ -3270,8 +3293,10 @@ I have snacks."`);
     if (!cam || !cam.placed) return null;
     const w = THUMB_W, h = THUMB_H;
     const fc = this._aimFeedCam(cam, w / h);
+    this._cullFor(fc);
     this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
     const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
+    this._cullBack();
     this._aimFeedCam(cam);                    // put it back for the big one
     if (!got) return null;
     this._thumbRaw = got.buf;
@@ -4186,6 +4211,13 @@ I have snacks."`);
     const int = this.pipeline.internal;
     if (int) this.ui.hud.setSize(int.w, int.h);
     this.ui.hud.update(dt);
+    /* Repack the scenery to the view before drawing it. It costs nothing
+       on the frames where the camera has not moved, and on the ones where
+       it has it is the difference between a million triangles and two
+       hundred thousand. */
+    if (this.state === 'island' && this.scatterMeshes) {
+      cullScatter(this.scatterMeshes, this.camera);
+    }
     this.ui.hud.render(this.time);
     this.screens.update(dt);
     this.screens.draw(this.ui.hud.x, this.ui.hud.c.width, this.ui.hud.c.height);
