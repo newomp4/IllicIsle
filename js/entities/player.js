@@ -657,27 +657,52 @@ export class Player {
     }
 
     /* ---- walking ----
-       `skew` bends the sine so the forward half of the stride happens
-       faster than the back half, which is what a leg actually does. */
+       FIRST, THE DIRECTION EVERYTHING IS MEASURED IN.
+
+       The model faces +Z: the beard is built at +0.10 and the toes at
+       +0.05. A leg hangs down from a hip joint at the top, so a POSITIVE
+       rotation.x swings the foot toward -Z — which is BEHIND you. Every
+       sign below depends on that and the old cycle had three of them the
+       wrong way round, which is why he read as running in reverse.
+
+       So: L > 0 means that leg is behind you. L < 0 means it is in front.
+
+       `skew` bends the sine so the stride is not a metronome. Stance —
+       the foot planted, the body travelling over it, the leg going from
+       in front to behind — takes LONGER than the swing back through. The
+       old skew had it the other way about, which on its own makes a walk
+       look like film run backwards. */
     const amp = 0.52 + running * 0.46;
-    const skew = (a) => Math.sin(a + Math.sin(a) * 0.28);
+    const skew = (a) => Math.sin(a - Math.sin(a) * 0.28);
     const L = skew(ph);
     const R = skew(ph + Math.PI);
 
     p.legs.l.rotation.x = L * amp;
     p.legs.r.rotation.x = R * amp;
 
-    /* The knee bends on the way THROUGH, not at the ends: it is straight
-       at full stride either way and folded in the middle as the foot
-       passes under the body. cos of twice the phase, clamped to positive,
-       is exactly that shape. */
+    /* THE KNEE. This is the one that made him look like he was going the
+       wrong way, and it is worth being exact about.
+
+       A knee is near enough straight when the leg is stretched out in
+       FRONT of you about to take the weight, and it is folded hardest in
+       the middle of the SWING, when the foot has to get from behind you
+       to in front of you without dragging through the ground.
+
+       Fully behind is ph = PI/2. Fully in front is ph = 3PI/2. So the
+       swing is the half from PI/2 round to 3PI/2, its middle is ph = PI,
+       and max(0, -cos ph) is exactly that half with its peak in the
+       middle of it — zero for the whole of stance, one at mid-swing.
+
+       The old line folded the knee on max(0, -L), which is the half the
+       leg spends IN FRONT. He reached forward with a tucked knee and
+       straightened it as it trailed behind him, which is what a leg does
+       in a film played backwards. */
     if (p.knees) {
-      const bendL = Math.max(0, -Math.cos(ph * 2 + 0.6));
-      const bendR = Math.max(0, -Math.cos(ph * 2 + 0.6 + Math.PI * 2));
       const kAmp = 0.55 + running * 0.75;
-      // and the leg that is behind you bends more than the one in front
-      p.knees.l.rotation.x = (bendL * 0.55 + Math.max(0, -L) * 0.75) * kAmp;
-      p.knees.r.rotation.x = (bendR * 0.55 + Math.max(0, -R) * 0.75) * kAmp;
+      const swing = (a) => Math.max(0, -Math.cos(a));
+      // never quite locked, even at full stretch
+      p.knees.l.rotation.x = (0.10 + swing(ph) * 1.40) * kAmp;
+      p.knees.r.rotation.x = (0.10 + swing(ph + Math.PI) * 1.40) * kAmp;
     }
 
     /* Arms swing against the legs, and lag them by about a tenth of a
@@ -691,10 +716,14 @@ export class Player {
     p.arms.l.rotation.z = 0.14 + running * 0.06;
     p.arms.r.rotation.z = -0.14 - running * 0.06;
     if (p.elbows) {
-      // the elbow closes as the arm comes forward and opens behind you
+      /* The elbow closes as the arm comes FORWARD and opens as it goes
+         behind — watch anybody run. Forward is a negative rotation, same
+         as the legs, so this is max(0, -a) and not max(0, a), which is
+         what it said and which had him running with his elbows locked in
+         front and folded behind. */
       const eAmp = 0.30 + running * 0.55;
-      p.elbows.l.rotation.x = (0.18 + Math.max(0, aL) * 0.9) * eAmp;
-      p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
+      p.elbows.l.rotation.x = (0.18 + Math.max(0, -aL) * 0.9) * eAmp;
+      p.elbows.r.rotation.x = (0.18 + Math.max(0, -aR) * 0.9) * eAmp;
     }
 
     /* ---- what the body does about all that ----

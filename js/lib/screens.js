@@ -65,18 +65,28 @@ function thumbSurface(w, h) {
   return _thumbSurf;
 }
 
-/* Green phosphor. A monitor of this vintage had no colour and the
-   brightness is what matters; the gamma is baked into the table so the
-   inner loop is two array reads and no maths. */
-let _phos = null;
-function phosphorLut() {
-  if (_phos) return _phos;
-  _phos = new Uint8Array(256 * 3);
+/* COLOUR. The feed used to be flattened to brightness and pushed through
+   a green phosphor, which is the look of a set thirty years older than
+   the rest of this island and threw away the one thing that makes a
+   camera useful — you could not tell a red shirt from a blue one, which
+   is the whole of identifying somebody at forty metres.
+
+   It is colour now, through a per-channel curve: lifted blacks, a little
+   extra in the greens because everything out there is jungle, and the
+   saturation pulled up so the small colour a low-light chip gets is
+   actually visible. One table per channel, gamma baked in, so the inner
+   loop is three array reads and no maths. */
+let _rgbLut = null;
+function colourLut() {
+  if (_rgbLut) return _rgbLut;
+  _rgbLut = new Uint8Array(256 * 3);
   for (let k = 0; k < 256; k++) {
-    const q = Math.pow(k / 255, 0.78);
-    _phos[k * 3] = q * 60; _phos[k * 3 + 1] = q * 245; _phos[k * 3 + 2] = q * 135;
+    const q = Math.pow(k / 255, 0.82);
+    _rgbLut[k * 3] = Math.min(255, 12 + q * 246);          // red
+    _rgbLut[k * 3 + 1] = Math.min(255, 14 + q * 252);      // green
+    _rgbLut[k * 3 + 2] = Math.min(255, 18 + q * 232);      // blue, coolest
   }
-  return _phos;
+  return _rgbLut;
 }
 
 /* Ironbow, which is what a thermal set of this age put on a screen: cold
@@ -4216,13 +4226,17 @@ export const SCREENS = {
       s.rec = (s.rec + dt) % 2;
       if (s.glitch > 0) s.glitch = Math.max(0, s.glitch - dt * 3);
       if (s.flip > 0) s.flip = Math.max(0, s.flip - dt * 5.5);
+      if (s.servo > 0) s.servo = Math.max(0, s.servo - dt * 4);
 
       /* The big picture is a whole extra pass over the island plus a read
          back off the GPU, and doing that sixty times a second to watch a
          path nobody is on is a waste of a frame. Twenty is what a relay of
          this kind managed anyway, and it looks more like CCTV for it. */
+      /* Twenty a second normally; while the mount is moving it runs flat
+         out, because a panning shot that updates five times a second is
+         unusable for aiming. */
       s.feedT += dt;
-      if (s.feedT >= 0.05) { s.feedT = 0; s.wantFeed = true; }
+      if (s.feedT >= (s.servo > 0 ? 0.001 : 0.05)) { s.feedT = 0; s.wantFeed = true; }
 
       /* The stills. One channel every third of a second, skipping the one
          that is already live in the big window — a multiplexer only ever
@@ -4350,16 +4364,47 @@ export const SCREENS = {
 
           const surf = feedSurface(w, h);
           const px = surf.img.data;
-          const lut = therm ? ironLut() : phosphorLut();
-          for (let py = 0; py < h; py++) {
-            const src = (h - 1 - py) * w * 4;          // read back is bottom-up
-            let dst = py * w * 4;
-            for (let i = 0; i < w; i++) {
-              const o = src + i * 4;
-              const l = (buf[o] * 0.3 + buf[o + 1] * 0.6 + buf[o + 2] * 0.1) * gain;
-              const q = (l > 255 ? 255 : l | 0) * 3;
-              px[dst++] = lut[q]; px[dst++] = lut[q + 1]; px[dst++] = lut[q + 2];
-              px[dst++] = 255;
+          if (therm) {
+            /* Thermal reads a temperature, and a temperature has no
+               colour of its own — the scene is flattened to brightness
+               and mapped into the cold end of the ironbow. */
+            const lut = ironLut();
+            for (let py = 0; py < h; py++) {
+              const src = (h - 1 - py) * w * 4;        // read back is bottom-up
+              let dst = py * w * 4;
+              for (let i = 0; i < w; i++) {
+                const o = src + i * 4;
+                const l = (buf[o] * 0.3 + buf[o + 1] * 0.6 + buf[o + 2] * 0.1) * gain;
+                const q = (l > 255 ? 255 : l | 0) * 3;
+                px[dst++] = lut[q]; px[dst++] = lut[q + 1]; px[dst++] = lut[q + 2];
+                px[dst++] = 255;
+              }
+            }
+          } else {
+            /* Colour, per channel, with the saturation pushed away from
+               the frame's own grey — a low-light chip sees very little
+               colour and this is the gain that makes what it does see
+               worth having. */
+            const lut = colourLut();
+            const SAT = 1.35;
+            for (let py = 0; py < h; py++) {
+              const src = (h - 1 - py) * w * 4;
+              let dst = py * w * 4;
+              for (let i = 0; i < w; i++) {
+                const o = src + i * 4;
+                const r0 = buf[o], g0 = buf[o + 1], b0 = buf[o + 2];
+                const lum = r0 * 0.3 + g0 * 0.6 + b0 * 0.1;
+                let r = (lum + (r0 - lum) * SAT) * gain;
+                let g2 = (lum + (g0 - lum) * SAT) * gain;
+                let b2 = (lum + (b0 - lum) * SAT) * gain;
+                r = r < 0 ? 0 : r > 255 ? 255 : r;
+                g2 = g2 < 0 ? 0 : g2 > 255 ? 255 : g2;
+                b2 = b2 < 0 ? 0 : b2 > 255 ? 255 : b2;
+                px[dst++] = lut[(r | 0) * 3];
+                px[dst++] = lut[(g2 | 0) * 3 + 1];
+                px[dst++] = lut[(b2 | 0) * 3 + 2];
+                px[dst++] = 255;
+              }
             }
           }
           surf.cx.putImageData(surf.img, 0, 0);
@@ -4467,23 +4512,46 @@ export const SCREENS = {
           x.fillStyle = 'rgba(200,255,220,.5)';
           x.fillRect(FX, FY + Math.round(FH * k) - 1, FW, 1);
         }
-        // the burned-in caption every camera has
-        drawText(x, sel.name, { x: FX + 4, y: FY + 4, scale: 1, color: therm ? '#ffe0a8' : '#a8ffc8' });
+        // the burned-in caption every camera has, white on a colour picture
+        const cap = therm ? '#ffe0a8' : '#e6f2e8';
+        const cap2 = therm ? '#c08050' : '#a8c4b0';
+        drawText(x, sel.name, { x: FX + 4, y: FY + 4, scale: 1, color: cap });
         const clock = `${String(Math.floor(g.clock24 / 60) % 24).padStart(2, '0')}:`
           + `${String(Math.floor(g.clock24) % 60).padStart(2, '0')}`;
         drawText(x, clock, {
-          x: FX + FW - 4, y: FY + 4, scale: 1, align: 'right',
-          color: therm ? '#ffe0a8' : '#a8ffc8',
+          x: FX + FW - 4, y: FY + 4, scale: 1, align: 'right', color: cap,
         });
         drawText(x, `${Math.round(sel.x)} ${Math.round(sel.z)}`, {
-          x: FX + 4, y: FY + FH - 10, scale: 1, color: therm ? '#c08050' : '#5ae08a',
+          x: FX + 4, y: FY + FH - 10, scale: 1, color: cap2,
         });
-        drawText(x, therm ? 'IR 8-14UM' : 'CH ' + (s.sel + 1), {
-          x: FX + FW - 4, y: FY + FH - 10, scale: 1, align: 'right',
-          color: therm ? '#c08050' : '#3e8a5c',
+        /* Where the head is pointing and how far the lens is in. Both are
+           burned into the corner where a real set puts them. */
+        const zm = (sel.zoom || 1);
+        drawText(x, therm ? `IR  X${zm.toFixed(1)}` : `X${zm.toFixed(1)}`, {
+          x: FX + FW - 4, y: FY + FH - 10, scale: 1, align: 'right', color: cap2,
         });
+
+        /* The pan and tilt gauges, drawn as two short travels with a
+           marker on each — so you can see how much of the mount is left
+           before you run out of it. */
+        {
+          const GW = 44, GX = FX + FW / 2 - GW / 2, GY = FY + FH - 8;
+          x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(GX - 2, GY - 1, GW + 4, 5);
+          x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(GX, GY + 1, GW, 1);
+          x.fillStyle = 'rgba(255,255,255,.30)'; x.fillRect(GX + GW / 2, GY, 1, 3);
+          const pk = GX + GW / 2 + ((sel.pan || 0) / 1.25) * (GW / 2);
+          x.fillStyle = cap; x.fillRect(Math.round(pk) - 1, GY - 1, 3, 5);
+          // tilt runs up the right-hand edge of the picture
+          const TH = 34, TX = FX + FW - 7, TY = FY + FH / 2 - TH / 2;
+          x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(TX - 1, TY - 2, 5, TH + 4);
+          x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(TX + 1, TY, 1, TH);
+          x.fillStyle = 'rgba(255,255,255,.30)'; x.fillRect(TX, TY + TH / 2, 3, 1);
+          const tk = TY + TH / 2 - ((sel.tilt || 0) / 0.55) * (TH / 2);
+          x.fillStyle = cap; x.fillRect(TX - 1, Math.round(tk) - 1, 5, 3);
+        }
+
         // crosshair, because every one of these had one
-        x.fillStyle = therm ? 'rgba(255,220,170,.26)' : 'rgba(168,255,200,.30)';
+        x.fillStyle = therm ? 'rgba(255,220,170,.26)' : 'rgba(230,242,232,.30)';
         x.fillRect(FX + FW / 2 - 5, FY + FH / 2, 11, 1);
         x.fillRect(FX + FW / 2, FY + FH / 2 - 5, 1, 11);
       }
@@ -4520,11 +4588,19 @@ export const SCREENS = {
           } else {
             const surf = thumbSurface(tw, th);
             const px = surf.img.data;
-            const lut = therm ? ironLut() : phosphorLut();
+            const lut = therm ? ironLut() : null;
             for (let k = 0; k < tw * th; k++) {
-              const q = still[k] * 3;
-              px[k * 4] = lut[q]; px[k * 4 + 1] = lut[q + 1];
-              px[k * 4 + 2] = lut[q + 2]; px[k * 4 + 3] = 255;
+              if (lut) {
+                // one temperature per pixel, same ramp as the big picture
+                const l = still[k * 3] * 0.3 + still[k * 3 + 1] * 0.6 + still[k * 3 + 2] * 0.1;
+                const q = (l > 255 ? 255 : l | 0) * 3;
+                px[k * 4] = lut[q]; px[k * 4 + 1] = lut[q + 1]; px[k * 4 + 2] = lut[q + 2];
+              } else {
+                px[k * 4] = still[k * 3];
+                px[k * 4 + 1] = still[k * 3 + 1];
+                px[k * 4 + 2] = still[k * 3 + 2];
+              }
+              px[k * 4 + 3] = 255;
             }
             surf.cx.putImageData(surf.img, 0, 0);
             x.imageSmoothingEnabled = false;
@@ -4620,18 +4696,40 @@ export const SCREENS = {
         });
       }
 
-      /* Kept short on purpose: the strip starts at x=256 and a longer line
-         centred on 160 runs under it. */
-      footer(x, W, H, 'W S CHANNEL   T THERMAL   ESC');
+      footer(x, W, H, 'ARROWS AIM  ZX ZOOM  WS CH  R CENTRE  T IR  ESC');
       return rows;
     },
     key(code, s, g, st) {
       const n = (g.cams || []).length || 1;
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
-      if (code === 'ArrowUp' || code === 'KeyW') {
+
+      /* THE HEAD. Arrows drive the mount, because that is what arrows do
+         on a set like this; the channel moved to W and S to make room.
+         One press is one step, and the browser's own key repeat gives you
+         a held-down sweep for free. */
+      const STEP = 0.085, TSTEP = 0.055;
+      const aim = (dp, dt2, dz) => {
+        if (g.aimCamera?.(s.sel, dp, dt2, dz)) {
+          s.wantFeed = true;                 // do not wait for the next tick
+          s.servo = 1;
+          g.audio?.sfx('oche');       // a short servo knock
+        } else g.audio?.sfx('deny');
+        return true;
+      };
+      if (code === 'ArrowLeft') return aim(-STEP, 0, 0);
+      if (code === 'ArrowRight') return aim(STEP, 0, 0);
+      if (code === 'ArrowUp') return aim(0, TSTEP, 0);
+      if (code === 'ArrowDown') return aim(0, -TSTEP, 0);
+      if (code === 'KeyX' || code === 'Equal' || code === 'NumpadAdd') return aim(0, 0, 0.25);
+      if (code === 'KeyZ' || code === 'Minus' || code === 'NumpadSubtract') return aim(0, 0, -0.25);
+      if (code === 'KeyR') {
+        g.centreCamera?.(s.sel); s.wantFeed = true; g.audio?.sfx('terminal'); return true;
+      }
+
+      if (code === 'KeyW') {
         s.sel = (s.sel + n - 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
       }
-      if (code === 'ArrowDown' || code === 'KeyS') {
+      if (code === 'KeyS') {
         s.sel = (s.sel + 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
       }
       if (code === 'KeyT') {

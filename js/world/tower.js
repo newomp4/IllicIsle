@@ -24,11 +24,16 @@ const G = (n) => new THREE.Color(n);
 /* Where the mast stands.
 
    It was at (-96, -78), which is byte-for-byte BUNKER_SPOTS[0] — I picked
-   the coordinates by hand and landed exactly on the west shoulder hatch, so
-   the mast grew out of the listening post. This is the far side of the
-   island from the wreck camp at (-46, 154): a walk, visible from most of
-   the map, and not on top of anything. */
-export const TOWER_SPOT = { x: 70, z: -100 };
+   the coordinates by hand and landed exactly on the west shoulder hatch,
+   so the mast grew out of the listening post. Then it went to (70, -100),
+   which is off to one side.
+
+   This is the point diametrically opposite the campfire at (-39, 134):
+   bearing 2.85 against the fire's -0.28, which is a straight line through
+   the middle of the island and out the other side. 241 metres from the
+   fire, 87 from the nearest hatch, on the highest ground on that side at
+   49 metres, and 16 clear of anything solid. */
+export const TOWER_SPOT = { x: 28, z: -96 };
 export const TOWER_H = 38;            // to the lamp
 export const CAB_Y = 15.5;            // the hut, up the ladder
 

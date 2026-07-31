@@ -690,7 +690,35 @@ export class Game {
       this.player.onLand = (v) => { if (v > 11) this.audio.sfx('land'); };
       this.player.onBounds = () => this._boundsWarn();
       this.coconutProto = buildCoconutMesh(this.propMats);
+      this.settleLoosePickups();
     });
+  }
+
+  /**
+   * Last look over everything lying on the ground, once the world is
+   * finished.
+   *
+   * The coins choose their spots near the end of the landmark pass, but
+   * not everything that takes up room has arrived even then — the mast's
+   * pad, the shrine, the X's own collider all land afterwards. One coin
+   * really was ending up a fifth of a metre from a collider that had not
+   * existed when it chose. This is the sweep that catches whatever the
+   * order of the build misses, and it costs nothing: it runs once.
+   */
+  settleLoosePickups() {
+    let moved = 0;
+    for (const c of (this.syncoins || [])) {
+      if (this.clearOfSolids(c.x, c.z, 1.3)) continue;
+      const f = this.freeSpot(c.x, c.z, 1.3, 8);
+      if (f.x === c.x && f.z === c.z) continue;
+      const y = heightAt(f.x, f.z);
+      c.x = f.x; c.z = f.z;
+      c.mesh.position.set(f.x, y, f.z);
+      c.mesh.userData.baseY = y;          // the bob hangs off this
+      moved++;
+    }
+    if (moved) this._loosePickupsMoved = moved;
+    return moved;
   }
 
   /* ===========================================================
@@ -1018,7 +1046,14 @@ export class Game {
     /* ---- the three overworld relics ---- */
     this.relicNodes = [];
     const placeRelic = (kind, hintX, hintZ, opts) => {
-      const g = findGround(hintX, hintZ, { rng, radius: 16, ...opts });
+      let g = findGround(hintX, hintZ, { rng, radius: 16, ...opts });
+      /* findGround only asks about the shape of the ground; it has no idea
+         what is standing on it. A relic is the size of a car and half of
+         one inside a boulder is not a set piece, it is a fault. */
+      {
+        const f = this.freeSpot(g.x, g.z, kind === 'aerlingus' ? 3.4 : 2.2);
+        if (f.x !== g.x || f.z !== g.z) g = { x: f.x, y: heightAt(f.x, f.z), z: f.z };
+      }
       const m = buildRelic(kind, rng, this.propMats);
       /* Relics sit ON the ground, they are not sunk into it.
          Sinking to the lowest point in a metre-and-a-half ring is the rule
@@ -1044,7 +1079,11 @@ export class Game {
 
     // the First Syncoin sits on a little cairn deep in the west
     {
-      const g = findGround(-86, 96, { rng, radius: 16, minH: 4, maxH: 24, maxSlope: 0.22 });
+      let g = findGround(-86, 96, { rng, radius: 16, minH: 4, maxH: 24, maxSlope: 0.22 });
+      {
+        const f = this.freeSpot(g.x, g.z, 2.6);
+        if (f.x !== g.x || f.z !== g.z) g = { x: f.x, y: heightAt(f.x, f.z), z: f.z };
+      }
       const big = buildSyncoin(this.propMats, true);
       big.position.set(g.x, g.y + 0.6, g.z);
       big.userData.baseY = g.y + 0.6;
@@ -1294,20 +1333,7 @@ export class Game {
        the bridge with nothing able to detect it. Money goes down last, when
        everything it has to keep away from is already on the island. */
     this.syncoins = [];
-    const clearOfProps = (x, z, need = 1.4) => {
-      for (const c of this.colliders) {
-        const rr = c.r + need;
-        if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
-      }
-      /* And every rock, log and shell the scatter dropped, collider or not.
-         This is the check that was missing: the coin near the Flopper sat on
-         a rock too small to have been given one. */
-      for (const q of (this.scattered || [])) {
-        const rr = q.r + need;
-        if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
-      }
-      return true;
-    };
+    const clearOfProps = (x, z, need = 1.4) => this.clearOfSolids(x, z, need);
     /* A coin has to be somewhere a BODY CAN STAND, which is the only test
        that matters and is not the same as "the ground here is flat".
 
@@ -2986,6 +3012,57 @@ I have snacks."`);
   }
 
   /* =========================================================
+     NOTHING YOU CAN PICK UP GOES INSIDE ANYTHING SOLID
+
+     Every coin, relic and dropped purse ends up on the ground somewhere,
+     and until now each one worked that out for itself. The thirty-eight
+     scattered coins had a careful test; the coin on the cairn had none;
+     the two big relics had none; and a purse dropped off a body had none
+     at all — it landed exactly where the body fell, which on this island
+     means it can land inside a rock. That is the one that leaves a coin
+     you cannot take standing in the middle of a path for the rest of the
+     round, and it is almost certainly the one people keep finding.
+
+     One test, one nudge, used by all of them.
+     ========================================================= */
+
+  /** Is (x, z) clear of everything solid the world knows about? */
+  clearOfSolids(x, z, need = 1.4) {
+    for (const c of (this.colliders || [])) {
+      const rr = c.r + need;
+      if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
+    }
+    /* And every rock, log and shell the scatter dropped, collider or not
+       — the small ones are given no collider by design, and they are
+       exactly the ones a coin disappears into. */
+    for (const q of (this.scattered || [])) {
+      const rr = q.r + need;
+      if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The nearest spot to (x, z) that is clear, searched outward in rings.
+   *
+   * Returns the original point if it was already fine, and the best it
+   * could manage if the whole neighbourhood is solid — a coin two metres
+   * off where somebody died is better than a coin inside a boulder.
+   */
+  freeSpot(x, z, need = 1.4, reach = 6) {
+    if (this.clearOfSolids(x, z, need)) return { x, z };
+    for (let r = 0.8; r <= reach; r += 0.8) {
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2 + r;      // twist each ring a little
+        const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+        if (heightAt(px, pz) < 0.35) continue;     // not into the sea
+        if (this.clearOfSolids(px, pz, need)) return { x: px, z: pz };
+      }
+    }
+    return { x, z };
+  }
+
+  /* =========================================================
      THE CAMERAS
 
      Four are already fitted when the mast goes up, watching the ways on
@@ -3014,9 +3091,18 @@ I have snacks."`);
       this.islandScene.add(node);
       this.tickers.push(node);
       /* `short` is what the channel strip prints. The strip is 58 pixels
-         wide now so it gets five characters; the full name is the caption
-         burned into the picture itself, where there is room for it. */
-      const c = { i, node, placed: false, fitted, x: 0, y: 0, z: 0, yaw: 0, name, short };
+         wide now so it gets four characters; the full name is the caption
+         burned into the picture itself, where there is room for it.
+
+         `pan`, `tilt` and `zoom` are the head: every one of these is on a
+         motorised mount and the terminal drives it. They are stored on
+         the camera and not on the screen so that where you left it
+         pointing is where it still points when you come back up the
+         ladder, and so the thumbnail agrees with the big picture. */
+      const c = {
+        i, node, placed: false, fitted, x: 0, y: 0, z: 0, yaw: 0, name, short,
+        pan: 0, tilt: 0, zoom: 1,
+      };
       this.cams.push(c);
       return c;
     };
@@ -3079,19 +3165,59 @@ I have snacks."`);
    * thumbnails nobody is reading. The result is read back as pixels so the
    * interface, which is a 2D canvas, can draw it with everything else.
    */
+  /* How far the mount will go, and how far the lens will. */
+  static CAM_PAN = 1.25;                  // 72 degrees either side
+  static CAM_TILT = 0.55;                 // 31 degrees up or down
+  static CAM_ZOOM_MAX = 4.0;
+  static CAM_FOV = 62;
+
   /** Put the borrowed camera where camera `i` is and point it that way. */
-  _aimFeedCam(cam) {
+  _aimFeedCam(cam, aspect = FEED_W / FEED_H) {
     if (!this._feedCam) {
-      this._feedCam = new THREE.PerspectiveCamera(62, FEED_W / FEED_H, 0.4, 220);
+      this._feedCam = new THREE.PerspectiveCamera(Game.CAM_FOV, aspect, 0.4, 260);
     }
     const fc = this._feedCam;
     fc.position.set(cam.x, cam.y, cam.z);
     fc.rotation.set(0, 0, 0);
-    fc.rotateY(cam.yaw);
-    fc.rotateX(-0.10);                    // they all look slightly down
+    fc.rotateY(cam.yaw + (cam.pan || 0));
+    // they all look slightly down, and then wherever you have tilted them
+    fc.rotateX(-0.10 + (cam.tilt || 0));
+    /* OPTICAL zoom, not a crop: a narrower angle of view, so the picture
+       gets tighter without getting softer. Two times is a face at thirty
+       metres instead of a shape. */
+    fc.fov = Game.CAM_FOV / Math.max(1, cam.zoom || 1);
+    fc.aspect = aspect;
     fc.updateMatrixWorld(true);
     fc.updateProjectionMatrix();
     return fc;
+  }
+
+  /** Drive the head of camera `i`. Returns true if anything moved. */
+  aimCamera(i, dPan, dTilt, dZoom) {
+    const cam = this.cams?.[i];
+    if (!cam || !cam.placed) return false;
+    const P = Game.CAM_PAN, T = Game.CAM_TILT;
+    const before = `${cam.pan}|${cam.tilt}|${cam.zoom}`;
+    /* The mount turns slower the further it is zoomed in, which is what a
+       real head does and is the difference between aiming and flailing:
+       at four times you are nudging it a degree at a time. */
+    const geared = 1 / Math.max(1, cam.zoom || 1);
+    cam.pan = THREE.MathUtils.clamp(cam.pan + dPan * geared, -P, P);
+    cam.tilt = THREE.MathUtils.clamp(cam.tilt + dTilt * geared, -T, T);
+    cam.zoom = THREE.MathUtils.clamp((cam.zoom || 1) + dZoom, 1, Game.CAM_ZOOM_MAX);
+    // the thing on the tree turns too, so what you see is where it points
+    cam.node.rotation.y = cam.yaw + cam.pan;
+    cam.node.rotation.x = 0.16 - cam.tilt;
+    return `${cam.pan}|${cam.tilt}|${cam.zoom}` !== before;
+  }
+
+  /** Back to how it was fitted. */
+  centreCamera(i) {
+    const cam = this.cams?.[i];
+    if (!cam) return;
+    cam.pan = 0; cam.tilt = 0; cam.zoom = 1;
+    cam.node.rotation.y = cam.yaw;
+    cam.node.rotation.x = 0.16;
   }
 
   feedPixels(i) {
@@ -3117,22 +3243,24 @@ I have snacks."`);
   thumbPixels(i) {
     const cam = this.cams?.[i];
     if (!cam || !cam.placed) return null;
-    const fc = this._aimFeedCam(cam);
     const w = THUMB_W, h = THUMB_H;
-    fc.aspect = w / h;
-    fc.updateProjectionMatrix();
+    const fc = this._aimFeedCam(cam, w / h);
     this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
     const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
-    fc.aspect = FEED_W / FEED_H;              // put it back for the big one
-    fc.updateProjectionMatrix();
+    this._aimFeedCam(cam);                    // put it back for the big one
     if (!got) return null;
     this._thumbRaw = got.buf;
-    const out = new Uint8Array(w * h);
+    /* Colour, three bytes a pixel, top row first — the strip is a set of
+       little monitors off the same cameras and a green stamp beside a
+       colour picture reads as a fault rather than a style. */
+    const out = new Uint8Array(w * h * 3);
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
         const o = ((h - 1 - py) * w + px) * 4;         // read back is bottom-up
-        out[py * w + px] = Math.min(255,
-          (got.buf[o] * 0.3 + got.buf[o + 1] * 0.6 + got.buf[o + 2] * 0.1) * 2.1);
+        const d = (py * w + px) * 3;
+        out[d] = Math.min(255, got.buf[o] * 2.0);
+        out[d + 1] = Math.min(255, got.buf[o + 1] * 2.0);
+        out[d + 2] = Math.min(255, got.buf[o + 2] * 2.0);
       }
     }
     return out;
@@ -3159,7 +3287,14 @@ I have snacks."`);
     const M = this.mp;                    // no session at all in single player
     const fc = this._aimFeedCam(cam);
     const v = this._feedV || (this._feedV = new THREE.Vector3());
-    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
+    /* Where the head is ACTUALLY pointing, and how wide it is actually
+       seeing — pan turns it and zoom narrows it, and a contact list that
+       ignored both would list people who are off the side of the picture
+       and miss the ones you just panned onto. */
+    const aimYaw = cam.yaw + (cam.pan || 0);
+    const fwdX = Math.sin(aimYaw), fwdZ = Math.cos(aimYaw);
+    const halfH = Math.atan(Math.tan((fc.fov * Math.PI / 180) / 2) * fc.aspect);
+    const minDot = Math.cos(Math.min(1.45, halfH * 1.04));
 
     /* Can the camera see that spot, or is there ground in the way? Eight
        samples along the line, each asking whether the terrain has risen
@@ -3181,7 +3316,7 @@ I have snacks."`);
       if (d > 46) return;
       // 62 degrees across, so a little over half a radian either side
       const dot = (dx * fwdX + dz * fwdZ) / (d || 1);
-      if (dot < 0.55) return;
+      if (dot < minDot) return;
       const gy = heightAt(x, z);
       if (!clear(x, z, gy + 0.9)) return;
       // where the chest lands in the picture
@@ -3195,7 +3330,7 @@ I have snacks."`);
            body is 1.8 of them — about a seventh of the picture at ten
            metres. The first version of this had a constant seventeen times
            too big and painted one man across half the screen. */
-        size: THREE.MathUtils.clamp(1.5 / Math.max(2.5, d), 0.012, 0.62),
+        size: THREE.MathUtils.clamp((1.5 * (cam.zoom || 1)) / Math.max(2.5, d), 0.012, 0.9),
       });
     };
 
@@ -3227,8 +3362,9 @@ I have snacks."`);
     const dx = f.x - cam.x, dz = f.z - cam.z;
     const d = Math.hypot(dx, dz);
     if (d > 50) return null;
-    const fwdX = Math.sin(cam.yaw), fwdZ = Math.cos(cam.yaw);
-    if ((dx * fwdX + dz * fwdZ) / (d || 1) < 0.5) return null;
+    const aimYaw = cam.yaw + (cam.pan || 0);
+    const fwdX = Math.sin(aimYaw), fwdZ = Math.cos(aimYaw);
+    if ((dx * fwdX + dz * fwdZ) / (d || 1) < 0.45) return null;
     const fc = this._aimFeedCam(cam);
     const v = this._feedV || (this._feedV = new THREE.Vector3());
     v.set(f.x, heightAt(f.x, f.z) + 0.5, f.z).project(fc);
@@ -3236,7 +3372,7 @@ I have snacks."`);
       sx: (v.x + 1) / 2,
       sy: (1 - v.y) / 2,
       // a fire is about a metre across and glows further than that
-      size: THREE.MathUtils.clamp(2.6 / Math.max(2.5, d), 0.02, 0.8),
+      size: THREE.MathUtils.clamp((2.6 * (cam.zoom || 1)) / Math.max(2.5, d), 0.02, 1.1),
     };
   }
 

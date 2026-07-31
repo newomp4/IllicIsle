@@ -574,13 +574,18 @@ export class MPGame extends Game {
     if (!coins || !this.islandScene) return;
     const M = this.mp;
     M.drops = M.drops || [];
+    /* Where the body fell, unless the body fell against a rock — this had
+       no clearance test of any kind, so a purse could land inside the one
+       boulder on a busy path and sit there, visible and untakeable, for
+       the rest of the round. */
+    const f = this.freeSpot(x, z, 1.3, 5);
+    const gy = Math.max(y, heightAt(f.x, f.z));
     const g = buildSyncoin(this.propMats, true);
-    const gy = Math.max(y, heightAt(x, z));
-    g.position.set(x, gy + 0.4, z);
+    g.position.set(f.x, gy + 0.4, f.z);
     this.islandScene.add(g);
     this.tickers.push(g);
-    M.drops.push({ mesh: g, x, z, coins, taken: false });
-    this.taskFx?.burst(x, gy, z, 0xffd24a, 'done', 3.0);
+    M.drops.push({ mesh: g, x: f.x, z: f.z, coins, taken: false });
+    this.taskFx?.burst(f.x, gy, f.z, 0xffd24a, 'done', 3.0);
   }
 
   /** The cork vest earned its keep. */
@@ -2531,8 +2536,14 @@ export class MPGame extends Game {
       });
     };
 
-    // the mast: always audible, and the widest range of anything
-    if (this.tower) push('mast', 'RELAY MAST', this.tower.x, this.tower.z, 0.08, 320);
+    /* THE X. This used to be the mast, which is a fixed point you can see
+       from most of the island and learn in one round — a carrier that
+       tells you something you already knew is not worth a band. The chest
+       moves every round, it is the one thing on the island worth finding
+       that nothing else will point you at, and it goes quiet the moment
+       somebody digs it up. */
+    const bu = this.buried;
+    if (bu && !bu.state.taken) push('x', 'BURIED METAL', bu.x, bu.z, 0.08, 300);
     // the real listening post. The decoys are holes in the ground.
     if (M.bunker) push('post', 'LISTENING POST', M.bunker.x, M.bunker.z, 0.30, 170);
     // every camera that is up, including the four that came with the mast
@@ -2590,7 +2601,7 @@ export class MPGame extends Game {
       name: lock.name,
       note: lock.kind === 'him' ? 'HUMANOID HEAT'
         : lock.kind === 'cam' ? 'RELAY CAMERA'
-          : lock.kind === 'mast' ? 'THE MAST' : 'BURIED SET',
+          : lock.kind === 'x' ? 'WORTH DIGGING' : 'BURIED SET',
       dist: lock.dist,
       shown,
       strength: lock.strength,
