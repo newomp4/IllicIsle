@@ -186,12 +186,21 @@ export const STOCK = [
        what happens under it is not written down anywhere, which is most
        of why people go down there. */
     id: 'printer', name: 'RECEIPT PRINTER', cost: 12, side: 'open', icon: 'chart',
-    blurb: 'A till roll on your own screen. Every time somebody buys from Ferdi\'s '
-      + 'open counter it prints a docket: who they are, what they took and what '
-      + 'they paid. It hangs there 15 seconds and rolls away. One at a time - a '
-      + 'second sale tears the first one off. It does not see the black market '
-      + 'and it does not print your own.',
-    tag: 'PASSIVE',
+    blurb: 'A till roll on your belt. Press its number to switch it on and every '
+      + 'sale over Ferdi\'s open counter prints a docket: who, what, and what they '
+      + 'paid. It keeps the last 6 and you can read back through them. It does not '
+      + 'see the black market and it does not print your own.',
+    tag: 'BELT',
+  },
+  {
+    /* Somebody has to be able to MAKE it dark. Half the island's items
+       are for the dark and the day is two and a half minutes long. */
+    id: 'nightfall', name: 'NIGHTFALL FLARE', cost: 16, side: 'open', icon: 'lantern',
+    blurb: 'A signal flare that brings the night on for everybody, at once, wherever '
+      + 'they are. Dusk lands in about 8 seconds and the night runs its full '
+      + 'length from there. The Lucky Flopper comes in on the tide with it. One '
+      + 'use, and everyone sees the sky change.',
+    tag: 'ONE USE',
   },
   {
     id: 'scanner', name: 'SIGNAL SCANNER', cost: 8, side: 'open', icon: 'scanner',

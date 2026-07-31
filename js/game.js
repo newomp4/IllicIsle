@@ -3110,7 +3110,8 @@ I have snacks."`);
     this.cams = [];
     const add = (name, fitted, short) => {
       const i = this.cams.length;
-      const node = buildCamera(this.propMats);
+      // the mast's four are lashed to trunks; yours come with a tripod
+      const node = buildCamera(this.propMats, fitted ? 'tree' : 'tripod');
       node.userData.phase = i * 0.53;
       node.visible = false;
       this.islandScene.add(node);
@@ -3147,12 +3148,18 @@ I have snacks."`);
         ax = d.x - Math.sin(a) * 13; az = d.z - Math.cos(a) * 13;
       }
       c.x = ax; c.z = az;
-      c.y = heightAt(ax, az) + 3.4;      // up a trunk, looking down
+      /* The GROUND is where the mount stands; the lens is whatever the
+         mount holds it at. These used to be positioned at ground plus
+         three and a half metres with nothing underneath, which is why
+         every camera on the island was hanging in the air. */
+      const gy = heightAt(ax, az);
+      c.head = c.node.userData.headHeight || 3.4;
+      c.y = gy + c.head;                 // where the lens actually is
       c.yaw = Math.atan2(lx - ax, lz - az);
       c.placed = true;
-      c.node.position.set(c.x, c.y, c.z);
-      c.node.rotation.y = c.yaw;
-      c.node.rotation.x = 0.16;
+      c.node.position.set(c.x, gy, c.z);
+      c.node.userData.head.rotation.y = c.yaw;
+      c.node.userData.head.rotation.x = 0.16;
       c.node.visible = true;
     }
     // and room for the ones you buy
@@ -3241,9 +3248,10 @@ I have snacks."`);
     if (cam.pan < -Math.PI) cam.pan += Math.PI * 2;
     cam.tilt = THREE.MathUtils.clamp(cam.tilt + dTilt * geared, -T, T);
     cam.zoom = THREE.MathUtils.clamp((cam.zoom || 1) + dZoom, 1, Game.CAM_ZOOM_MAX);
-    // the thing on the tree turns too, so what you see is where it points
-    cam.node.rotation.y = cam.yaw + cam.pan;
-    cam.node.rotation.x = 0.16 - cam.tilt;
+    /* The HEAD turns, not the whole thing. Rotating the node would swivel
+       the tripod's legs and spin the tree it is lashed to. */
+    const h = cam.node.userData.head;
+    if (h) { h.rotation.y = cam.yaw + cam.pan; h.rotation.x = 0.16 - cam.tilt; }
     return `${cam.pan}|${cam.tilt}|${cam.zoom}` !== before;
   }
 
@@ -3252,8 +3260,8 @@ I have snacks."`);
     const cam = this.cams?.[i];
     if (!cam) return;
     cam.pan = 0; cam.tilt = 0; cam.zoom = 1;
-    cam.node.rotation.y = cam.yaw;
-    cam.node.rotation.x = 0.16;
+    const h = cam.node.userData.head;
+    if (h) { h.rotation.y = cam.yaw; h.rotation.x = 0.16; }
   }
 
   feedPixels(i) {
@@ -3264,8 +3272,10 @@ I have snacks."`);
     /* The island keeps running whether or not anybody is in it, so this
        renders the live scene — bodies, avatars, the lot. */
     this._cullFor(fc);
+    const was = this._showIslandForFeed();
     this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
     this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
+    this._restoreAfterFeed(was);
     this._cullBack();
     return this._feedBuf;
   }
@@ -3285,6 +3295,40 @@ I have snacks."`);
   }
 
   /**
+   * Put the island's people back on before a camera looks at it.
+   *
+   * Avatars are hidden when they are not in the same room as YOU — which
+   * is right for the world in front of you and completely wrong for a
+   * security camera. Watching the feed happens at the top of a mast, so
+   * you are in room 4, so every single person on the island was switched
+   * off and every channel showed an empty jungle. That is the "I don't
+   * see anyone on the cameras" of it.
+   */
+  _showIslandForFeed() {
+    const M = this.mp;
+    if (!M || !M.avatars) return null;
+    const was = [];
+    for (const av of M.avatars.values()) {
+      was.push([av, av.mesh.visible, av.mesh.parent]);
+      const onIsland = (av.room | 0) === 0 && av.alive !== false;
+      av.mesh.visible = onIsland;
+      if (onIsland && this.islandScene && av.mesh.parent !== this.islandScene) {
+        this.islandScene.add(av.mesh);
+      }
+    }
+    return was;
+  }
+
+  /** And back to what you can see from where you are standing. */
+  _restoreAfterFeed(was) {
+    if (!was) return;
+    for (const [av, vis, parent] of was) {
+      av.mesh.visible = vis;
+      if (parent && av.mesh.parent !== parent) parent.add(av.mesh);
+    }
+  }
+
+  /**
    * A postage stamp of channel `i` for the strip down the side.
    *
    * Brightness only, one byte a pixel, top row first — the strip draws
@@ -3298,8 +3342,10 @@ I have snacks."`);
     const w = THUMB_W, h = THUMB_H;
     const fc = this._aimFeedCam(cam, w / h);
     this._cullFor(fc);
+    const was = this._showIslandForFeed();
     this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
     const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
+    this._restoreAfterFeed(was);
     this._cullBack();
     this._aimFeedCam(cam);                    // put it back for the big one
     if (!got) return null;
@@ -3444,13 +3490,17 @@ I have snacks."`);
     /* A little forward of you and at head height, looking where you are
        looking — you are hanging it on whatever is in front of you. */
     const f = this.player.facing;
-    cam.x = p.x + Math.sin(f) * 0.5;
-    cam.z = p.z + Math.cos(f) * 0.5;
-    cam.y = heightAt(cam.x, cam.z) + 1.85;
+    cam.x = p.x + Math.sin(f) * 0.8;
+    cam.z = p.z + Math.cos(f) * 0.8;
+    const gy = heightAt(cam.x, cam.z);
+    cam.head = cam.node.userData.headHeight || 1.5;
+    cam.y = gy + cam.head;               // the lens, on top of the tripod
     cam.yaw = f;
     cam.placed = true;
-    cam.node.position.set(cam.x, cam.y, cam.z);
-    cam.node.rotation.y = f;
+    cam.pan = 0; cam.tilt = 0; cam.zoom = 1;
+    cam.node.position.set(cam.x, gy, cam.z);
+    cam.node.userData.head.rotation.y = f;
+    cam.node.userData.head.rotation.x = 0.16;
     cam.node.visible = true;
     this.camsHeld--;
     this.audio.sfx('terminal');

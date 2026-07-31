@@ -31,15 +31,14 @@ import {
 const NET_TICK_MS = 40;
 
 /** Bought and immediately in force; nothing to press. */
-const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest', 'printer',
+const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
   'spyglass', 'rounds', 'nightglass']);
 /** Bought and carried until you choose the moment. These fill the belt. */
-const BELT_IDS = ['gun', 'scanner', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton',
-  'chaff', 'shroud', 'blackout', 'ticket'];
+const BELT_IDS = ['gun', 'scanner', 'printer', 'whistle', 'speaker', 'flask', 'alibi',
+  'skeleton', 'chaff', 'shroud', 'blackout', 'ticket', 'nightfall'];
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
-import { DIG_SECONDS } from '../world/treasure.js';
 import { BUNKER_BOX, BUNKER_COLLIDERS, bunkerHeight } from '../world/bunker.js';
 import {
   HR_BOX, HR_COLLIDERS, hrHeight, HR_BAR_DOOR, HR_BAR_RETURN,
@@ -141,6 +140,9 @@ export class MPGame extends Game {
       onPurse: (c, gained) => this._onPurse(c, gained),
       onLedger: (rows) => this._onLedger(rows),
       onReceipt: (r) => this._onReceipt(r),
+      onDig: (d) => this._onDig(d),
+      onNightfall: () => this._onNightfall(),
+      onChest: (byId, gold) => this._onChest(byId, gold),
       onBlackout: (secs) => this._onBlackout(secs),
       onStranger: (on, x, z) => this._onStranger(on, x, z),
       onRiddle: (text) => this._onRiddle(text),
@@ -236,6 +238,15 @@ export class MPGame extends Game {
         if (hp && this.player) {
           hp.x = this.player.pos.x; hp.y = this.player.pos.y; hp.z = this.player.pos.z;
           hp.yaw = this.player.facing;
+          /* AND WHICH ROOM. A guest sends this with every move; the host
+             writes its own row by hand and this line was missing, so the
+             host was permanently on the island as far as everybody else
+             was concerned. Stand in the high rollers' room with the host
+             and you each saw an empty room — the host could see you, you
+             could not see the host, and the host's body was parented to
+             the island scene the whole time. */
+          hp.room = this.roomId;
+          hp.anim = 0;
         }
         this._applySnapshot({ p: M.host.snapshot() });
       } else if (M.view.phase === PHASE.ROAM && this.player) {
@@ -263,6 +274,9 @@ export class MPGame extends Game {
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
       case S.LEDGER: this._onLedger(msg.rows); break;
+      case S.NIGHTFALL: this._onNightfall(); break;
+      case S.DIG: this._onDig(msg.dug); break;
+      case S.CHEST: this._onChest(msg.byId, msg.gold); break;
       case S.RECEIPT: this._onReceipt(msg); break;
       case S.BLACKOUT: this._onBlackout(msg.secs); break;
       case S.STRANGER: this._onStranger(msg.on, msg.x, msg.z); break;
@@ -1038,9 +1052,11 @@ export class MPGame extends Game {
        round's cameras still up, still on the feed, still pointing wherever
        somebody left them — and with however many were in your hands. */
     for (const c of (this.cams || [])) {
-      if (c.fitted) { c.pan = 0; c.tilt = 0; c.zoom = 1; c.node.rotation.y = c.yaw; c.node.rotation.x = 0.16; continue; }
-      c.placed = false;
       c.pan = 0; c.tilt = 0; c.zoom = 1;
+      const h = c.node.userData.head;
+      if (h) { h.rotation.y = c.yaw; h.rotation.x = 0.16; }
+      if (c.fitted) continue;
+      c.placed = false;
       c.node.visible = false;
     }
     this.camsHeld = 0;
@@ -1742,6 +1758,7 @@ export class MPGame extends Game {
       if (e.code === 'KeyG') { this.togglePistol(); return; }
       if (e.code === 'KeyV') { this.placeCamera(); return; }
       if (e.code === 'KeyB' && this.scannerOn) { this.scanNext(1); return; }
+      if (e.code === 'KeyN' && this.printerOn) { this.receiptBack(); return; }
       if (e.code === 'KeyF') {
         if (this.pistolOut) this.fireFlare(); else this.tryKill();
         return;
@@ -2047,13 +2064,7 @@ export class MPGame extends Game {
     // Cathy's food does the same thing in both modes, so it lives on Game
     if (FOOD.some((f) => f.id === id)) this.applyFood(id);
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
-    if (id === 'printer') {
-      /* The host has to know who is carrying one, so a docket goes only
-         to the people who paid for it. */
-      this._send({ t: C.PERK, perk: 'printer', on: true });
-      this.receipts = this.receipts || [];
-      this.ui.toast('THE TILL ROLL IS LIVE', 'jade', 2600);
-    }
+
     if (id === 'vest') {
       this._send({ t: C.PERK, perk: 'vest', on: true });
       /* Cork and canvas over your chest is heavy. A quarter off both your
@@ -2196,6 +2207,29 @@ export class MPGame extends Game {
     /* The scanner is the one thing on the belt you switch ON rather than
        use up: pressing it again puts it away, and it is still in your hand
        either way. Everything else here is consumed. */
+    /* The till roll is switched on and off like the scanner rather than
+       running whether you want it or not — it is an instrument you pick
+       up, not a thing that happens to you. */
+    if (id === 'nightfall') {
+      if (!this.useCarried('nightfall')) { this.audio.sfx('deny'); return false; }
+      this.audio.sfx('cast');
+      this.audio.sfx('horn');
+      // the host tells everybody, including us — one sky, one clock
+      this._send({ t: C.PERK, perk: 'nightfall', on: true });
+      return true;
+    }
+    if (id === 'printer') {
+      if (!this.hasItem('printer')) { this.audio.sfx('deny'); return false; }
+      this.printerOn = !this.printerOn;
+      this.receipts = this.receipts || [];
+      this.receiptAt = 0;
+      // the host only sends dockets to sets that are switched on
+      this._send({ t: C.PERK, perk: 'printer', on: !!this.printerOn });
+      this.audio.sfx(this.printerOn ? 'page' : 'select');
+      this.ui.toast(this.printerOn ? 'TILL ROLL ON - N READS BACK' : 'TILL ROLL OFF',
+        this.printerOn ? 'jade' : 'bad', 2200);
+      return true;
+    }
     if (id === 'scanner') {
       if (!this.hasItem('scanner')) { this.audio.sfx('deny'); return false; }
       this.scannerOn = !this.scannerOn;
@@ -2745,7 +2779,12 @@ export class MPGame extends Game {
       return;
     }
     bu.digging += dt;
-    st.dug = Math.min(1, st.dug + dt / DIG_SECONDS);
+    /* THE HOLE IS THE HOST'S. This used to advance `dug` locally, so
+       everybody dug a private hole in the same spot and two people
+       standing over the same X saw different ground. Spadework goes on
+       the wire in quarter-second lots and the depth comes back. */
+    bu.sent = (bu.sent || 0) + dt;
+    if (bu.sent >= 0.25) { this._send({ t: C.DIG, secs: bu.sent }); bu.sent = 0; }
     // a spadeful every third of a second, and sand off the shovel
     if (bu.digging - (bu.lastSpade || 0) > 0.34) {
       bu.lastSpade = bu.digging;
@@ -2777,6 +2816,14 @@ export class MPGame extends Game {
   openChest() {
     const bu = this.buried;
     if (!bu || bu.state.taken || bu.state.dug < 1) { this.audio.sfx('deny'); return; }
+    // the host says who got it, and there is only one lot to get
+    this._send({ t: C.CHEST });
+  }
+
+  /** The host's answer: it is open, this is who reached in. */
+  _onChest(byId, gold) {
+    const bu = this.buried;
+    if (!bu || bu.state.taken) return;
     bu.state.taken = true;
     // the lid swings over the next second, in the node's own tick
     const swing = setInterval(() => {
@@ -2789,14 +2836,25 @@ export class MPGame extends Game {
     /* Enough to matter and not enough to end the round: between twenty and
        forty, which is a night at Ferdi's or a very good night at the
        Flopper. */
-    const gold = 20 + ((Math.random() * 21) | 0);
-    this.coins = (this.coins || 0) + gold;
-    this._send({ t: C.PURSE, coins: this.coins });
+    const mine = byId === this.mp.view.selfId;
+    if (mine) {
+      this.coins = (this.coins || 0) + gold;
+      this._send({ t: C.PURSE, coins: this.coins });
+    }
     this.taskFx?.burst(bu.x, bu.y + 1.0, bu.z, 0xffd24a, 'done', 5.0);
     this.player.punch?.(0.28);
 
-    /* And one thing off Ferdi's shelf, free. Never the flare pistol — a
-       free gun found in a hole is not a thing this round needs. */
+    if (!mine) {
+      // somebody else got there first, and everybody should know who
+      const who = this.mp.view.players.get(byId)?.name || 'SOMEBODY';
+      this.ui.toast(`${who} TOOK THE CHEST`, 'gold', 3200);
+      return;
+    }
+
+    /* And one thing off Ferdi's shelf, free — rolled here rather than by
+       the host because only the person holding it is affected by it, and
+       it depends on what they already own. Never the flare pistol: a free
+       gun found in a hole is not a thing this round needs. */
     const pool = STOCK.filter((i) => i.side === 'open' && i.id !== 'gun'
       && !(this.owned?.has(i.id)));
     const prize = pool.length ? pool[(Math.random() * pool.length) | 0] : null;
@@ -2811,6 +2869,35 @@ export class MPGame extends Game {
     this.ui.clearToasts?.();
     this.ui.showPopup(`${gold} SYNCOIN`, prize ? prize.name : 'AND NOTHING ELSE',
       'coin', 'THE CHEST');
+  }
+
+  /**
+   * Somebody put the night on.
+   *
+   * The clock is wound to eight seconds short of dusk, so the sky turns
+   * while you watch rather than snapping, and the night then runs its
+   * full length from there. Everybody's clock is set by the same message,
+   * so nobody is standing in a different hour to anybody else.
+   */
+  _onNightfall() {
+    const DAY = 131;                       // seconds of daylight in the cycle
+    if (this.clock24 > DAY - 8 && this.night > 0.5) {
+      // already dark; do not wind it forward into the dawn
+      this.ui.toast('IT IS ALREADY DARK', 'bad', 2000);
+      return;
+    }
+    this.clock24 = DAY - 8;
+    this.audio.sfx('horn');
+    this.audio.sfx('dawn');
+    this.ui.clearToasts?.();
+    this.ui.showPopup('NIGHTFALL', 'THE SKY IS GOING OUT', 'lantern', 'A FLARE WENT UP');
+  }
+
+  /** The host says the hole is this deep. */
+  _onDig(dug) {
+    const bu = this.buried;
+    if (!bu) return;
+    bu.state.dug = Math.max(bu.state.dug || 0, Math.min(1, +dug || 0));
   }
 
   /* =========================================================
@@ -3253,7 +3340,7 @@ export class MPGame extends Game {
      newest is ever on the roll.
      ========================================================= */
   _onReceipt(r) {
-    if (!r || !this.hasItem?.('printer')) return;
+    if (!r || !this.hasItem?.('printer') || !this.printerOn) return;
     this.receipts = this.receipts || [];
     const it = itemById(r.id);
     this.receipts.push({
@@ -3265,21 +3352,27 @@ export class MPGame extends Game {
       life: 15,                         // and how long it gets
       no: (this._receiptNo = (this._receiptNo || 0) + 1),
     });
-    /* Whatever was on the roll tears off now: give it a fifth of a second
-       to roll away rather than blinking out from under the new one. */
-    for (const q of this.receipts) {
-      if (q !== this.receipts[this.receipts.length - 1]) q.life = Math.min(q.life, q.t + 0.2);
-    }
-    while (this.receipts.length > 2) this.receipts.shift();
+    /* Six on the roll. They no longer expire on a clock — the set is on
+       or it is off, and while it is on you can read back through what it
+       has printed, which is the whole point of a printer over a toast. */
+    while (this.receipts.length > 6) this.receipts.shift();
+    this.receiptAt = 0;                    // a new one always shows itself
     this.audio.sfx('page');
+    this.audio.sfx('select');
   }
 
   _tickReceipts(dt) {
     const R = this.receipts;
     if (!R || !R.length) return;
     for (const q of R) q.t += dt;
-    // 15 seconds out, then three quarters of a second to roll away
-    for (let i = R.length - 1; i >= 0; i--) if (R[i].t > R[i].life + 0.75) R.splice(i, 1);
+  }
+
+  /** Read back one docket. Wraps, because six is not many to scroll. */
+  receiptBack(d = 1) {
+    const R = this.receipts || [];
+    if (!R.length) { this.audio.sfx('deny'); return; }
+    this.receiptAt = ((this.receiptAt || 0) + d + R.length) % R.length;
+    this.audio.sfx('select');
   }
 
   _onLedger(rows) {
@@ -4170,8 +4263,14 @@ export class MPGame extends Game {
     }
     /* The till roll. Handed over by reference — it is a short list and it
        is rebuilt only when something is actually bought. */
-    d.receipts = (this.receipts && this.receipts.length && this.hasItem?.('printer'))
-      ? this.receipts : null;
+    if (this.printerOn && this.hasItem?.('printer')) {
+      const pr = (d.printer = d.printer || {});
+      pr.on = true;
+      pr.list = this.receipts || [];
+      pr.at = Math.min(this.receiptAt || 0, Math.max(0, pr.list.length - 1));
+      pr.t = (pr.t || 0) + 0.016;
+    } else if (d.printer) d.printer.on = false;
+    d.receipts = null;
     d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;

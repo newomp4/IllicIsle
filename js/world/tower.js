@@ -86,25 +86,78 @@ export function cabHeight() { return 0; }
    a lens, a bracket, and one red pinhole that blinks. From ten metres
    in a bush it is a red pixel that comes and goes.
    =========================================================== */
-export function buildCamera(mats) {
+export function buildCamera(mats, kind = 'tripod') {
   const g = new THREE.Group();
-  const P = [];
   const SHELL = G(0x3a4038), SHELL_D = G(0x22261f), LENS = G(0x0e1214);
+  const BARK = G(0x6a5340), ROPE = G(0xa08a5c), LEG = G(0x4a4f46);
 
-  // the bracket it hangs off
-  P.push(tint(box(0.05, 0.16, 0.05, 'metal', { pos: [0, 0.10, -0.10] }), SHELL_D));
-  P.push(tint(box(0.10, 0.04, 0.14, 'metal', { pos: [0, 0.02, -0.08] }), SHELL_D));
+  /* ---- THE MOUNT ----
+     A camera hanging in mid-air is the first thing anybody notices, and
+     that is exactly what these were: positioned at ground level plus
+     three and a half metres with nothing whatsoever underneath them.
+
+     The four that came with the mast are lashed to a trunk. The ones you
+     buy come with a little tripod, because you are carrying them in a bag
+     and hammering a tree is not a thing you can do quietly. */
+  const HEAD_H = kind === 'tree' ? 3.4 : 1.5;
+  const mount = [];
+  if (kind === 'tree') {
+    // a trunk, running past the camera and on up out of shot
+    mount.push(tint(cyl(0.26, 0.34, HEAD_H + 3.2, 7, 'bark', {
+      pos: [0, (HEAD_H + 3.2) / 2, -0.34],
+    }), BARK));
+    // the lashings holding it on
+    for (const y of [HEAD_H - 0.18, HEAD_H + 0.16]) {
+      mount.push(tint(cyl(0.30, 0.30, 0.05, 8, 'rope', {
+        pos: [0, y, -0.34], rot: [Math.PI / 2, 0, 0],
+      }), ROPE));
+    }
+    // and the arm it stands off the trunk on
+    mount.push(tint(box(0.07, 0.07, 0.30, 'metal', { pos: [0, HEAD_H, -0.18] }), SHELL_D));
+  } else {
+    /* Three legs and a column. Splayed, because a tripod that is not
+       splayed is a stick. */
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + 0.4;
+      const lean = 0.34;
+      const len = Math.hypot(HEAD_H - 0.42, lean * 1.9);
+      mount.push(tint(cyl(0.022, 0.030, len, 4, 'metal', {
+        pos: [Math.cos(a) * lean, (HEAD_H - 0.42) / 2, Math.sin(a) * lean],
+        rot: [Math.sin(a) * 0.36, 0, -Math.cos(a) * 0.36],
+      }), LEG));
+      // a foot, so it stands on the ground rather than in it
+      mount.push(tint(box(0.07, 0.03, 0.07, 'metal', {
+        pos: [Math.cos(a) * lean * 1.9, 0.015, Math.sin(a) * lean * 1.9],
+      }), SHELL_D));
+    }
+    // the centre column and its collar
+    mount.push(tint(cyl(0.030, 0.034, 0.62, 6, 'metal', { pos: [0, HEAD_H - 0.30, 0] }), LEG));
+    mount.push(tint(cyl(0.052, 0.052, 0.06, 6, 'metal', { pos: [0, HEAD_H - 0.60, 0] }), SHELL_D));
+  }
+  g.add(new THREE.Mesh(mergeGeos(mount), mats.opaque));
+
+  /* ---- THE HEAD ----
+     Its own group, because the mount must not turn when you pan: a
+     tripod that swivels its legs, or a tree that rotates, is worse than
+     the floating was. */
+  const head = new THREE.Group();
+  head.position.y = HEAD_H;
+  g.add(head);
+
+  const P = [];
   // the body: a stubby box with a hood over the lens
-  P.push(tint(box(0.15, 0.13, 0.24, 'metal', { pos: [0, 0.02, 0] }), SHELL));
-  P.push(tint(box(0.16, 0.03, 0.20, 'metal', { pos: [0, 0.09, 0.01] }), SHELL_D));
-  P.push(tint(box(0.17, 0.09, 0.05, 'metal', { pos: [0, 0.02, 0.13] }), SHELL_D));
+  P.push(tint(box(0.15, 0.13, 0.24, 'metal', { pos: [0, 0, 0] }), SHELL));
+  P.push(tint(box(0.16, 0.03, 0.20, 'metal', { pos: [0, 0.07, 0.01] }), SHELL_D));
+  P.push(tint(box(0.17, 0.09, 0.05, 'metal', { pos: [0, 0, 0.13] }), SHELL_D));
+  // the yoke it hangs in
+  P.push(tint(box(0.10, 0.04, 0.10, 'metal', { pos: [0, -0.09, 0] }), SHELL_D));
   // the lens, black and slightly proud
   P.push(tint(cyl(0.045, 0.05, 0.06, 8, 'glass', {
-    pos: [0, 0.02, 0.15], rot: [Math.PI / 2, 0, 0],
+    pos: [0, 0, 0.15], rot: [Math.PI / 2, 0, 0],
   }), LENS));
   // a stub aerial, because it has to talk to something
-  P.push(tint(cyl(0.008, 0.008, 0.16, 4, 'metal', { pos: [0.05, 0.16, -0.04] }), SHELL_D));
-  g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+  P.push(tint(cyl(0.008, 0.008, 0.16, 4, 'metal', { pos: [0.05, 0.14, -0.04] }), SHELL_D));
+  head.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
 
   /* The tell: one red pinhole. Unlit for most of a second, so from any
      distance it is a pixel that appears and is gone before you are sure
@@ -116,9 +169,11 @@ export function buildCamera(mats) {
       blending: THREE.AdditiveBlending, depthWrite: false,
     })
   );
-  led.position.set(0.055, 0.055, 0.13);
-  g.add(led);
+  led.position.set(0.055, 0.035, 0.13);
+  head.add(led);
 
+  g.userData.head = head;
+  g.userData.headHeight = HEAD_H;
   g.userData.led = led;
   g.userData.tick = (t, dt = 0.016, camPos = null) => {
     // one blink every 2.4 seconds, and it lasts about a tenth of one
@@ -128,11 +183,15 @@ export function buildCamera(mats) {
     if (on && camPos) {
       // it faces you so the pinhole is never edge-on and invisible
       led.rotation.y = Math.atan2(camPos.x - g.position.x, camPos.z - g.position.z)
-        - g.rotation.y;
+        - g.rotation.y - head.rotation.y;
     }
   };
   return g;
 }
+
+/** How high off the ground each kind of mount holds the lens. */
+export const CAM_HEAD_TREE = 3.4;
+export const CAM_HEAD_TRIPOD = 1.5;
 
 /* ===========================================================
    THE MAST

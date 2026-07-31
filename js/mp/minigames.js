@@ -268,6 +268,8 @@ const wind = {
     const bx = 160 + Math.sin(swing * MAXA) * L;
     if (Math.abs(swing) > s.window) {
       s.got++;
+      // it bites, and the last tooth of the ratchet rings differently
+      s.sfx?.('lever'); s.sfx?.(s.got >= s.need - 1 ? 'confirm' : 'clink');
       s.flash = 1;
       s.ring = 0;
       s.ringX = bx;
@@ -283,6 +285,7 @@ const wind = {
         });
       }
     } else {
+      s.sfx?.('deny'); s.sfx?.('rumble');            // it slips, and the whole rig shakes
       s.miss = 1;
       s.shake = 1;
       s.speed = Math.max(1.2, s.speed - 0.2);
@@ -346,8 +349,10 @@ const splice = {
     if (s.playing) return false;
     if (s.seq[s.at] === i) {
       s.at++;
+      s.sfx?.('select'); s.sfx?.('clink');
       return s.at >= s.seq.length;
     }
+    s.sfx?.('deny'); s.sfx?.('gemHit');              // wrong strand, and it all comes apart
     s.wrong = 1; s.at = 0; s.playing = true; s.showing = 0; s.showT = 0;
     return false;
   },
@@ -513,11 +518,13 @@ const stitch = {
   _sew(idx, s) {
     if (idx === s.at) {
       s.at++; s.pull = 1;
+      s.sfx?.('oche'); s.sfx?.('page');              // the needle through, the thread after it
       // the needle follows the thread to the next hole
       const nk = s.order[s.at];
       if (nk) { s.nx = s.tears[nk[0]][nk[1]].x; s.ny = s.tears[nk[0]][nk[1]].y; }
       return s.at >= s.order.length;
     }
+    s.sfx?.('deny');
     s.wrong = 1;
     s.miss = 1;
     // drop back to the start of the tear you botched, not the whole sail
@@ -544,7 +551,7 @@ const stitch = {
       const d = Math.hypot(p.x - s.nx, (p.y - s.ny) * 0.62);
       if (d < bestD) { bestD = d; best = idx; }
     });
-    if (best < 0) { s.miss = 1; return false; }
+    if (best < 0) { s.sfx?.('deny'); s.miss = 1; return false; }
     return this._sew(best, s);
   },
 };
@@ -928,7 +935,8 @@ const bail = {
     const got = Math.min(s.level, d * 0.20);
     s.pump = 1;
     s.tip = 1;
-    if (got < 0.012) { s.miss = 1; s.carry = 0; return false; }
+    if (got < 0.012) { s.sfx?.('deny'); s.miss = 1; s.carry = 0; return false; }
+    s.sfx?.('step_water'); s.sfx?.('pour');          // in, and over the side
     s.carry = Math.min(1, got / 0.2);
     s.level = Math.max(0, s.level - got);
     s.best = Math.max(s.best || 0, got);
@@ -950,6 +958,11 @@ export const MINIGAMES = { wind, splice, stitch, dials, bail };
 let _draw = null;
 /** screens.js injects its own text routine so the font stays in one place. */
 export function bindText(fn) { _draw = fn; }
+
+/* SOUND. Four of these five were silent: only the dials ever called the
+   `s.sfx` hook screens.js has been handing them all along. They are
+   physical things — a pendulum, a needle, a bucket — and doing physical
+   things without a noise is the difference between a puzzle and a chore. */
 function drawText3(x, str, cx, cy, col) { _draw?.(x, str, { x: cx, y: cy, scale: 1, align: 'center', color: col }); }
 function drawKeyCap(x, str, cx, cy) {
   x.fillStyle = '#2a1c0e'; x.fillRect(cx - 5, cy, 11, 10);

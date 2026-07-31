@@ -8,6 +8,7 @@
    =========================================================== */
 
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
+import { DIG_SECONDS } from '../world/treasure.js';
 import { SABOTAGE_DEFS, dealTasks, taskSteps } from './tasks.js';
 import { makeClue } from './stranger.js';
 
@@ -143,6 +144,8 @@ export class HostSession {
       /* The command table's ledger. It is answered privately and only for
          somebody who is really standing in the bunker, so knowing what
          everybody is carrying stays a thing you have to go and earn. */
+      case C.DIG: { this._dig(from, msg); break; }
+      case C.CHEST: { this._openChest(from); break; }
       case C.BOUGHT: { this._receipt(from, msg); break; }
       case C.LEDGER: { this._sendLedger(from); break; }
       case C.ASKSTRANGER: { this._askStranger(from); break; }
@@ -158,6 +161,12 @@ export class HostSession {
            put the whole shop ledger on the wire for anybody with a
            console open, which is a deduction game giving itself away. */
         if (msg.perk === 'printer') p.printer = !!msg.on;
+        /* The night is not a thing you can have privately. One person
+           pulls it and the sky changes for the whole island at once. */
+        if (msg.perk === 'nightfall') {
+          this.net.broadcast({ t: S.NIGHTFALL });
+          this.hooks.onNightfall?.();
+        }
         if (msg.perk === 'speaker') {
           this.net.broadcast({ t: S.SPEAKER, x: msg.x, z: msg.z, secs: 60 });
           this.hooks.onSpeaker?.(msg.x, msg.z, 60);
@@ -251,6 +260,11 @@ export class HostSession {
 
     this.tasksDone = 0;
     this.tasksTotal = 0;
+    // one hole, and it is filled in again for a new round
+    this.dug = 0;
+    this._dugStep = -1;
+    this.chestTaken = false;
+    this.digSeconds = DIG_SECONDS;
     for (const id of ids) {
       const p = this.players.get(id);
       p.role = agents.has(id) ? ROLE.AGENT : ROLE.CASTAWAY;
@@ -637,6 +651,48 @@ export class HostSession {
       if (pid === 'host') this.hooks.onReceipt?.(packet);
       else this.net.sendTo(pid, packet);
     }
+  }
+
+  /* =========================================================
+     THE BURIED CHEST
+
+     One hole, one chest, one lot of gold. All of it used to be worked out
+     on each player's own machine: everybody dug their own private hole in
+     the same spot, everybody found a chest in it, and everybody took
+     twenty to forty coins out of it. Two people standing over the same X
+     saw different holes.
+
+     The hole belongs to the host now. Anybody can put spadework in and it
+     all goes into the same hole, and the first person to reach in gets
+     what is in there — once.
+     ========================================================= */
+  _dig(from, msg) {
+    const p = this.players.get(from);
+    if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
+    if (this.chestTaken || this.dug >= 1) return;
+    // a quarter of a second at a time at most, so nobody can dig it in one
+    const secs = Math.max(0, Math.min(0.4, +msg.secs || 0));
+    this.dug = Math.min(1, (this.dug || 0) + secs / this.digSeconds);
+    const step = Math.round(this.dug * 20);          // twentieths, to keep the wire quiet
+    if (step !== this._dugStep || this.dug >= 1) {
+      this._dugStep = step;
+      this.net.broadcast({ t: S.DIG, dug: this.dug });
+      this.hooks.onDig?.(this.dug);
+    }
+  }
+
+  _openChest(from) {
+    const p = this.players.get(from);
+    if (!p || !p.alive) return;
+    if (this.chestTaken || (this.dug || 0) < 1) return;
+    this.chestTaken = true;
+    /* The host rolls it, so there is one answer and everybody hears the
+       same one. Between twenty and forty: a night at Ferdi's, or a very
+       good night at the Flopper. */
+    const gold = 20 + ((this.rng() * 21) | 0);
+    p.coins = (p.coins | 0) + gold;
+    this.net.broadcast({ t: S.CHEST, byId: from, gold, prize: null });
+    this.hooks.onChest?.(from, gold, null);
   }
 
   _sendLedger(id) {
