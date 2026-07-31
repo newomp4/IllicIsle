@@ -21,19 +21,43 @@ import { drawText, textWidth } from '../lib/bitfont.js';
 
 const G = (n) => new THREE.Color(n);
 
-/* Where the mast stands. The back shoulder of the island, high enough to
-   be seen from most of it and far enough from everything else that
-   walking to it is a decision. */
-export const TOWER_SPOT = { x: -96, z: -78 };
+/* Where the mast stands.
+
+   It was at (-96, -78), which is byte-for-byte BUNKER_SPOTS[0] — I picked
+   the coordinates by hand and landed exactly on the west shoulder hatch, so
+   the mast grew out of the listening post. This is the far side of the
+   island from the wreck camp at (-46, 154): a walk, visible from most of
+   the map, and not on top of anything. */
+export const TOWER_SPOT = { x: 70, z: -100 };
 export const TOWER_H = 38;            // to the lamp
 export const CAB_Y = 15.5;            // the hut, up the ladder
 
-/** How many cameras there are, and where they start: in the hut. */
-export const CAMERA_COUNT = 4;
+/** How many are already up when you get there, and how many you may own. */
+export const CAMERA_FITTED = 4;
+export const CAMERA_MAX = 10;
 
-/* The room at the head of the ladder. Small, and it is meant to be. */
-export const CAB_BOX = { minX: -2.2, maxX: 2.2, minZ: -2.2, maxZ: 2.2, maxY: 2.6 };
-export const CAB_ENTRY = { x: 0, y: 0.1, z: 1.5 };
+/* Where the four that came with the mast are pointing.
+
+   Whoever put them up was watching the ways ON to this island, not the
+   pretty bits: the camp, the shop, the pier and the temple door. They are
+   fixed, they are already on the feed when you first climb the ladder, and
+   they are the reason the terminal is worth finding at all — a bank of
+   dead channels tells you nothing. */
+export const FITTED_CAMS = [
+  { at: [-46, 140], look: [-46, 154], name: 'CAM 1  CAMP' },
+  { at: [-30, 34], look: [-30, 46], name: 'CAM 2  SHOP' },
+  { at: [-118, 96], look: [-132, 110], name: 'CAM 3  PIER' },
+  { at: [0, 0], look: [0, 0], name: 'CAM 4  TEMPLE' },
+];
+
+/* The room at the head of the ladder.
+
+   It was five metres square with the walls at 2.2, which is not enough to
+   stand a third-person camera in — it ended up in the wall and you were
+   looking at the grey outside of the world. Seven and a half now, with the
+   box well inside the walls so the camera has somewhere to be. */
+export const CAB_BOX = { minX: -3.0, maxX: 3.0, minZ: -3.0, maxZ: 3.0, maxY: 3.1 };
+export const CAB_ENTRY = { x: 0, y: 0.1, z: 2.2 };
 export function cabHeight() { return 0; }
 
 /* ===========================================================
@@ -286,96 +310,241 @@ export function buildTower(rng, mats, flameFactory) {
 export function buildCab(mats) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0e0c);
-  scene.fog = new THREE.Fog(0x141a16, 6, 30);
+  scene.fog = new THREE.Fog(0x141a16, 9, 40);
 
   const P = [];
-  const IRON = G(0x5a6058), IRON_D = G(0x343a32), RUST = G(0x7a4a2a);
-  const W = 5.0, H = 2.7;
+  const IRON = G(0x6a7068), IRON_D = G(0x3a4038), RUST = G(0x8a5230);
+  const W = 7.6, H = 3.4;
 
-  // floor: steel plate, worn through in the middle
-  for (let i = 0; i < 5; i++) {
-    for (let j = 0; j < 5; j++) {
-      const px = -W / 2 + 0.5 + i, pz = -W / 2 + 0.5 + j;
-      const mid = 1 - Math.min(1, Math.hypot(px, pz) / 3);
-      P.push(tint(box(0.98, 0.3, 0.98, 'metal', { pos: [px, -0.15, pz] }),
-        IRON_D.clone().lerp(G(0x6a6258), 0.2 + mid * 0.4)));
+  /* ---- the floor: steel plate, worn through where people stood ---- */
+  for (let i = 0; i < 8; i++) {
+    for (let j = 0; j < 8; j++) {
+      const px = -W / 2 + 0.475 + i * 0.95, pz = -W / 2 + 0.475 + j * 0.95;
+      const mid = 1 - Math.min(1, Math.hypot(px, pz) / 4.2);
+      P.push(tint(box(0.93, 0.3, 0.93, 'metal', { pos: [px, -0.15, pz] }),
+        IRON_D.clone().lerp(G(0x8a9088), 0.15 + mid * 0.45)));
+      // the diamond tread on each plate
+      if ((i + j) % 2 === 0) {
+        P.push(tint(box(0.5, 0.03, 0.5, 'metal', { pos: [px, 0.015, pz], rot: [0, 0.78, 0] }),
+          G(0x9aa098)));
+      }
     }
   }
-  // ceiling and walls
-  P.push(tint(box(W, 0.3, W, 'metal', { pos: [0, H + 0.15, 0] }), G(0x22261f)));
-  for (const [px, pz, bw, bd] of [[0, -W / 2, W, 0.3], [-W / 2, 0, 0.3, W], [W / 2, 0, 0.3, W]]) {
+  // ceiling, with a girder across it
+  P.push(tint(box(W, 0.3, W, 'metal', { pos: [0, H + 0.15, 0] }), G(0x262a22)));
+  P.push(tint(box(W, 0.34, 0.30, 'metal', { pos: [0, H - 0.18, 0] }), IRON_D));
+  P.push(tint(box(0.30, 0.34, W, 'metal', { pos: [0, H - 0.18, 0] }), IRON_D));
+
+  /* ---- the walls ----
+     Half a metre thick, because a third-person camera backed into a
+     twenty-centimetre wall sees straight through it and out into the grey. */
+  for (const [px, pz, bw, bd] of [[0, -W / 2, W, 0.5], [-W / 2, 0, 0.5, W], [W / 2, 0, 0.5, W]]) {
     P.push(tint(box(bw, H, bd, 'metal', { pos: [px, H / 2, pz] }), IRON));
   }
   // the south wall, with the doorway out to the ladder
-  P.push(tint(box(1.6, H, 0.3, 'metal', { pos: [-1.7, H / 2, W / 2] }), IRON));
-  P.push(tint(box(1.6, H, 0.3, 'metal', { pos: [1.7, H / 2, W / 2] }), IRON));
-  P.push(tint(box(1.8, 0.7, 0.3, 'metal', { pos: [0, H - 0.35, W / 2] }), IRON));
-  // ribs down the walls, and rust where the water gets in
-  for (let i = -2; i <= 2; i++) {
-    P.push(tint(box(0.08, H, 0.08, 'metal', { pos: [i * 1.0, H / 2, -W / 2 + 0.18] }),
-      i % 2 ? RUST : IRON_D));
+  P.push(tint(box(2.9, H, 0.5, 'metal', { pos: [-2.35, H / 2, W / 2] }), IRON));
+  P.push(tint(box(2.9, H, 0.5, 'metal', { pos: [2.35, H / 2, W / 2] }), IRON));
+  P.push(tint(box(1.9, 0.9, 0.5, 'metal', { pos: [0, H - 0.45, W / 2] }), IRON));
+  // ribs, and rust running down from where the roof leaks
+  for (let i = -3; i <= 3; i++) {
+    for (const pz of [-W / 2 + 0.28, W / 2 - 0.28]) {
+      P.push(tint(box(0.09, H, 0.09, 'metal', { pos: [i * 1.0, H / 2, pz] }),
+        i % 2 ? RUST : IRON_D));
+    }
+    P.push(tint(box(0.09, H, 0.09, 'metal', { pos: [-W / 2 + 0.28, H / 2, i * 1.0] }), IRON_D));
+    P.push(tint(box(0.09, H, 0.09, 'metal', { pos: [W / 2 - 0.28, H / 2, i * 1.0] }), IRON_D));
   }
-  // the window, looking out over the island
-  P.push(tint(box(2.6, 0.12, 0.10, 'metal', { pos: [0, 1.05, -W / 2 + 0.16] }), IRON_D));
-  P.push(tint(box(2.6, 0.12, 0.10, 'metal', { pos: [0, 2.05, -W / 2 + 0.16] }), IRON_D));
 
-  /* ---- the desk and the terminal ---- */
-  P.push(tint(box(3.0, 0.10, 0.9, 'metal', { pos: [0, 0.78, -1.5] }), G(0x4a5048)));
-  for (const sx of [-1.3, 1.3]) {
-    P.push(tint(box(0.10, 0.78, 0.10, 'metal', { pos: [sx, 0.39, -1.2] }), IRON_D));
-    P.push(tint(box(0.10, 0.78, 0.10, 'metal', { pos: [sx, 0.39, -1.8] }), IRON_D));
+  /* ---- the window, and what is behind it ----
+     A long strip across the north wall with the island painted on it, so
+     the room has somewhere to be rather than being a box in the void. */
+  P.push(tint(box(4.6, 0.14, 0.12, 'metal', { pos: [0, 1.15, -W / 2 + 0.24] }), IRON_D));
+  P.push(tint(box(4.6, 0.14, 0.12, 'metal', { pos: [0, 2.35, -W / 2 + 0.24] }), IRON_D));
+  for (const mx of [-1.5, 0, 1.5]) {
+    P.push(tint(box(0.10, 1.2, 0.12, 'metal', { pos: [mx, 1.75, -W / 2 + 0.24] }), IRON_D));
   }
-  // the rack the monitor sits in
-  P.push(tint(box(1.5, 1.15, 0.7, 'metal', { pos: [0, 1.42, -1.7] }), G(0x3a4038)));
-  P.push(tint(box(1.6, 0.10, 0.8, 'metal', { pos: [0, 2.02, -1.7] }), IRON_D));
-  // cable trays and a loom of cable going up through the roof
-  P.push(tint(box(0.3, 0.14, W - 0.6, 'metal', { pos: [-1.9, H - 0.4, 0] }), IRON_D));
-  for (let i = 0; i < 6; i++) {
-    P.push(tint(cyl(0.03, 0.03, W - 0.8, 4, 'rope', {
-      pos: [-1.9 + (i % 3) * 0.09, H - 0.32 + ((i / 3) | 0) * 0.07, 0],
+
+  /* ---- the desk, running the length of the north wall ---- */
+  P.push(tint(box(5.6, 0.12, 1.0, 'metal', { pos: [0, 0.80, -2.6] }), G(0x5a6058)));
+  P.push(tint(box(5.6, 0.10, 0.14, 'metal', { pos: [0, 0.88, -2.14] }), G(0x7a8078)));
+  for (const sx of [-2.4, 0, 2.4]) {
+    P.push(tint(box(0.12, 0.80, 0.12, 'metal', { pos: [sx, 0.40, -2.2] }), IRON_D));
+    P.push(tint(box(0.12, 0.80, 0.12, 'metal', { pos: [sx, 0.40, -3.0] }), IRON_D));
+  }
+  // the monitor rack in the middle of it
+  P.push(tint(box(1.9, 1.35, 0.8, 'metal', { pos: [0, 1.55, -2.8] }), G(0x424840)));
+  P.push(tint(box(2.0, 0.12, 0.9, 'metal', { pos: [0, 2.26, -2.8] }), IRON_D));
+  // a keyboard shelf, and a chunky keyboard on it
+  P.push(tint(box(1.1, 0.06, 0.36, 'metal', { pos: [0, 0.88, -2.05] }), G(0x3a4038)));
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 11; c++) {
+      P.push(tint(box(0.07, 0.03, 0.07, 'metal', {
+        pos: [-0.42 + c * 0.085, 0.93, -2.14 + r * 0.09],
+      }), G(0xc8c8c0)));
+    }
+  }
+
+  /* ---- the racks down the east wall, which is what a relay hut IS ---- */
+  for (let r = 0; r < 3; r++) {
+    const rz = -1.6 + r * 1.6;
+    P.push(tint(box(0.9, 2.4, 1.3, 'metal', { pos: [W / 2 - 0.9, 1.2, rz] }), G(0x3a4038)));
+    P.push(tint(box(0.05, 2.3, 1.2, 'metal', { pos: [W / 2 - 1.36, 1.2, rz] }), G(0x2a2e28)));
+    // slot fronts, with their own little lamps
+    for (let u = 0; u < 7; u++) {
+      P.push(tint(box(0.06, 0.24, 1.1, 'metal', {
+        pos: [W / 2 - 1.38, 0.3 + u * 0.31, rz],
+      }), G(0x4a5048)));
+    }
+  }
+  // a spares shelf on the west wall, with cameras on it
+  P.push(tint(box(0.7, 0.08, 3.0, 'metal', { pos: [-W / 2 + 0.7, 1.15, -0.4] }), IRON_D));
+  P.push(tint(box(0.7, 0.08, 3.0, 'metal', { pos: [-W / 2 + 0.7, 1.75, -0.4] }), IRON_D));
+  for (let i = 0; i < 5; i++) {
+    P.push(tint(box(0.16, 0.14, 0.24, 'metal', {
+      pos: [-W / 2 + 0.7, 1.26, -1.5 + i * 0.6], rot: [0, 0.3 + i * 0.4, 0],
+    }), G(0x3a4038)));
+  }
+  // cable trays round three walls and a loom going up through the roof
+  for (const [tx, tz, tw2, td] of [[0, -W / 2 + 0.5, W - 1, 0.34], [-W / 2 + 0.5, 0, 0.34, W - 1]]) {
+    P.push(tint(box(tw2, 0.16, td, 'metal', { pos: [tx, H - 0.5, tz] }), IRON_D));
+  }
+  for (let i = 0; i < 8; i++) {
+    P.push(tint(cyl(0.032, 0.032, W - 1.2, 4, 'rope', {
+      pos: [-W / 2 + 0.42 + (i % 4) * 0.1, H - 0.40 + ((i / 4) | 0) * 0.08, 0],
       rot: [Math.PI / 2, 0, 0],
-    }), G([0x8a2018, 0x2a4a8a, 0x8a7a20, 0x2a2a2a, 0x6a6a6a, 0x2a6a3a][i])));
+    }), G([0x8a2018, 0x2a4a8a, 0x8a7a20, 0x2a2a2a, 0x6a6a6a, 0x2a6a3a, 0x8a4a8a, 0xc06020][i])));
   }
-  // a chair, a mug, and a shelf of spares
-  P.push(tint(cyl(0.32, 0.30, 0.09, 8, 'metal', { pos: [0, 0.48, -0.5] }), G(0x5a2a24)));
-  P.push(tint(cyl(0.07, 0.09, 0.46, 6, 'metal', { pos: [0, 0.23, -0.5] }), IRON_D));
-  P.push(tint(box(0.42, 0.06, 0.42, 'metal', { pos: [0, 0.02, -0.5] }), IRON_D));
-  P.push(tint(cyl(0.055, 0.05, 0.10, 7, 'planks', { pos: [1.1, 0.88, -1.4] }), G(0xd8d0c0)));
-  P.push(tint(box(1.6, 0.08, 0.34, 'metal', { pos: [1.6, 1.9, -W / 2 + 0.35], rot: [0, 0, 0] }), IRON_D));
+  // a chair on castors, pushed back from the desk
+  P.push(tint(cyl(0.36, 0.34, 0.10, 8, 'clothTat', { pos: [0.4, 0.50, -1.5] }), G(0x5a2a24)));
+  P.push(tint(box(0.62, 0.60, 0.12, 'clothTat', { pos: [0.4, 0.85, -1.2] }), G(0x5a2a24)));
+  P.push(tint(cyl(0.07, 0.09, 0.48, 6, 'metal', { pos: [0.4, 0.24, -1.5] }), IRON_D));
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    P.push(tint(box(0.28, 0.05, 0.07, 'metal', {
+      pos: [0.4 + Math.cos(a) * 0.16, 0.04, -1.5 + Math.sin(a) * 0.16], rot: [0, -a, 0],
+    }), IRON_D));
+  }
+  // and the things people leave: a mug, a clipboard, a fan
+  P.push(tint(cyl(0.055, 0.05, 0.11, 7, 'planks', { pos: [1.5, 0.92, -2.4] }), G(0xd8d0c0)));
+  P.push(tint(box(0.30, 0.02, 0.40, 'paper', { pos: [-1.6, 0.87, -2.4], rot: [0, 0.3, 0] }), G(0xd8d2b8)));
+  P.push(tint(cyl(0.22, 0.22, 0.10, 10, 'metal', {
+    pos: [-2.6, 0.98, -2.5], rot: [Math.PI / 2, 0, 0.3],
+  }), G(0x4a5048)));
 
   scene.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
 
-  /* the monitor's own glass, which glows whether or not you are using it */
+  /* ---- the view out of the window ----
+     A painted backdrop: sky, sea, a headland and the tree line, so looking
+     out of the window is looking at the island and not at nothing. */
+  {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 40;
+    const x = c.getContext('2d');
+    const sky = x.createLinearGradient(0, 0, 0, 40);
+    sky.addColorStop(0, '#3a6a9a'); sky.addColorStop(0.55, '#7ab0d0');
+    x.fillStyle = sky; x.fillRect(0, 0, 128, 40);
+    x.fillStyle = '#2a5a7a'; x.fillRect(0, 21, 128, 19);
+    x.fillStyle = '#1e4a66'; x.fillRect(0, 21, 128, 1);
+    // a headland and a tree line on it
+    x.fillStyle = '#2a3a24';
+    for (let i = 0; i < 128; i++) {
+      const h = 4 + Math.sin(i * 0.09) * 3 + Math.sin(i * 0.31) * 2;
+      x.fillRect(i, 21 - h, 1, h);
+    }
+    x.fillStyle = '#1a2a18';
+    for (let i = 0; i < 26; i++) {
+      const px = (i * 37) % 128;
+      x.fillRect(px, 14 - (i % 4), 2, 6 + (i % 4));
+    }
+    // clouds
+    x.fillStyle = 'rgba(255,255,255,.55)';
+    for (let i = 0; i < 6; i++) x.fillRect((i * 43) % 120, 3 + (i % 3) * 3, 14, 2);
+    const tex = new THREE.CanvasTexture(c);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
+    const view = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.4, 1.15),
+      new THREE.MeshBasicMaterial({ map: tex })
+    );
+    view.position.set(0, 1.75, -W / 2 + 0.26);
+    scene.add(view);
+  }
+
+  /* ---- the monitor's own glass ---- */
   const glass = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.2, 0.86),
+    new THREE.PlaneGeometry(1.5, 1.05),
     new THREE.MeshBasicMaterial({ color: 0x1a4a34 })
   );
-  glass.position.set(0, 1.45, -1.34);
+  glass.position.set(0, 1.58, -2.38);
   scene.add(glass);
 
-  scene.add(new THREE.AmbientLight(0x8a9a90, 1.2));
-  scene.add(new THREE.HemisphereLight(0xa8c0b0, 0x2a3028, 0.8));
-  const tube = new THREE.PointLight(0xd8f0e0, 2.4, 10, 1.6);
-  tube.position.set(0, H - 0.4, 0.4);
+  /* ---- the rack lamps: two rows of them, blinking on their own clocks ---- */
+  const lamps = [];
+  for (let r = 0; r < 3; r++) {
+    const rz = -1.6 + r * 1.6;
+    for (let u = 0; u < 7; u++) {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.05, 0.05),
+        new THREE.MeshBasicMaterial({
+          color: u % 3 === 0 ? 0xff3020 : (u % 3 === 1 ? 0x30ff70 : 0xffc030),
+          transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+      );
+      m.position.set(W / 2 - 1.42, 0.3 + u * 0.31, rz - 0.42);
+      m.rotation.y = -Math.PI / 2;
+      scene.add(m);
+      lamps.push({ m, rate: 0.7 + ((r * 7 + u) % 9) * 0.31, phase: (r * 3 + u) * 0.7 });
+    }
+  }
+
+  scene.add(new THREE.AmbientLight(0x9aa8a0, 1.35));
+  scene.add(new THREE.HemisphereLight(0xb8ccc0, 0x30382e, 0.9));
+  const tube = new THREE.PointLight(0xd8f0e0, 3.0, 14, 1.5);
+  tube.position.set(0, H - 0.5, 0.6);
   scene.add(tube);
-  const screenGlow = new THREE.PointLight(0x40c080, 1.6, 6, 1.8);
-  screenGlow.position.set(0, 1.45, -1.0);
+  const screenGlow = new THREE.PointLight(0x40c080, 1.8, 7, 1.8);
+  screenGlow.position.set(0, 1.55, -1.9);
   scene.add(screenGlow);
 
+  /* the strip light itself, so the flicker has something to come from */
+  {
+    const t2 = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 0.10, 0.22),
+      new THREE.MeshBasicMaterial({ color: 0xe8fff0 })
+    );
+    t2.position.set(0, H - 0.42, 0.6);
+    scene.add(t2);
+    scene.userData.tubeMesh = t2;
+  }
+
   scene.userData.tick = (t) => {
-    // the strip light has a flicker it has had for years
-    const bad = Math.sin(t * 37) > 0.986 ? 0.35 : 1;
-    tube.intensity = (2.3 + Math.sin(t * 5.1) * 0.1) * bad;
-    screenGlow.intensity = 1.5 + Math.sin(t * 2.3) * 0.2;
-    glass.material.color.setRGB(0.09, 0.28 + Math.sin(t * 2.3) * 0.03, 0.20);
+    // a flicker it has had for years
+    const bad = Math.sin(t * 37) > 0.984 ? 0.3 : 1;
+    tube.intensity = (2.9 + Math.sin(t * 5.1) * 0.12) * bad;
+    if (scene.userData.tubeMesh) {
+      const v = 0.75 + 0.25 * bad;
+      scene.userData.tubeMesh.material.color.setRGB(v, v, v * 0.97);
+    }
+    screenGlow.intensity = 1.7 + Math.sin(t * 2.3) * 0.22;
+    glass.material.color.setRGB(0.09, 0.30 + Math.sin(t * 2.3) * 0.04, 0.22);
+    for (const L of lamps) {
+      const k = Math.sin(t * L.rate + L.phase);
+      L.m.material.opacity = k > 0.4 ? 0.95 : 0.14;
+    }
   };
   return scene;
 }
 
 /** The desk, the rack and the chair are solid. */
-export const CAB_COLLIDERS = [
-  { x: 0, z: -1.6, r: 1.5 },
-  { x: -1.4, z: -1.5, r: 0.5 },
-  { x: 1.4, z: -1.5, r: 0.5 },
-  { x: 0, z: -0.5, r: 0.42 },
-];
+export const CAB_COLLIDERS = (() => {
+  const out = [];
+  // the desk, along the north wall
+  for (let i = 0; i < 6; i++) out.push({ x: -2.4 + i * 0.96, z: -2.7, r: 0.62 });
+  // the racks down the east wall
+  for (let r = 0; r < 3; r++) out.push({ x: 3.0, z: -1.6 + r * 1.6, r: 0.8 });
+  // the spares shelf and the chair
+  out.push({ x: -3.1, z: -0.4, r: 0.5 });
+  out.push({ x: 0.4, z: -1.4, r: 0.45 });
+  return out;
+})();

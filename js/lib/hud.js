@@ -121,7 +121,7 @@ export class Hud {
       this._compass(W / 2, 2, d.compass);
       this._mpBanner(W, H, d.mp);
       this._mpBelt(4, H - 52, d.mp);
-      if (d.mp.scanner?.on) this._scanner(4, 70, d.mp.scanner);
+      if (d.mp.scanner?.on) this._scanner(4, 66, d.mp.scanner);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       /* An Agent has a knife panel in the bottom right corner, and a long
          prompt centred on the screen runs straight into it — "QUEZETRIEL
@@ -249,139 +249,150 @@ export class Hud {
   /* ===========================================================
      THE SIGNAL SCANNER
 
-     A handheld set with a round green face, drawn as a piece of hardware
-     rather than as an overlay: a bezel with four screws, a phosphor
-     screen that is still faintly lit where the beam last passed, range
-     rings, a sweep arm, and a needle that only means anything when the
-     sweep is near it.
+     A spectrum analyser and a steer, in that order, because that is the
+     order you use them in: look at the band, see what is on it, lock the
+     one you want, then turn until the marker centres and walk.
 
-     Nothing here is decoration for its own sake. The sweep tells you it
-     is working; the wedge tells you how much it does not know; the bar
-     tells you whether you are getting warmer. The static tells you the
-     answer is unreliable, which it is.
+     The sonar this replaced was a pretty circle that told you a bearing
+     you then had to hold in your head while you turned. This tells you
+     which way to turn and how far you have left, which is the only two
+     things anybody actually wanted.
      =========================================================== */
   _scanner(ox, oy, sc) {
     const x = this.x;
-    const W = 62, H = 74;
-    const R = 24;
-    const cx = ox + W / 2, cy = oy + 27;
+    const W = 92, H = 78;
 
     /* ---- the case ---- */
-    x.fillStyle = 'rgba(6,8,6,.90)'; x.fillRect(ox - 1, oy - 1, W + 2, H + 2);
+    x.fillStyle = 'rgba(6,8,6,.92)'; x.fillRect(ox - 1, oy - 1, W + 2, H + 2);
     x.fillStyle = '#2a2e28'; x.fillRect(ox, oy, W, H);
     x.fillStyle = '#3c423a'; x.fillRect(ox, oy, W, 1);
     x.fillStyle = '#161a15'; x.fillRect(ox, oy + H - 1, W, 1);
-    // four screws
     for (const [sx, sy] of [[ox + 3, oy + 3], [ox + W - 5, oy + 3],
       [ox + 3, oy + H - 5], [ox + W - 5, oy + H - 5]]) {
       x.fillStyle = '#5a6154'; x.fillRect(sx, sy, 2, 2);
       x.fillStyle = '#161a15'; x.fillRect(sx, sy + 1, 2, 1);
     }
 
-    /* ---- the screen ---- */
-    x.fillStyle = '#04120a';
-    x.beginPath(); x.arc(cx, cy, R + 2, 0, 6.283); x.fill();
-    x.fillStyle = '#07200f';
-    x.beginPath(); x.arc(cx, cy, R, 0, 6.283); x.fill();
-    // range rings, and the cross
-    x.strokeStyle = 'rgba(90,220,130,.20)'; x.lineWidth = 1;
-    for (const rr of [R * 0.34, R * 0.67, R]) {
-      x.beginPath(); x.arc(cx, cy, rr, 0, 6.283); x.stroke();
-    }
-    x.fillStyle = 'rgba(90,220,130,.16)';
-    x.fillRect(cx - R, cy, R * 2, 1);
-    x.fillRect(cx, cy - R, 1, R * 2);
+    /* ---- the band: a spectrum with one peak per transmitter ---- */
+    const BX = ox + 5, BY = oy + 6, BW = W - 10, BH = 26;
+    x.fillStyle = '#04120a'; x.fillRect(BX, BY, BW, BH);
+    // the graticule
+    x.fillStyle = 'rgba(90,220,130,.13)';
+    for (let i = 1; i < 6; i++) x.fillRect(BX + Math.round(i * BW / 6), BY, 1, BH);
+    for (let i = 1; i < 3; i++) x.fillRect(BX, BY + Math.round(i * BH / 3), BW, 1);
 
-    /* ---- the sweep, with a phosphor tail ----
-       Twelve steps behind the arm, each fainter, which is what a screen
-       that keeps glowing after the beam has gone actually looks like. */
-    const ang = sc.sweep * Math.PI * 2 - Math.PI / 2;
-    for (let i = 12; i >= 0; i--) {
-      const a = ang - i * 0.075;
-      const k = (1 - i / 12);
-      x.strokeStyle = `rgba(120,255,170,${(k * k * 0.42).toFixed(3)})`;
-      x.beginPath();
-      x.moveTo(cx, cy);
-      x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
-      x.stroke();
+    /* The noise floor: a live trace, so the instrument is alive even when
+       there is nothing on the band worth hearing. */
+    x.fillStyle = 'rgba(90,220,130,.32)';
+    for (let i = 0; i < BW; i++) {
+      const n = Math.sin(i * 0.7 + sc.t * 9) * 0.5 + Math.sin(i * 2.3 - sc.t * 13) * 0.5;
+      const h = 1 + Math.abs(n) * 2;
+      x.fillRect(BX + i, BY + BH - h, 1, h);
     }
 
-    /* ---- what it is hearing ---- */
-    if (sc.contact) {
-      /* The wedge of doubt: everything between here and here. It is the
-         honest part of the display and it is the part that shrinks as you
-         close on him. */
-      const b = sc.bearing - sc.facing - Math.PI / 2;
-      const half = Math.max(0.06, sc.spread);
-      x.fillStyle = `rgba(255,210,74,${(0.10 + sc.strength * 0.10).toFixed(3)})`;
-      x.beginPath();
-      x.moveTo(cx, cy);
-      x.arc(cx, cy, R, b - half, b + half);
-      x.closePath(); x.fill();
-
-      /* The blip, which is only bright just after the sweep has passed it.
-         Between passes it fades, so you have to wait for the next one —
-         which is the whole feel of a set like this. */
-      const passed = ((sc.sweep * Math.PI * 2 - Math.PI / 2) - b + 6.283 * 2) % 6.283;
-      const fresh = Math.max(0, 1 - passed / 1.2);
-      const br = R * (0.30 + (1 - sc.strength) * 0.62);
-      const bx = cx + Math.cos(b) * br, by = cy + Math.sin(b) * br;
-      if (fresh > 0.02) {
-        for (let i = 3; i >= 0; i--) {
-          x.fillStyle = `rgba(180,255,200,${(fresh * 0.16 / (i + 1)).toFixed(3)})`;
-          x.beginPath(); x.arc(bx, by, 2 + i * 2, 0, 6.283); x.fill();
-        }
-        x.fillStyle = `rgba(210,255,225,${fresh.toFixed(2)})`;
-        x.fillRect(Math.round(bx) - 1, Math.round(by) - 1, 3, 3);
+    /* and a peak for each carrier, drawn as a proper skirt rather than a
+       spike, because that is what a carrier looks like on a set like this */
+    for (const b of (sc.bars || [])) {
+      const px = BX + Math.round(b.band * (BW - 2)) + 1;
+      const ph = Math.max(3, Math.round(b.strength * (BH - 4)));
+      const locked = sc.lock && Math.abs(b.band - sc.band) < 0.001;
+      for (let w = -3; w <= 3; w++) {
+        const k = 1 - Math.abs(w) / 4;
+        const hh = Math.round(ph * k * k);
+        if (hh < 1) continue;
+        const col = b.kind === 'him'
+          ? (locked ? '#fff3c4' : '#ffd24a')
+          : (locked ? '#b8ffd0' : '#3e9a68');
+        x.fillStyle = col;
+        x.fillRect(px + w, BY + BH - hh, 1, hh);
       }
-      // and a needle round the bezel pointing the way, which does not fade
-      const nx = cx + Math.cos(b) * (R + 3), ny = cy + Math.sin(b) * (R + 3);
-      x.fillStyle = sc.ping > 0.3 ? '#fff3c4' : '#ffd24a';
-      x.fillRect(Math.round(nx) - 1, Math.round(ny) - 1, 3, 3);
-    }
-
-    /* ---- static, everywhere, and worse the less it can hear ---- */
-    {
-      const n = Math.round(18 + sc.noise * 34);
-      for (let i = 0; i < n; i++) {
-        const a = (i * 2.399 + sc.sweep * 31) % 6.283;
-        const r = ((i * 7.13) % 100) / 100 * R;
-        x.fillStyle = `rgba(150,255,190,${(0.05 + (i % 3) * 0.03).toFixed(3)})`;
-        x.fillRect(Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 1, 1);
+      // the lock brackets, which sit outside the peak
+      if (locked) {
+        x.fillStyle = '#fff3c4';
+        x.fillRect(px - 6, BY + 1, 1, 4); x.fillRect(px - 6, BY + 1, 3, 1);
+        x.fillRect(px + 6, BY + 1, 1, 4); x.fillRect(px + 4, BY + 1, 3, 1);
       }
     }
-    // the glass, and the shine on it
-    x.strokeStyle = 'rgba(120,200,150,.30)'; x.lineWidth = 1;
-    x.beginPath(); x.arc(cx, cy, R + 1.5, 0, 6.283); x.stroke();
-    x.strokeStyle = 'rgba(220,255,235,.10)';
-    x.beginPath(); x.arc(cx, cy, R - 3, -2.5, -1.4); x.stroke();
+    x.fillStyle = '#1e7a4a';
+    x.fillRect(BX, BY, BW, 1); x.fillRect(BX, BY + BH - 1, BW, 1);
+    x.fillRect(BX, BY, 1, BH); x.fillRect(BX + BW - 1, BY, 1, BH);
 
-    /* ---- the readout under it ---- */
-    const ry = oy + 56;
-    x.fillStyle = '#0b0f0a'; x.fillRect(ox + 4, ry, W - 8, 8);
-    if (sc.contact) {
-      const k = sc.strength;
-      const bw = Math.round((W - 12) * k);
-      for (let i = 0; i < bw; i += 2) {
-        x.fillStyle = i > (W - 12) * 0.72 ? '#ffd24a' : '#5ae08a';
-        x.fillRect(ox + 6 + i, ry + 2, 1, 4);
-      }
-      drawText(x, k > 0.72 ? 'CLOSE' : (k > 0.34 ? 'SIGNAL' : 'FAINT'), {
-        x: cx, y: oy + 65, scale: 1, align: 'center',
-        color: k > 0.72 ? '#fff3c4' : '#8fe8a0',
+    /* ---- what is locked ---- */
+    const NY = oy + 35;
+    if (!sc.lock) {
+      drawText(x, 'BAND CLEAR', {
+        x: ox + W / 2, y: NY + 8, scale: 1, align: 'center', color: '#4a7a5c',
       });
-    } else {
-      // a dead line crawling across, so it is obviously ON and hearing nothing
-      const dx2 = Math.round((sc.sweep * (W - 12)) % (W - 12));
-      x.fillStyle = '#2a4a34'; x.fillRect(ox + 6, ry + 4, W - 12, 1);
-      x.fillStyle = '#5ae08a'; x.fillRect(ox + 6 + dx2, ry + 3, 3, 2);
-      drawText(x, 'NO SIGNAL', {
-        x: cx, y: oy + 65, scale: 1, align: 'center', color: '#4a7a5c',
+      drawText(x, 'B  STEP', {
+        x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center', color: '#2e5a42',
+      });
+      return;
+    }
+    const him = sc.kind === 'him';
+    drawText(x, sc.name.slice(0, 15), {
+      x: BX, y: NY, scale: 1, color: him ? '#ffd24a' : '#8fe8a0',
+    });
+
+    /* ---- THE STEER ----
+       A bar with a marker that centres when you are facing it. Turn until
+       it is in the middle, then walk. The band of doubt is drawn round the
+       marker so you can see how much the set is guessing. */
+    const SY = NY + 11;
+    x.fillStyle = '#04120a'; x.fillRect(BX, SY, BW, 13);
+    // how far off your heading the bearing is, wrapped to +/- pi
+    let rel = sc.bearing - sc.facing;
+    rel = ((rel % 6.283) + 9.4248) % 6.283 - 3.1416;
+    const HALF = 1.9;                      // what the bar covers, either side
+    const px2 = BX + BW / 2 + Math.max(-BW / 2 + 3, Math.min(BW / 2 - 3, (rel / HALF) * (BW / 2)));
+    // the doubt, either side of the marker
+    const sw = Math.min(BW / 2, (sc.spread / HALF) * (BW / 2));
+    x.fillStyle = him ? 'rgba(255,210,74,.16)' : 'rgba(90,220,130,.14)';
+    x.fillRect(Math.round(px2 - sw), SY + 1, Math.round(sw * 2), 11);
+    // the centre line: this is the "you are facing it" mark
+    x.fillStyle = 'rgba(200,255,220,.34)';
+    x.fillRect(BX + Math.round(BW / 2), SY, 1, 13);
+    // ticks either side, so the bar has a scale
+    x.fillStyle = 'rgba(90,220,130,.22)';
+    for (const f of [0.25, 0.5, 0.75]) {
+      x.fillRect(BX + Math.round(BW / 2 * (1 - f)), SY + 10, 1, 3);
+      x.fillRect(BX + Math.round(BW / 2 * (1 + f)), SY + 10, 1, 3);
+    }
+    // the marker itself
+    const on = Math.abs(rel) < 0.16;
+    x.fillStyle = on ? '#fff3c4' : (him ? '#ffd24a' : '#8fe8a0');
+    x.fillRect(Math.round(px2) - 1, SY + 1, 3, 11);
+    for (let r = 0; r < 3; r++) x.fillRect(Math.round(px2) - r, SY + 1 + r, r * 2 + 1, 1);
+    // and which way to turn, in words, when you are well off
+    if (Math.abs(rel) > 0.5) {
+      drawText(x, rel > 0 ? '>>' : '<<', {
+        x: rel > 0 ? BX + BW - 10 : BX + 2, y: SY + 3, scale: 1,
+        color: Math.floor(sc.t * 4) % 2 ? '#fff3c4' : '#4a8a64',
       });
     }
+    x.fillStyle = '#1e7a4a';
+    x.fillRect(BX, SY, BW, 1); x.fillRect(BX, SY + 12, BW, 1);
+
+    /* ---- range, and how good the signal is ---- */
+    const RY = SY + 16;
+    drawText(x, `${Math.round(sc.dist)}M`, {
+      x: BX, y: RY, scale: 1, color: on ? '#fff3c4' : '#8fe8a0',
+    });
+    // a strength bar, which also tells you it is getting better as you walk
+    const gw = BW - 34;
+    x.fillStyle = '#0b1f14'; x.fillRect(BX + 32, RY + 1, gw, 5);
+    const gn = Math.round(gw * sc.strength);
+    for (let i = 0; i < gn; i += 2) {
+      x.fillStyle = i > gw * 0.75 ? '#fff3c4' : (him ? '#ffd24a' : '#5ae08a');
+      x.fillRect(BX + 32 + i, RY + 2, 1, 3);
+    }
+    drawText(x, on ? 'ON THE NOSE' : 'B  STEP', {
+      x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center',
+      color: on ? '#8fe8a0' : '#2e5a42',
+    });
   }
 
   /**
+   * The Agent's own panel, in the corner where a weapon readout belongs  /**
    * The Agent's own panel, in the corner where a weapon readout belongs
    * rather than buried under the shopping list.
    */
@@ -1110,6 +1121,16 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
     p(2, 3, 8, 3, C('#f090c0', '#6a3a52'));
     p(4, 1, 4, 2, C('#f8a8d0', '#74405a'));
     if (beat > 0.5) { p(2, 1, 1, 1, C('#ffc8e0', '#7a4a60')); p(9, 4, 1, 1, C('#ffc8e0', '#7a4a60')); }
+  } else if (kind === 'cctv') {
+    // a camera on a bracket, with its red pinhole
+    p(1, 5, 8, 5, C('#3a4038', '#22261f'));
+    p(1, 4, 8, 1, C('#5a6154', '#2e3229'));
+    p(9, 6, 2, 3, C('#22261f', '#161a15'));
+    p(11, 6, 1, 3, C('#0e1214', '#0a0c0e'));
+    p(4, 1, 1, 4, C('#5a6154', '#2e3229'));
+    p(2, 0, 6, 1, C('#5a6154', '#2e3229'));
+    if (lit && beat > 0.55) { p(2, 6, 1, 1, '#ff3a28'); }
+    else p(2, 6, 1, 1, C('#5a2018', '#2a1410'));
   } else if (kind === 'scanner') {
     // a handheld set: a round green screen, an aerial and a carrying strap
     p(1, 2, 10, 9, C('#2a2e28', '#1a1c18'));

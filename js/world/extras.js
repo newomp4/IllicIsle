@@ -290,8 +290,13 @@ export function buildRelic(kind, rng, mats) {
 
        Everything below is built in her own space with her lying on her left
        side, head toward +X, and then tipped over as one piece. */
-    const STEEL = G(0xb8c0c6), STEEL_D = G(0x7e868c), DARK = G(0x3a4046);
-    const BRASS = G(0xc0a058);
+    /* Brighter than she was. She is painted steel lying in a jungle, and
+       at the old values she read as a dark lump you walked past — the
+       thing that makes a machine legible is CONTRAST between its plates,
+       its seams and its joints, and all three were within a shade of each
+       other. */
+    const STEEL = G(0xd8e0e6), STEEL_D = G(0x8a949c), DARK = G(0x2a3036);
+    const BRASS = G(0xd8b464), HAZARD = G(0xe0a828);
     const body = [];
 
     // ---- the chassis: a panelled box, not a tube ----
@@ -331,11 +336,35 @@ export function buildRelic(kind, rng, mats) {
       }), i % 2 ? G(0x8a3a2a) : G(0x2a2e32)));
     }
 
+    /* Hazard chevrons along the flank, in the yellow every piece of plant
+       machinery in the world wears. Nothing on this island is that colour
+       except her, and it is the fastest way to say MADE. */
+    for (let i = 0; i < 4; i++) {
+      body.push(tint(box(0.06, 0.12, 0.42, 'metal', {
+        pos: [-0.20 + i * 0.13, 0.20, 0.01], rot: [0, 0, 0.5],
+      }), i % 2 ? HAZARD : DARK));
+    }
+    // a maker's plate, riveted on
+    body.push(tint(box(0.20, 0.12, 0.03, 'metal', { pos: [-0.14, 0.56, 0.21] }), STEEL_D));
+    for (const [rx, ry] of [[-0.22, 0.51], [-0.06, 0.51], [-0.22, 0.61], [-0.06, 0.61]]) {
+      body.push(tint(box(0.02, 0.02, 0.02, 'metal', { pos: [rx, ry, 0.23] }), BRASS));
+    }
+    // a shoulder actuator, exposed, with its rod part way out
+    for (const sx of [-1, 1]) {
+      body.push(tint(cyl(0.035, 0.035, 0.20, 6, 'metal', {
+        pos: [sx * 0.26, 0.48, 0.16], rot: [0.2, 0, sx * 0.3],
+      }), BRASS));
+      body.push(tint(cyl(0.018, 0.018, 0.12, 4, 'metal', {
+        pos: [sx * 0.28, 0.60, 0.19], rot: [0.2, 0, sx * 0.3],
+      }), G(0xe8eef2)));
+    }
+
     // ---- the head: a visor, not a face ----
     body.push(tint(cyl(0.09, 0.09, 0.14, 8, 'metal', { pos: [0, 0.74, 0] }), DARK));      // neck
     body.push(tint(box(0.30, 0.28, 0.34, 'metal', { pos: [0, 0.92, 0] }), STEEL));
     body.push(tint(box(0.32, 0.06, 0.36, 'metal', { pos: [0, 1.05, 0] }), STEEL_D));      // crown seam
-    // the visor slit, recessed
+    // the visor slit, recessed, with a bezel round it
+    body.push(tint(box(0.28, 0.13, 0.03, 'metal', { pos: [0, 0.94, 0.175] }), STEEL_D));
     body.push(tint(box(0.24, 0.09, 0.04, 'metal', { pos: [0, 0.94, 0.18] }), G(0x14181c)));
     // a hinged jaw plate, dropped open
     body.push(tint(box(0.22, 0.10, 0.16, 'metal', { pos: [0, 0.80, 0.12], rot: [0.5, 0, 0] }), STEEL_D));
@@ -364,8 +393,19 @@ export function buildRelic(kind, rng, mats) {
     const her = new THREE.Group();
     her.add(new THREE.Mesh(mergeGeos(body), mats.opaque));
     her.rotation.set(0.15, 0.4, 1.42);
-    her.position.set(0, 0.34, 0);
     g.add(her);
+    /* MEASURE where she ends up, do not guess at it.
+       She is built standing and then tipped eighty degrees about two axes,
+       so where her lowest corner lands is the product of a rotation nobody
+       is going to do in their head — and the two previous guesses left her
+       buried to the shoulder and then to the knee. Take the bounding box
+       after the rotation and set her down on it. */
+    her.position.set(0, 0, 0);
+    her.updateMatrixWorld(true);
+    {
+      const bb = new THREE.Box3().setFromObject(her);
+      her.position.y = -bb.min.y + 0.04;
+    }
     g.userData.her = her;
 
     // the number, painted on the collar plate

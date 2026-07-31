@@ -48,7 +48,8 @@ import {
   BAR_ENTRY, BAR_BOX, BAR_COLLIDERS, barHeight, BAR_KEEP, BAR_OCHE, BAR_DOOR,
 } from '../world/bar.js';
 import {
-  buildCamera, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y, CAMERA_COUNT,
+  buildCamera, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAB_Y,
+  CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS,
 } from '../world/tower.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
@@ -1246,7 +1247,7 @@ export class MPGame extends Game {
       const dt4 = Math.hypot(p.x - 0, p.z - (-1.5));
       if (dt4 < 2.4) return { kind: 'mpCams', prompt: 'THE TERMINAL' };
       const dsh = Math.hypot(p.x - 1.6, p.z - (-2.2));
-      if (dsh < 1.8) return { kind: 'mpTakeCams', prompt: 'TAKE THE CAMERAS' };
+      if (dsh < 1.8) return { kind: 'mpTakeCams', prompt: 'THE SPARES SHELF' };
       const ddn = Math.hypot(p.x - 0, p.z - 2.2);
       if (ddn < 1.8 && !this._cabCooldown) return { kind: 'mpCabOut', prompt: 'BACK DOWN' };
       return null;
@@ -1466,7 +1467,11 @@ export class MPGame extends Game {
       case 'mpChest': { this.openChest(); break; }
       case 'mpLadderUp': { this.enterCab(); break; }
       case 'mpCabOut': { this.leaveCab(); break; }
-      case 'mpTakeCams': { this.takeCameras(); break; }
+      case 'mpTakeCams': {
+        this.audio.sfx('deny');
+        this.ui.toast('THE SPARES ARE GONE - FERDI SELLS THEM', 'bad', 3000);
+        break;
+      }
       case 'mpCams': {
         this._initCameras();
         this.screens.push('mpCams', { sel: 0 });
@@ -1682,6 +1687,7 @@ export class MPGame extends Game {
       if (/^Digit[1-9]$/.test(e.code)) { this.useBeltSlot(+e.code.slice(5)); return; }
       if (e.code === 'KeyG') { this.togglePistol(); return; }
       if (e.code === 'KeyV') { this.placeCamera(); return; }
+      if (e.code === 'KeyB' && this.scannerOn) { this.scanNext(1); return; }
       if (e.code === 'KeyF') {
         if (this.pistolOut) this.fireFlare(); else this.tryKill();
         return;
@@ -1908,6 +1914,14 @@ export class MPGame extends Game {
 
     /* Food is eaten at the counter. It does not go on your belt: there is
        no version of this where you carry a burger around and press 4. */
+    /* A camera is not carried on the belt and is not eaten: buying one
+       hands it straight to the relay's spare count and you set it with V. */
+    if (id === 'camera') {
+      if (!this.gainCamera()) { this.coins += price; this.audio.sfx('deny'); return false; }
+      this.ui.showPopup(it.name, 'PRESS V WHERE YOU WANT IT', 'coin', 'FERDI SAYS');
+      return true;
+    }
+
     const isFood = FOOD.some((f) => f.id === id);
     if (it.tag === 'PASSIVE' || it.once) this.owned.add(id);
     else if (isFood) { /* the floss is eaten and gone */ }
@@ -2479,32 +2493,60 @@ export class MPGame extends Game {
   _initCameras() {
     if (this.cams) return;
     this.cams = [];
-    for (let i = 0; i < CAMERA_COUNT; i++) {
+    const add = (name, fitted) => {
+      const i = this.cams.length;
       const node = buildCamera(this.propMats);
-      node.userData.phase = i * 0.6;
+      node.userData.phase = i * 0.53;
       node.visible = false;
       this.islandScene.add(node);
       this.tickers.push(node);
-      this.cams.push({
-        i, node, placed: false, x: 0, y: 0, z: 0, yaw: 0,
-        name: `CAM ${i + 1}`,
-      });
+      const c = { i, node, placed: false, fitted, x: 0, y: 0, z: 0, yaw: 0, name };
+      this.cams.push(c);
+      return c;
+    };
+
+    /* The four that came with the mast, already up and already on the feed.
+       A terminal that boots to four dead channels tells you nothing and is
+       not worth the climb; these are watching the ways on to the island. */
+    for (const f of FITTED_CAMS) {
+      const c = add(f.name, true);
+      let [ax, az] = f.at;
+      let [lx, lz] = f.look;
+      // CAM 4 watches the temple door, which is not at a fixed spot
+      if (f.name.endsWith('TEMPLE') && this.templeDoorPos) {
+        const d = this.templeDoorPos;
+        lx = d.x; lz = d.z;
+        const a = Math.atan2(d.x, d.z);
+        ax = d.x - Math.sin(a) * 13; az = d.z - Math.cos(a) * 13;
+      }
+      c.x = ax; c.z = az;
+      c.y = heightAt(ax, az) + 3.4;      // up a trunk, looking down
+      c.yaw = Math.atan2(lx - ax, lz - az);
+      c.placed = true;
+      c.node.position.set(c.x, c.y, c.z);
+      c.node.rotation.y = c.yaw;
+      c.node.rotation.x = 0.16;
+      c.node.visible = true;
     }
-    this.camsHeld = CAMERA_COUNT;      // how many are still in your hands
+    // and room for the ones you buy
+    for (let i = 0; i < CAMERA_MAX - CAMERA_FITTED; i++) {
+      add(`CAM ${CAMERA_FITTED + i + 1}`, false);
+    }
+    this.camsHeld = 0;                    // you start with none of your own
   }
 
-  /** Take the lot off the shelf in the hut. */
-  takeCameras() {
+  /** Ferdi sells them. One bought is one you can set, wherever you like. */
+  gainCamera() {
     this._initCameras();
-    const loose = this.cams.filter((c) => !c.placed).length;
-    if (!loose) {
-      this.audio.sfx('deny');
-      this.ui.toast('THEY ARE ALL OUT THERE ALREADY', 'bad', 2000);
-      return;
+    const spare = this.cams.some((c) => !c.placed);
+    if (!spare) {
+      this.ui.toast('THE RELAY WILL NOT TAKE ANOTHER', 'bad', 2400);
+      return false;
     }
-    this.camsHeld = loose;
-    this.audio.sfx('pickup');
-    this.ui.toast(`${loose} CAMERA${loose === 1 ? '' : 'S'} - PRESS V TO SET ONE`, 'jade', 3600);
+    this.camsHeld = (this.camsHeld || 0) + 1;
+    this.ui.toast(`${this.camsHeld} CAMERA${this.camsHeld === 1 ? '' : 'S'} IN HAND - V TO SET`,
+      'jade', 3600);
+    return true;
   }
 
   /**
@@ -2596,62 +2638,129 @@ export class MPGame extends Game {
   /* =========================================================
      THE SIGNAL SCANNER
 
-     A direction finder, not a map. It sweeps, and when the sweep passes
-     the bearing it is hearing, it pings and paints a blip. The bearing it
-     gives you is WRONG by a margin that closes as you get nearer — sixty
-     degrees of doubt at a hundred and fifty metres, six at twenty — so it
-     narrows the island down rather than walking you to the spot.
+     The first version of this was a sonar sweep looking for exactly one
+     thing: the Stranger. He comes ashore once a round and stays for
+     seventy-five seconds, so a fifteen Syncoin item spent the other
+     nineteen minutes saying NO SIGNAL. It was not glitchy — it had
+     nothing to find.
 
-     The error is not re-rolled every frame. It wanders on its own slow
-     clock, because a needle that jitters is a needle you learn to average
-     out, and a needle that drifts is one you have to keep checking.
+     It is a spectrum analyser now. The island is full of things that
+     transmit, and they sit at different places on the band:
+
+       the mast          always there, and it is what gets you home
+       the listening post  the real hatch talks; the three decoys do not
+       relay cameras     one carrier each, so you can find cameras
+                         somebody else hid
+       the Stranger      when he is ashore, and he is the loudest
+                         thing on the band by a long way
+
+     So it is useful from the moment you switch it on, and when the one
+     you actually want appears you cannot miss it.
+
+     You LOCK a carrier and it gives you a steer: a bar with a marker that
+     centres as you turn to face it, and a range that counts down as you
+     close. That is a thing you can walk with. A bearing painted on a
+     compass rose is not.
      ========================================================= */
+  _scanSources(out = []) {
+    out.length = 0;
+    const M = this.mp;
+    const p = this.player.pos;
+    const push = (kind, name, x, z, band, power) => {
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d > power * 1.6) return;                 // out of its range entirely
+      out.push({
+        kind, name, x, z, band,
+        dist: d,
+        // how loud it reads: inverse square, near enough, clamped
+        strength: THREE.MathUtils.clamp(1 - (d / (power * 1.6)), 0.04, 1),
+      });
+    };
+
+    // the mast: always audible, and the widest range of anything
+    if (this.tower) push('mast', 'RELAY MAST', this.tower.x, this.tower.z, 0.08, 320);
+    // the real listening post. The decoys are holes in the ground.
+    if (M.bunker) push('post', 'LISTENING POST', M.bunker.x, M.bunker.z, 0.30, 170);
+    // every camera that is up, including the four that came with the mast
+    for (const c of (this.cams || [])) {
+      if (!c.placed) continue;
+      push('cam', c.name, c.x, c.z, 0.50 + (c.i % 10) * 0.028, 110);
+    }
+    // and him, when he is out there
+    if (M.stranger) push('him', 'UNLISTED SET', M.stranger.x, M.stranger.z, 0.86, 260);
+    out.sort((a, b) => a.band - b.band);
+    return out;
+  }
+
   _tickScanner(dt) {
-    if (!this.scannerOn) { this.scanContact = null; return; }
+    if (!this.scannerOn) { this.scanLock = null; return; }
     if (!this.hasItem('scanner')) { this.scannerOn = false; return; }
 
     const t = now();
-    this.scanSweep = ((this.scanSweep || 0) + dt * 1.35) % 1;
+    this.scanT = (this.scanT || 0) + dt;
+    const list = this._scanSources(this.scanList || (this.scanList = []));
 
-    const him = this.mp.stranger;
-    const p = this.player.pos;
-    if (!him || !this.amAlive) {
-      // it still sweeps, it just has nothing to say
-      this.scanContact = null;
-      this.scanNoise = 0.85 + Math.sin(t * 13) * 0.15;
-      return;
-    }
+    /* Which carrier you are locked to. It stays put unless it goes away,
+       so the display does not jump about under you while you are walking
+       toward something. The Stranger, though, takes the lock the moment he
+       appears — that is what you bought this for. */
+    let lock = list.find((q) => q.kind === this.scanKind && q.name === this.scanName);
+    const him = list.find((q) => q.kind === 'him');
+    if (him && this.scanKind !== 'him') lock = him;
+    if (!lock) lock = list[0] || null;
+    if (lock) { this.scanKind = lock.kind; this.scanName = lock.name; }
 
-    const dx = him.x - p.x, dz = him.z - p.z;
-    const dist = Math.hypot(dx, dz);
-    const trueBearing = Math.atan2(dx, dz);
+    if (!lock) { this.scanLock = null; return; }
 
-    /* How wrong it is, in radians, and it wanders. 1.05 rad is sixty
-       degrees; by twenty metres it is a tenth of that. */
-    const far = THREE.MathUtils.clamp((dist - 20) / 130, 0, 1);
-    const spread = 0.10 + far * 0.95;
-    const drift = Math.sin(t * 0.23) * 0.6 + Math.sin(t * 0.11 + 1.7) * 0.4;
-    const bearing = trueBearing + drift * spread;
+    /* The bearing is wrong by a margin that closes as you get nearer, and
+       it wanders on its own slow clock rather than jittering — a needle
+       that jitters is one you learn to average out. */
+    const dx = lock.x - this.player.pos.x, dz = lock.z - this.player.pos.z;
+    const trueB = Math.atan2(dx, dz);
+    const far = THREE.MathUtils.clamp((lock.dist - 15) / 120, 0, 1);
+    const spread = 0.05 + far * 0.55;
+    const drift = Math.sin(t * 0.27) * 0.62 + Math.sin(t * 0.13 + 1.9) * 0.38;
 
-    this.scanContact = {
-      bearing,
+    this.scanLock = {
+      kind: lock.kind,
+      name: lock.name,
+      dist: lock.dist,
+      strength: lock.strength,
+      band: lock.band,
+      bearing: trueB + drift * spread,
       spread,
-      // how strong he reads: everything the panel draws scales off this
-      strength: THREE.MathUtils.clamp(1 - far, 0.08, 1),
-      dist,
     };
-    this.scanNoise = 0.25 + far * 0.55 + Math.sin(t * 17) * 0.1;
 
-    /* The ping happens when the sweep line crosses the bearing, which is
-       what makes it a sweep rather than a dial. */
-    const sweepAng = this.scanSweep * Math.PI * 2;
-    const rel = ((bearing - sweepAng) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-    if (this._scanLast !== undefined && this._scanLast < 0 && rel >= 0) {
-      this.scanPing = 1;
-      this.audio.sfx(dist < 40 ? 'ping' : 'terminal');
+    /* It clicks faster the closer you are, like a geiger counter — which
+       is the part that actually walks you in, because you can hear it
+       without looking at the panel. */
+    const rate = 0.10 + (1 - THREE.MathUtils.clamp(lock.dist / 140, 0, 1)) * 1.9;
+    this._scanClick = (this._scanClick || 0) + dt * rate;
+    if (this._scanClick >= 1) {
+      this._scanClick = 0;
+      this.audio.sfx(lock.kind === 'him' ? 'ping' : 'oche');
     }
-    this._scanLast = rel;
-    this.scanPing = Math.max(0, (this.scanPing || 0) - dt * 1.6);
+
+    // and a warble when he first turns up, so you know without looking
+    if (lock.kind === 'him' && !this._scanSaidHim) {
+      this._scanSaidHim = true;
+      this.audio.sfx('alert');
+      this.ui.toast('AN UNLISTED SET IS TRANSMITTING', 'gold', 4000);
+    }
+    if (lock.kind !== 'him') this._scanSaidHim = false;
+  }
+
+  /** Step the lock on to the next carrier along the band. */
+  scanNext(d = 1) {
+    if (!this.scannerOn) return;
+    const list = this.scanList || [];
+    if (!list.length) { this.audio.sfx('deny'); return; }
+    let i = list.findIndex((q) => q.kind === this.scanKind && q.name === this.scanName);
+    if (i < 0) i = 0;
+    const n = list[(i + d + list.length) % list.length];
+    this.scanKind = n.kind;
+    this.scanName = n.name;
+    this.audio.sfx('select');
   }
 
   /* =========================================================
@@ -4004,17 +4113,22 @@ export class MPGame extends Game {
     /* The scanner panel. One object, reused, because this is written every
        frame and a new one each time is garbage for nothing. */
     if (this.scannerOn) {
-      const sc = (d.scanner = d.scanner || {});
+      const sc = (d.scanner = d.scanner || { bars: [] });
       sc.on = true;
-      sc.sweep = this.scanSweep || 0;
-      sc.ping = this.scanPing || 0;
-      sc.noise = this.scanNoise || 0.5;
+      sc.t = this.scanT || 0;
       sc.facing = this.player?.facing || 0;
-      const c = this.scanContact;
-      sc.contact = !!c;
-      sc.bearing = c ? c.bearing : 0;
-      sc.spread = c ? c.spread : 0;
-      sc.strength = c ? c.strength : 0;
+      // the whole band, so the panel can draw every carrier on it
+      sc.bars.length = 0;
+      for (const q of (this.scanList || [])) {
+        sc.bars.push({ band: q.band, strength: q.strength, kind: q.kind });
+      }
+      const L = this.scanLock;
+      sc.lock = !!L;
+      if (L) {
+        sc.kind = L.kind; sc.name = L.name; sc.dist = L.dist;
+        sc.strength = L.strength; sc.band = L.band;
+        sc.bearing = L.bearing; sc.spread = L.spread;
+      }
     } else if (d.scanner) {
       d.scanner.on = false;
     }

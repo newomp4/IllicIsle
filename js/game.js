@@ -41,7 +41,7 @@ import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
 import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
 import {
   buildTower, buildCab, buildCamera, TOWER_SPOT, TOWER_H, CAB_Y,
-  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight, CAMERA_COUNT,
+  CAB_BOX, CAB_COLLIDERS, CAB_ENTRY, cabHeight,
 } from './world/tower.js';
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
@@ -1014,85 +1014,16 @@ export class Game {
       }
     }
 
-    /* ---- syncoins scattered as currency ----
-       Placed against the colliders, not just against the terrain. findGround
-       only asks whether the ground is flat enough; it has no idea there is a
-       boulder standing on it, which is how one of these ended up embedded in
-       a rock near the camp. */
-    this.syncoins = [];
-    const clearOfProps = (x, z, need = 1.4) => {
-      for (const c of this.colliders) {
-        const rr = c.r + need;
-        if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
-      }
-      /* And every rock, log and shell the scatter dropped, collider or not.
-         This is the check that was missing: the coin near the Flopper sat on
-         a rock too small to have been given one. */
-      for (const q of (this.scattered || [])) {
-        const rr = q.r + need;
-        if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
-      }
-      return true;
-    };
-    /* A coin has to be somewhere you can WALK to, which is not the same as
-       somewhere flat. findGround only asks about the slope at the point
-       itself, so it will happily put one on the crown of a boulder or on a
-       ledge with a wall on every side — and one always ended up on a rock
-       near the flag, three feet in the air, where you could see it and see
-       it and never reach it.
-
-       So: the ground has to be flat AND every approach to it has to be
-       walkable. Sixteen bearings, and the rise over the last metre and a
-       half of each has to be something a pair of legs can manage. */
-    const reachable = (x, z) => {
-      const h = heightAt(x, z);
-      let ways = 0;
-      for (let k = 0; k < 16; k++) {
-        const a = (k / 16) * Math.PI * 2;
-        const dx = Math.cos(a), dz = Math.sin(a);
-        // walk out three metres; it must not need a climb on the way
-        let ok = true;
-        let prev = h;
-        for (let step = 1; step <= 4; step++) {
-          const hh = heightAt(x + dx * step * 0.8, z + dz * step * 0.8);
-          if (Math.abs(hh - prev) > 0.75) { ok = false; break; }
-          prev = hh;
-        }
-        if (ok && prev < h + 1.4 && prev > 0.35) ways++;
-      }
-      return ways >= 5;
-    };
-    for (let i = 0; i < 38; i++) {
-      let g = null;
-      for (let attempt = 0; attempt < 22; attempt++) {
-        const a = rng() * Math.PI * 2;
-        const r = 26 + rng() * 132;
-        const cand = findGround(Math.cos(a) * r, Math.sin(a) * r,
-          { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
-        if (clearOfProps(cand.x, cand.z, 2.0) && reachable(cand.x, cand.z)) { g = cand; break; }
-      }
-      if (!g) continue;                       // rather no coin than one in a rock
-      const coin = buildSyncoin(this.propMats);
-      coin.position.set(g.x, g.y, g.z);
-      coin.userData.baseY = g.y;
-      scene.add(coin);
-      this.tickers.push(coin);
-      this.syncoins.push({ mesh: coin, x: g.x, z: g.z, taken: false });
-    }
-
     /* ---- the three overworld relics ---- */
     this.relicNodes = [];
     const placeRelic = (kind, hintX, hintZ, opts) => {
       const g = findGround(hintX, hintZ, { rng, radius: 16, ...opts });
       const m = buildRelic(kind, rng, this.propMats);
-      // sunk to the lowest ground under it, like everything else with a base
-      let lo = g.y;
-      for (let k = 0; k < 8; k++) {
-        const a2 = (k / 8) * Math.PI * 2;
-        const hh = heightAt(g.x + Math.cos(a2) * 1.8, g.z + Math.sin(a2) * 1.8);
-        if (hh < lo) lo = hh;
-      }
-      m.position.set(g.x, lo, g.z);
+      /* Relics sit ON the ground, they are not sunk into it.
+         Sinking to the lowest point in a metre-and-a-half ring is the rule
+         for a crate with a wide flat base; a figure lying on her side has
+         no base, and on any slope at all it put Tasha under the turf. */
+      m.position.set(g.x, g.y, g.z);
       m.rotation.y = rng() * Math.PI * 2;
       scene.add(m);
       if (m.userData.tick) this.tickers.push(m);
@@ -1353,6 +1284,77 @@ export class Game {
         });
       }
     }
+
+    /* ---- syncoins, LAST ----
+       These used to be scattered before the relics, Cathy, the X, the mast,
+       the casino and her pier were placed — so every collider those add
+       arrived after the coins had already chosen where to sit, and a coin
+       could end up inside the pier head or under a rock at the shore end of
+       the bridge with nothing able to detect it. Money goes down last, when
+       everything it has to keep away from is already on the island. */
+    this.syncoins = [];
+    const clearOfProps = (x, z, need = 1.4) => {
+      for (const c of this.colliders) {
+        const rr = c.r + need;
+        if ((x - c.x) ** 2 + (z - c.z) ** 2 < rr * rr) return false;
+      }
+      /* And every rock, log and shell the scatter dropped, collider or not.
+         This is the check that was missing: the coin near the Flopper sat on
+         a rock too small to have been given one. */
+      for (const q of (this.scattered || [])) {
+        const rr = q.r + need;
+        if ((x - q.x) ** 2 + (z - q.z) ** 2 < rr * rr) return false;
+      }
+      return true;
+    };
+    /* A coin has to be somewhere a BODY CAN STAND, which is the only test
+       that matters and is not the same as "the ground here is flat".
+
+       The old check walked outward sampling heights and allowed a
+       three-quarter-metre step each time, which let a coin sit on a ledge
+       you could see up to and never climb. This asks the real question:
+       is there anywhere within reach of it that the player's own collision
+       would actually let you stand, at a height your legs could manage?
+       If there is nowhere, there is no coin. */
+    const canStandNear = (x, z) => {
+      const R = 0.42;                    // the player's radius
+      const h = heightAt(x, z);
+      for (let k = 0; k < 24; k++) {
+        const a = (k / 24) * Math.PI * 2;
+        for (const rr of [0.9, 1.2]) {
+          const px = x + Math.cos(a) * rr, pz = z + Math.sin(a) * rr;
+          let blocked = false;
+          for (const c of this.colliders) {
+            if ((px - c.x) ** 2 + (pz - c.z) ** 2 < (c.r + R) ** 2) { blocked = true; break; }
+          }
+          if (blocked) continue;
+          const ph = heightAt(px, pz);
+          if (Math.abs(ph - h) > 1.0) continue;   // a step, not a climb
+          if (ph < 0.35) continue;                // and not in the sea
+          return true;
+        }
+      }
+      return false;
+    };
+
+    for (let i = 0; i < 38; i++) {
+      let g = null;
+      for (let attempt = 0; attempt < 22; attempt++) {
+        const a = rng() * Math.PI * 2;
+        const r = 26 + rng() * 132;
+        const cand = findGround(Math.cos(a) * r, Math.sin(a) * r,
+          { rng, radius: 18, minH: 1.0, maxH: 34, maxSlope: 0.26 });
+        if (clearOfProps(cand.x, cand.z, 2.0) && canStandNear(cand.x, cand.z)) { g = cand; break; }
+      }
+      if (!g) continue;                       // rather no coin than one in a rock
+      const coin = buildSyncoin(this.propMats);
+      coin.position.set(g.x, g.y, g.z);
+      coin.userData.baseY = g.y;
+      scene.add(coin);
+      this.tickers.push(coin);
+      this.syncoins.push({ mesh: coin, x: g.x, z: g.z, taken: false });
+    }
+
 
     /* ---- the storm, dormant until the Pendulums are read ---- */
     this.storm = buildStorm(scene);
@@ -1749,6 +1751,53 @@ export class Game {
   }
 
   /* ===========================================================
+     THE MAST, IN SINGLE PLAYER
+
+     The same hut and the same terminal. There are no other players to
+     watch, but the four fitted cameras are still up and the island is
+     still moving in front of them.
+     =========================================================== */
+  enterCabSP() {
+    if (this.state !== 'island' || !this.cabScene) return;
+    this._initCameras?.();
+    this.state = 'cab';
+    this.scene = this.cabScene;
+    this.player.mesh.removeFromParent();
+    this.cabScene.add(this.player.mesh);
+    this.player.setColliders(CAB_COLLIDERS);
+    this.player.insideBox = CAB_BOX;
+    this.player.teleport(CAB_ENTRY.x, CAB_ENTRY.y, CAB_ENTRY.z, Math.PI);
+    this.player.pitch = -0.05;
+    this._cabCooldown = true;
+    setTimeout(() => { this._cabCooldown = false; }, 1600);
+    this.audio.sfx('ladder');
+    this.pipeline.tint.setHex(0x203028);
+    this.pipeline.tintAmt = 0.55;
+    this.ui.toast('THE MAST. NOBODY CAME BACK FOR IT.', 'jade', 3200);
+  }
+
+  leaveCabSP() {
+    if (this.state !== 'cab') return;
+    this.state = 'island';
+    this.scene = this.islandScene;
+    this.player.mesh.removeFromParent();
+    this.islandScene.add(this.player.mesh);
+    this.player.setColliders(this.colliders);
+    this.player.insideBox = null;
+    const tw = this.tower;
+    if (tw) {
+      const a = Math.PI / 4 + Math.PI;
+      const bx = tw.x + Math.cos(a) * 4.6, bz = tw.z + Math.sin(a) * 4.6;
+      this.player.teleport(bx, heightAt(bx, bz) + 0.6, bz, a);
+    }
+    this._cabCooldown = true;
+    setTimeout(() => { this._cabCooldown = false; }, 1600);
+    this.audio.sfx('ladder');
+    this.pipeline.tint.setHex(0xffffff);
+    this.pipeline.tintAmt = 0.4;
+  }
+
+  /* ===========================================================
      THE X, IN SINGLE PLAYER
 
      The same hole and the same chest. There is no market here, so what is
@@ -1980,9 +2029,15 @@ export class Game {
     });
   }
 
+  /* Every state in which there is a world under your feet and a body to
+     move about it. Rooms added later were not added here, so standing in
+     the mast's hut in single player meant `playing` was false, update()
+     returned on its first line, and nothing moved at all — including the
+     camera, which stayed wherever it had last been left. */
   get playing() {
     return this.state === 'island' || this.state === 'temple'
-      || this.state === 'bunker' || this.state === 'highroller';
+      || this.state === 'bunker' || this.state === 'highroller'
+      || this.state === 'bar' || this.state === 'cab';
   }
   anyOverlayOpen() { return this.screens.open; }
 
@@ -2793,6 +2848,25 @@ I have snacks."`);
       const d = Math.hypot(p.x - this.cathy.x, p.z - this.cathy.z);
       if (d < 5.0 && d < bestD) { bestD = d; best = { kind: 'cathy', prompt: 'Cathy' }; }
     }
+    /* The foot of the mast's ladder, and the terminal at the top of it.
+       These were only ever wired into the Castaways interactables, so in
+       single player the mast was scenery you could not climb. */
+    if (this.tower && this.state === 'island') {
+      const a = Math.PI / 4 + Math.PI;
+      const lx = this.tower.x + Math.cos(a) * 3.0, lz = this.tower.z + Math.sin(a) * 3.0;
+      const dl = Math.hypot(p.x - lx, p.z - lz);
+      if (dl < 3.0 && dl < bestD && !this._cabCooldown) {
+        bestD = dl; best = { kind: 'ladderUp', prompt: 'Climb the mast' };
+      }
+    }
+    if (this.state === 'cab') {
+      const dt4 = Math.hypot(p.x - 0, p.z - (-2.7));
+      if (dt4 < 2.6) return { kind: 'cams', prompt: 'The terminal' };
+      const ddn = Math.hypot(p.x - 0, p.z - 3.0);
+      if (ddn < 2.2 && !this._cabCooldown) return { kind: 'cabOut', prompt: 'Back down' };
+      return null;
+    }
+
     if (this.buried) {
       const bu = this.buried;
       const d = Math.hypot(p.x - bu.x, p.z - bu.z);
@@ -2896,6 +2970,15 @@ I have snacks."`);
       case 'cathy': this.openCathy(); break;
       case 'dig': case 'dug': break;      // held, not pressed
       case 'chest': this.openChestSP(); break;
+      case 'ladderUp': this.enterCabSP(); break;
+      case 'cabOut': this.leaveCabSP(); break;
+      case 'cams': {
+        this._initCameras?.();
+        document.exitPointerLock?.();
+        this.screens.push('mpCams', { sel: 0 });
+        this.audio.sfx('terminal');
+        break;
+      }
       case 'templeExit': this.exitTemple(); break;
       case 'takeIdol': this.takeIdol(); break;
     }
@@ -3340,6 +3423,7 @@ I have snacks."`);
 
     const frozen = this.paused || this.anyOverlayOpen();
     const inTemple = this.state === 'temple';
+    const inCab = this.state === 'cab';
     // whatever Cathy sold you, keeping up with where you are
     if (!frozen && !inTemple) this._tickFood();
 
@@ -3353,14 +3437,15 @@ I have snacks."`);
            her bridge are all platforms the terrain knows nothing about.
            Single player used heightAt directly, so Ferdi's steps were a
            picture of steps. */
-        groundOf: inTemple ? templeHeight : (this.groundOf || heightAt),
-        water: !inTemple,
-        bounds: !inTemple,
-        insideBox: inTemple
+        groundOf: inCab ? cabHeight : (inTemple ? templeHeight : (this.groundOf || heightAt)),
+        water: !inTemple && !inCab,
+        bounds: !inTemple && !inCab,
+        insideBox: inCab ? CAB_BOX : (inTemple
           ? { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ }
-          : null,
+          : null),
       });
-      if (!inTemple) { this._tide(dt); this._tickDig(dt); }
+      if (!inTemple && !inCab) { this._tide(dt); this._tickDig(dt); }
+      if (inCab) this.cabScene.userData.tick(this.time);
       this.updateCoconuts(dt);
       this.updateCoinFx(dt);
     } else {

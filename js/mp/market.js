@@ -167,6 +167,16 @@ export const STOCK = [
 
   /* ---------- the thing under the counter ---------- */
   {
+    /* The mast came with four. These are yours, they go where you decide,
+       and they join the same feed — which is the whole of it: the four that
+       were already up are watching what somebody else thought mattered. */
+    id: 'camera', name: 'RELAY CAMERA', cost: 11, side: 'open', icon: 'cctv',
+    blurb: 'One more eye on the mast\'s feed. Press V to hang it where you are '
+      + 'standing, aimed where you are looking. It shows up on the terminal at '
+      + 'the top of the ladder the moment it is up.',
+    tag: 'PRESS V',
+  },
+  {
     /* The one thing that will find the Stranger. He comes ashore once, he
        stands in the trees, and without this you find him by walking into
        him — which is not a mechanic, it is a coincidence. */
