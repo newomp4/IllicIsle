@@ -181,6 +181,19 @@ export const STOCK = [
     /* The one thing that will find the Stranger. He comes ashore once, he
        stands in the trees, and without this you find him by walking into
        him — which is not a mechanic, it is a coincidence. */
+    /* Ferdi keeps a docket machine behind the counter and will happily
+       sell you the other end of it. It only ever sees the open counter —
+       what happens under it is not written down anywhere, which is most
+       of why people go down there. */
+    id: 'printer', name: 'RECEIPT PRINTER', cost: 12, side: 'open', icon: 'chart',
+    blurb: 'A till roll on your own screen. Every time somebody buys from Ferdi\'s '
+      + 'open counter it prints a docket: who they are, what they took and what '
+      + 'they paid. It hangs there 15 seconds and rolls away. One at a time - a '
+      + 'second sale tears the first one off. It does not see the black market '
+      + 'and it does not print your own.',
+    tag: 'PASSIVE',
+  },
+  {
     id: 'scanner', name: 'SIGNAL SCANNER', cost: 8, side: 'open', icon: 'scanner',
     blurb: 'A handheld set that reads the whole band: the mast, the real listening '
       + 'post, every camera that is up, and any heat signature that is not on the '

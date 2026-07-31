@@ -143,6 +143,7 @@ export class HostSession {
       /* The command table's ledger. It is answered privately and only for
          somebody who is really standing in the bunker, so knowing what
          everybody is carrying stays a thing you have to go and earn. */
+      case C.BOUGHT: { this._receipt(from, msg); break; }
       case C.LEDGER: { this._sendLedger(from); break; }
       case C.ASKSTRANGER: { this._askStranger(from); break; }
       case C.PERK: {
@@ -151,6 +152,12 @@ export class HostSession {
         if (!p) break;
         if (msg.perk === 'quiet') p.quiet = !!msg.on;
         if (msg.perk === 'vest') p.vest = !!msg.on;
+        /* Who has a printer. The host needs this so a receipt goes only
+           to the people who paid for one — broadcasting every purchase to
+           every client and letting them decide whether to show it would
+           put the whole shop ledger on the wire for anybody with a
+           console open, which is a deduction game giving itself away. */
+        if (msg.perk === 'printer') p.printer = !!msg.on;
         if (msg.perk === 'speaker') {
           this.net.broadcast({ t: S.SPEAKER, x: msg.x, z: msg.z, secs: 60 });
           this.hooks.onSpeaker?.(msg.x, msg.z, 60);
@@ -217,10 +224,13 @@ export class HostSession {
       p.doneTasks = new Set();
       p.emergencies = this.settings.emergencyPerPlayer;
       p.killReady = now() + Math.max(this.settings.killCooldown, this.settings.graceSeconds || 0);
-      p.tasks = p.role === ROLE.CASTAWAY
-        ? dealTasks(this.rng, this.settings.tasksPerPlayer)
-        : dealTasks(this.rng, this.settings.tasksPerPlayer);   // agents get a fake list
+      // the same list for everyone; an Agent's chores are real chores
+      p.tasks = dealTasks(this.rng, this.settings.tasksPerPlayer);
       p.step = {};                       // taskId -> how far through it they are
+      /* Only the Castaways' work sets the SIZE of the job. An Agent who
+         pitches in is doing somebody else's share, not adding to it —
+         otherwise a stonewalling Agent could park the bar below a hundred
+         for ever and take the Castaways' win condition away with him. */
       if (p.role === ROLE.CASTAWAY) {
         for (const t of p.tasks) this.tasksTotal += taskSteps(t);
       }
@@ -291,11 +301,27 @@ export class HostSession {
     if (finished) p.doneTasks.add(taskId);
     else p.step[taskId] = at + 1;
 
-    /* Agents get a decoy list so they can be seen "doing tasks"; it just
-       never counts toward the bar. The dead do count — finishing the work
-       is how the Castaways win, and being killed should not take you out
-       of that fight. */
-    if (p.role === ROLE.CASTAWAY) { this.tasksDone++; this._tasks(); }
+    /* EVERY completed step moves the bar, whoever did it.
+
+       It used to only count a Castaway's work, and that was a hole you
+       could drive a bus through: the crew picks a suspect, makes him do
+       one chore while nobody else works, and watches the bar. It moves —
+       he is one of them. It does not — he is an Agent. No amount of good
+       lying survives that, because it is not a read, it is a readout.
+
+       So an Agent's chores are real chores now. He can do them, they look
+       identical from outside, and the bar cannot tell anyone apart.
+
+       What it costs him is the point of the whole thing: the bar is how
+       the Castaways WIN. Every chore an Agent does to look busy is a
+       chore they no longer have to do themselves. Under suspicion he can
+       buy his innocence by handing them progress, and that is a decision
+       worth having rather than a tell worth exploiting.
+
+       The dead count too — finishing the work is how the Castaways win,
+       and being killed should not take you out of that fight. */
+    this.tasksDone++;
+    this._tasks();
     const packet = { t: S.TASK_OK, taskId, step: p.step[taskId] || 0, done: finished };
     if (id === 'host') this.hooks.onTaskOk?.(taskId, packet.step, finished);
     else this.net.sendTo(id, packet);
@@ -553,6 +579,29 @@ export class HostSession {
     for (const q of this.players.values()) {
       if (q.id === exceptId) continue;
       if (Math.hypot((q.x || 0) - x, (q.z || 0) - z) < 12) q.nearBody = true;
+    }
+  }
+
+  /**
+   * Somebody bought something over Ferdi's open counter, and the people
+   * who own a printer get a docket for it.
+   *
+   * The buyer says what it was; the host says who they were and passes it
+   * on. The buyer never gets their own receipt — you know what you just
+   * bought, and a printer that told you would be noise.
+   *
+   * Only the open counter. What goes on under it is the whole point of
+   * the black market and printing that would end it.
+   */
+  _receipt(from, msg) {
+    const p = this.players.get(from);
+    if (!p || !msg || !msg.id) return;
+    const price = Math.max(0, Math.min(999, msg.price | 0));
+    for (const [pid, q] of this.players) {
+      if (!q.printer || pid === from) continue;
+      const packet = { t: S.RECEIPT, from: p.name || '?', id: msg.id, price };
+      if (pid === 'host') this.hooks.onReceipt?.(packet);
+      else this.net.sendTo(pid, packet);
     }
   }
 

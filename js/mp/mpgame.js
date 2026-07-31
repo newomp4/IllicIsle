@@ -31,7 +31,7 @@ import {
 const NET_TICK_MS = 40;
 
 /** Bought and immediately in force; nothing to press. */
-const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
+const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest', 'printer',
   'spyglass', 'rounds', 'nightglass']);
 /** Bought and carried until you choose the moment. These fill the belt. */
 const BELT_IDS = ['gun', 'scanner', 'whistle', 'speaker', 'flask', 'alibi', 'skeleton',
@@ -140,6 +140,7 @@ export class MPGame extends Game {
       onChaff: (secs) => { M.chaffUntil = now() + secs; },
       onPurse: (c, gained) => this._onPurse(c, gained),
       onLedger: (rows) => this._onLedger(rows),
+      onReceipt: (r) => this._onReceipt(r),
       onBlackout: (secs) => this._onBlackout(secs),
       onStranger: (on, x, z) => this._onStranger(on, x, z),
       onRiddle: (text) => this._onRiddle(text),
@@ -262,6 +263,7 @@ export class MPGame extends Game {
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
       case S.LEDGER: this._onLedger(msg.rows); break;
+      case S.RECEIPT: this._onReceipt(msg); break;
       case S.BLACKOUT: this._onBlackout(msg.secs); break;
       case S.STRANGER: this._onStranger(msg.on, msg.x, msg.z); break;
       case S.RIDDLE: this._onRiddle(msg.text); break;
@@ -1913,6 +1915,10 @@ export class MPGame extends Game {
     }
     this.coins -= price;
     this._send({ t: C.PURSE, coins: this.coins });
+    /* Over the counter, in front of whoever is watching, and on the
+       docket of anybody carrying a printer. Under the counter, nothing is
+       written down — that is what the black market is for. */
+    if (it.side !== 'black') this._send({ t: C.BOUGHT, id, price });
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
 
@@ -1975,6 +1981,13 @@ export class MPGame extends Game {
     // Cathy's food does the same thing in both modes, so it lives on Game
     if (FOOD.some((f) => f.id === id)) this.applyFood(id);
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
+    if (id === 'printer') {
+      /* The host has to know who is carrying one, so a docket goes only
+         to the people who paid for it. */
+      this._send({ t: C.PERK, perk: 'printer', on: true });
+      this.receipts = this.receipts || [];
+      this.ui.toast('THE TILL ROLL IS LIVE', 'jade', 2600);
+    }
     if (id === 'vest') {
       this._send({ t: C.PERK, perk: 'vest', on: true });
       /* Cork and canvas over your chest is heavy. A quarter off both your
@@ -3134,6 +3147,48 @@ export class MPGame extends Game {
   }
 
   /** The host's answer to a ledger request, cached until the next one. */
+  /* =========================================================
+     THE RECEIPT PRINTER
+
+     A docket for every sale over Ferdi's open counter: who, what, and
+     what they paid. It feeds out of the top of the panel, hangs there for
+     fifteen seconds, and rolls away.
+
+     One station, one docket. If a second sale comes in while the first
+     is still hanging there the first tears off — the queue is kept so
+     nothing is lost while the paper is changing over, but only the
+     newest is ever on the roll.
+     ========================================================= */
+  _onReceipt(r) {
+    if (!r || !this.hasItem?.('printer')) return;
+    this.receipts = this.receipts || [];
+    const it = itemById(r.id);
+    this.receipts.push({
+      who: String(r.from || '?').slice(0, 12),
+      what: (it ? it.name : String(r.id || '?')).slice(0, 18),
+      price: r.price | 0,
+      icon: it ? it.icon : 'coin',
+      t: 0,                             // how long it has been out
+      life: 15,                         // and how long it gets
+      no: (this._receiptNo = (this._receiptNo || 0) + 1),
+    });
+    /* Whatever was on the roll tears off now: give it a fifth of a second
+       to roll away rather than blinking out from under the new one. */
+    for (const q of this.receipts) {
+      if (q !== this.receipts[this.receipts.length - 1]) q.life = Math.min(q.life, q.t + 0.2);
+    }
+    while (this.receipts.length > 2) this.receipts.shift();
+    this.audio.sfx('page');
+  }
+
+  _tickReceipts(dt) {
+    const R = this.receipts;
+    if (!R || !R.length) return;
+    for (const q of R) q.t += dt;
+    // 15 seconds out, then three quarters of a second to roll away
+    for (let i = R.length - 1; i >= 0; i--) if (R[i].t > R[i].life + 0.75) R.splice(i, 1);
+  }
+
   _onLedger(rows) {
     const M = this.mp;
     M.ledger = new Map();
@@ -3749,6 +3804,7 @@ export class MPGame extends Game {
     this._tickFood();
     this._tickDig(dt);
     this._tickScanner(dt);
+    this._tickReceipts(dt);
 
     /* The one on the treeline. His position comes off the wire at the net
        tick, so it is interpolated here — he moves far too fast for a
@@ -4019,6 +4075,10 @@ export class MPGame extends Game {
     } else if (d.scanner) {
       d.scanner.on = false;
     }
+    /* The till roll. Handed over by reference — it is a short list and it
+       is rebuilt only when something is actually bought. */
+    d.receipts = (this.receipts && this.receipts.length && this.hasItem?.('printer'))
+      ? this.receipts : null;
     d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;

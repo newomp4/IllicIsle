@@ -2052,6 +2052,13 @@ export class Game {
     /* Alt-tabbing out of a menu should do nothing; there is nothing to
        pause, and pausing on top of an open screen stacks two of them. */
     window.addEventListener('blur', () => {
+      /* Tabbing away never delivers the key-up, so anything being held
+         stays held — and a camera head with a key stuck down turns for
+         ever. */
+      this.screens.clearHeld();
+      this.input.fwd = this.input.back = this.input.left = this.input.right = false;
+      this.input.sprint = this.input.jump = false;
+      this.holdingE = false;
       if (this.playing && !this.paused && !this.anyOverlayOpen()) this.pause(true);
     });
   }
@@ -2082,6 +2089,13 @@ export class Game {
   _key(e, down) {
     const k = e.code;
     const I = this.input;
+
+    /* A screen that wants a key HELD needs the key-up as well, and the
+       guard below throws every key-up away. This is the one line that
+       lets the mast terminal drive a camera head smoothly instead of in
+       key-repeat steps. */
+    if (this.screens.open) this.screens.setHeld(k, down);
+    else if (this.screens.held.size) this.screens.clearHeld();
 
     /* Canvas screens take priority over everything, including movement,
        so arrow keys drive menus instead of walking you into the sea. */
@@ -3165,11 +3179,19 @@ I have snacks."`);
    * thumbnails nobody is reading. The result is read back as pixels so the
    * interface, which is a 2D canvas, can draw it with everything else.
    */
-  /* How far the mount will go, and how far the lens will. */
-  static CAM_PAN = 1.25;                  // 72 degrees either side
-  static CAM_TILT = 0.55;                 // 31 degrees up or down
+  /* How far the mount will go, and how far the lens will.
+
+     Pan has no stop: the head goes all the way round, so a camera you
+     hung facing the wrong way is a camera you can turn round rather than
+     one you have to take down. Tilt does have stops, because a camera
+     that can look straight up and keep going is looking at the inside of
+     its own bracket. */
+  static CAM_TILT = 0.62;                 // 35 degrees up or down
   static CAM_ZOOM_MAX = 4.0;
   static CAM_FOV = 62;
+  static CAM_PAN_RATE = 1.7;              // radians a second, wide open
+  static CAM_TILT_RATE = 1.0;
+  static CAM_ZOOM_RATE = 1.3;             // times a second
 
   /** Put the borrowed camera where camera `i` is and point it that way. */
   _aimFeedCam(cam, aspect = FEED_W / FEED_H) {
@@ -3196,13 +3218,16 @@ I have snacks."`);
   aimCamera(i, dPan, dTilt, dZoom) {
     const cam = this.cams?.[i];
     if (!cam || !cam.placed) return false;
-    const P = Game.CAM_PAN, T = Game.CAM_TILT;
+    const T = Game.CAM_TILT;
     const before = `${cam.pan}|${cam.tilt}|${cam.zoom}`;
     /* The mount turns slower the further it is zoomed in, which is what a
        real head does and is the difference between aiming and flailing:
        at four times you are nudging it a degree at a time. */
     const geared = 1 / Math.max(1, cam.zoom || 1);
-    cam.pan = THREE.MathUtils.clamp(cam.pan + dPan * geared, -P, P);
+    cam.pan += dPan * geared;
+    // all the way round, and kept in one turn so the readout stays sane
+    if (cam.pan > Math.PI) cam.pan -= Math.PI * 2;
+    if (cam.pan < -Math.PI) cam.pan += Math.PI * 2;
     cam.tilt = THREE.MathUtils.clamp(cam.tilt + dTilt * geared, -T, T);
     cam.zoom = THREE.MathUtils.clamp((cam.zoom || 1) + dZoom, 1, Game.CAM_ZOOM_MAX);
     // the thing on the tree turns too, so what you see is where it points

@@ -755,7 +755,23 @@ export class ScreenStack {
     this.stack = [];
     this.t = 0;
     this._rows = [];
+    /* Which keys are down RIGHT NOW.
+
+       Screens only ever saw key-downs, so anything that wants to be held
+       — driving a camera head, say — had to ride on the browser's own
+       key repeat, which waits half a second and then fires in steps. That
+       is fine for a menu and useless for aiming. */
+    this.held = new Set();
   }
+
+  setHeld(code, down) {
+    if (down) this.held.add(code); else this.held.delete(code);
+  }
+
+  /** Everything up. Called when a screen opens or closes, and on blur. */
+  clearHeld() { this.held.clear(); }
+
+  holding(code) { return this.held.has(code); }
 
   get open() { return this.stack.length > 0; }
   get top() { return this.stack[this.stack.length - 1] || null; }
@@ -772,12 +788,18 @@ export class ScreenStack {
     }
     const s = { name, sel: 0, scroll: 0, t: 0, ...data, name };
     if (SCREENS[name]?.init) SCREENS[name].init(s, this.game);
+    this.clearHeld();          // whatever opened this is not still held
     this.stack.push(s);
     this.game.audio?.sfx('page');
     return s;
   }
-  pop() { const s = this.stack.pop(); this.game.audio?.sfx('select'); return s; }
-  clear() { this.stack.length = 0; }
+  pop() {
+    const s = this.stack.pop();
+    this.clearHeld();
+    this.game.audio?.sfx('select');
+    return s;
+  }
+  clear() { this.stack.length = 0; this.clearHeld(); }
   replace(name, data) { this.stack.length = 0; return this.push(name, data); }
   has(name) { return this.stack.some((s) => s.name === name); }
 
@@ -848,7 +870,7 @@ export class ScreenStack {
        counting itself out) needs a clock that is not the draw call — draw
        must stay a pure function of state or it misbehaves the moment a
        frame is dropped. */
-    SCREENS[s.name]?.tick?.(s, this.game, dt, s.t);
+    SCREENS[s.name]?.tick?.(s, this.game, dt, s.t, this);
   }
 
   draw(x, W, H) {
@@ -4221,12 +4243,48 @@ export const SCREENS = {
       s.feedT = 9;            // due immediately
       s.hasPic = false;
     },
-    tick(s, g, dt, t) {
+    tick(s, g, dt, t, st) {
       s.boot = Math.min(1, s.boot + dt * 0.9);
       s.rec = (s.rec + dt) % 2;
       if (s.glitch > 0) s.glitch = Math.max(0, s.glitch - dt * 3);
       if (s.flip > 0) s.flip = Math.max(0, s.flip - dt * 5.5);
-      if (s.servo > 0) s.servo = Math.max(0, s.servo - dt * 4);
+
+      /* ---- THE MOUNT ----
+         A step per key press meant the browser's own repeat drove the
+         head: half a second of nothing, then a series of jerks. This is a
+         motor instead. Hold a key and it winds up over about a fifth of a
+         second, hold it longer and it runs at full rate, let go and it
+         coasts to a stop. Nothing snaps. */
+      const H = st ? st.held : null;
+      const want = (a, b2) => ((H && H.has(a)) ? 1 : 0) - ((H && H.has(b2)) ? 1 : 0);
+      const px = H ? want('ArrowRight', 'ArrowLeft') : 0;
+      const ty = H ? want('ArrowUp', 'ArrowDown') : 0;
+      const zx = H
+        ? (want('KeyX', 'KeyZ') || want('Equal', 'Minus') || want('NumpadAdd', 'NumpadSubtract'))
+        : 0;
+      // spin up quickly, run down a little more slowly, like a real head
+      const ease = (v, target, up, down) =>
+        v + (target - v) * Math.min(1, dt * (Math.abs(target) > Math.abs(v) ? up : down));
+      s.panV = ease(s.panV || 0, px, 9, 13);
+      s.tiltV = ease(s.tiltV || 0, ty, 9, 13);
+      s.zoomV = ease(s.zoomV || 0, zx, 8, 12);
+      if (Math.abs(s.panV) < 0.002) s.panV = 0;
+      if (Math.abs(s.tiltV) < 0.002) s.tiltV = 0;
+      if (Math.abs(s.zoomV) < 0.002) s.zoomV = 0;
+      const moving = s.panV || s.tiltV || s.zoomV;
+      if (moving) {
+        g.aimCamera?.(s.sel,
+          s.panV * 1.7 * dt,
+          s.tiltV * 1.0 * dt,
+          s.zoomV * 1.3 * dt);
+        s.servo = 1;
+        /* One knock every so often while it runs, not one per frame —
+           sixty a second is a buzz, not a motor. */
+        s.servoT = (s.servoT || 0) + dt;
+        if (s.servoT > 0.11) { s.servoT = 0; g.audio?.sfx('oche'); }
+      } else if (s.servo > 0) {
+        s.servo = Math.max(0, s.servo - dt * 4);
+      }
 
       /* The big picture is a whole extra pass over the island plus a read
          back off the GPU, and doing that sixty times a second to watch a
@@ -4535,18 +4593,40 @@ export const SCREENS = {
            marker on each — so you can see how much of the mount is left
            before you run out of it. */
         {
-          const GW = 44, GX = FX + FW / 2 - GW / 2, GY = FY + FH - 8;
-          x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(GX - 2, GY - 1, GW + 4, 5);
-          x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(GX, GY + 1, GW, 1);
-          x.fillStyle = 'rgba(255,255,255,.30)'; x.fillRect(GX + GW / 2, GY, 1, 3);
-          const pk = GX + GW / 2 + ((sel.pan || 0) / 1.25) * (GW / 2);
-          x.fillStyle = cap; x.fillRect(Math.round(pk) - 1, GY - 1, 3, 5);
-          // tilt runs up the right-hand edge of the picture
+          /* Pan goes all the way round now, so a travel bar with two ends
+             is the wrong instrument — it is a dial. The needle is where
+             the head is pointing, the notch at the top is how it was
+             fitted, and it wraps because the head does. */
+          const CXr = FX + FW / 2, CYr = FY + FH - 11, RR = 8;
+          x.fillStyle = 'rgba(0,0,0,.5)';
+          x.fillRect(CXr - RR - 2, CYr - RR - 2, RR * 2 + 5, RR * 2 + 5);
+          x.fillStyle = 'rgba(255,255,255,.20)';
+          for (let a = 0; a < 32; a++) {
+            const th = (a / 32) * Math.PI * 2;
+            x.fillRect(Math.round(CXr + Math.sin(th) * RR),
+              Math.round(CYr - Math.cos(th) * RR), 1, 1);
+          }
+          // the notch at its fitted bearing
+          x.fillStyle = 'rgba(255,255,255,.45)';
+          x.fillRect(CXr, CYr - RR - 2, 1, 3);
+          const pa = sel.pan || 0;
+          x.fillStyle = cap;
+          for (let r = 2; r <= RR - 1; r++) {
+            x.fillRect(Math.round(CXr + Math.sin(pa) * r),
+              Math.round(CYr - Math.cos(pa) * r), 1, 1);
+          }
+          x.fillRect(CXr - 1, CYr - 1, 3, 3);
+          // and the bearing in degrees, because a needle is not a number
+          drawText(x, `${Math.round(pa * 57.3)}`, {
+            x: CXr + RR + 5, y: CYr - 3, scale: 1, color: cap2,
+          });
+
+          // tilt runs up the right-hand edge of the picture, and does stop
           const TH = 34, TX = FX + FW - 7, TY = FY + FH / 2 - TH / 2;
           x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(TX - 1, TY - 2, 5, TH + 4);
           x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(TX + 1, TY, 1, TH);
           x.fillStyle = 'rgba(255,255,255,.30)'; x.fillRect(TX, TY + TH / 2, 3, 1);
-          const tk = TY + TH / 2 - ((sel.tilt || 0) / 0.55) * (TH / 2);
+          const tk = TY + TH / 2 - ((sel.tilt || 0) / 0.62) * (TH / 2);
           x.fillStyle = cap; x.fillRect(TX - 1, Math.round(tk) - 1, 5, 3);
         }
 
@@ -4705,23 +4785,18 @@ export const SCREENS = {
 
       /* THE HEAD. Arrows drive the mount, because that is what arrows do
          on a set like this; the channel moved to W and S to make room.
-         One press is one step, and the browser's own key repeat gives you
-         a held-down sweep for free. */
-      const STEP = 0.085, TSTEP = 0.055;
-      const aim = (dp, dt2, dz) => {
-        if (g.aimCamera?.(s.sel, dp, dt2, dz)) {
-          s.wantFeed = true;                 // do not wait for the next tick
-          s.servo = 1;
-          g.audio?.sfx('oche');       // a short servo knock
-        } else g.audio?.sfx('deny');
+         These are HELD, and the motion happens in tick() off the held-key
+         set — a key handler only fires on the way down, and driving a
+         camera off key repeat is why it used to move in lurches. Swallow
+         them here so the stack does not treat them as menu keys. */
+      if (code === 'ArrowLeft' || code === 'ArrowRight'
+        || code === 'ArrowUp' || code === 'ArrowDown'
+        || code === 'KeyX' || code === 'KeyZ'
+        || code === 'Equal' || code === 'Minus'
+        || code === 'NumpadAdd' || code === 'NumpadSubtract') {
+        if (!(g.cams || [])[s.sel]?.placed) g.audio?.sfx('deny');
         return true;
-      };
-      if (code === 'ArrowLeft') return aim(-STEP, 0, 0);
-      if (code === 'ArrowRight') return aim(STEP, 0, 0);
-      if (code === 'ArrowUp') return aim(0, TSTEP, 0);
-      if (code === 'ArrowDown') return aim(0, -TSTEP, 0);
-      if (code === 'KeyX' || code === 'Equal' || code === 'NumpadAdd') return aim(0, 0, 0.25);
-      if (code === 'KeyZ' || code === 'Minus' || code === 'NumpadSubtract') return aim(0, 0, -0.25);
+      }
       if (code === 'KeyR') {
         g.centreCamera?.(s.sel); s.wantFeed = true; g.audio?.sfx('terminal'); return true;
       }

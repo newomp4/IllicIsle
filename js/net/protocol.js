@@ -24,6 +24,7 @@ export const C = {
   SNAP:       'c.snap',       // { yes }        a snap vote answer
   PURSE:      'c.purse',      // { coins }      tell the host what you are carrying
   PERK:       'c.perk',       // { perk, on }   something bought that others must see
+  BOUGHT:     'c.bought',     // { id, price }  over Ferdi's counter, for the printers
   LEDGER:     'c.ledger',     // {}             ask what everybody is carrying
   ASKSTRANGER: 'c.ask',       // {}             speak to the one on the treeline
   SETTINGS:   'c.settings',   // host-only UI echo; ignored from clients
@@ -56,6 +57,7 @@ export const S = {
   VOTES:      's.votes',      // { counts, voted }
   EXILE:      's.exile',      // { targetId | null, wasAgent, reveal }
   SABOTAGE:   's.sabotage',   // { kind, endsAt, half }  half = where it came from
+  RECEIPT:    's.receipt',    // { from, id, price }  PRIVATE, to whoever owns a printer
   LEDGER:     's.ledger',     // { rows: [[id, coins]] }  PRIVATE, the command table
   BLACKOUT:   's.blackout',   // { secs }        every fire on the island goes out
   STRANGER:   's.stranger',   // { on, x, z }   where he is, if he is anywhere

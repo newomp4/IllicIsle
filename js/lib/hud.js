@@ -124,6 +124,8 @@ export class Hud {
       /* Clear of the toast stack above it (two at 13 apiece from 58, so
          84 at the worst) and clear of the belt caption below it at 164. */
       if (d.mp.scanner?.on) this._scanner(4, 86, d.mp.scanner);
+      // and the till roll in the one gap nothing else uses
+      if (d.mp.receipts) this._receipts(138, 24, d.mp.receipts);
       if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
       /* An Agent has a knife panel in the bottom right corner, and a long
          prompt centred on the screen runs straight into it — "QUEZETRIEL
@@ -244,7 +246,11 @@ export class Hud {
       });
       y += 8;
     }
-    if (agent) drawText(x, 'THESE ARE FOR SHOW', { x: ox, y: y + 1, scale: 1, color: '#a05c50' });
+    /* This used to say THESE ARE FOR SHOW, and it was true: an Agent's
+       chores did not move the bar, which is exactly the tell the crew
+       learned to force. They count now, and the line has to say so,
+       because the cost is the whole decision. */
+    if (agent) drawText(x, 'THESE COUNT FOR THEM', { x: ox, y: y + 1, scale: 1, color: '#c08a5c' });
     else drawText(x, 'TAB  MAP', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
   }
 
@@ -437,6 +443,91 @@ export class Hud {
       x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center',
       color: on ? '#8fe8a0' : (him ? '#c09a3a' : '#2e6a48'),
     });
+  }
+
+  /* ===========================================================
+     THE RECEIPT PRINTER
+
+     Ferdi's docket machine, on your belt. Paper feeds out of the head at
+     the top, the printing catches up with it a line at a time, it hangs
+     there for fifteen seconds, then it rolls back in.
+
+     It is drawn as paper — off-white, a torn top edge, a perforated
+     bottom one — because the whole point is that it reads as a thing
+     somebody handed you rather than as another green box.
+     =========================================================== */
+  _receipts(ox, oy, list) {
+    const x = this.x;
+    /* WHERE THIS LIVES, and why it is one at a time.
+
+       Every other edge of this HUD is spoken for: chores top left, purse
+       and work top right, toasts across the middle at 58, the item card
+       at 86 to 138 on the right, the scanner down the left from 86, the
+       belt at 164 and the Agent's knife panel at 157. The one rectangle
+       nothing else uses is under the compass and to the right of the
+       chore list — ninety-eight by thirty, at 138, 24, which stops six
+       pixels short of the purse plate.
+
+       A docket at a time fits there and nothing else ever will, which is
+       also how a printer with one station behaves: if a second sale comes
+       in while the first is still hanging there, the first one tears off
+       and the new one feeds in behind it. */
+    const W = 98, H = 30;
+    const r = list[list.length - 1];
+    if (!r) return;
+    const outT = Math.min(1, r.t / 0.5);
+    const backT = r.t > r.life ? Math.min(1, (r.t - r.life) / 0.7) : 0;
+    const shown = Math.round(H * (1 - Math.pow(1 - outT, 3)) * (1 - backT));
+    const y = oy;
+
+    // the printer head: a dark slot the paper comes out of
+    x.fillStyle = '#1a1d18'; x.fillRect(ox - 2, y - 5, W + 4, 5);
+    x.fillStyle = '#3a4038'; x.fillRect(ox - 2, y - 5, W + 4, 1);
+    x.fillStyle = '#0a0c09'; x.fillRect(ox, y - 2, W, 2);
+    // a lamp on the head that blinks while it is feeding
+    if (shown < H && backT < 1) {
+      x.fillStyle = Math.floor(r.t * 12) % 2 ? '#7affa8' : '#2a5a3a';
+      x.fillRect(ox + W - 4, y - 4, 2, 2);
+    }
+    if (shown < 3) return;
+
+    // the paper, clipped to however much of it is out
+    x.save();
+    x.beginPath(); x.rect(ox, y, W, shown); x.clip();
+    x.fillStyle = '#e8e3d2'; x.fillRect(ox, y, W, H);
+    x.fillStyle = 'rgba(150,138,110,.35)';
+    x.fillRect(ox, y, 1, H); x.fillRect(ox + W - 1, y, 1, H);
+    // the faint ruling a thermal roll has
+    x.fillStyle = 'rgba(60,50,40,.07)';
+    for (let i = 2; i < H; i += 4) x.fillRect(ox + 3, y + i, W - 6, 1);
+
+    /* What it says, in the order a printer would put it down — the lines
+       catch up with the paper rather than arriving with it. */
+    const line = (n) => outT >= 1 && r.t > 0.28 + n * 0.13;
+    // a name that runs off the roll says so, rather than stopping mid-word
+    const fit = (str) => {
+      const full = String(str);
+      let v = full;
+      while (v.length > 2 && textWidth(v, 1) > W - 8) v = v.slice(0, -1);
+      return v === full ? v : `${v.slice(0, -1)}.`;
+    };
+    if (line(0)) drawText(x, fit(r.who), { x: ox + 4, y: y + 2, scale: 1, color: '#241e16' });
+    if (line(1)) drawText(x, fit(r.what), { x: ox + 4, y: y + 11, scale: 1, color: '#4a4032' });
+    if (line(2)) {
+      x.fillStyle = 'rgba(60,50,40,.45)';
+      for (let i = 4; i < W - 4; i += 2) x.fillRect(ox + i, y + 19, 1, 1);
+      drawText(x, 'PAID', { x: ox + 4, y: y + 21, scale: 1, color: '#7a6c54' });
+      const pr = String(r.price);
+      drawText(x, pr, { x: ox + W - 4, y: y + 21, scale: 1, align: 'right', color: '#241e16' });
+      drawCoinPip(x, ox + W - 6 - textWidth(pr, 1) - 7, y + 21);
+    }
+    x.restore();
+
+    // the torn bottom edge, on whatever is actually out
+    const bot = y + shown;
+    x.fillStyle = '#c9c2ad';
+    for (let i = 0; i < W; i += 3) x.fillRect(ox + i, bot - 1, 2, 1);
+    x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(ox, bot, W, 1);
   }
 
   /**
