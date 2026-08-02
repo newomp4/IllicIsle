@@ -5858,20 +5858,73 @@ export const SCREENS = {
       let rows = [];
       if (!s.done) {
         s.sfx = s.sfx || ((n) => g.audio?.sfx(n));
+        /* THE JOLT. Games ask for it by setting `s.shake`; it is applied
+           here, to the whole panel, because a game shaking its own
+           contents while its frame stays put reads as a bug. It decays
+           on this clock so no game has to remember to wind it down. */
+        s.shake = Math.max(0, (s.shake || 0) - dt * 4.2);
+        const jolt = s.shake > 0.01;
+        if (jolt) {
+          const a = s.shake * s.shake * 5;
+          x.save();
+          x.translate(Math.round((Math.random() - 0.5) * a * 2),
+            Math.round((Math.random() - 0.5) * a * 2));
+        }
         rows = G.draw.call(G, x, W, H, s, t, dt) || [];
+        if (jolt) x.restore();
         footer(x, W, H, `${G.hint}   ESC WALK AWAY`);
       } else {
-        // it lands, rather than the window simply closing
+        /* ---- IT LANDS ----
+           Three rings going out, the panel washing green, a burst of
+           sparks off the middle and the word arriving with a thump. It
+           used to be one thin circle and the text, which for the last
+           thing you see before the window shuts was very little. */
         s.doneT += dt;
-        const k = Math.min(1, s.doneT / 0.45);
-        const r = Math.round(6 + k * 90);
-        x.strokeStyle = `rgba(126,200,80,${(1 - k).toFixed(2)})`;
-        x.lineWidth = 2;
-        x.beginPath(); x.arc(W / 2, H / 2, r, 0, Math.PI * 2); x.stroke();
-        drawText(x, 'DONE', {
-          x: W / 2, y: H / 2 - 10, scale: k < 0.4 ? 3 : 2, align: 'center',
-          color: k < 0.4 ? '#ffffff' : JADE,
+        const k = Math.min(1, s.doneT / 0.62);
+        const cx = W / 2, cy = H / 2;
+        // the wash, brightest at the instant it lands
+        x.fillStyle = `rgba(126,200,80,${(Math.max(0, 0.42 - k * 0.42)).toFixed(2)})`;
+        x.fillRect(0, 0, W, H);
+        // three rings, staggered, drawn as pixels like everything else
+        for (let ri = 0; ri < 3; ri++) {
+          const rk = k * 1.35 - ri * 0.16;
+          if (rk <= 0 || rk >= 1) continue;
+          const rr = 8 + rk * (74 + ri * 20);
+          const a = (1 - rk) * (0.7 - ri * 0.18);
+          x.fillStyle = `rgba(190,255,180,${a.toFixed(2)})`;
+          const n = 30 + ri * 8;
+          for (let i = 0; i < n; i++) {
+            const th = (i / n) * Math.PI * 2;
+            x.fillRect(Math.round(cx + Math.cos(th) * rr),
+              Math.round(cy + Math.sin(th) * rr * 0.82), 2, 2);
+          }
+        }
+        // sparks off the middle, thrown once and left to fall
+        s._spark = s._spark || Array.from({ length: 26 }, (_, i) => {
+          const a = (i / 26) * Math.PI * 2 + 0.3;
+          const v = 90 + (i % 5) * 34;
+          return { x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.7 - 40, t: 0 };
         });
+        for (const p of s._spark) {
+          p.t += dt;
+          if (p.t > 0.9) continue;
+          p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 210 * dt;
+          x.fillStyle = p.t < 0.22 ? '#ffffff' : (p.t < 0.55 ? '#dfffc4' : '#63c6a8');
+          const r = p.t < 0.5 ? 2 : 1;
+          x.fillRect(Math.round(p.x), Math.round(p.y), r, r);
+        }
+        // and the word, arriving big and settling
+        const pop = k < 0.18 ? 4 : k < 0.34 ? 3 : 2;
+        drawText(x, 'DONE', {
+          x: cx, y: cy - pop * 4, scale: pop, align: 'center',
+          color: k < 0.34 ? '#ffffff' : JADE,
+        });
+        if (k > 0.42) {
+          drawText(x, 'THAT IS ONE OFF THE LIST', {
+            x: cx, y: cy + 16, scale: 1, align: 'center',
+            color: `rgba(190,255,180,${Math.min(1, (k - 0.42) * 3).toFixed(2)})`,
+          });
+        }
         footer(x, W, H, '');
       }
       // a strip showing this is one step of possibly several
@@ -5904,7 +5957,11 @@ export const SCREENS = {
     _win(s, g, st) {
       s.done = true;
       s.doneT = 0;
+      s._spark = null;
+      // three sounds, not one: the catch, the ring and the stamp
       g.audio?.sfx('confirm');
+      g.audio?.sfx('idolRise');
+      setTimeout(() => g.audio?.sfx('victory'), 90);
       setTimeout(() => {
         if (st.name === 'mpMinigame') { st.pop(); g.afterOverlayClose(); }
         g.finishMinigame?.(s.taskId);

@@ -1633,8 +1633,12 @@ export class MPGame extends Game {
 
   _send(msg) {
     const M = this.mp;
-    if (this.isHost) M.host._recv(msg, 'host');
-    else M.net.sendHost(msg);
+    if (this.isHost) { if (M.host) M.host._recv(msg, 'host'); return; }
+    /* No socket means no session — a queued callback firing after you
+       have quit to the lobby, or anything that reaches this outside a
+       round. Dropping the message is right; throwing takes the frame
+       down with it. */
+    if (M.net) M.net.sendHost(msg);
   }
 
   /* Left click does nothing in Castaways. Killing somebody because you

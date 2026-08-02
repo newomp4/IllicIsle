@@ -23,6 +23,135 @@ const JADE = '#63c6a8';
 const RED = '#e0453a';
 const INK = '#0a0704';
 
+/* ===========================================================
+   SHARED EFFECTS
+
+   Every one of these games was drawing its own sparks, its own red
+   flash and its own shake, and three of the five were drawing none of
+   them at all. One pool, one updater, one drawer — so adding a puff of
+   dust to a game is one line rather than a new array and a new loop.
+
+   Nothing here allocates during play: the pool is fixed and particles
+   are recycled by writing over dead ones.
+   =========================================================== */
+const FX_MAX = 120;
+
+function fxInit(s) {
+  if (s.fx) return s.fx;
+  const pool = new Array(FX_MAX);
+  for (let i = 0; i < FX_MAX; i++) {
+    pool[i] = { on: false, x: 0, y: 0, vx: 0, vy: 0, t: 0, life: 1, g: 0, r: 2, kind: 'spark', col: '#fff' };
+  }
+  s.fx = { pool, next: 0 };
+  return s.fx;
+}
+
+/**
+ * Throw one particle.
+ *
+ * `kind` decides how it is drawn and how it dies:
+ *   spark   a bright pixel that fades white to colour
+ *   puff    a square that grows and thins, for dust and smoke
+ *   chunk   a square that tumbles and falls, for debris
+ *   drop    a falling pixel with a splash colour, for water
+ */
+function fx(s, kind, x2, y2, opts = {}) {
+  const F = fxInit(s);
+  // find a dead one, or take the oldest
+  let p = null;
+  for (let i = 0; i < FX_MAX; i++) {
+    const q = F.pool[(F.next + i) % FX_MAX];
+    if (!q.on) { p = q; F.next = (F.next + i + 1) % FX_MAX; break; }
+  }
+  if (!p) { p = F.pool[F.next]; F.next = (F.next + 1) % FX_MAX; }
+  p.on = true; p.kind = kind;
+  p.x = x2; p.y = y2;
+  p.vx = opts.vx ?? 0; p.vy = opts.vy ?? 0;
+  p.t = 0; p.life = opts.life ?? 0.5;
+  p.g = opts.g ?? (kind === 'chunk' || kind === 'drop' ? 220 : kind === 'puff' ? -18 : 90);
+  p.r = opts.r ?? (kind === 'puff' ? 3 : 2);
+  p.col = opts.col || '#ffffff';
+  return p;
+}
+
+/** A ring of them, thrown outward. The commonest thing any of these want. */
+function fxBurst(s, kind, x2, y2, n, opts = {}) {
+  const spd = opts.speed ?? 90;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + (opts.spin || 0);
+    const v = spd * (0.45 + Math.random() * 0.75);
+    fx(s, kind, x2, y2, {
+      ...opts,
+      vx: Math.cos(a) * v + (opts.driftX || 0),
+      vy: Math.sin(a) * v * (opts.squash ?? 1) + (opts.driftY || 0),
+    });
+  }
+}
+
+/** Step and paint the lot. Called once per frame by each game's draw. */
+function fxDraw(x, s, dt) {
+  const F = s.fx;
+  if (!F) return;
+  for (let i = 0; i < FX_MAX; i++) {
+    const p = F.pool[i];
+    if (!p.on) continue;
+    p.t += dt;
+    if (p.t >= p.life) { p.on = false; continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.g * dt;
+    const k = p.t / p.life;                    // 0 fresh, 1 gone
+    if (p.kind === 'puff') {
+      const r = Math.round(p.r * (0.6 + k * 1.9));
+      x.fillStyle = k < 0.5 ? p.col : 'rgba(120,106,80,.28)';
+      x.globalAlpha = Math.max(0, 1 - k) * 0.7;
+      x.fillRect(Math.round(p.x) - r, Math.round(p.y) - r, r * 2, r * 2);
+      x.globalAlpha = 1;
+    } else if (p.kind === 'chunk') {
+      const r = p.r;
+      x.fillStyle = p.col;
+      // it tumbles, so it is a square that changes size as it turns
+      const w = 1 + Math.abs(Math.round(Math.cos(p.t * 14) * r));
+      x.fillRect(Math.round(p.x) - (w >> 1), Math.round(p.y) - (r >> 1), w, r);
+    } else if (p.kind === 'drop') {
+      x.fillStyle = k < 0.7 ? p.col : '#5a8aa0';
+      // stretched by how fast it is falling, which is what a drop looks like
+      const h = Math.max(1, Math.min(4, Math.round(Math.abs(p.vy) / 90)));
+      x.fillRect(Math.round(p.x), Math.round(p.y), 1, h);
+    } else {
+      x.fillStyle = k < 0.28 ? '#ffffff' : p.col;
+      const r = k > 0.7 ? 1 : p.r;
+      x.fillRect(Math.round(p.x) - (r >> 1), Math.round(p.y) - (r >> 1), r, r);
+    }
+  }
+}
+
+/**
+ * A shock ring. Every game wants one and three of them had written it
+ * out by hand; `squash` flattens it into an ellipse for anything lying
+ * on a surface.
+ */
+function fxRing(x, cx, cy, k, col, opts = {}) {
+  if (k < 0 || k > 1) return;
+  const r = (opts.from ?? 6) + k * (opts.to ?? 30);
+  const a = (1 - k) * (opts.alpha ?? 0.55);
+  const n = opts.n ?? 20;
+  const sq = opts.squash ?? 1;
+  x.fillStyle = col.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
+  for (let i = 0; i < n; i++) {
+    const th = (i / n) * Math.PI * 2;
+    x.fillRect(Math.round(cx + Math.cos(th) * r), Math.round(cy + Math.sin(th) * r * sq), 2, 2);
+  }
+}
+
+/** The whole panel jolts. Games set it; the screen applies it. */
+function fxShake(s, amount) { s.shake = Math.max(s.shake || 0, amount); }
+
+/** A full-screen wash, for a hit or a miss. */
+function fxFlash(x, W, H, k, rgb) {
+  if (k <= 0) return;
+  x.fillStyle = `rgba(${rgb},${(k * 0.24).toFixed(2)})`;
+  x.fillRect(0, 0, W, H);
+}
+
 /* ---------- shared chrome ---------- */
 /** A cheap two-tone weave, so a big flat rectangle has some grain in it. */
 function ditherRect3(x, ox, oy, w, h, a, b) {
@@ -72,12 +201,16 @@ const wind = {
     s.ringY = 100;
     s.shake = 0;
     s.ratchet = 0;        // the escape wheel, one tooth per catch
+    s.taut = 0;           // the rope snapping tight on a catch
+    fxInit(s);
   },
   draw(x, W, H, s, t, dt) {
     s.phase += dt * s.speed;
     if (s.flash > 0) s.flash -= dt * 3;
     if (s.miss > 0) s.miss -= dt * 2.5;
-    if (s.shake > 0) s.shake -= dt * 4;
+    /* The screen decays `shake` and moves the whole panel with it now, so
+       a game that also decayed it halved its own jolt and one that also
+       offset its contents slid them out from under their own frame. */
     if (s.ring >= 0) { s.ring += dt * 2.6; if (s.ring > 1) s.ring = -1; }
     s.ratchet += dt * (s.flash > 0 ? 6 : 0.35);
 
@@ -90,7 +223,7 @@ const wind = {
        arc now: the angle is what swings, and the position follows from it. */
     const MAXA = 1.02;                  // radians either side of vertical
     const ang = swing * MAXA;
-    const shk = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 2 * s.shake) : 0;
+    const shk = 0;                       // the whole panel jolts instead
     /* The pivot sits below the frame's title rule, which is at y = 28. The
        gantry used to be drawn from y = 18 — straight through the title — and
        its bracing was a row of dots that ran clean across the top of the
@@ -160,12 +293,17 @@ const wind = {
 
     /* ---- the rod, in pixel steps rather than a stroked line ---- */
     const steps = 22;
+    const taut = Math.max(0, s.taut || 0);
     for (let i = 1; i <= steps; i++) {
       const k = i / steps;
+      /* Slack in the rod, taken up when it bites. A dead straight line
+         between two points is a stick; a rope has a belly in it. */
+      const sag = Math.sin(k * Math.PI) * (1 - taut) * 2.2;
       const rx = Math.round(px + (bx - px) * k);
-      const ry = Math.round(py + (by - py) * k);
-      x.fillStyle = i > steps - 3 ? '#c9b98a' : '#8a7a52';
-      x.fillRect(rx - 1, ry - 1, 2, 2);
+      const ry = Math.round(py + (by - py) * k + sag);
+      x.fillStyle = taut > 0.2 ? '#fff3c4' : (i > steps - 3 ? '#c9b98a' : '#8a7a52');
+      const w = taut > 0.2 ? 3 : 2;
+      x.fillRect(rx - (w >> 1), ry - 1, w, 2);
     }
 
     /* ---- the trail: fading dots along the path just travelled ----
@@ -255,10 +393,9 @@ const wind = {
     drawText3(x, `TENSION ${Math.round((s.window - 0.86) / 0.105 * 100)}%`,
       W / 2, H - 30, inWindow ? '#9ff0dc' : '#8a7a52');
 
-    if (s.miss > 0) {
-      x.fillStyle = `rgba(224,69,58,${(s.miss * 0.22).toFixed(2)})`;
-      x.fillRect(0, 0, W, H);
-    }
+    if (s.taut > 0) s.taut -= dt * 3.4;
+    fxDraw(x, s, dt);
+    fxFlash(x, W, H, s.miss, '224,69,58');
     return [];
   },
   key(code, s) {
@@ -271,10 +408,16 @@ const wind = {
       // it bites, and the last tooth of the ratchet rings differently
       s.sfx?.('lever'); s.sfx?.(s.got >= s.need - 1 ? 'confirm' : 'clink');
       s.flash = 1;
+      s.taut = 1;
       s.ring = 0;
       s.ringX = bx;
       s.ringY = 50 + Math.cos(swing * MAXA) * L;
       s.ratchet += 0.52;
+      /* Brass filings off the escape wheel and a small kick through the
+         frame — a catch you can feel as well as see. */
+      fxShake(s, 0.45);
+      fxBurst(s, 'spark', 160, 50, 7, { col: '#ffe9a8', speed: 70, life: 0.4 });
+      fxBurst(s, 'chunk', 160, 50, 3, { col: '#8a7a52', speed: 55, life: 0.6, r: 2 });
       // each catch winds it tighter: faster, and a narrower window
       s.speed += 0.34;
       s.window = Math.min(0.965, s.window + 0.016);
@@ -287,7 +430,10 @@ const wind = {
     } else {
       s.sfx?.('deny'); s.sfx?.('rumble');            // it slips, and the whole rig shakes
       s.miss = 1;
-      s.shake = 1;
+      fxShake(s, 1);
+      /* The pawl skips: dust out of the bearing and grit off the gantry. */
+      fxBurst(s, 'puff', 160, 50, 5, { col: 'rgba(150,130,90,.55)', speed: 30, life: 0.9, r: 3 });
+      fxBurst(s, 'chunk', 160, 50, 5, { col: '#5c3f1c', speed: 95, life: 0.7, r: 2 });
       s.speed = Math.max(1.2, s.speed - 0.2);
       s.window = Math.max(0.86, s.window - 0.01);
       s.got = Math.max(0, s.got - 1);
@@ -304,55 +450,203 @@ const splice = {
   name: 'SPLICE THE OPTIC',
   hint: 'REPEAT WHAT IT SHOWS',
   COLS: ['#e0453a', '#46a04a', '#3f6fd0', '#e0c040'],
+  GLOW: ['#ff9a88', '#9fe89a', '#8fb4ff', '#ffefa0'],
   init(s, rng) {
     s.seq = new Array(s.hard ? 5 : 3).fill(0).map(() => (rng() * 4) | 0);
     s.at = 0; s.showing = 0; s.showT = 0; s.playing = true; s.wrong = 0;
+    /* Per strand: how lit it is, and where a pulse of light has got to on
+       its way down. A strand that has been spliced stays warm. */
+    s.lit = [0, 0, 0, 0];
+    s.pulse = [-1, -1, -1, -1];
+    s.fused = [0, 0, 0, 0];
+    s.arc = 0;                  // the flash across the block when it shorts
+    s.hum = 0;
+    fxInit(s);
   },
   draw(x, W, H, s, t, dt) {
     const rows = [];
     if (s.playing) {
       s.showT += dt;
-      if (s.showT > 0.55) { s.showT = 0; s.showing++; }
+      if (s.showT > 0.55) {
+        s.showT = 0; s.showing++;
+        // a pulse leaves the cable every time it calls one
+        if (s.showing < s.seq.length) {
+          s.pulse[s.seq[s.showing]] = 0;
+          s.sfx?.('cast');
+        }
+      }
       if (s.showing >= s.seq.length + 1) { s.playing = false; s.showing = -1; s.at = 0; }
     }
     if (s.wrong > 0) s.wrong -= dt * 2;
+    if (s.arc > 0) s.arc -= dt * 5;
+    s.hum = (s.hum || 0) + dt;
 
     const bw = 42, bh = 34, gap = 6;
     const total = 4 * bw + 3 * gap;
-    const ox = Math.round((W - total) / 2), oy = 52;
+    /* The cable sits BELOW the panel's own title. At 34 the housing ran
+       from 22, and the frame prints the job's name at 28 — the words came
+       out through the middle of the ducting. */
+    const CAB_Y = 58;
+    const oy = 98;
+    const ox = Math.round((W - total) / 2);
+    const cabX = W / 2;
+
+    /* ---- the housing: a dark box with the cable coming into it ---- */
+    ditherRect3(x, 20, CAB_Y - 12, W - 40, 20, '#171c1e', '#20272a');
+    x.fillStyle = '#2e383c'; x.fillRect(20, CAB_Y - 12, W - 40, 1);
+    x.fillStyle = '#0b0e0f'; x.fillRect(20, CAB_Y + 7, W - 40, 1);
+    // the cable itself, banded, running in from the left
+    for (let i = 20; i < W - 20; i += 4) {
+      x.fillStyle = (i >> 2) % 2 ? '#3a2f28' : '#4a3c32';
+      x.fillRect(i, CAB_Y - 4, 4, 8);
+    }
+    x.fillStyle = '#5a4a3c'; x.fillRect(20, CAB_Y - 4, W - 40, 1);
+    // the splice block in the middle, where the strands are broken out
+    x.fillStyle = '#252d30'; x.fillRect(cabX - 34, CAB_Y - 9, 68, 18);
+    x.fillStyle = '#46545a'; x.fillRect(cabX - 34, CAB_Y - 9, 68, 1);
+    x.fillStyle = '#0d1112'; x.fillRect(cabX - 34, CAB_Y + 8, 68, 1);
+    for (let i = 0; i < 4; i++) {
+      x.fillStyle = '#0d1112';
+      x.fillRect(cabX - 26 + i * 17, CAB_Y - 5, 3, 10);
+    }
+    // a status lamp that breathes while it is calling
+    {
+      const on = s.playing && Math.floor(s.hum * 6) % 2 === 0;
+      x.fillStyle = on ? '#ffd24a' : '#4a3a10';
+      x.fillRect(cabX + 28, CAB_Y - 5, 4, 4);
+    }
+
+    /* ---- four strands, fanning from the block down to the terminals ---- */
     for (let i = 0; i < 4; i++) {
       const bx = ox + i * (bw + gap);
-      const on = s.playing && s.showing < s.seq.length && s.seq[s.showing] === i && s.showT < 0.38;
-      x.fillStyle = on ? this.COLS[i] : '#1a1208';
-      x.fillRect(bx, oy, bw, bh);
-      x.fillStyle = this.COLS[i];
+      const tipX = bx + bw / 2;
+      const rootX = cabX - 25 + i * 17;
+      const lit = Math.max(s.lit[i], s.fused[i] * 0.55);
+      // the strand, drawn as pixels down a curve
+      const N = 26;
+      for (let k2 = 0; k2 <= N; k2++) {
+        const u = k2 / N;
+        // ease across so it leaves the block vertically and arrives vertically
+        const e = u * u * (3 - 2 * u);
+        const px = Math.round(rootX + (tipX - rootX) * e);
+        const py = Math.round(CAB_Y + 9 + u * (oy - CAB_Y - 9));
+        const isPulse = s.pulse[i] >= 0 && Math.abs(u - s.pulse[i]) < 0.10;
+        x.fillStyle = isPulse ? '#ffffff'
+          : lit > 0.05 ? this.GLOW[i]
+            : (s.fused[i] ? '#4a5c4a' : '#3a4038');
+        x.fillRect(px - 1, py, 2, 2);
+        if (isPulse) {
+          // the light spills off the strand as it travels
+          x.fillStyle = `rgba(255,255,255,.22)`;
+          x.fillRect(px - 3, py - 1, 6, 4);
+        }
+      }
+      // advance the pulse
+      if (s.pulse[i] >= 0) {
+        s.pulse[i] += dt * 2.6;
+        if (s.pulse[i] >= 1) {
+          s.pulse[i] = -1;
+          s.lit[i] = 1;                          // it arrives, and the pad blooms
+          fxBurst(s, 'spark', tipX, oy + 4, 6, { col: this.GLOW[i], speed: 60, life: 0.35 });
+        }
+      }
+      if (s.lit[i] > 0) s.lit[i] = Math.max(0, s.lit[i] - dt * 2.2);
+    }
+
+    /* ---- the terminals ---- */
+    for (let i = 0; i < 4; i++) {
+      const bx = ox + i * (bw + gap);
+      const lit = s.lit[i];
+      const fused = s.fused[i];
+      const on = lit > 0.05;
+      // the pad, sunk into a bezel
+      x.fillStyle = '#0d1112'; x.fillRect(bx - 2, oy - 2, bw + 4, bh + 4);
+      ditherRect3(x, bx, oy, bw, bh, on ? this.COLS[i] : '#161d1a',
+        on ? this.GLOW[i] : '#1d2622');
+      // the rim, brighter when it has been spliced for good
+      x.fillStyle = on ? '#ffffff' : (fused ? this.COLS[i] : '#33403a');
       x.fillRect(bx, oy, bw, 1); x.fillRect(bx, oy + bh - 1, bw, 1);
       x.fillRect(bx, oy, 1, bh); x.fillRect(bx + bw - 1, oy, 1, bh);
-      x.fillStyle = on ? '#ffffff' : this.COLS[i];
-      x.fillRect(bx + bw / 2 - 5, oy + bh / 2 - 5, 10, 10);
-      drawKeyCap(x, String(i + 1), bx + bw / 2, oy + bh + 4);
+      // the ferrule in the middle: a lens that lights from within
+      const r = on ? 8 : 5;
+      x.fillStyle = '#0a0d0c';
+      x.fillRect(bx + bw / 2 - r - 1, oy + bh / 2 - r - 1, r * 2 + 2, r * 2 + 2);
+      x.fillStyle = on ? '#ffffff' : (fused ? this.GLOW[i] : this.COLS[i]);
+      x.fillRect(bx + bw / 2 - r, oy + bh / 2 - r, r * 2, r * 2);
+      if (on) {
+        x.fillStyle = this.COLS[i];
+        x.fillRect(bx + bw / 2 - r + 2, oy + bh / 2 - r + 2, r * 2 - 4, r * 2 - 4);
+        // and it throws light onto the panel around it
+        x.globalAlpha = lit * 0.28;
+        x.fillStyle = this.GLOW[i];
+        x.fillRect(bx - 8, oy - 8, bw + 16, bh + 16);
+        x.globalAlpha = 1;
+      }
+      // a fused strand keeps a small steady core
+      if (fused && !on) {
+        x.fillStyle = this.GLOW[i];
+        x.fillRect(bx + bw / 2 - 2, oy + bh / 2 - 2, 4, 4);
+      }
+      drawKeyCap(x, String(i + 1), bx + bw / 2, oy + bh + 5);
       rows.push({ x: bx, y: oy, w: bw, h: bh, pick: i });
     }
-    // progress pips
+
+    /* ---- the arc flash, when you put the wrong strand across ---- */
+    if (s.arc > 0) {
+      const k = s.arc;
+      x.fillStyle = `rgba(255,255,255,${(k * 0.5).toFixed(2)})`;
+      // a jagged line across the block
+      let px = cabX - 34;
+      let py = CAB_Y;
+      for (let i = 0; i < 14; i++) {
+        const nx = px + 5;
+        const ny = CAB_Y + (Math.random() - 0.5) * 14 * k;
+        x.fillRect(Math.round(px), Math.round(py), Math.round(nx - px) + 1, 2);
+        px = nx; py = ny;
+      }
+    }
+
+    /* ---- progress: strands spliced, as a row of ferrules ---- */
     for (let i = 0; i < s.seq.length; i++) {
-      const mx = W / 2 - (s.seq.length * 12) / 2 + i * 12;
-      x.fillStyle = i < s.at ? JADE : '#3a2a10';
-      x.fillRect(mx, H - 46, 9, 9);
+      const mx = W / 2 - (s.seq.length * 13) / 2 + i * 13;
+      const done = i < s.at;
+      x.fillStyle = '#0d1112'; x.fillRect(mx - 1, H - 47, 12, 11);
+      x.fillStyle = done ? JADE : '#243028';
+      x.fillRect(mx, H - 46, 10, 9);
+      if (done) { x.fillStyle = '#dfffc4'; x.fillRect(mx + 3, H - 43, 4, 3); }
     }
-    if (s.wrong > 0) {
-      x.fillStyle = `rgba(224,69,58,${(s.wrong * 0.25).toFixed(2)})`;
-      x.fillRect(0, 0, W, H);
-    }
+    drawText3(x, s.playing ? 'LISTEN' : `${s.at} OF ${s.seq.length} SPLICED`,
+      W / 2, H - 32, s.playing ? GOLD : (s.at ? '#9ff0dc' : DIM));
+
+    fxDraw(x, s, dt);
+    fxFlash(x, W, H, s.wrong, '224,69,58');
     return rows;
   },
   _hit(i, s) {
     if (s.playing) return false;
+    /* Kept in step with draw() by hand, because _hit has no layout of its
+       own and the sparks have to come off the ferrule you just pressed. */
+    const bw = 42, gap = 6, ox = Math.round((320 - (4 * bw + 3 * gap)) / 2);
+    const tipX = ox + i * (bw + gap) + bw / 2;
+    const tipY = 98 + 17;
     if (s.seq[s.at] === i) {
       s.at++;
+      s.lit[i] = 1;
+      s.fused[i] = 1;
       s.sfx?.('select'); s.sfx?.('clink');
+      // it fuses: white sparks off the ferrule and a puff of the flux burning
+      fxBurst(s, 'spark', tipX, tipY, 10, { col: this.GLOW[i], speed: 105, life: 0.42 });
+      fxBurst(s, 'puff', tipX, tipY - 3, 3, { col: 'rgba(220,230,220,.5)', speed: 26, life: 0.7, r: 2 });
       return s.at >= s.seq.length;
     }
-    s.sfx?.('deny'); s.sfx?.('gemHit');              // wrong strand, and it all comes apart
+    s.sfx?.('deny'); s.sfx?.('gemHit');
+    /* Wrong strand across the block: it arcs, the panel jolts, everything
+       that was lit goes out, and it starts calling again. */
+    s.arc = 1;
+    fxShake(s, 1);
+    fxBurst(s, 'spark', 160, 58, 14, { col: '#ffe9a8', speed: 150, life: 0.5 });
+    fxBurst(s, 'puff', 160, 54, 5, { col: 'rgba(90,90,90,.6)', speed: 34, life: 1.0, r: 3 });
+    for (let k2 = 0; k2 < 4; k2++) { s.lit[k2] = 0; s.fused[k2] = 0; s.pulse[k2] = -1; }
     s.wrong = 1; s.at = 0; s.playing = true; s.showing = 0; s.showT = 0;
     return false;
   },
@@ -369,7 +663,7 @@ const splice = {
    =========================================================== */
 const stitch = {
   name: 'PATCH THE SAIL',
-  hint: 'ARROWS MOVE THE NEEDLE   SPACE STITCH',
+  hint: 'ARROWS AIM   SPACE STITCH',
   init(s, rng) {
     /* Two tears, ten holes, and they alternate sides — so it is a route to
        walk rather than six dots in a row you can sweep through. */
@@ -396,10 +690,27 @@ const stitch = {
     const first = s.tears[s.order[0][0]][s.order[0][1]];
     s.nx = first.x; s.ny = first.y;
     s.miss = 0;
+    /* How far each tear has been drawn together. A tear that is sewn
+       should CLOSE, not just change colour — the two lips of it come in
+       toward the seam as the stitches go in. */
+    s.close = s.tears.map(() => 0);
+    s.gust = 0;
+    fxInit(s);
   },
   draw(x, W, H, s, t, dt) {
     if (s.wrong > 0) s.wrong -= dt * 2;
     if (s.pull > 0) s.pull -= dt * 3;
+    // the tears ease shut behind the needle
+    s.close = s.close || s.tears.map(() => 0);
+    s.tears.forEach((pts, tear) => {
+      const doneTo = s.order.slice(0, s.at).filter(([w]) => w === tear).length;
+      const want = doneTo / pts.length;
+      s.close[tear] += (want - s.close[tear]) * Math.min(1, dt * 6);
+    });
+    /* A gust every few seconds: the whole sail bellies out and snaps
+       back, which is the difference between cloth and a brown rectangle. */
+    s.gust = (s.gust || 0) + dt;
+    const gust = Math.max(0, Math.sin(s.gust * 0.62)) ** 3;
 
     const sx = 26, sy = 40, sw = W - 52, sh = H - 92;
     // canvas, with a weave and a wind-billow in it
@@ -408,6 +719,20 @@ const stitch = {
       const shade = 0.06 + Math.sin(j * 0.13 + t * 0.8) * 0.05;
       x.fillStyle = `rgba(120,106,80,${Math.max(0, shade).toFixed(3)})`;
       x.fillRect(sx, sy + j, sw, 1);
+    }
+    /* The belly of the sail, as bands of light and shade that travel
+       across it while the gust runs through. */
+    if (gust > 0.02) {
+      for (let j = 0; j < sh; j += 2) {
+        const w2 = Math.sin(j * 0.09 - s.gust * 3.4) * gust;
+        if (w2 > 0.25) {
+          x.fillStyle = `rgba(255,248,220,${(w2 * 0.16).toFixed(3)})`;
+          x.fillRect(sx, sy + j, sw, 2);
+        } else if (w2 < -0.25) {
+          x.fillStyle = `rgba(90,76,50,${(-w2 * 0.14).toFixed(3)})`;
+          x.fillRect(sx, sy + j, sw, 2);
+        }
+      }
     }
     ditherPatch(x, sx, sy, sw, sh);
     // bolt ropes and grommets
@@ -426,16 +751,38 @@ const stitch = {
       y: Math.round(sy + s.tears[tear][i].y * sh),
     });
 
-    // the tears themselves, gaping until they are sewn
+    /* The tears themselves. A tear is a HOLE — two edges with daylight
+       between them — and it was a single brown line. Two lips, with the
+       gap between them closing as the seam goes in. */
     s.tears.forEach((pts, tear) => {
       const doneTo = s.order.slice(0, s.at).filter(([w]) => w === tear).length;
-      x.strokeStyle = '#5a4a2c'; x.lineWidth = 2;
-      x.beginPath();
-      pts.forEach((p, i) => {
-        const q = P(tear, i);
-        if (i === 0) x.moveTo(q.x, q.y); else x.lineTo(q.x, q.y);
-      });
-      x.stroke();
+      const shut = s.close[tear] || 0;
+      const gap = (1 - shut) * 4.5 + 0.5;
+      for (let lip = -1; lip <= 1; lip += 2) {
+        x.strokeStyle = lip < 0 ? '#6a5a38' : '#4a3c22';
+        x.lineWidth = 2;
+        x.beginPath();
+        pts.forEach((p, i) => {
+          const q = P(tear, i);
+          // the lips flap a little in the gust while they are still open
+          const flap = lip * (1 - shut) * gust * 1.6;
+          const yy = q.y + lip * gap + flap;
+          if (i === 0) x.moveTo(q.x, yy); else x.lineTo(q.x, yy);
+        });
+        x.stroke();
+      }
+      // what is behind the sail, showing through the gap
+      if (shut < 0.98) {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = P(tear, i), p1 = P(tear, i + 1);
+          for (let k = 0; k <= 8; k++) {
+            const px2 = p0.x + (p1.x - p0.x) * (k / 8);
+            const py2 = p0.y + (p1.y - p0.y) * (k / 8);
+            x.fillStyle = `rgba(24,30,38,${(0.5 * (1 - shut)).toFixed(2)})`;
+            x.fillRect(Math.round(px2) - 1, Math.round(py2 - gap + 1), 2, Math.max(1, Math.round(gap * 2 - 2)));
+          }
+        }
+      }
       // sewn section, drawn as stitches rather than a line
       if (doneTo > 1) {
         for (let i = 0; i < doneTo - 1; i++) {
@@ -508,10 +855,8 @@ const stitch = {
 
     bar(x, 30, H - 40, W - 60, 5, s.at / s.order.length, JADE);
     drawText3(x, `${s.at} OF ${s.order.length} STITCHES`, W / 2, H - 30, DIM);
-    if (s.wrong > 0) {
-      x.fillStyle = `rgba(224,69,58,${(s.wrong * 0.22).toFixed(2)})`;
-      x.fillRect(0, 0, W, H);
-    }
+    fxDraw(x, s, dt);
+    fxFlash(x, W, H, s.wrong, '224,69,58');
     return rows;
   },
   /** One place decides what a stitch does, whichever way you asked for it. */
@@ -519,6 +864,15 @@ const stitch = {
     if (idx === s.at) {
       s.at++; s.pull = 1;
       s.sfx?.('oche'); s.sfx?.('page');              // the needle through, the thread after it
+      /* Lint off the weave where the needle went in, and a small tug
+         through the frame as the thread is drawn tight. */
+      {
+        const q = s.tears[s.order[s.at - 1][0]][s.order[s.at - 1][1]];
+        const px2 = 26 + q.x * (320 - 52), py2 = 40 + q.y * (224 - 92);
+        fxBurst(s, 'puff', px2, py2, 4, { col: 'rgba(232,224,196,.65)', speed: 24, life: 0.55, r: 2 });
+        fxBurst(s, 'spark', px2, py2, 3, { col: '#dfffc4', speed: 48, life: 0.3 });
+        fxShake(s, 0.22);
+      }
       // the needle follows the thread to the next hole
       const nk = s.order[s.at];
       if (nk) { s.nx = s.tears[nk[0]][nk[1]].x; s.ny = s.tears[nk[0]][nk[1]].y; }
@@ -527,6 +881,7 @@ const stitch = {
     s.sfx?.('deny');
     s.wrong = 1;
     s.miss = 1;
+    fxShake(s, 0.7);
     // drop back to the start of the tear you botched, not the whole sail
     const tear = s.order[s.at]?.[0] ?? 0;
     while (s.at > 0 && s.order[s.at - 1][0] === tear) s.at--;
@@ -561,7 +916,7 @@ const stitch = {
    =========================================================== */
 const dials = {
   name: 'SET THE DIALS',
-  hint: 'LEFT RIGHT PICK A WHEEL   UP DOWN TURN IT',
+  hint: 'LEFT RIGHT PICK   UP DOWN TURN',
   init(s, rng) {
     const n = s.hard ? 4 : 3;
     s.want = []; s.have = [];
@@ -577,20 +932,44 @@ const dials = {
     s.lock = new Array(n).fill(0);   // how far each tumbler has dropped
     s.bolt = 0;                      // the bolt, once they all match
     s.shake = 0;
+    s.dropped = new Array(n).fill(false);   // which tumblers have already fallen
+    s.boltSaid = false;
+    fxInit(s);
     if (s.want.every((v, i) => v === s.have[i])) s.have[0] = (s.have[0] % 9) + 1;
   },
 
   draw(x, W, H, s, t, dt) {
     const rows = [];
     const n = s.have.length;
-    if (s.shake > 0) s.shake -= dt * 4;
+    /* The screen decays `shake` and moves the whole panel with it now, so
+       a game that also decayed it halved its own jolt and one that also
+       offset its contents slid them out from under their own frame. */
     const solved = s.want.every((v, i) => v === s.have[i]);
     if (solved) s.bolt = Math.min(1, (s.bolt || 0) + dt * 3);
+    /* A tumbler falling is the moment of this game, and it happened in
+       silence with nothing coming off it. Grit out of the wards, a knock
+       through the case, and the same again louder when the bolt runs. */
+    s.dropped = s.dropped || new Array(n).fill(false);
+    for (let i = 0; i < n; i++) {
+      const home = s.want[i] === s.have[i];
+      if (home && !s.dropped[i]) {
+        s.dropped[i] = true;
+        fxShake(s, 0.30);
+        fxBurst(s, 'chunk', W / 2, 96, 4, { col: '#5c3f1c', speed: 70, life: 0.5, r: 2 });
+        fxBurst(s, 'puff', W / 2, 96, 3, { col: 'rgba(150,130,90,.5)', speed: 22, life: 0.7, r: 2 });
+      } else if (!home && s.dropped[i]) s.dropped[i] = false;
+    }
+    if (solved && !s.boltSaid) {
+      s.boltSaid = true;
+      fxShake(s, 0.9);
+      fxBurst(s, 'spark', W / 2, 118, 12, { col: '#ffe9a8', speed: 120, life: 0.5 });
+      fxBurst(s, 'puff', W / 2, 118, 4, { col: 'rgba(170,150,110,.55)', speed: 30, life: 0.9, r: 3 });
+    }
 
     /* ---- layout, in bands, so nothing can drift into anything ---- */
     const DW = n > 3 ? 40 : 46, GAP = 8;
     const TOTAL = n * DW + (n - 1) * GAP;
-    const OX = Math.round((W - TOTAL) / 2) + (s.shake > 0 ? Math.round(Math.sin(s.shake * 60) * 2) : 0);
+    const OX = Math.round((W - TOTAL) / 2);
     const PLATE_Y = 42;          // the stamped code, clear of the title
     const PLATE_H = 26;
     const DRUM_Y = PLATE_Y + PLATE_H + 12;
@@ -739,6 +1118,7 @@ const dials = {
       x.fillStyle = `rgba(126,200,80,${((1 - s.bolt) * 0.22).toFixed(3)})`;
       x.fillRect(0, 0, W, H);
     }
+    fxDraw(x, s, dt);
     return rows;
   },
 
@@ -802,6 +1182,9 @@ const bail = {
     s.splash = [];
     s.miss = 0;
     s.best = 0;
+    s.lastLevel = s.level;
+    s.rising = 0;             // spray where the water is climbing the ribs
+    fxInit(s);
   },
   /** How deep the water is at `u` across the hull, 0..1. */
   depthAt(s, u) {
@@ -817,6 +1200,19 @@ const bail = {
     if (s.pump > 0) s.pump -= dt * 3.4;
     if (s.tip > 0) s.tip -= dt * 2.2;
     if (s.miss > 0) s.miss -= dt * 3;
+    /* Spray where the water is coming up, so a hull that is filling LOOKS
+       like it is filling rather than a bar quietly changing height. */
+    s.rising = (s.rising || 0) + dt;
+    if (s.level > (s.lastLevel ?? s.level) && s.rising > 0.16) {
+      s.rising = 0;
+      const u = Math.random();
+      const d = this.depthAt(s, u);
+      fx(s, 'drop', 34 + u * (W - 68), (H - 96) * (1 - d) + 40, {
+        vx: (Math.random() - 0.5) * 30, vy: -50 - Math.random() * 40,
+        col: '#8fc8dc', life: 0.55,
+      });
+    }
+    s.lastLevel = s.level;
 
     const hx = 34, hy = 40, hw = W - 68, hh = H - 96;
 
@@ -922,6 +1318,8 @@ const bail = {
       : (s.level > 0.88 ? 'SHE IS GOING DOWN'
         : 'BAIL FROM WHERE IT IS DEEPEST');
     drawText3(x, msg, W / 2, H - 38, s.miss > 0 ? '#ffb08a' : (s.level > 0.88 ? RED : DIM));
+    fxDraw(x, s, dt);
+    fxFlash(x, W, H, s.miss, '224,69,58');
     return [];
   },
   key(code, s) {
@@ -935,8 +1333,26 @@ const bail = {
     const got = Math.min(s.level, d * 0.20);
     s.pump = 1;
     s.tip = 1;
-    if (got < 0.012) { s.sfx?.('deny'); s.miss = 1; s.carry = 0; return false; }
+    if (got < 0.012) {
+      // the bucket scrapes the boards: a knock and a dry rattle, no water
+      s.sfx?.('deny');
+      fxShake(s, 0.35);
+      fxBurst(s, 'chunk', 34 + s.bucket * (320 - 68), 96, 3,
+        { col: '#5a4a2c', speed: 60, life: 0.45, r: 2 });
+      s.miss = 1; s.carry = 0; return false;
+    }
     s.sfx?.('step_water'); s.sfx?.('pour');          // in, and over the side
+    /* A full bucket is thrown over the side: a rope of water going out
+       and a shower coming off it. The old version put seven flat pixels
+       on the screen and called it a splash. */
+    {
+      const bxp = 34 + s.bucket * (320 - 68);
+      fxBurst(s, 'drop', bxp, 62, 14, {
+        col: '#9fd8e8', speed: 130, life: 0.6, squash: 0.5, driftY: -60,
+      });
+      fxBurst(s, 'puff', bxp, 66, 3, { col: 'rgba(200,230,240,.5)', speed: 26, life: 0.5, r: 2 });
+      fxShake(s, 0.28 * Math.min(1, got / 0.14));
+    }
     s.carry = Math.min(1, got / 0.2);
     s.level = Math.max(0, s.level - got);
     s.best = Math.max(s.best || 0, got);
