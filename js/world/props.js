@@ -597,6 +597,13 @@ export function cullScatter(meshes, camera, force = false) {
        COUNT changes shows the wrong trees in the right number. */
     im.userData.shown = n;
     im.count = n;
+    /* Nothing of this species in front of you is not a draw of nothing —
+       it is a program bind, a uniform block and a buffer bind that ends
+       in a draw of nothing. There are seventy-eight of these meshes and
+       from most places on the island a good third of them are empty, so
+       switching the empty ones off is a third of the scenery's draw calls
+       for no visible difference at all. */
+    im.visible = n > 0;
     im.instanceMatrix.needsUpdate = true;
     drawn += n;
   }
@@ -1567,17 +1574,24 @@ export function buildBirdFlock(rng, mats, count = 22) {
 
   const wingGeo = mergeGeos([tint(plane(0.62, 0.34, 'birdWing', { rot: [-Math.PI / 2, 0, 0] }), G(0xffffff))]);
 
+  /* Twenty-two birds used to be sixty-six meshes and sixty-six draw calls
+     for two hundred and thirty triangles — the whole flock is smaller than
+     one palm frond. They are all the same two shapes, so they are two
+     instanced meshes now and the flock costs two draws. The matrices are
+     worked out exactly as the scene graph used to: the body's transform,
+     and each wing's laid on top of it. */
+  const bodies = new THREE.InstancedMesh(bodyGeo, mats.opaque, count);
+  const wings = new THREE.InstancedMesh(wingGeo, mats.cutoutStill, count * 2);
+  bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  wings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // they fly over the whole island; there is nothing to gain from testing them
+  bodies.frustumCulled = false;
+  wings.frustumCulled = false;
+  group.add(bodies, wings);
+
   const birds = [];
   for (let i = 0; i < count; i++) {
-    const b = new THREE.Group();
-    b.add(new THREE.Mesh(bodyGeo, mats.opaque));
-    const wl = new THREE.Mesh(wingGeo, mats.cutoutStill);
-    const wr = new THREE.Mesh(wingGeo, mats.cutoutStill);
-    wl.position.set(0, 0.05, -0.16); wr.position.set(0, 0.05, 0.16);
-    b.add(wl); b.add(wr);
-    group.add(b);
     birds.push({
-      mesh: b, wl, wr,
       cx: (rng() - 0.5) * 220, cz: (rng() - 0.5) * 220,
       rad: 14 + rng() * 42,
       y: 26 + rng() * 30,
@@ -1588,19 +1602,35 @@ export function buildBirdFlock(rng, mats, count = 22) {
     });
   }
 
+  const _bird = new THREE.Object3D();
+  const _wing = new THREE.Object3D();
+  const _mat = new THREE.Matrix4();
   group.userData.tick = (t) => {
-    for (const b of birds) {
+    for (let i = 0; i < birds.length; i++) {
+      const b = birds[i];
       const a = b.ph + t * b.sp;
-      const x = b.cx + Math.cos(a) * b.rad;
-      const z = b.cz + Math.sin(a) * b.rad;
-      b.mesh.position.set(x, b.y + Math.sin(t * 0.6 + b.bob) * 2.2, z);
+      _bird.position.set(
+        b.cx + Math.cos(a) * b.rad,
+        b.y + Math.sin(t * 0.6 + b.bob) * 2.2,
+        b.cz + Math.sin(a) * b.rad
+      );
       // face along the tangent of the circle
-      b.mesh.rotation.y = -a + Math.PI / 2;
-      b.mesh.rotation.z = 0.32;
+      _bird.rotation.set(0, -a + Math.PI / 2, 0.32);
+      _bird.updateMatrix();
+      bodies.setMatrixAt(i, _bird.matrix);
+
       const f = Math.sin(t * b.flap + b.ph);
-      b.wl.rotation.x = f * 0.9;
-      b.wr.rotation.x = -f * 0.9;
+      _wing.position.set(0, 0.05, -0.16);
+      _wing.rotation.set(f * 0.9, 0, 0);
+      _wing.updateMatrix();
+      wings.setMatrixAt(i * 2, _mat.multiplyMatrices(_bird.matrix, _wing.matrix));
+      _wing.position.set(0, 0.05, 0.16);
+      _wing.rotation.set(-f * 0.9, 0, 0);
+      _wing.updateMatrix();
+      wings.setMatrixAt(i * 2 + 1, _mat.multiplyMatrices(_bird.matrix, _wing.matrix));
     }
+    bodies.instanceMatrix.needsUpdate = true;
+    wings.instanceMatrix.needsUpdate = true;
   };
   group.frustumCulled = false;
   return group;
@@ -1621,14 +1651,27 @@ export function buildCritters(rng, mats, groundAt, count = 26) {
     tint(plane(0.22, 0.16, 'flower', { rot: [0, 0, 0] }), G(0xffffff)),
   ]);
 
+  /* Two shapes, twenty-six of them, and they were twenty-six draw calls
+     for a hundred and thirty triangles. Two instanced meshes instead —
+     one for what crawls and one for what flies. */
+  const nFly = Math.ceil(count / 3);
+  const flies = new THREE.InstancedMesh(flyGeo, mats.cutoutStill, nFly);
+  const beetles = new THREE.InstancedMesh(beetleGeo, mats.opaque, count - nFly);
+  flies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  beetles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // they live within a few metres of you; testing them is wasted work
+  flies.frustumCulled = false;
+  beetles.frustumCulled = false;
+  group.add(flies, beetles);
+
   const items = [];
+  let slotFly = 0, slotBug = 0;
   for (let i = 0; i < count; i++) {
     const isFly = i % 3 === 0;
-    const mesh = new THREE.Mesh(isFly ? flyGeo : beetleGeo,
-      isFly ? mats.cutoutStill : mats.opaque);
-    group.add(mesh);
     items.push({
-      mesh, isFly,
+      isFly,
+      into: isFly ? flies : beetles,
+      slot: isFly ? slotFly++ : slotBug++,
       ang: rng() * Math.PI * 2,
       rad: 3 + rng() * 12,
       sp: (rng() - 0.5) * 1.6,
@@ -1636,10 +1679,12 @@ export function buildCritters(rng, mats, groundAt, count = 26) {
       h: isFly ? 0.5 + rng() * 1.1 : 0.05,
       home: new THREE.Vector3(),
       placed: false,
+      on: false,
     });
   }
 
-  const tmp = new THREE.Vector3();
+  const _it = new THREE.Object3D();
+  const _gone = new THREE.Matrix4().makeScale(0, 0, 0);
   group.userData.tick = (t, dt, playerPos) => {
     if (!playerPos) return;
     for (const it of items) {
@@ -1651,21 +1696,24 @@ export function buildCritters(rng, mats, groundAt, count = 26) {
         it.home.set(playerPos.x + Math.cos(a) * r, 0, playerPos.z + Math.sin(a) * r);
         it.home.y = groundAt(it.home.x, it.home.z);
         it.placed = true;
-        it.mesh.visible = it.home.y > 0.4;   // nothing crawls on the sea
+        it.on = it.home.y > 0.4;             // nothing crawls on the sea
       }
+      if (!it.on) { it.into.setMatrixAt(it.slot, _gone); continue; }
       it.ang += it.sp * dt;
       const wob = it.isFly
         ? Math.sin(t * 3 + it.ph) * 0.5
         : Math.sin(t * 1.4 + it.ph) * 0.25;
-      tmp.set(
+      _it.position.set(
         it.home.x + Math.cos(it.ang) * (it.isFly ? 1.4 : 0.5) + wob,
         it.home.y + it.h + (it.isFly ? Math.sin(t * 4 + it.ph) * 0.28 : 0),
         it.home.z + Math.sin(it.ang) * (it.isFly ? 1.4 : 0.5)
       );
-      it.mesh.position.copy(tmp);
-      it.mesh.rotation.y = -it.ang;
-      if (it.isFly) it.mesh.rotation.z = Math.sin(t * 9 + it.ph) * 0.7;
+      _it.rotation.set(0, -it.ang, it.isFly ? Math.sin(t * 9 + it.ph) * 0.7 : 0);
+      _it.updateMatrix();
+      it.into.setMatrixAt(it.slot, _it.matrix);
     }
+    flies.instanceMatrix.needsUpdate = true;
+    beetles.instanceMatrix.needsUpdate = true;
   };
   group.frustumCulled = false;
   return group;

@@ -84,6 +84,41 @@ export function mergeGeos(list) {
   return out;
 }
 
+/**
+ * Concatenate geometries that already carry their placement in their
+ * vertices, without adding a colour attribute.
+ *
+ * mergeGeos() is for props that take their colour from a tint and draw
+ * through the atlas material. This is for the plainer case: a handful of
+ * shapes that share one flat material and only exist separately because
+ * they were built separately. Nothing is added, so nothing is wasted.
+ */
+export function weldGeos(list) {
+  const parts = list.filter(Boolean).map((g) => (g.index ? g.toNonIndexed() : g));
+  if (!parts.length) return null;
+  if (parts.length === 1) return parts[0];
+  let total = 0;
+  for (const g of parts) total += g.attributes.position.count;
+  const position = new Float32Array(total * 3);
+  const normal = new Float32Array(total * 3);
+  const uv = new Float32Array(total * 2);
+  let o = 0;
+  for (const g of parts) {
+    if (!g.attributes.normal) g.computeVertexNormals();
+    const p = g.attributes.position, n = g.attributes.normal, t = g.attributes.uv;
+    const c = p.count;
+    position.set(p.array.subarray(0, c * 3), o * 3);
+    normal.set(n.array.subarray(0, c * 3), o * 3);
+    if (t) uv.set(t.array.subarray(0, c * 2), o * 2);
+    o += c;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(position, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return markStamped(out);
+}
+
 /* ---------- primitive factories with atlas UVs + tint ---------- */
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();

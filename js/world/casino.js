@@ -12,7 +12,7 @@
 
 import * as THREE from 'three';
 import {
-  mergeGeos, box, cyl, plane, tint, blankUV,
+  mergeGeos, weldGeos, box, cyl, plane, tint, blankUV,
 } from '../lib/geo.js';
 import { buildSignTexture } from '../lib/textures.js';
 import { drawText, textWidth } from '../lib/bitfont.js';
@@ -174,10 +174,13 @@ function buildMarquee(mats, word, w, h, hue) {
   }
   g.add(new THREE.Mesh(mergeGeos(F), mats.opaque));
 
-  /* The bulbs. One shared sphere, one material per bulb because each is on
-     its own beat — twelve materials is nothing, and the chase is the whole
-     reason anybody looks at a marquee. */
-  const bulbGeo = new THREE.SphereGeometry(0.13, 6, 5);
+  /* The bulbs, and the chase they run.
+     A bulb is lit when (its phase + the beat) divides by three, so every
+     bulb whose phase has the same remainder is lit at the same moment as
+     every other one — always, on every beat. There are only three
+     answers, so there only need to be three meshes: bake each bulb's
+     place into its vertices and put it in the group it belongs to. Same
+     chase, three draws a sign instead of fourteen. */
   const bulbs = [];
   const ring = [];
   const NX = Math.max(3, Math.round(w / 0.75)), NY = Math.max(2, Math.round(h / 0.75));
@@ -189,12 +192,19 @@ function buildMarquee(mats, word, w, h, hue) {
     const by = -h / 2 + (i / NY) * h;
     ring.push([-w / 2 - 0.18, by], [w / 2 + 0.18, by]);
   }
+  const beats = new Map();
   ring.forEach(([bx, by], i) => {
-    const m = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({ color: 0x2a1015, fog: false }));
-    m.position.set(bx, by, 0.02);
-    g.add(m);
-    bulbs.push({ m, phase: i });
+    const bulb = new THREE.SphereGeometry(0.13, 6, 5);
+    bulb.translate(bx, by, 0.02);
+    const k = i % 3;
+    if (!beats.has(k)) beats.set(k, []);
+    beats.get(k).push(bulb);
   });
+  for (const [phase, geos] of beats) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x2a1015, fog: false });
+    g.add(new THREE.Mesh(weldGeos(geos), mat));
+    bulbs.push({ mat, phase });
+  }
 
   // two floodlights so the sign throws colour onto the deck
   const glowA = new THREE.PointLight(0xff3aa0, 2.6, 20, 1.6);
@@ -208,7 +218,7 @@ function buildMarquee(mats, word, w, h, hue) {
     const step = Math.floor(t * 7);
     for (const b of bulbs) {
       const lit = ((b.phase + step) % 3) === 0;
-      b.m.material.color.copy(lit ? ON : OFF);
+      b.mat.color.copy(lit ? ON : OFF);
     }
     const pulse = 0.75 + Math.sin(t * 2.3) * 0.25;
     glowA.intensity = 2.6 * pulse;
@@ -525,22 +535,33 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
 
   /* a string of bulbs from the mast down to the bow, which is what
      actually sells a boat as lit up */
+  /* Twenty-eight bulbs, and the same trick as the marquee: a bulb's
+     colour depends on nothing but its own colour and its phase against a
+     four-beat chase, so every bulb that shares both is always in exactly
+     the same state. Eight combinations, eight meshes, one draw each. */
   const strings = [];
   {
-    const bulbGeo = new THREE.SphereGeometry(0.1, 5, 4);
     const COLS = [0xff4a8a, 0x4ad0ff, 0xffd24a, 0x8aff6a];
+    const beats = new Map();
     for (const side of [-1, 1]) {
       for (let i = 0; i < 14; i++) {
         const t = i / 13;
         const z = 6.0 - t * (LEN / 2 + 4.5);
         const sag = Math.sin(t * Math.PI) * 0.9;
-        const m = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({
-          color: COLS[i % 4], fog: false,
-        }));
-        m.position.set(side * (0.6 + t * (WID / 2 - 1.2)), 9.2 - t * 6.4 - sag, z);
-        g.add(m);
-        strings.push({ m, base: COLS[i % 4], phase: i + (side > 0 ? 2 : 0) });
+        const base = COLS[i % 4];
+        const phase = (i + (side > 0 ? 2 : 0)) % 4;
+        const bulb = new THREE.SphereGeometry(0.1, 5, 4);
+        bulb.translate(side * (0.6 + t * (WID / 2 - 1.2)), 9.2 - t * 6.4 - sag, z);
+        const key = `${phase}|${base}`;
+        let e = beats.get(key);
+        if (!e) { e = { base, phase, geos: [] }; beats.set(key, e); }
+        e.geos.push(bulb);
       }
+    }
+    for (const e of beats.values()) {
+      const mat = new THREE.MeshBasicMaterial({ color: e.base, fog: false });
+      g.add(new THREE.Mesh(weldGeos(e.geos), mat));
+      strings.push({ mat, base: e.base, phase: e.phase });
     }
   }
 
@@ -634,7 +655,7 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     const step = Math.floor(t * 5);
     for (const b of strings) {
       const lit = ((b.phase + step) % 4) !== 0;
-      b.m.material.color.copy(lit ? _c.setHex(b.base) : OFF);
+      b.mat.color.copy(lit ? _c.setHex(b.base) : OFF);
     }
     // she rolls at anchor
     g.rotation.z = Math.sin(t * 0.55) * 0.022;
@@ -709,7 +730,6 @@ export function buildVendingMachine(rng, mats) {
      being under a light rather than being lit by the sun. That is the whole
      difference between "there is something in there" and "I can see what is
      in there" from twenty metres away at night. */
-  const inner = [];
   const LIT = (hex) => new THREE.MeshBasicMaterial({ color: hex, fog: true });
   const backGlow = new THREE.Mesh(
     new THREE.PlaneGeometry(HW * 1.7, HT - 0.5),
@@ -718,36 +738,45 @@ export function buildVendingMachine(rng, mats) {
   backGlow.position.set(0, 0.26 + HT / 2, -HD + 0.20);
   g.add(backGlow);
 
-  const shelves = [];
+  /* The cabinet used to be seventy-five separate meshes with seventy-five
+     separate materials in it, for two thousand triangles — a coil, a
+     bottle and a cap each being its own draw call. Two machines on the
+     island came to a hundred and fifty draws for something you look at
+     from across a clearing.
+
+     The four shelves all take the same colour off the same flicker, so
+     they are one mesh with one material. The coils and the stock never
+     change at all, so they are one mesh with their colours baked into
+     their vertices. Same cabinet, ten draws instead of seventy-five. */
+  const shelfGeo = [], stockGeo = [];
   const ROWS = 4, COLS = 4;
   for (let r = 0; r < ROWS; r++) {
     const sy = 1.10 + r * 0.46;
-    // the shelf
-    const sh = new THREE.Mesh(new THREE.BoxGeometry(HW * 1.6, 0.05, HD), LIT(0x9fe8d8));
-    sh.position.set(0, sy, -0.06);
-    g.add(sh);
-    shelves.push(sh);
+    shelfGeo.push(box(HW * 1.6, 0.05, HD, 'metal', { pos: [0, sy, -0.06] }));
     // the coil in front of it
     for (let k = 0; k < 8; k++) {
-      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.06, 5), LIT(0xdff4ee));
-      c.rotation.x = Math.PI / 2;
-      c.position.set(-HW * 0.68 + k * (HW * 1.36 / 7), sy + 0.10, 0.06);
-      g.add(c);
+      stockGeo.push(tint(cyl(0.032, 0.032, 0.06, 5, 'metal', {
+        pos: [-HW * 0.68 + k * (HW * 1.36 / 7), sy + 0.10, 0.06], rot: [Math.PI / 2, 0, 0],
+      }), G(0xdff4ee)));
     }
     // the stock, standing on it, each item its own colour
     for (let k = 0; k < COLS; k++) {
       const col = [0xf0dcae, 0xe0453a, 0xffd24a, 0x8fd8f0][(r + k) % 4];
       const tall = 0.28 + ((r + k) % 3) * 0.06;
-      const bt = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, tall, 8), LIT(col));
-      bt.position.set(-HW * 0.55 + k * (HW * 1.1 / 3), sy + 0.06 + tall / 2, 0.02);
-      g.add(bt);
-      inner.push(bt);
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 6), LIT(0xc8ced4));
-      cap.position.set(bt.position.x, sy + 0.08 + tall, 0.02);
-      g.add(cap);
-      inner.push(cap);
+      const bx = -HW * 0.55 + k * (HW * 1.1 / 3);
+      stockGeo.push(tint(cyl(0.085, 0.085, tall, 8, 'metal', {
+        pos: [bx, sy + 0.06 + tall / 2, 0.02],
+      }), G(col)));
+      stockGeo.push(tint(cyl(0.05, 0.05, 0.06, 6, 'metal', {
+        pos: [bx, sy + 0.08 + tall, 0.02],
+      }), G(0xc8ced4)));
     }
   }
+  const shelfMat = LIT(0x9fe8d8);
+  g.add(new THREE.Mesh(weldGeos(shelfGeo), shelfMat));
+  g.add(new THREE.Mesh(mergeGeos(stockGeo), new THREE.MeshBasicMaterial({
+    vertexColors: true, fog: true,
+  })));
 
   /* the glass over it, last, so it sits in front of everything */
   const glass = new THREE.Mesh(
@@ -818,9 +847,7 @@ export function buildVendingMachine(rng, mats) {
     tube.material.color.setScalar(0.25 + 0.75 * flick * out);
     const k = (0.35 + 0.65 * flick) * out;
     backGlow.material.color.setRGB(0.10 * k, 0.42 * k, 0.36 * k);
-    for (const sh of shelves) sh.material.color.setRGB(0.55 * k, 0.88 * k, 0.82 * k);
-    // and the stock dims with it rather than glowing in a dead cabinet
-    for (const m of inner) m.material.opacity = 1;
+    shelfMat.color.setRGB(0.55 * k, 0.88 * k, 0.82 * k);
     // the sheen crawls, so the glass is never static
     sheen.position.x = -HW * 0.3 + Math.sin(t * 0.4) * HW * 0.25;
 

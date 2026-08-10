@@ -52,6 +52,7 @@ import {
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
 import { setTime } from '../lib/ps1.js';
+import { rigScene } from '../lib/lights.js';
 import { setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
 
@@ -1073,11 +1074,23 @@ export class MPGame extends Game {
        while the reveal card is still up, rather than the first time
        somebody finishes a chore or somebody dies. */
     try {
+      /* Anything built since the loading screen may have brought a light
+         with it. Put those on the rig BEFORE compiling, or this compiles
+         every material for a light count the game will never render at
+         and does it all again on the first frame. */
+      rigScene(this.islandScene);
       const hidden = [];
       this.islandScene.traverse((o) => {
+        if (o.userData.rigOff) return;
         if (o.visible === false) { o.visible = true; hidden.push(o); }
       });
+      /* Into the target, not the canvas — the output colour space is part
+         of every program's cache key, so compiling with nothing bound
+         builds the twin of each program that nothing ever draws with. See
+         the warm-up in game.js. */
+      this.renderer.setRenderTarget(this.pipeline.target);
       this.renderer.compile(this.islandScene, this.camera);
+      this.renderer.setRenderTarget(null);
       for (const o of hidden) o.visible = false;
     } catch (e) { /* never worth failing a round start over */ }
 

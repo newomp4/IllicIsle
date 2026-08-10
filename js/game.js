@@ -10,6 +10,7 @@ import { GameAudio } from './lib/audio.js';
 import { Cutscene, setCinemaBars, attachHud } from './lib/cutscene.js';
 import { UI } from './ui.js';
 import { ScreenStack, GLYPH_NAMES } from './lib/screens.js';
+import { rigScene } from './lib/lights.js';
 
 import {
   buildTerrain, buildOcean, buildSurf, buildSky, buildClouds, heightAt, slopeAt, findBeach,
@@ -656,16 +657,28 @@ export class Game {
          compiles its program, and a compile mid-round is exactly the
          one-second freeze that has no obvious cause.
 
-         Two things this has to get right that the obvious version does
+         Three things this has to get right that the obvious version does
          not. renderer.compile() walks the scene graph and SKIPS anything
          with visible === false, so every pooled effect, every hidden
          hatch and the boombox — all the things that appear for the first
-         time in the middle of a round — were missed by it. And the light
+         time in the middle of a round — were missed by it. The light
          count is baked into every program's cache key, so the scene has
-         to be holding all of its lights before anything is compiled. */
+         to be holding all of its lights before anything is compiled.
+
+         And the one that made all of this do nothing at all: the OUTPUT
+         COLOUR SPACE is in the cache key too, and it is read off whatever
+         render target is bound at the time. The game draws the world into
+         an offscreen target and only the final quad goes to the canvas, so
+         every program the game actually uses is a linear-space one — and
+         this pass, binding nothing, was compiling the sRGB twin of each,
+         which is a program nothing ever draws with. Thirty-one shaders
+         were still being compiled one at a time in the middle of rounds,
+         each one a hitch, with a warm-up sitting right here that had
+         warmed the wrong pipes. Bind the target first. */
       const revealed = [];
       const showAll = (root) => {
         root.traverse((o) => {
+          if (o.userData.rigOff) return;
           if (o.visible === false) { o.visible = true; revealed.push(o); }
         });
       };
@@ -677,13 +690,32 @@ export class Game {
         this._lanternLight.position.set(0, 4, 0);
         this.islandScene.add(this._lanternLight);
 
+        this.renderer.setRenderTarget(this.pipeline.target);
         for (const sc of [this.islandScene, this.templeScene, this.bunkerScene,
           this.hrScene, this.barScene, this.cabScene, this.titleScene]) {
           if (!sc) continue;
           showAll(sc);
+          /* Take the scene's own point lights off duty and give it the
+             standard rig. This has to happen BEFORE the compile, because
+             how many lights a scene is holding is baked into every
+             program built from it — and it has to happen to every scene,
+             because that is what makes one program serve all of them. */
+          rigScene(sc);
           this.renderer.compile(sc, this.camera);
         }
+        // and the one program that really does draw to the canvas
+        this.renderer.setRenderTarget(null);
+        this.renderer.compile(this.pipeline.quadScene, this.pipeline.quadCam);
+        /* Every program the game uses now exists and has been linked with
+           error checking on, so anything wrong with a shader has already
+           been reported. From here the check is nothing but a stall: it
+           asks the driver for a link status the first time each program
+           is drawn with, and asking is what stops the driver compiling in
+           the background. Off, and the first sight of a material is a
+           frame like any other. */
+        this.renderer.debug.checkShaderErrors = false;
       } catch (e) { /* a warm-up that fails is not worth failing the load over */ }
+      this.renderer.setRenderTarget(null);
       for (const o of revealed) o.visible = false;
     });
 
@@ -3273,10 +3305,16 @@ I have snacks."`);
        renders the live scene — bodies, avatars, the lot. */
     this._cullFor(fc);
     const was = this._showIslandForFeed();
+    /* The rig is dealt for wherever YOU are, and you are up the mast. Deal
+       it again for the camera or the feed is a picture of an unlit island,
+       then deal it back on the next frame. */
+    const rig = this.islandScene.userData.rig;
+    rig?.update(0, fc, true);
     this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
     this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
     this._restoreAfterFeed(was);
     this._cullBack();
+    rig?.update(0, this.camera, true);
     return this._feedBuf;
   }
 
@@ -3650,6 +3688,19 @@ I have snacks."`);
         onDefeat: () => this.onBossDefeat(),
         sfx: (n) => this.audio.sfx(n),
       });
+      /* He arrives carrying a light, and carrying the only two materials
+         in the game that the loading screen could not warm — he is built
+         the first time somebody opens the door. Put the light on the rig
+         and compile him now, into the target the world is drawn into, so
+         the first swing of the fight is not the frame that stops to build
+         a shader. */
+      rigScene(this.templeScene);
+      try {
+        this.renderer.setRenderTarget(this.pipeline.target);
+        this.renderer.compile(this.templeScene, this.camera);
+      } finally {
+        this.renderer.setRenderTarget(null);
+      }
     }
 
     this.audio.playMusic('temple');
@@ -4277,13 +4328,18 @@ I have snacks."`);
     this.ui.hud.renderCinema(this.time);
     this.pipeline.markHudDirty();
 
+    /* Deal the light rig out to whatever we are about to look at, from
+       wherever we are looking. See lib/lights.js. */
     if (this.state === 'title' || this.state === 'ending') {
       this.titleCam.aspect = this.camera.aspect;
       this.titleCam.updateProjectionMatrix();
+      this.titleScene.userData.rig?.update(dt, this.titleCam);
       this.pipeline.render(this.titleScene, this.titleCam, dt);
     } else if (this.state === 'cutscene' && this.cutScene) {
+      this.cutScene.userData.rig?.update(dt, this.camera);
       this.pipeline.render(this.cutScene, this.camera, dt);
     } else if (this.scene) {
+      this.scene.userData.rig?.update(dt, this.camera);
       this.pipeline.render(this.scene, this.camera, dt);
     }
   }

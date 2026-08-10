@@ -6,6 +6,7 @@
 
 import * as THREE from 'three';
 import { ps1ify } from '../lib/ps1.js';
+import { weldGeos } from '../lib/geo.js';
 import { buildDetailTexture, buildWaterTexture, buildSkyTexture, buildFoamTexture } from '../lib/textures.js';
 
 /* ---------- value noise ---------- */
@@ -422,15 +423,27 @@ export function buildClouds(rng) {
   const group = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({ color: 0xf4f0e4, fog: false, transparent: true, opacity: 0.85 });
   for (let i = 0; i < 18; i++) {
-    const cloud = new THREE.Group();
+    /* One cloud, one mesh. Each is three to five lumps and the lumps
+       never move relative to each other — only the cloud drifts — so
+       there is nothing to be gained from giving each lump its own node
+       and its own draw call, and sixty-eight of them in the sky was a
+       quarter of everything the island drew. The lump's placement is
+       baked into its vertices instead: same shapes, same seed, same
+       sky, a quarter of the calls. */
+    const parts = [];
     const puffs = 3 + ((rng() * 3) | 0);
     for (let p = 0; p < puffs; p++) {
       const g = new THREE.IcosahedronGeometry(10 + rng() * 14, 0);
-      const m = new THREE.Mesh(g, mat);
-      m.position.set((p - puffs / 2) * (14 + rng() * 9), rng() * 5, rng() * 8 - 4);
-      m.scale.set(1.6 + rng(), 0.5, 1);
-      cloud.add(m);
+      // the numbers come off the seed in the order they always did
+      const px = (p - puffs / 2) * (14 + rng() * 9);
+      const py = rng() * 5;
+      const pz = rng() * 8 - 4;
+      const sx = 1.6 + rng();
+      g.scale(sx, 0.5, 1);                 // scale first, then place: T·R·S
+      g.translate(px, py, pz);
+      parts.push(g);
     }
+    const cloud = new THREE.Mesh(weldGeos(parts), mat);
     const a = rng() * Math.PI * 2;
     const rad = 180 + rng() * 180;
     cloud.position.set(Math.cos(a) * rad, 120 + rng() * 70, Math.sin(a) * rad);
