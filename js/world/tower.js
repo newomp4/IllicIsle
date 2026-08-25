@@ -64,7 +64,13 @@ export const THUMB_H = 13;
    dead channels tells you nothing. */
 export const FITTED_CAMS = [
   { at: [-46, 140], look: [-46, 154], name: 'CAM 1  CAMP', short: 'CAMP' },
-  { at: [-30, 34], look: [-30, 46], name: 'CAM 2  SHOP', short: 'SHOP' },
+  /* The hut is turned to face the wreck camp and it is open on that side
+     only, so a mount south of it — which is where this one was — watched
+     the back planking, the stilts and the underside of the deck. It stands
+     on the camp side now, thirteen metres out along the line the hut is
+     facing, looking back at it: the counter, the awning and whoever is
+     stood at them. */
+  { at: [-32, 59], look: [-30, 46], name: 'CAM 2  SHOP', short: 'SHOP' },
   { at: [-118, 96], look: [-132, 110], name: 'CAM 3  PIER', short: 'PIER' },
   { at: [0, 0], look: [0, 0], name: 'CAM 4  TEMPLE', short: 'TMPL' },
 ];

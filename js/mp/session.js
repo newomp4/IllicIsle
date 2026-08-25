@@ -10,7 +10,7 @@
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
 import { DIG_SECONDS } from '../world/treasure.js';
 import { SABOTAGE_DEFS, dealTasks, taskSteps, taskStage } from './tasks.js';
-import { VENDOR_IDS, LOOT_SHARE } from './market.js';
+import { VENDOR_IDS, LOOT_SHARE, itemById } from './market.js';
 import { makeClue } from './stranger.js';
 
 const now = () => performance.now() / 1000;
@@ -303,7 +303,8 @@ export class HostSession {
 
   /* ---------- start ---------- */
   canStart() {
-    // the workshop runs with one
+    /* [RELEASE] REMOVE BEFORE RELEASE — `this.dev ? 1 :` is the 7226 workshop
+       dropping the three-player minimum. The line should read `>= 3`. */
     return this.players.size >= (this.dev ? 1 : 3) && this.phase === PHASE.LOBBY;
   }
 
@@ -366,6 +367,8 @@ export class HostSession {
        among nine is a needle in a haystack; three among four is a massacre. */
     const auto = ids.length >= 9 ? 3 : ids.length >= 6 ? 2 : 1;
     const want = this.settings.agents > 0 ? this.settings.agents : auto;
+    /* [RELEASE] REMOVE BEFORE RELEASE — the `this.dev ? 0 :` arm is the 7226
+       workshop dealing no Agents so one player can walk the island alone. */
     const agentCount = this.dev
       ? 0                                   // alone, you are whatever you choose
       : Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
@@ -1016,7 +1019,15 @@ export class HostSession {
     const where = this.hooks.siteOf?.('vend' + (index + 1));
     if (where && ((p.room | 0) !== 0 || Math.hypot(p.x - where.x, p.z - where.z) > 8)) return;
     this.vendSpent[index] = true;
-    const itemId = VENDOR_IDS[(this.rng() * VENDOR_IDS.length) | 0];
+    /* The counter will not sell a night item in daylight and the drum was
+       the one place that would: a BOOK OF TICKETS in the afternoon is three
+       pulls on a Flopper that does not come in until dark. Roll from what
+       the shelf would show, not from the whole box. */
+    const pool = VENDOR_IDS.filter((id) => {
+      const it = itemById(id);
+      return !it?.night || !!this.hooks.isNight?.();
+    });
+    const itemId = pool[(this.rng() * pool.length) | 0];
     this.net.broadcast({ t: S.VEND, index, byId: from, itemId });
     this.hooks.onVend?.(index, from, itemId);
   }
@@ -1276,7 +1287,8 @@ export class HostSession {
     else if (this.tasksTotal > 0 && this.tasksDone >= this.tasksTotal) {
       winner = 'castaways'; reason = 'ALL WORK COMPLETE';
     }
-    if (this.dev) return false;             // the workshop never ends on its own
+    // [RELEASE] REMOVE BEFORE RELEASE — 7226: the round never ends on its own.
+    if (this.dev) return false;
     if (!winner) return false;
 
     /* The round ending is a fourth way a sabotage ends, and update() returns

@@ -36,6 +36,10 @@ async function boot() {
     $('load-text').style.color = '#e0453a';
     return;
   }
+  /* [RELEASE] REMOVE BEFORE RELEASE — a console handle on the whole game.
+     Everything is reachable through it: coins, roles, the host's own rules
+     object. Harmless in development and an open cheat menu in a browser
+     console once this is public. */
   window.__game = game;
 
   const fill = $('load-fill');

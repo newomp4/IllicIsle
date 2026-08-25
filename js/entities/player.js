@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeos, box, cyl, ico, sphere, plane, place, tint, limb } from '../lib/geo.js';
 import { applyRegion, CELLS, makeRng } from '../lib/textures.js';
-import { heightAt, biomeAt } from '../world/terrain.js';
+import { heightAt, biomeAt, SEA_LEVEL } from '../world/terrain.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -966,6 +966,16 @@ export class Player {
     // to make anybody seasick
     if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 3.2);
 
+    /* The sea is one upward-facing plane at SEA_LEVEL and nothing in the game
+       draws its underside or tints the view below it, so a camera that dips
+       under it has the whole ocean culled away and the island is left standing
+       on bare seabed. Afloat you are exactly there: the water floor parks the
+       feet at -1.35, the wading dip takes another 0.4 off the eye, and
+       -1.35 + 1.55 - 0.4 puts the eye 20cm under the surface — and the boom
+       goes further under still the moment you pitch up. Hold any camera in
+       water a near plane clear of the surface instead. */
+    const camFloorY = this.inWater > 0 ? SEA_LEVEL + 0.35 : -Infinity;
+
     if (this.thirdPerson) {
       const targetY = this.pos.y + 1.42;
       // orbit direction, pointing back from the player
@@ -1093,8 +1103,15 @@ export class Player {
         limit = Math.min(limit, dirY > 0
           ? slab(oy, dirY, gLo + 0.55, floorHi)
           : slabH(oy, dirY, gLo + 0.55, floorHi));
-        // never inside the body: at anything under 1.3 the camera is in the head
-        dist = Math.max(1.3, Math.min(dist, limit));
+        /* Let the wall win. The 1.3 minimum used to be applied after the slab
+           clamp, and 1.3 is longer than any of these rooms leaves: backed
+           against the cab's north wall the body stops at 3.0 - RADIUS = 2.58
+           and the boom landed at 3.88, inside a wall slab running 3.55 to
+           4.05, so the screen went black; in the temple it ended most of a
+           metre inside 1.6m masonry. The floor now only has to keep the lens
+           off the head — 0.55 leaves the body a near plane (0.35) away — and
+           every one of these boxes is inset further than that from its wall. */
+        dist = Math.max(0.55, Math.min(dist, limit));
       }
 
       if (cam.fov !== this.FOV_THIRD) {
@@ -1121,6 +1138,7 @@ export class Player {
         cam.position.x += Math.sin(this.shake * 47) * j3;
         cam.position.y += Math.sin(this.shake * 31) * j3;
       }
+      if (cam.position.y < camFloorY) cam.position.y = camFloorY;
       cam.lookAt(
         this.pos.x + rightX * SHOULDER * 0.45,
         targetY + 0.22,
@@ -1136,9 +1154,11 @@ export class Player {
         cam.fov = this.FOV_FIRST;
         cam.updateProjectionMatrix();
       }
+      const eyeY = this.pos.y + this.EYE - this.inWater * 0.4 + bob
+        + (j ? Math.sin(this.shake * 31) * j : 0);
       cam.position.set(
         this.pos.x + (j ? Math.sin(this.shake * 47) * j : 0),
-        this.pos.y + this.EYE - this.inWater * 0.4 + bob + (j ? Math.sin(this.shake * 31) * j : 0),
+        Math.max(eyeY, camFloorY),
         this.pos.z
       );
       const lx = this.pos.x + Math.sin(this.yaw) * cp;

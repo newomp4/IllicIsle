@@ -129,6 +129,12 @@ export function textWidth(text, s = 1, tracking = 1) {
    can render a frame and ask which pairs overlap.
 
    Off unless something turns it on, and one branch when off.
+
+   [RELEASE] OPTIONAL — this is test scaffolding, not a game feature. It is
+   cheap (one predictable branch per drawText) and it is what the layout
+   sweeps measure with, so it is defensible to ship. Remove it only if you
+   want the engine to carry nothing a player cannot use: delete `textBoxes`,
+   `recordText`, and the one push inside drawText below.
    =========================================================== */
 export let textBoxes = null;
 

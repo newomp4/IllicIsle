@@ -74,6 +74,9 @@ function boxGeo(w, h, d, i) {
   return new THREE.Mesh(g, m);
 }
 
+/** The walls of each room, by the same numbering `roomId` uses. */
+const ROOM_BOXES = { 1: BUNKER_BOX, 2: HR_BOX, 3: BAR_BOX, 4: CAB_BOX };
+
 /** A stable 32-bit seed from a string, so a puzzle looks the same if reopened. */
 function hashSeed(str) {
   let h = 2166136261;
@@ -109,6 +112,15 @@ export class MPGame extends Game {
        wire, and the flag was still set when you came back: standing near the
        X was then enough to dig the chest with no key down at all. */
     window.addEventListener('blur', () => { if (this.mp) this.mp.holdingE = false; });
+
+    /* The other half of the click-hold: the press arrives through Game's
+       canvas handler, but the release can land anywhere — off the canvas,
+       over a screen that opened under the button — and a release that was
+       never seen would leave the belt, the bar and the shovel held down
+       for the rest of the round. */
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0 && this.mp) this.mp.holdingClick = false;
+    });
   }
 
   /* ===========================================================
@@ -119,10 +131,18 @@ export class MPGame extends Game {
     clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
     M.kicked = false;
-    /* 7226 opens a workshop: one player, no minimum, a full purse, the
+    /* [RELEASE] REMOVE BEFORE RELEASE — the whole 7226 workshop.
+       7226 opens a workshop: one player, no minimum, a full purse, the
        listening post already on your chart and a readout of what the rules
        think is going on. It exists so the island can be tested without
-       finding three other people first. */
+       finding three other people first.
+
+       Anybody who learns the code gets a full purse, every item and a round
+       that cannot end, so it must not ship. Grep [RELEASE] for the rest of
+       it: the grants below in _applyDevKit, the host flags a few lines down,
+       the knowsBunker line in startCastaways, the three tests in
+       js/mp/session.js, and the badge and player-count test in
+       js/lib/screens.js mpLobby. */
     M.dev = String(room || '').trim() === '7226';
     M.cool = {};
     M.chat.length = 0;
@@ -222,6 +242,7 @@ export class MPGame extends Game {
        copy. One object, so what it renders is what it edits. */
     M.view.settings = M.host.settings;
     M.view.selfId = 'host';
+    // [RELEASE] REMOVE BEFORE RELEASE — workshop only: no grace, a 6s knife.
     if (M.dev) {
       M.host.dev = true;
       M.host.settings.graceSeconds = 0;
@@ -863,7 +884,7 @@ export class MPGame extends Game {
      the round ending simply cuts the shot short.
      =========================================================== */
   _beginDeathShot(x, y, z) {
-    this.mp.holdingE = false;
+    this.mp.holdingE = this.mp.holdingClick = false;
     /* The blow lands whether or not the shot gets to play. A player knifed
        with the chart, a shop card or the pause menu up has a screen on the
        stack, and render() ends the shot before its first update — so
@@ -882,7 +903,24 @@ export class MPGame extends Game {
        carries no killer id on purpose — you are not meant to learn who it
        was, and a camera that swung round to look at him would tell you. */
     const a = this.player.yaw || 0;
-    const back = (r, h) => V(x - Math.sin(a) * r, y + h, z - Math.cos(a) * r);
+    /* Indoors the shot has to stay in the room. The last rise is 6.2 m up
+       and 4.8 m back, and every interior here is smaller than that in both
+       — the mast hut is 3.1 m to the ceiling and 6 m across — so a kill in
+       the listening post, the bunker, the bar or the cab flew the camera
+       out through the wall and finished on a black frame. The kill
+       coordinates are the room's own, so the room's box clamps them: half a
+       metre in from the walls it already keeps the player off, and the
+       ceiling less the same clearance the pull-back leaves at the floor. */
+    const box = ROOM_BOXES[this.roomId] || null;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const back = (r, h) => {
+      const bx = x - Math.sin(a) * r, bz = z - Math.cos(a) * r;
+      return box
+        ? V(clamp(bx, box.minX + 0.5, box.maxX - 0.5),
+          Math.min(y + h, box.maxY - 0.6),
+          clamp(bz, box.minZ + 0.5, box.maxZ - 0.5))
+        : V(bx, y + h, bz);
+    };
     const body = V(x, y + 0.35, z);
 
     this.deathShot = new Cutscene(this.camera, {
@@ -1304,11 +1342,20 @@ export class MPGame extends Game {
       const hut = this.hutNode;
       if (hut) {
         if (!hut.userData.boards) {
-          // planks nailed across the counter, made once and hidden
+          /* Planks nailed across the counter, made once and hidden.
+
+             Four of them at 0.75 apart put the top board at 4.45, which is
+             above the shopfront opening entirely — the deck is at 1.5 and
+             the awning comes down at 3.78-4.25 — and straight through the
+             roof sheets at 4.62-4.72. It stuck out of the roof at an angle.
+             Three boards cover the gap and stay under the awning: the top
+             one reaches 3.68, and 3.96 at the end that the roll lifts.
+             6.4 long, too, for a 6.2 m hut; 7.4 overhung open air by more
+             than half a metre each side. */
           const B = [];
-          for (let i = 0; i < 4; i++) {
-            const b2 = boxGeo(7.4, 0.55, 0.24, i);
-            b2.position.set(0, 2.2 + i * 0.75, 2.55);
+          for (let i = 0; i < 3; i++) {
+            const b2 = boxGeo(6.4, 0.55, 0.24, i);
+            b2.position.set(0, 2.0 + i * 0.7, 2.55);
             b2.rotation.z = (i % 2 ? 1 : -1) * 0.09;
             B.push(b2);
           }
@@ -1650,6 +1697,7 @@ export class MPGame extends Game {
     }
     for (const v of (this.vendors || [])) v.spent = false;
     this._buildSpeakerNode();
+    // [RELEASE] REMOVE BEFORE RELEASE — the workshop starts knowing the post.
     this.knowsBunker = !!M2.dev;
     /* A round that ends inside a live sabotage never sees the S.FIXED that
        would have undone it, so the douse, the jam and the storm used to run
@@ -1745,8 +1793,11 @@ export class MPGame extends Game {
        somebody left them — and with however many were in your hands. */
     for (const c of (this.cams || [])) {
       c.pan = 0; c.tilt = 0; c.zoom = 1;
+      /* The head carries only the pan now — the node carries the bearing it
+         was fitted at — so putting the yaw back on the head here turned every
+         fitted camera twice on a rematch. */
       const h = c.node.userData.head;
-      if (h) { h.rotation.y = c.yaw; h.rotation.x = 0.16; }
+      if (h) { h.rotation.y = 0; h.rotation.x = 0.16; }
       if (c.fitted) continue;
       c.placed = false;
       c.node.visible = false;
@@ -2186,17 +2237,30 @@ export class MPGame extends Game {
 
     // Ferdi's counter
     if (this.amAlive && this.hutPos && !this.shopShut) {
-      const dh = Math.hypot(p.x - this.hutPos.x, p.z - this.hutPos.z);
       /* The safe circle is thirteen metres wide and nothing anywhere told
          anybody it existed — Castaways never learned they were safe and
          Agents only learned the key had stopped working. Taught off
-         `inSanctuary` rather than the 7.5m prompt radius, so a shut shop
-         correctly says nothing. */
+         `inSanctuary` rather than the counter's prompt radius, so a shut
+         shop correctly says nothing. */
       if (!this._saidSanct && this.inSanctuary(p.x, p.z)) {
         this._saidSanct = true;
         this.ui.toast('FERDI KEEPS THE PEACE - NOBODY DIES HERE', 'jade', 3400);
       }
-      if (dh < 7.5 && dh < bestD) { bestD = dh; best = { kind: 'mpShop', prompt: 'FERDI STEINMAN' }; }
+      /* Measured from the COUNTER, not from the middle of the building.
+         A 7.5 m circle on `hutPos` reached three metres past the back wall
+         and well past both sides, so you could buy through the planking
+         from a spot where Ferdi is not even visible. Single player has this
+         right: the stall stands 3.6 m out along the hut's facing and
+         answers within 5.2 m, which reaches back to hut-local z = -1.6 —
+         over the counter, short of the back wall at -2.5. */
+      const hy = this.hutNode ? this.hutNode.rotation.y : 0;
+      const dcount = Math.hypot(
+        p.x - (this.hutPos.x + Math.sin(hy) * 3.6),
+        p.z - (this.hutPos.z + Math.cos(hy) * 3.6),
+      );
+      if (dcount < 5.2 && dcount < bestD) {
+        bestD = dcount; best = { kind: 'mpShop', prompt: 'FERDI STEINMAN' };
+      }
     }
 
     // a dead player's purse, lying where they fell
@@ -2501,6 +2565,7 @@ export class MPGame extends Game {
     if (this.screens.name === 'chart') { this.screens.pop(); this.afterOverlayClose(); return; }
     if (!this.mp.started) { this.audio.sfx('deny'); return; }
     const M = this.mp;
+    const self = this;         // `this` inside the live getters below is the data object
     const jobs = this.scattered ? [] : M.view.tasks
       .map((id) => ({ id, site: this._taskSite(id), done: M.view.doneTasks.has(id) }))
       .filter((j) => j.site);
@@ -2563,18 +2628,26 @@ export class MPGame extends Game {
           const def2 = SABOTAGE_DEFS[sab2.kind];
           return (def2?.fixAt || []).map((k2) => this._namedSite(k2)).filter(Boolean);
         })(),
-        others: [...M.avatars.values()]
-          .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !this.amAlive)
-          .map((a) => {
-            const rec = M.view.players.get(a.id);
-            const bx = M.speaker && now() < M.speaker.until ? M.speaker : null;
-            /* Same local-space trap on the other side: a ghost watching the
-               round saw everybody who had gone below stacked on the island's
-               origin. Plot them at the way in instead. The box and the alibi
-               are already island coordinates, and both still lie first. */
-            const at = bx || rec?.decoy || this._roomAnchor(a.room) || a.pos;
-            return { x: at.x, z: at.z, colour: colourHex(a.colour) };
-          }),
+        /* A getter, because drawChart reads this every frame and nothing
+           ever rebuilds the data object: built as a list of copied numbers
+           the living were frozen where they stood at the moment the ghost
+           pressed M, and only moved when the map was closed and reopened.
+           The overrides have to be resolved per frame too — an alibi or a
+           Party Box that starts while the chart is open must lie on it. */
+        get others() {
+          return [...M.avatars.values()]
+            .filter((a) => (M.view.players.get(a.id)?.alive !== false) && !self.amAlive)
+            .map((a) => {
+              const rec = M.view.players.get(a.id);
+              const bx = M.speaker && now() < M.speaker.until ? M.speaker : null;
+              /* Same local-space trap on the other side: a ghost watching the
+                 round saw everybody who had gone below stacked on the island's
+                 origin. Plot them at the way in instead. The box and the alibi
+                 are already island coordinates, and both still lie first. */
+              const at = bx || rec?.decoy || self._roomAnchor(a.room) || a.pos;
+              return { x: at.x, z: at.z, colour: colourHex(a.colour) };
+            });
+        },
       },
     });
     document.exitPointerLock?.();
@@ -2586,7 +2659,7 @@ export class MPGame extends Game {
      constructor binds its events before `this.mp` exists. */
   _clearHeldInput() {
     super._clearHeldInput();
-    if (this.mp) this.mp.holdingE = false;
+    if (this.mp) this.mp.holdingE = this.mp.holdingClick = false;
   }
 
   _key(e, down) {
@@ -2860,14 +2933,17 @@ export class MPGame extends Game {
     else if (id !== 'camera') this.carry = [...(this.carry || []), id];
     if (id === 'camera' || PASSIVE_AT_BUY.has(id)) this.applyItem(id);
 
-    this.plan = {
-      id, name: it.name, each,
-      left: SCHLARNA_N - 1,
-      owed: this.schlarnaTotal(id) - each,
-    };
+    /* How many payments are left is the schedule's own length, not the
+       nominal four: `each` is rounded up, so a cheap line clears the total in
+       three and the card said four. _payInstalment recomputes it this way on
+       every collection after the first, so the popup was the only place that
+       disagreed with the card the player had just signed. */
+    const owed = this.schlarnaTotal(id) - each;
+    const left = Math.max(0, Math.ceil(owed / each));
+    this.plan = { id, name: it.name, each, left, owed };
     this.mp.after = null;                    // one a day, and it has gone
     this.ui.showPopup(it.name,
-      `${SCHLARNA_N - 1} PAYMENTS OF ${each} LEFT`, 'coin', 'SCHLARNA');
+      `${left} PAYMENTS OF ${each} LEFT`, 'coin', 'SCHLARNA');
     return true;
   }
 
@@ -2942,6 +3018,16 @@ export class MPGame extends Game {
         this.audio.sfx('deny');
         return false;
       }
+    }
+    /* Nine belt keys, so nine belt rows. A tenth was sold, paid for and
+       then told you to PRESS 10 — a key nothing is bound to — and the item
+       was gone for good. Only a NEW row costs a slot: another of something
+       already carried stacks on the row it has. */
+    if (BELT_IDS.includes(id) && !(this.carry || []).includes(id)
+      && this.beltSlots().length >= 9) {
+      this.audio.sfx('deny');
+      this.ui.toast('YOUR BELT IS FULL', 'bad', 1600);
+      return false;
     }
     this.coins -= price;
     this._send({ t: C.PURSE, coins: this.coins });
@@ -3319,6 +3405,11 @@ export class MPGame extends Game {
   throwCoconut() {
     if (!this.mp.active) return super.throwCoconut();
     if (this.pistolOut) { this.fireFlare(); return; }
+    /* If the click is the same reach as E it has to be the same HOLD as E.
+       The chore bar is driven by the held-E flag alone, so a chore or a
+       repair started with the mouse drained from the first frame and died
+       1.1 seconds later on 'YOU LET GO' with the button never released. */
+    this.mp.holdingClick = true;
     this.interact();
   }
 
@@ -3851,7 +3942,7 @@ export class MPGame extends Game {
     if (st.dug >= 1 || st.taken) { bu.digging = bu.lastSpade = 0; return; }
     const p = this.player.pos;
     const near = Math.hypot(p.x - bu.x, p.z - bu.z) < 3.2;
-    const want = near && this.mp.holdingE && this.amAlive
+    const want = near && (this.mp.holdingE || this.mp.holdingClick) && this.amAlive
       && !this.screens.open && this.mp.view.phase === PHASE.ROAM;
     if (!want) {
       bu.digging = bu.lastSpade = 0;
@@ -4891,7 +4982,9 @@ export class MPGame extends Game {
   }
   startMatch() { if (this.isHost) this.mp.host.start(); }
 
-  /** Everything the workshop hands you the moment a round begins. */
+  /* [RELEASE] REMOVE BEFORE RELEASE — everything the workshop hands you the
+     moment a round begins: 9999 coins, every item in the shop, the listening
+     post on your chart. Delete this method and its one call site. */
   _applyDevKit() {
     const M = this.mp;
     if (!M.dev) return;
@@ -5200,7 +5293,7 @@ export class MPGame extends Game {
            wire from behind the pause card. Nothing drains either — a body
            card popping up must not bin your chore for you. */
         tp.slack = 0;
-      } else if (!M.holdingE) {
+      } else if (!M.holdingE && !M.holdingClick) {
         // let go and it drains, so you cannot start six chores at once
         tp.t = Math.max(0, tp.t - dt * 1.6);
         tp.slack = (tp.slack || 0) + dt;
@@ -5631,7 +5724,7 @@ export class MPGame extends Game {
       d.task.verb = M.taskProgress.verb;
       d.task.name = M.taskProgress.name;
       d.task.k = M.taskProgress.t / M.taskProgress.secs;
-      d.task.holding = !!M.holdingE;
+      d.task.holding = !!(M.holdingE || M.holdingClick);
     } else d.task = null;
 
     this._tags(d.tags);

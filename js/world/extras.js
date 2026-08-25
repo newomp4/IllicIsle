@@ -691,7 +691,10 @@ export function buildFerdiHut(rng, mats, flameFactory, groundAt = () => 0) {
      chore actually happens — you take one off the top */
   {
     const crates = [];
-    const spots = [[-4.6, -0.6, 0], [-4.6, -0.6, 1], [-4.4, 1.4, 0], [-5.0, -2.4, 0], [-4.2, 0.4, 2]];
+    /* The pale crate you lift sits at 2.55, which is exactly one crate-top above a level-1
+       crate here — but the column under it was never built, so it and a lone level-2 crate
+       hung two metres over the dirt with the hut's stilts showing through the gap. */
+    const spots = [[-4.6, -0.6, 0], [-4.6, -0.6, 1], [-4.4, 1.4, 0], [-5.0, -2.4, 0], [-4.2, 0.4, 0], [-4.2, 0.4, 1]];
     for (const [cx2, cz2, lvl] of spots) {
       const y = 0.55 + lvl * 1.05;
       const bx2 = box(1.0, 0.95, 1.0, 'planks', { pos: [cx2, y, cz2], rot: [0, (rng() - 0.5) * 0.5, 0] });

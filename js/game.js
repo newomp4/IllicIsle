@@ -3,7 +3,9 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { RetroPipeline, setJitterEnabled, setTime, ps1Clone } from './lib/ps1.js';
+import {
+  RetroPipeline, setJitterEnabled, setTime, ps1Clone, MIN_INTERNAL_W,
+} from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
 import { mergeGeos, tint, plane, box, cyl, ico, lumpify, blankUV } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
@@ -542,7 +544,18 @@ export class Game {
    * fixed resolutions — already at or under 320 — are untouched.
    */
   _interfaceSize(int) {
-    const h = Math.min(int.h, 320);
+    /* The cap is on the HEIGHT, and on a portrait window that quietly
+       became a cap on the width: a 240x400 framebuffer — the 240 across
+       that ps1.js now grows its own height to protect — came back out of
+       here 192 wide, and every screen in this game is laid out in absolute
+       pixels from 240 up. Take whatever number of lines carries
+       MIN_INTERNAL_W across at the framebuffer's own aspect, and never
+       more lines than the framebuffer has: where the window is so narrow
+       that even ps1.js could not buy 240, this hands back the
+       framebuffer's own width, which is the widest that shape goes without
+       distorting it. Same policy, same direction, at both ends. */
+    const need = Math.ceil(MIN_INTERNAL_W * int.h / Math.max(1, int.w));
+    const h = Math.min(int.h, Math.max(320, need));
     return { w: Math.max(64, Math.round(int.w * (h / int.h))), h };
   }
 
@@ -2402,10 +2415,14 @@ export class Game {
       return;
     }
     switch (k) {
-      case 'KeyW': case 'ArrowUp': if (!this.ui.dialsOpen) I.fwd = down; break;
-      case 'KeyS': case 'ArrowDown': if (!this.ui.dialsOpen) I.back = down; break;
-      case 'KeyA': case 'ArrowLeft': if (!this.ui.dialsOpen) I.left = down; break;
-      case 'KeyD': case 'ArrowRight': if (!this.ui.dialsOpen) I.right = down; break;
+      /* No screen test here: a key-DOWN never reaches this switch with a
+         screen up, so the old `dialsOpen` guard could only ever fire on the
+         way UP — where it threw away the one event that says you have let
+         go. Solving the dials with W still held walked you into the door. */
+      case 'KeyW': case 'ArrowUp': I.fwd = down; break;
+      case 'KeyS': case 'ArrowDown': I.back = down; break;
+      case 'KeyA': case 'ArrowLeft': I.left = down; break;
+      case 'KeyD': case 'ArrowRight': I.right = down; break;
       case 'ShiftLeft': case 'ShiftRight': I.sprint = down; break;
       case 'Space': I.jump = down; if (down) e.preventDefault(); break;
       default: break;
@@ -2416,6 +2433,13 @@ export class Game {
     if (k === 'KeyE') this.holdingE = down;
 
     if (!down) return;
+
+    /* Everything below is a one-shot: a tap, or a toggle. The browser
+       repeats a held key thirty times a second, so holding TAB or M flipped
+       the chart open and shut at that rate — each cycle a page-turn, a
+       select, and a pointer lock dropped and grabbed — and holding C sprayed
+       first/third person toasts. A held key is one press. */
+    if (e.repeat) return;
 
     if (this.state === 'cutscene') { if (!e.repeat) this._skipCutsceneInput(); return; }
 
@@ -3540,6 +3564,17 @@ I have snacks."`);
         const a = Math.atan2(d.x, d.z);
         ax = d.x - Math.sin(a) * 13; az = d.z - Math.cos(a) * 13;
       }
+      /* CAM 2 is named for the counter and was filming the back of the shed:
+         the hut goes wherever findFlatGround puts it, and a bearing written
+         into the table cannot follow it. The hut's open front is its local
+         +Z, so the mount stands out along that and looks back at the hut.
+         (The temple branch above subtracts because its angle is the bearing
+         from the origin out to the door, not the building's own facing.) */
+      if (f.name.endsWith('SHOP') && this.hutPos && this.hutNode) {
+        const h = this.hutPos, hy = this.hutNode.rotation.y;
+        lx = h.x; lz = h.z;
+        ax = h.x + Math.sin(hy) * 13; az = h.z + Math.cos(hy) * 13;
+      }
       c.x = ax; c.z = az;
       /* The GROUND is where the mount stands; the lens is whatever the
          mount holds it at. These used to be positioned at ground plus
@@ -3551,7 +3586,14 @@ I have snacks."`);
       c.yaw = Math.atan2(lx - ax, lz - az);
       c.placed = true;
       c.node.position.set(c.x, gy, c.z);
-      c.node.userData.head.rotation.y = c.yaw;
+      /* The MOUNT is turned to where the camera was fitted; the head only
+         carries the pan on top of it. Nothing ever turned the mount, so
+         the trunk these four are lashed to sat due north of the lens
+         whichever way the lens looked — which on CAM 3 stood a metre of
+         bark across the left of its own picture, and on any of them swung
+         the trunk through the shot the moment you panned. */
+      c.node.rotation.y = c.yaw;
+      c.node.userData.head.rotation.y = 0;
       c.node.userData.head.rotation.x = 0.16;
       c.node.visible = true;
     }
@@ -3605,7 +3647,15 @@ I have snacks."`);
      its own bracket. */
   static CAM_TILT = 0.62;                 // 35 degrees up or down
   static CAM_ZOOM_MAX = 4.0;
-  static CAM_FOV = 62;
+  /* Vertical, so at the feed's 242x150 it is 107 degrees across where
+     sixty-two gave 88: the wide end of a real security lens, which is the
+     end the operator actually wants — a camera that cannot hold a whole
+     clearing is a camera you spend the entire feed panning. Much past
+     eighty-five the barrel of it starts to read as a broken picture
+     rather than a wide one. The zoom is a ratio and is untouched by this:
+     four times still narrows to twenty degrees across the height, which is
+     a face at thirty metres rather than a shape. */
+  static CAM_FOV = 80;
   static CAM_PAN_RATE = 1.7;              // radians a second, wide open
   static CAM_TILT_RATE = 1.0;
   static CAM_ZOOM_RATE = 1.3;             // times a second
@@ -3618,12 +3668,23 @@ I have snacks."`);
     const fc = this._feedCam;
     fc.position.set(cam.x, cam.y, cam.z);
     fc.rotation.set(0, 0, 0);
-    fc.rotateY(cam.yaw + (cam.pan || 0));
+    /* Half a turn on top of the bearing, and it is not a fudge. Every yaw
+       in this game means the direction (sin, cos) — the player's own
+       camera is aimed by looking AT a point down that vector — but a
+       three.js camera looks along its own -Z, so rotateY(yaw) on its own
+       pointed the lens at exactly the opposite of where its mount, its
+       fitted bearing and its own contact list all said it was pointing.
+       CAM 4 is fitted thirteen metres out from the temple door and was
+       showing the jungle behind itself; the list was right and the picture
+       was of somewhere else, which is the whole of "who is in view is not
+       accurate". */
+    fc.rotateY(cam.yaw + (cam.pan || 0) + Math.PI);
     // they all look slightly down, and then wherever you have tilted them
     fc.rotateX(-0.10 + (cam.tilt || 0));
     /* OPTICAL zoom, not a crop: a narrower angle of view, so the picture
-       gets tighter without getting softer. Two times is a face at thirty
-       metres instead of a shape. */
+       gets tighter without getting softer. Off a lens this wide it is all
+       the way up at four times that a face at thirty metres stops being a
+       shape. */
     fc.fov = Game.CAM_FOV / Math.max(1, cam.zoom || 1);
     fc.aspect = aspect;
     fc.updateMatrixWorld(true);
@@ -3647,10 +3708,12 @@ I have snacks."`);
     if (cam.pan < -Math.PI) cam.pan += Math.PI * 2;
     cam.tilt = THREE.MathUtils.clamp(cam.tilt + dTilt * geared, -T, T);
     cam.zoom = THREE.MathUtils.clamp((cam.zoom || 1) + dZoom, 1, Game.CAM_ZOOM_MAX);
-    /* The HEAD turns, not the whole thing. Rotating the node would swivel
-       the tripod's legs and spin the tree it is lashed to. */
+    /* The HEAD turns, not the whole thing: the mount was stood at its own
+       bearing when it was fitted and the pan rides on top of that.
+       Rotating the node here would swivel the tripod's legs and spin the
+       tree it is lashed to. */
     const h = cam.node.userData.head;
-    if (h) { h.rotation.y = cam.yaw + cam.pan; h.rotation.x = 0.16 - cam.tilt; }
+    if (h) { h.rotation.y = cam.pan; h.rotation.x = 0.16 - cam.tilt; }
     return `${cam.pan}|${cam.tilt}|${cam.zoom}` !== before;
   }
 
@@ -3660,7 +3723,7 @@ I have snacks."`);
     if (!cam) return;
     cam.pan = 0; cam.tilt = 0; cam.zoom = 1;
     const h = cam.node.userData.head;
-    if (h) { h.rotation.y = cam.yaw; h.rotation.x = 0.16; }
+    if (h) { h.rotation.y = 0; h.rotation.x = 0.16; }
   }
 
   /**
@@ -3715,6 +3778,14 @@ I have snacks."`);
     /* The island keeps running whether or not anybody is in it, so this
        renders the live scene — bodies, avatars, the lot. */
     this._cullFor(fc);
+    /* A camera cannot see itself. The lens sits at the head's own pivot
+       with the mount hanging under it and, on the four fitted ones, a
+       trunk running past it — and everything of that further off than the
+       near plane draws, so panning dragged bark and tripod leg across the
+       picture and clipped them into it. Off for its own feed and on again
+       straight after, the way a first-person view does not draw its head. */
+    const selfVis = cam.node.visible;
+    cam.node.visible = false;
     const was = this._showIslandForFeed();
     /* The rig is dealt for wherever YOU are, and you are up the mast. Deal
        it again for the camera or the feed is a picture of an unlit island,
@@ -3724,6 +3795,7 @@ I have snacks."`);
     this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
     this._feedPend = { i, therm };
     this._restoreAfterFeed(was);
+    cam.node.visible = selfVis;
     this._cullBack();
     rig?.update(0, this.camera, true);
     return ready;
@@ -3822,6 +3894,9 @@ I have snacks."`);
     const w = THUMB_W, h = THUMB_H;
     const fc = this._aimFeedCam(cam, w / h);
     this._cullFor(fc);
+    // and the stamp is off the same lens, so it cannot see itself either
+    const selfVis = cam.node.visible;
+    cam.node.visible = false;
     const was = this._showIslandForFeed();
     /* Same reason the big feed does it: the rig is dealt for wherever you
        are, and every world light lives in one of its twelve slots — a stamp
@@ -3834,6 +3909,7 @@ I have snacks."`);
     this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
     this._thumbPend = i;
     this._restoreAfterFeed(was);
+    cam.node.visible = selfVis;
     rig?.update(0, this.camera, true);
     this._cullBack();
     this._aimFeedCam(cam);                    // put it back for the big one
@@ -3877,6 +3953,47 @@ I have snacks."`);
   }
 
   /**
+   * Is the line from camera `cam` to (x, z, y) clear? Lifted out of the
+   * contact list so the fire can ask the same question: thermal was painting
+   * a glow through a hill that would have hidden a man standing in it.
+   */
+  _camSees(cam, x, z, y) {
+    /* Ground first, and the cheaper of the two: eight samples along the
+       line, each asking whether the terrain has risen above the straight
+       line between the lens and the target. */
+    for (let k = 1; k < 8; k++) {
+      const f = k / 8;
+      const px = cam.x + (x - cam.x) * f;
+      const pz = cam.z + (z - cam.z) * f;
+      const line = cam.y + (y - cam.y) * f;
+      if (heightAt(px, pz) > line + 0.5) return false;
+    }
+    /* Ground is not the only thing you can stand behind, and a camera
+       pointed at a building is pointed at the one thing on the island
+       people put between themselves and a camera. Every solid the world
+       knows about is a circle on the ground here, so the sight line has to
+       miss them. Nothing under a metre counts: a palm trunk or a rock hides
+       nobody, and a list that dropped a contact every time one passed
+       behind a tree would be its own kind of lie. They carry no height,
+       so a solid is treated as a column — which at these ranges, from a
+       lens three metres up, is very close to what the roof actually does. */
+    const ax = x - cam.x, az = z - cam.z;
+    const len2 = ax * ax + az * az || 1;
+    for (const c of (this.colliders || [])) {
+      if (c.r < 1) continue;
+      const bx = c.x - cam.x, bz = c.z - cam.z;
+      const t = (bx * ax + bz * az) / len2;
+      if (t <= 0 || t >= 1) continue;            // beside it, or past the target
+      const px = ax * t - bx, pz = az * t - bz;
+      if (px * px + pz * pz >= c.r * c.r) continue;
+      // stood AT it rather than behind it, and the corner does not hide them
+      if ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r * c.r) continue;
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Who camera `i` can actually see, for the contact list under the feed
    * and for the thermal overlay drawn on top of it.
    *
@@ -3885,10 +4002,11 @@ I have snacks."`);
    * blob over the body rather than trying to work out its temperature from
    * a picture that has already been flattened to brightness.
    *
-   * Line of sight is tested against the ground, so somebody on the far side
-   * of a hill is not a contact. Thermal will not see through a hill either;
-   * a bush is another matter and it is allowed through one, which is most
-   * of why the thermal channel is worth having at all.
+   * Line of sight is tested against the ground and against anything solid
+   * big enough to stand behind, so somebody on the far side of a hill or
+   * round the back of the shop hut is not a contact. Thermal will not see
+   * through either of those; a bush is another matter and it is allowed
+   * through one, which is most of why the channel is worth having at all.
    */
   feedContacts(i, out = []) {
     out.length = 0;
@@ -3897,50 +4015,68 @@ I have snacks."`);
     const M = this.mp;                    // no session at all in single player
     const fc = this._aimFeedCam(cam);
     const v = this._feedV || (this._feedV = new THREE.Vector3());
-    /* Where the head is ACTUALLY pointing, and how wide it is actually
-       seeing — pan turns it and zoom narrows it, and a contact list that
-       ignored both would list people who are off the side of the picture
-       and miss the ones you just panned onto. */
-    const aimYaw = cam.yaw + (cam.pan || 0);
-    const fwdX = Math.sin(aimYaw), fwdZ = Math.cos(aimYaw);
-    const halfH = Math.atan(Math.tan((fc.fov * Math.PI / 180) / 2) * fc.aspect);
-    const minDot = Math.cos(Math.min(1.45, halfH * 1.04));
+    /* IN SHOT means inside the picture, and the picture is a frustum. What
+       decided it before was a cone: built from the HORIZONTAL half-angle
+       and then asked about a direction with no height in it at all, so
+       anybody far enough above or below the lens counted; widened by
+       another four per cent; and stopped from ever closing past eighty-
+       three degrees however far the operator had zoomed in. The projection
+       underneath it — computed anyway, for the marker — disagreed with it
+       every time, which is a name in the list with nothing under it and a
+       blob on the picture with no name. The projection decides now, so
+       there is only one answer to disagree with.
 
-    /* Can the camera see that spot, or is there ground in the way? Eight
-       samples along the line, each asking whether the terrain has risen
-       above the straight line between the lens and the target. */
-    const clear = (x, z, y) => {
-      for (let k = 1; k < 8; k++) {
-        const f = k / 8;
-        const px = cam.x + (x - cam.x) * f;
-        const pz = cam.z + (z - cam.z) * f;
-        const line = cam.y + (y - cam.y) * f;
-        if (heightAt(px, pz) > line + 0.5) return false;
-      }
-      return true;
-    };
+       View space first, because project() on a point BEHIND the lens comes
+       back with coordinates that look perfectly reasonable, and three.js
+       looks down -Z. That is how somebody standing under the mast was
+       being drawn in the middle of the frame. */
+    const near = fc.near;
+    /* And the fog is the range, not forty-six metres — which was the fog's
+       NEAR plane, where a figure is still perfectly plain, and which cut
+       off a zoomed-in camera at a third of what it could see. Past the far
+       plane the picture is flat fog colour with nobody in it, and a storm
+       brings that in to where you can hardly see the beach. */
+    const far = Math.min(fc.far, this._scatterFogFar || fc.far);
+    // how much of the frame's HEIGHT a 1.8 m body fills one metre out
+    const bodyF = 1.8 / (2 * Math.tan((fc.fov * Math.PI / 180) / 2));
 
     const look = (x, z, name, colour, heat) => {
-      const dx = x - cam.x, dz = z - cam.z;
-      const d = Math.hypot(dx, dz);
-      if (d > 46) return;
-      // 62 degrees across, so a little over half a radian either side
-      const dot = (dx * fwdX + dz * fwdZ) / (d || 1);
-      if (dot < minDot) return;
       const gy = heightAt(x, z);
-      if (!clear(x, z, gy + 0.9)) return;
-      // where the chest lands in the picture
-      v.set(x, gy + 0.95, z).project(fc);
+      const cy = gy + 0.95;                        // the chest
+      /* The real distance and not the one along the ground: the mast's
+         four are three and a half metres up, and somebody at the foot of
+         the tree was being logged as further away than they were. */
+      const d = Math.hypot(x - cam.x, cy - cam.y, z - cam.z);
+      if (d > far) return;
+      v.set(x, cy, z).applyMatrix4(fc.matrixWorldInverse);
+      if (-v.z < near) return;                     // behind the lens, or inside it
+      v.applyMatrix4(fc.projectionMatrix);         // and only now is it honest
+      /* Straight off the lens they are being seen through, so a zoom that
+         halves the angle doubles the blob, with no separate guess at what
+         the zoom did. Below the old floor of this there is a body a pixel
+         high in a hundred and fifty lines of fog, and calling that a
+         contact is the same lie the other way round — the floor decides
+         the range now, so the range moves with the zoom: ninety metres
+         wide open and as far as the fog will carry at four times, instead
+         of the flat forty-six that lost a zoomed-in camera two thirds of
+         what it could see. */
+      const raw = bodyF / Math.max(2.5, d);
+      if (raw < 0.012) return;
+      const size = Math.min(raw, 0.9);
+      /* A body stands two of these tall in device coordinates, so half of
+         one is how far over the edge a contact can be and still have some
+         of itself in the picture — that margin is what stops somebody
+         walking the edge of frame flickering in and out of the list. It is
+         capped because the blob is painted over the picture, and one
+         allowed too far out paints on the panel round it. */
+      const m = Math.min(size, 0.25);
+      if (Math.abs(v.x) > 1 + m || Math.abs(v.y) > 1 + m) return;
+      if (!this._camSees(cam, x, z, gy + 0.9)) return;
       out.push({
         name, colour, heat, dist: Math.round(d),
         sx: (v.x + 1) / 2,
         sy: (1 - v.y) / 2,
-        /* How much of the frame HEIGHT a person fills. The lens is 62
-           degrees vertical, so the frame is 2*d*tan(31) metres tall and a
-           body is 1.8 of them — about a seventh of the picture at ten
-           metres. The first version of this had a constant seventeen times
-           too big and painted one man across half the screen. */
-        size: THREE.MathUtils.clamp((1.5 * (cam.zoom || 1)) / Math.max(2.5, d), 0.012, 0.9),
+        size,
       });
     };
 
@@ -3969,21 +4105,33 @@ I have snacks."`);
     const cam = this.cams?.[i];
     const f = this.campfirePos;
     if (!cam || !cam.placed || !f) return null;
-    const dx = f.x - cam.x, dz = f.z - cam.z;
-    const d = Math.hypot(dx, dz);
-    if (d > 50) return null;
-    const aimYaw = cam.yaw + (cam.pan || 0);
-    const fwdX = Math.sin(aimYaw), fwdZ = Math.cos(aimYaw);
-    if ((dx * fwdX + dz * fwdZ) / (d || 1) < 0.45) return null;
+    /* The pit is a fixed position and the fire in it can be out: DOUSE THE
+       FIRES kills the flames and the light, and thermal went on painting the
+       camp white while the optical channel of the same camera showed a dead
+       pit — one camera arguing with itself. */
+    if (this.doused) return null;
+    const fy = heightAt(f.x, f.z) + 0.5;
+    const d = Math.hypot(f.x - cam.x, fy - cam.y, f.z - cam.z);
     const fc = this._aimFeedCam(cam);
+    if (d > Math.min(fc.far, this._scatterFogFar || fc.far)) return null;
     const v = this._feedV || (this._feedV = new THREE.Vector3());
-    v.set(f.x, heightAt(f.x, f.z) + 0.5, f.z).project(fc);
-    return {
-      sx: (v.x + 1) / 2,
-      sy: (1 - v.y) / 2,
-      // a fire is about a metre across and glows further than that
-      size: THREE.MathUtils.clamp((2.6 * (cam.zoom || 1)) / Math.max(2.5, d), 0.02, 1.1),
-    };
+    /* The same frustum the contacts get, and for the same reasons: the
+       cone this asked was a fixed sixty-three degrees whichever way the
+       lens was set, so a zoomed-in camera glowed at a fire that was off
+       the side of its own picture, and it had nothing to say about a fire
+       behind the lens either. */
+    v.set(f.x, fy, f.z).applyMatrix4(fc.matrixWorldInverse);
+    if (-v.z < fc.near) return null;
+    v.applyMatrix4(fc.projectionMatrix);
+    // about three metres of glow, measured in whatever the lens is set to
+    const raw = (3.1 / (2 * Math.tan((fc.fov * Math.PI / 180) / 2))) / Math.max(2.5, d);
+    if (raw < 0.02) return null;          // too far off to be a glow at all
+    const size = Math.min(raw, 1.1);
+    const m = Math.min(size, 0.25);
+    if (Math.abs(v.x) > 1 + m || Math.abs(v.y) > 1 + m) return null;
+    // and last because it is the dear one: a hill hides a fire as well as a man
+    if (!this._camSees(cam, f.x, f.z, fy)) return null;
+    return { sx: (v.x + 1) / 2, sy: (1 - v.y) / 2, size };
   }
 
   /** Put one down where you are standing, aimed the way you are facing. */
@@ -3998,18 +4146,33 @@ I have snacks."`);
     }
     const p = this.player.pos;
     /* A little forward of you and at head height, looking where you are
-       looking — you are hanging it on whatever is in front of you. */
-    const f = this.player.facing;
+       looking — you are hanging it on whatever is in front of you. The LOOK
+       yaw and not the body's: `facing` only turns while you are walking, so
+       one set standing still was planted behind you and aimed back down the
+       path you had come up rather than at what you were watching. */
+    const f = this.player.yaw;
     cam.x = p.x + Math.sin(f) * 0.8;
     cam.z = p.z + Math.cos(f) * 0.8;
-    const gy = heightAt(cam.x, cam.z);
+    /* Eight tenths in front of you is inside the wall if you were stood
+       against one, and a lens inside solid geometry is a channel showing
+       the back of a polygon. Enough room for the thing itself, not enough
+       to walk round it, and it never moves far enough to be somewhere you
+       did not put it. */
+    const spot = this.freeSpot(cam.x, cam.z, 0.35, 1.2);
+    cam.x = spot.x; cam.z = spot.z;
+    /* The ground the player is actually stood on, which on the Flopper's
+       deck is 5.4 m above the terrain under it: raw heightAt sank the whole
+       tripod into the hull and put the lens below sea level. p.y is what
+       stops it mounting on the underside of a deck overhead. */
+    const gy = (this.groundOf || heightAt)(cam.x, cam.z, p.y);
     cam.head = cam.node.userData.headHeight || 1.5;
     cam.y = gy + cam.head;               // the lens, on top of the tripod
     cam.yaw = f;
     cam.placed = true;
     cam.pan = 0; cam.tilt = 0; cam.zoom = 1;
     cam.node.position.set(cam.x, gy, cam.z);
-    cam.node.userData.head.rotation.y = f;
+    cam.node.rotation.y = f;             // the mount stands the way you set it
+    cam.node.userData.head.rotation.y = 0;
     cam.node.userData.head.rotation.x = 0.16;
     cam.node.visible = true;
     this.camsHeld--;

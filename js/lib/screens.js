@@ -820,7 +820,14 @@ const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false, repeat
    once per repeat — fifteen to thirty times a second — and a purse of thirty
    coins became ten whistles. A held commit key is one commit. Navigation is
    deliberately not in here: holding an arrow to run down a list is wanted. */
-const COMMIT_KEYS = new Set(['Enter', 'NumpadEnter', 'KeyE', 'Space']);
+/* Keys that must act ONCE however long they are held. The commit keys were
+   always here; the screen keys joined them because holding TAB opened the
+   chart and then the first auto-repeat closed it again from the inside, so
+   the map strobed for as long as your thumb was down. */
+const COMMIT_KEYS = new Set([
+  'Enter', 'NumpadEnter', 'KeyE', 'Space',
+  'Tab', 'KeyM', 'KeyF', 'KeyC', 'Escape',
+]);
 
 export class ScreenStack {
   constructor(game) {
@@ -1230,6 +1237,34 @@ const nav = (code, s, len, onOk, onBack, g) => {
   return false;
 };
 
+const PAN_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+  'KeyA', 'KeyD', 'KeyW', 'KeyS']);
+
+/* Two screens let you push a plot of the island around, and both moved it one
+   fixed step per key EVENT: half a second of the browser's own silence and
+   then a series of jerks, on a chart whose hint says ARROWS PAN and whose
+   mouse drag is smooth. The mast terminal's mount had already solved it, so
+   they run on that same motor — wind up, run, coast to a stop.
+
+   `span` is the world distance from the middle of the paper to its edge, so a
+   held key covers four of the old steps a second whatever the zoom is. */
+const panMotor = (s, dt, st, span) => {
+  const held = st ? st.held : null;
+  const want = (a, b) => ((held && held.has(a)) ? 1 : 0) - ((held && held.has(b)) ? 1 : 0);
+  const px = held ? (want('ArrowRight', 'ArrowLeft') || want('KeyD', 'KeyA')) : 0;
+  const pz = held ? (want('ArrowDown', 'ArrowUp') || want('KeyS', 'KeyW')) : 0;
+  const ease = (v, target, up, down) =>
+    v + (target - v) * Math.min(1, dt * (Math.abs(target) > Math.abs(v) ? up : down));
+  s.panX = ease(s.panX || 0, px, 9, 13);
+  s.panZ = ease(s.panZ || 0, pz, 9, 13);
+  if (Math.abs(s.panX) < 0.002) s.panX = 0;
+  if (Math.abs(s.panZ) < 0.002) s.panZ = 0;
+  if (!s.panX && !s.panZ) return;
+  const rate = span * 0.22 * 4;
+  s.cx += s.panX * rate * dt;
+  s.cz += s.panZ * rate * dt;
+};
+
 /* The pause menu is not the same list in both modes, and it used to pretend
    it was. JOURNAL pushed the Idol quest journal in the middle of a Castaways
    round — a list of pendulums and relics from a game nobody in the room is
@@ -1342,7 +1377,15 @@ export const SCREENS = {
         'CASTAWAYS FINISH THE WORK. AGENTS CUT THEM DOWN.',
         'FIND A BODY, CALL A COUNCIL, THROW SOMEBODY TO THE SEA.',
       ];
-      const ruleBot = y + 28 + (rules.length - 1) * 10 + 7;   // the last line is 7 rows tall
+      /* fitLine closes the spaces and then gives up the tracking, and that
+         is as small as a line goes: the last rule is still 275 pixels on a
+         240 wide buffer against a 216 pixel panel, so it hung eighteen off
+         both ends of the first screen anybody sees. Nothing is cut here
+         either — they wrap, and the block is measured by the rows it
+         actually takes, because a rule that became two lines needs two. */
+      const ruleLines = [];
+      for (const r of rules) ruleLines.push(...wrapText(r, W - 24, 1, 1));
+      const ruleBot = y + 28 + (ruleLines.length - 1) * 10 + 7;   // the last line is 7 rows tall
       /* footer() draws at H - 17, and on a 180 tall buffer these started at
          162: the first rule printed through the key hints and the third fell
          off the bottom entirely. There is no room for them at that height, so
@@ -1350,8 +1393,8 @@ export const SCREENS = {
       if (!s.busy && !s.err && ruleBot <= H - 20) {
         x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, y + 22, 140, 1);
         let ry = y + 28;
-        for (const r of rules) {
-          fitLine(x, r, W / 2, ry, W - 24, { color: DIM });
+        for (const ln of ruleLines) {
+          fitLine(x, ln, W / 2, ry, W - 24, { color: DIM });
           ry += 10;
         }
       }
@@ -1583,10 +1626,13 @@ export const SCREENS = {
         }
       }
 
+      // [RELEASE] REMOVE BEFORE RELEASE — the 7226 workshop's badge.
       if (g.mp.dev) {
         drawText(x, 'DEV MODE', { x: W - 14, y: b.top + 4, scale: 1, align: 'right', color: JADE });
       }
       if (g.isHost) {
+        /* [RELEASE] REMOVE BEFORE RELEASE — `g.mp.dev ? 1 :` lets the workshop
+           put to sea alone. The line should read `players.length >= 3`. */
         const can = players.length >= (g.mp.dev ? 1 : 3);
         rows.push(...menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS', 'ROUND SETTINGS'],
           s.sel, W / 2, b.bottom - 40, t, { width: 150, gap: 15 }));
@@ -2197,13 +2243,16 @@ export const SCREENS = {
       s.cx = 0;
       s.cz = 0;
     },
-    tick(s, g, dt) {
+    tick(s, g, dt, t, st) {
       const was = s.boot;
       s.boot = Math.min(BOOT_LEN + 1, s.boot + dt);
       // one clack per line of the start-up log, and a chime when it lands
       const lineNow = Math.floor(s.boot / 0.16);
       if (s.boot < BOOT_LEN && lineNow !== Math.floor(was / 0.16)) g.audio?.sfx('reel');
       if (was < BOOT_LEN && s.boot >= BOOT_LEN) g.audio?.sfx('ping');
+      // the plot pans on the motor; draw() clamps it to the island afterwards
+      if (s.tab === 0) panMotor(s, dt, st, 205 / Math.max(1, Math.min(5, s.zoom || 1)));
+      else { s.panX = 0; s.panZ = 0; }
     },
     draw(x, W, H, s, g, t) {
       const d = g.bunkerReadout ? g.bunkerReadout() : null;
@@ -2755,7 +2804,6 @@ export const SCREENS = {
         s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
       }
       if (onPlot) {
-        const step = (205 / (s.zoom || 1)) * 0.22;
         if (code === 'Equal' || code === 'NumpadAdd') {
           s.zoom = Math.min(5, (s.zoom || 1) + 1); g.audio?.sfx('terminal'); return true;
         }
@@ -2763,10 +2811,9 @@ export const SCREENS = {
           s.zoom = Math.max(1, (s.zoom || 1) - 1); g.audio?.sfx('terminal'); return true;
         }
         if (code === 'KeyC') { s.cx = 0; s.cz = 0; g.audio?.sfx('ping'); return true; }
-        if (code === 'KeyA' || code === 'ArrowLeft') { s.cx -= step; return true; }
-        if (code === 'KeyD' || code === 'ArrowRight') { s.cx += step; return true; }
-        if (code === 'KeyW' || code === 'ArrowUp') { s.cz -= step; return true; }
-        if (code === 'KeyS' || code === 'ArrowDown') { s.cz += step; return true; }
+        // the pan itself is on the motor in tick(); swallowed here so the
+        // stack does not hand these to anything else
+        if (PAN_KEYS.has(code)) return true;
       } else {
         if (code === 'ArrowRight' || code === 'KeyD') {
           s.tab = (s.tab + 1) % 2; g.audio?.sfx('terminal'); return true;
@@ -2895,7 +2942,12 @@ export const SCREENS = {
     draw(x, W, H, s, g, t) {
       const COST = 6;
       const coins = g.coins || 0;
-      const pool = VENDOR_IDS.map((id) => STOCK.find((i) => i.id === id)).filter(Boolean);
+      /* The drum showed the night-only book of tickets at noon, and the host
+         will not hand one over before dark — the reel has to advertise the
+         same shelf the machine actually dispenses from. */
+      const isNight = (g.night || 0) > 0.5;
+      const pool = VENDOR_IDS.map((id) => STOCK.find((i) => i.id === id))
+        .filter((i) => i && (!i.night || isNight));
 
       x.fillStyle = '#08120f'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#08120f', '#0e1c18', 0.5, 2);
@@ -3926,8 +3978,14 @@ export const SCREENS = {
         });
         return { tx, tw, out, h: out.reduce((a, r) => a + (r === null ? 5 : 9), 0) };
       };
+      /* The two closing lines are drawn whole, not wrapped, so the column has
+         to be wide enough for the longer of them as well as tall enough for
+         the body — height alone kept the portrait on a tall narrow buffer and
+         printed NO CREDIT forty-five pixels past the edge. */
+      const CLOSERS = ['NO CREDIT.  NO REFUNDS.', 'SHE WORKS NIGHTS ONLY.'];
+      const closeW = Math.max(...CLOSERS.map((c) => textWidth(c, 1)));
       let lines = lay(fx + FW + 22);
-      const showFace = lines.h <= closeY - 44;          // the last glyph must clear the rule
+      const showFace = lines.h <= closeY - 44 && lines.tw >= closeW;
       if (!showFace) lines = lay(fx);
 
       if (showFace) {
@@ -3992,9 +4050,9 @@ export const SCREENS = {
       }
       y = closeY;
       x.fillStyle = '#8a6a1c'; x.fillRect(TX, y, TW, 1); y += 6;
-      drawText(x, 'NO CREDIT.  NO REFUNDS.', { x: TX, y, scale: 1, color: '#e0453a' });
+      drawText(x, CLOSERS[0], { x: TX, y, scale: 1, color: '#e0453a' });
       y += 11;
-      drawText(x, 'SHE WORKS NIGHTS ONLY.', { x: TX, y, scale: 1, color: '#63c6a8' });
+      drawText(x, CLOSERS[1], { x: TX, y, scale: 1, color: '#63c6a8' });
 
       footer(x, W, H, 'ESC  STEP BACK');
       return [];
@@ -4258,17 +4316,34 @@ export const SCREENS = {
       drawText(x, names.find((nm) => textWidth(nm, 2) <= headRoom) || names[names.length - 1], {
         x: 14, y: 11, scale: 2, color: accent,
       });
+      /* The list's metrics are settled up here because the stencil on the
+         back wall has to clear whatever the list took. */
+      const LX = 10, ROW = 15;
+      const RB = H - 30;
+      /* Sixteen items after dark at fifteen pixels a row ran off the bottom of
+         the picture with no scroll and no cap: the last rows were drawn below
+         the framebuffer, the highlight walked off with them, and their click
+         rects were outside the canvas. Only what fits is drawn, and the window
+         follows the selection — including the wrap from the last row back to
+         the first. */
+      const fit = Math.max(1, Math.floor((RB - 36) / ROW));
       if (black) {
-        // painted on the block work, well below the list
-        drawText(x, 'NOTHING WAS SOLD HERE', {
-          x: 14, y: H - 66, scale: 1, color: 'rgba(160,66,54,.55)', shadow: false,
-        });
-        drawText(x, 'NO NAMES.  NO NOTES.', {
-          x: 14, y: H - 56, scale: 1, color: 'rgba(160,66,54,.40)', shadow: false,
-        });
-        drawText(x, 'HE IS NOT HERE.', {
-          x: 14, y: H - 42, scale: 1, color: 'rgba(200,120,110,.55)', shadow: false,
-        });
+        /* Painted on the block work, under whatever the shelf took. Pinned to
+           H it was not: on the 180-tall buffer the six black-market rows run
+           down to y=126 and H-66 is 114, so NOTHING WAS SOLD HERE printed
+           straight through the FLARE PISTOL. A line that would then land in
+           the key hints is not painted at all — a glyph row is seven tall. */
+        const shelfBot = 36 + Math.min(fit, list.length) * ROW;
+        let sty = Math.max(H - 66, shelfBot + 4);
+        for (const [line, colour, gap] of [
+          ['NOTHING WAS SOLD HERE', 'rgba(160,66,54,.55)', 10],
+          ['NO NAMES.  NO NOTES.', 'rgba(160,66,54,.40)', 14],
+          ['HE IS NOT HERE.', 'rgba(200,120,110,.55)', 0],
+        ]) {
+          if (sty + 7 > RB) break;
+          drawText(x, line, { x: 14, y: sty, scale: 1, color: colour, shadow: false });
+          sty += gap;
+        }
       }
       if (s.vendor) {
         drawText(x, 'WHATEVER DID NOT SELL', { x: 14, y: 26, scale: 1, color: '#8a7a52' });
@@ -4285,7 +4360,6 @@ export const SCREENS = {
       x.fillRect(14, 28, W - 28, 1);
 
       /* the stock list */
-      const LX = 10, ROW = 15;
       // a strip on the right for the shopkeeper, so he is not half off the edge
       const MAN = s.vendor ? 0 : 34;
       /* The list was a fixed hundred and thirty-eight wide, so on a narrow
@@ -4295,14 +4369,6 @@ export const SCREENS = {
          rest, which leaves the 320 layout exactly as it was. */
       const RW_MIN = 96;                        // 10 for LX, 8 gutter, 12 margin
       const LW = Math.max(96, Math.min(138, W - 30 - MAN - RW_MIN));
-      const RB = H - 30;
-      /* Sixteen items after dark at fifteen pixels a row ran off the bottom of
-         the picture with no scroll and no cap: the last rows were drawn below
-         the framebuffer, the highlight walked off with them, and their click
-         rects were outside the canvas. Only what fits is drawn, and the window
-         follows the selection — including the wrap from the last row back to
-         the first. */
-      const fit = Math.max(1, Math.floor((RB - 36) / ROW));
       const maxScroll = Math.max(0, list.length - fit);
       s.scroll = Math.max(s.sel - fit + 1, Math.min(s.scroll || 0, s.sel));
       s.scroll = Math.max(0, Math.min(s.scroll, maxScroll));
@@ -4984,7 +5050,7 @@ export const SCREENS = {
       s.glitch = 0;
       s.rec = 0;
       s.log = [];
-      s.lastSeen = '';
+      s.lastSeen = new Set();
       s.flip = 0;             // the wipe when you change channel
       s.feedT = 9;            // due immediately
       s.hasPic = false;
@@ -5003,8 +5069,15 @@ export const SCREENS = {
          coasts to a stop. Nothing snaps. */
       const H = st ? st.held : null;
       const want = (a, b2) => ((H && H.has(a)) ? 1 : 0) - ((H && H.has(b2)) ? 1 : 0);
-      const px = H ? want('ArrowRight', 'ArrowLeft') : 0;
-      const ty = H ? want('ArrowUp', 'ArrowDown') : 0;
+      /* Pan is a yaw in the frame the whole game looks in: forward is
+         (sin, cos) and the player's own look SUBTRACTS for a rightward
+         mouse, so the key that swings the view RIGHT is the one that takes
+         pan down. Named the other way round, this terminal was the only
+         control in the game that panned against the hand on it.
+         WASD aims as well as the arrows, because the hand that is on the
+         zoom keys is already over there; the channel moved to Q and E. */
+      const px = H ? (want('ArrowLeft', 'ArrowRight') || want('KeyA', 'KeyD')) : 0;
+      const ty = H ? (want('ArrowUp', 'ArrowDown') || want('KeyW', 'KeyS')) : 0;
       const zx = H
         ? (want('KeyX', 'KeyZ') || want('Equal', 'Minus') || want('NumpadAdd', 'NumpadSubtract'))
         : 0;
@@ -5064,21 +5137,29 @@ export const SCREENS = {
       }
 
       /* Who the selected camera can see, and a line in the log when that
-         changes — the log is what makes this a tool rather than a window. */
+         changes — the log is what makes this a tool rather than a window.
+
+         The alert used to compare the names JOINED in the order feedContacts
+         returns them, and that order is by range: two people already in shot
+         swapping which of them was nearer rewrote the string, so the tear and
+         the contact chime fired with nobody having walked in or out. It is the
+         population that matters, so only an arrival sets them off. Whole names
+         in a set, because BOB never got a line of his own while BOBBY was in
+         shot — a log that quietly leaves people out. */
       const before = s.lastSeen;
       g.feedContacts?.(s.sel, s.contacts);
-      const nowSeen = s.contacts.map((c) => c.name).join(',');
-      if (nowSeen && nowSeen !== before) {
-        const cam = cams[s.sel];
-        for (const c of s.contacts) {
-          if (before.includes(c.name)) continue;
-          s.log.unshift({ t: s.t, cam: cam ? cam.short || cam.name : '?', who: c.name, d: c.dist });
-        }
-        if (s.log.length > 6) s.log.length = 6;
-        s.glitch = 0.5;
-        g.audio?.sfx('select');
+      const cam = cams[s.sel];
+      const seen = new Set();
+      let arrived = 0;
+      for (const c of s.contacts) {
+        seen.add(c.name);
+        if (before.has(c.name)) continue;
+        arrived++;
+        s.log.unshift({ t: s.t, cam: cam ? cam.short || cam.name : '?', who: c.name, d: c.dist });
       }
-      s.lastSeen = nowSeen;
+      if (s.log.length > 6) s.log.length = 6;
+      if (arrived) { s.glitch = 0.5; g.audio?.sfx('select'); }
+      s.lastSeen = seen;
     },
     draw(x, W, H, s, g, t) {
       const cams = g.cams || [];
@@ -5350,8 +5431,19 @@ export const SCREENS = {
         const cap = therm ? '#ffe0a8' : '#e6f2e8';
         const cap2 = therm ? '#c08050' : '#a8c4b0';
         drawText(x, sel.name, { x: FX + 4, y: FY + 4, scale: 1, color: cap });
-        const clock = `${String(Math.floor(g.clock24 / 60) % 24).padStart(2, '0')}:`
-          + `${String(Math.floor(g.clock24) % 60).padStart(2, '0')}`;
+        /* clock24 counts SECONDS through the cycle, not minutes of the day:
+           read as a wall clock it never passed 05:59 on the six-minute
+           default, went dark at 02:30, rolled over to midnight in the middle
+           of the afternoon, and put nightfall at a different hour on every
+           setting of the DAY LENGTH dial. The hour is the PHASE of the cycle,
+           on the same effective length tickClock runs on, anchored so that
+           the day phase opens at 09:00 — which puts dusk at 17:44, dark at
+           19:00 and dawn breaking at 07:44 on any dial. */
+        const cyc = g.dayCycle
+          ?? (g.DAY_LEN > 5000 ? 360 : Math.max(120, g.DAY_LEN || 360));
+        const h24 = ((g.clock24 / cyc) * 24 + 9) % 24;
+        const clock = `${String(Math.floor(h24)).padStart(2, '0')}:`
+          + `${String(Math.floor(h24 * 60) % 60).padStart(2, '0')}`;
         drawText(x, clock, {
           x: FX + FW - 4, y: FY + 4, scale: 1, align: 'right', color: cap,
         });
@@ -5385,7 +5477,11 @@ export const SCREENS = {
           // the notch at its fitted bearing
           x.fillStyle = 'rgba(255,255,255,.45)';
           x.fillRect(CXr, CYr - RR - 2, 1, 3);
-          const pa = sel.pan || 0;
+          /* A bearing seen from above, where a turn to the right is a turn
+             clockwise — and pan RISES to the left, so the dial takes the
+             other sign. Drawn straight, the needle swung the opposite way
+             to the picture it is printed on. */
+          const pa = -(sel.pan || 0);
           x.fillStyle = cap;
           for (let r = 2; r <= RR - 1; r++) {
             x.fillRect(Math.round(CXr + Math.sin(pa) * r),
@@ -5531,29 +5627,36 @@ export const SCREENS = {
       const LH = Math.max(0, H - LY - 20);
       x.fillStyle = '#0c1610'; x.fillRect(FX - 2, LY, FW + 4, LH);
       x.fillStyle = '#1e4a32'; x.fillRect(FX - 2, LY, FW + 4, 1);
-      if (s.contacts.length) {
-        drawText(x, 'IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: hot });
-        let cx2 = FX + 48;
-        for (const c of s.contacts.slice(0, 4)) {
-          const col = c.colour ? colourOf(c.colour) : '#a8ffc8';
-          x.fillStyle = col; x.fillRect(cx2, LY + 3, 5, 5);
-          const lab = `${c.name} ${c.dist}M`;
-          drawText(x, lab, { x: cx2 + 8, y: LY + 3, scale: 1, color: '#a8ffc8' });
-          cx2 += 14 + textWidth(lab, 1);
-          if (cx2 > FX + FW - 34) break;
+      /* Not a word about who is in shot until the set has synced, which is
+         the gate the thumbnails are already behind. The warm-up caption is
+         printed across the middle of the frame and the wash under it is a
+         FADE, so on a 224-tall buffer this line came up through the word and
+         the two read as one mangled row for the last half of the boot. */
+      if (boot >= 1) {
+        if (s.contacts.length) {
+          drawText(x, 'IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: hot });
+          let cx2 = FX + 48;
+          for (const c of s.contacts.slice(0, 4)) {
+            const col = c.colour ? colourOf(c.colour) : '#a8ffc8';
+            x.fillStyle = col; x.fillRect(cx2, LY + 3, 5, 5);
+            const lab = `${c.name} ${c.dist}M`;
+            drawText(x, lab, { x: cx2 + 8, y: LY + 3, scale: 1, color: '#a8ffc8' });
+            cx2 += 14 + textWidth(lab, 1);
+            if (cx2 > FX + FW - 34) break;
+          }
+        } else {
+          drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#5f9a78' });
         }
-      } else {
-        drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#5f9a78' });
-      }
-      // the log, newest first
-      let ly = LY + 13;
-      for (const e of s.log.slice(0, 2)) {
-        // a shallow box holds the contacts line and nothing else
-        if (ly + 7 > LY + LH) break;
-        drawText(x, `${e.cam}  ${e.who} AT ${e.d}M`, {
-          x: FX + 2, y: ly, scale: 1, color: '#3e8a5c',
-        });
-        ly += 9;
+        // the log, newest first
+        let ly = LY + 13;
+        for (const e of s.log.slice(0, 2)) {
+          // a shallow box holds the contacts line and nothing else
+          if (ly + 7 > LY + LH) break;
+          drawText(x, `${e.cam}  ${e.who} AT ${e.d}M`, {
+            x: FX + 2, y: ly, scale: 1, color: '#3e8a5c',
+          });
+          ly += 9;
+        }
       }
 
       /* ---- the set warming up, over the top of everything ---- */
@@ -5582,21 +5685,29 @@ export const SCREENS = {
         });
       }
 
-      footer(x, W, H, 'ARROWS AIM  ZX ZOOM  WS CH  R CENTRE  T IR  ESC');
+      /* Forty-five characters: the spacing closes and the tracking goes on a
+         240 frame, and it still comes out at 200 against a 232 budget, so it
+         stays on ONE row — a second row would land on the top log line. */
+      footer(x, W, H, 'WASD AIM  ZX ZOOM  QE CH  R CENTRE  T IR  ESC');
       return rows;
     },
-    key(code, s, g, st) {
+    key(code, s, g, st, mods) {
       const n = (g.cams || []).length || 1;
       if (code === 'Escape' || code === 'Backspace') { st.pop(); g.afterOverlayClose(); return true; }
 
       /* THE HEAD. Arrows drive the mount, because that is what arrows do
-         on a set like this; the channel moved to W and S to make room.
+         on a set like this, and WASD drives it too, because that is what
+         the hand does everywhere else in the game. The channel moved off
+         W and S to Q and E to make room, and the digits still jump
+         straight to one, so nothing was lost.
          These are HELD, and the motion happens in tick() off the held-key
          set — a key handler only fires on the way down, and driving a
          camera off key repeat is why it used to move in lurches. Swallow
          them here so the stack does not treat them as menu keys. */
       if (code === 'ArrowLeft' || code === 'ArrowRight'
         || code === 'ArrowUp' || code === 'ArrowDown'
+        || code === 'KeyA' || code === 'KeyD'
+        || code === 'KeyW' || code === 'KeyS'
         || code === 'KeyX' || code === 'KeyZ'
         || code === 'Equal' || code === 'Minus'
         || code === 'NumpadAdd' || code === 'NumpadSubtract') {
@@ -5607,11 +5718,15 @@ export const SCREENS = {
         g.centreCamera?.(s.sel); s.wantFeed = true; g.audio?.sfx('terminal'); return true;
       }
 
-      if (code === 'KeyW') {
-        s.sel = (s.sel + n - 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
-      }
-      if (code === 'KeyS') {
-        s.sel = (s.sel + 1) % n; s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select'); return true;
+      /* One channel per press. The stack holds E back for itself — it is a
+         commit key everywhere else — and Q has to ask: without this, a
+         leaned-on key ran the whole rack backwards at the browser's repeat
+         rate, a cut and a sound on every step of it. */
+      if (code === 'KeyQ' || code === 'KeyE') {
+        if (mods?.repeat) return true;
+        s.sel = (s.sel + (code === 'KeyE' ? 1 : n - 1)) % n;
+        s.glitch = 0.6; s.flip = 1; g.audio?.sfx('select');
+        return true;
       }
       if (code === 'KeyT') {
         g.camTherm = !g.camTherm;
@@ -5651,6 +5766,17 @@ export const SCREENS = {
       s.done = false;
       s.coins = [];        // the coins the demo throws
     },
+    /* The plan's real schedule. Four boxes of ceil(total/4) sum to MORE than
+       the total on eight of the fifteen lines the counter can offer — the
+       spyglass quoted 17 and showed 5+5+5+5, the flask quoted 6 and showed
+       2+2+2+2 and then settled in three — because the last collection is
+       clamped to what is still owed. The card draws what will be taken. */
+    _parts(g, id) {
+      const each = g.schlarnaEach(id);
+      const out = [];
+      for (let owed = g.schlarnaTotal(id); owed > 0; owed -= each) out.push(Math.min(each, owed));
+      return out;
+    },
     tick(s, g, dt) {
       s.drop = Math.min(1, s.drop + dt * 4.6);
       s.pulse += dt;
@@ -5660,9 +5786,10 @@ export const SCREENS = {
          is the whole explanation — you should be able to look away from
          the words and still understand it. */
       s.demo += dt * 0.62;
-      if (s.demo > SCHLARNA_N + 1.4) { s.demo = 0; s.coins.length = 0; }
+      const n = s.id ? SCREENS.mpSchlarna._parts(g, s.id).length : SCHLARNA_N;
+      if (s.demo > n + 1.4) { s.demo = 0; s.coins.length = 0; }
       const want = Math.floor(s.demo);
-      if (want < SCHLARNA_N && !s.coins[want]) s.coins[want] = { t: 0 };
+      if (want < n && !s.coins[want]) s.coins[want] = { t: 0 };
       for (const c of s.coins) if (c) c.t += dt;
     },
     draw(x, W, H, s, g, t) {
@@ -5672,7 +5799,8 @@ export const SCREENS = {
       const cash = g.priceOf(id);
       const total = g.schlarnaTotal(id);
       const each = g.schlarnaEach(id);
-      const n = SCHLARNA_N;
+      const parts = SCREENS.mpSchlarna._parts(g, id);
+      const n = parts.length;
       const coins = g.coins || 0;
       const rows = [];
 
@@ -5766,7 +5894,13 @@ export const SCREENS = {
       }
 
       const BX0 = cx0 + 40, BW = Math.floor((CW - 52 - (n - 1) * 5) / n);
-      const paid = g.plan && g.plan.id === id ? n - Math.ceil(g.plan.owed / each) : 0;
+      /* Counted off the schedule, not backwards off what is owed: on the
+         flask, 4 - ceil(4/2) said two boxes were PAID after one payment. */
+      let paid = 0;
+      if (g.plan && g.plan.id === id) {
+        let done = total - g.plan.owed;
+        while (paid < n && done >= parts[paid]) { done -= parts[paid]; paid++; }
+      }
       for (let i = 0; i < n; i++) {
         const bx2 = BX0 + i * (BW + 5);
         const first = i === 0;
@@ -5779,7 +5913,7 @@ export const SCREENS = {
         x.fillStyle = INK;
         x.fillRect(bx2, PY, BW, 1); x.fillRect(bx2, PY + 29, BW, 1);
         x.fillRect(bx2, PY, 1, 30); x.fillRect(bx2 + BW - 1, PY, 1, 30);
-        drawText(x, String(each), {
+        drawText(x, String(parts[i]), {
           x: bx2 + BW / 2, y: PY + 5, scale: 2, align: 'center',
           color: donePay || landed || first ? PINK : INK, shadow: false,
         });
@@ -6862,8 +6996,26 @@ export const SCREENS = {
     init(s) { s.sel = s.sel || 0; s.pull = 0; s.arm = 0; },
     /* The lever springs back on the clock rather than a fixed step a draw,
        which returned it faster the faster the monitor. */
-    tick(s, g, dt) {
+    tick(s, g, dt, t, st) {
       if (s.pull > 0) s.pull = Math.max(0, s.pull - dt * 2.1);
+
+      /* The hold the footer promises. E threw the switch on the first
+         key-down, so the tap that BEGAN the hold had already sent the
+         sabotage — your one throw and its cooldown spent on whichever row
+         the cursor happened to be on, with no way to back out of a press
+         you only meant to start. E now winds the same lever the mouse
+         drags, over the same travel, and lets go of it the moment you do:
+         what is left of the pull springs back on the clock above. */
+      const defs = Object.values(SABOTAGE_DEFS);
+      const d = defs[s.sel];
+      const locked = !d || ((g.mp.cool || {})[d.id] || 0) > performance.now() / 1000
+        || !!g.mp.view.sabotage;
+      if (locked || !st?.held.has('KeyE')) {
+        if (s.arm > 0) { s.pull = Math.max(s.pull, s.arm); s.arm = 0; }
+        return;
+      }
+      s.arm = Math.min(1, (s.arm || 0) + dt / 0.6);
+      if (s.arm >= 1) { s.arm = 0; SCREENS.mpSabotage._throw(s, g, st); }
     },
     draw(x, W, H, s, g, t) {
       const defs = Object.values(SABOTAGE_DEFS);
@@ -7133,7 +7285,7 @@ export const SCREENS = {
           });
         }
 
-        const pull = Math.max(s.pull || 0, s.drag || 0);
+        const pull = Math.max(s.pull || 0, s.drag || 0, s.arm || 0);
         const top = LVY + 8;
         const knobY = Math.round(top + pull * (THROAT - 9));
         // the shaft, and the knob
@@ -7236,6 +7388,9 @@ export const SCREENS = {
         const def = defs[s.sel];
         const cd = Math.max(0, ((g.mp.cool || {})[def.id] || 0) - performance.now() / 1000);
         if (cd > 0 || g.mp.view.sabotage) { g.audio?.sfx('deny'); return true; }
+        // E is the hold; all a key-down does is answer a press that cannot go
+        // anywhere. The ramp, and the throw at the end of it, live in tick().
+        if (code === 'KeyE') return true;
         s.pull = 1;
         g.sendSabotage(def.id);
         g.audio?.sfx('slam');
@@ -7741,12 +7896,17 @@ export const SCREENS = {
       if (code === 'ArrowDown' || code === 'KeyS') {
         s.sel = (s.sel + 1) % O.length; g.audio?.sfx('select'); return true;
       }
-      if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Enter' || code === 'KeyE') {
+      /* W and S move the highlight, so the screen reads as WASD-navigable and
+         then A and D did nothing at all — the one list in the game where the
+         hand you play with has to move to the arrows to change a setting. */
+      const back = code === 'ArrowLeft' || code === 'KeyA';
+      if (back || code === 'ArrowRight' || code === 'KeyD'
+        || code === 'Enter' || code === 'KeyE' || code === 'Space') {
         const o = O[s.sel];
         const cur = String(o.get(g));
         let vi = o.values.findIndex((v) => String(v.v) === cur);
         if (vi < 0) vi = 0;
-        vi = (vi + (code === 'ArrowLeft' ? o.values.length - 1 : 1)) % o.values.length;
+        vi = (vi + (back ? o.values.length - 1 : 1)) % o.values.length;
         o.set(g, o.values[vi].v);
         g.applySettings();
         g.audio?.sfx('select');
@@ -7845,6 +8005,12 @@ export const SCREENS = {
 
   /* ---------------- THE MAP ---------------- */
   chart: {
+    /* ARROWS PAN, says the hint, so they pan — the paper is only centred on
+       you by the first draw, which is why an untouched view is left alone. */
+    tick(s, g, dt, t, st) {
+      if (s.cx === undefined) return;
+      panMotor(s, dt, st, (s.data?.radius || 200) / (s.zoom || 1));
+    },
     draw(x, W, H, s, g, t) {
       /* It unrolls. Two rods part and the paper comes out between them,
          with the roll still visible at each edge until it is fully open —
@@ -7953,8 +8119,6 @@ export const SCREENS = {
     /** The wheel is the zoom this screen already has on + and -. */
     wheel(dir, s, g, st) { return this.key(dir < 0 ? 'Equal' : 'Minus', s, g, st); },
     key(code, s, g, st) {
-      const R = s.data?.radius || 200;
-      const step = () => (R / (s.zoom || 1)) * 0.22;
       if (code === 'Equal' || code === 'NumpadAdd' || code === 'KeyZ') {
         if (s.zoom < 5) {
           // zooming in from the wide view starts on you
@@ -7974,10 +8138,9 @@ export const SCREENS = {
         g.audio?.sfx('confirm');
         return true;
       }
-      if (code === 'ArrowLeft' || code === 'KeyA') { s.cx -= step(); return true; }
-      if (code === 'ArrowRight' || code === 'KeyD') { s.cx += step(); return true; }
-      if (code === 'ArrowUp' || code === 'KeyW') { s.cz -= step(); return true; }
-      if (code === 'ArrowDown' || code === 'KeyS') { s.cz += step(); return true; }
+      // the pan itself is on the motor in tick(); swallowed here so the stack
+      // does not hand these to anything else
+      if (PAN_KEYS.has(code)) return true;
       if (code === 'KeyM' || code === 'Escape' || code === 'Tab' || code === 'KeyF') {
         st.pop(); g.afterOverlayClose(); return true;
       }
@@ -8033,8 +8196,19 @@ export const SCREENS = {
           lo: '#241708',
         });
         drawText(x, it.name, { x: bx + 6, y: y + 4, scale: 1, color: it.owned ? '#7a9a8c' : (on ? GOLD_LT : DIM) });
-        drawText(x, it.desc, { x: bx + 6, y: y + 13, scale: 1, color: '#8a7a52' });
-        drawText(x, it.owned ? 'SOLD' : `${it.cost}`, {
+        /* The blurb was printed from the left margin with nothing measuring
+           it, while the price and its coin are hung off the RIGHT edge of the
+           same panel: six pixels of daylight between the longest one and the
+           cost at 240 wide, and none at all under that. It gives way against
+           whatever is actually going to sit there, the way the names on the
+           Castaways shelf do. */
+        const right = it.owned ? 'SOLD' : `${it.cost}`;
+        const room = W - 48 - textWidth(right, 1);
+        let blurb = it.desc;
+        while (blurb.length > 3 && textWidth(blurb, 1) > room) blurb = blurb.slice(0, -1);
+        if (blurb !== it.desc) blurb = blurb.slice(0, -1) + '.';
+        drawText(x, blurb, { x: bx + 6, y: y + 13, scale: 1, color: '#8a7a52' });
+        drawText(x, right, {
           x: bx + W - 38, y: y + 8, scale: 1, align: 'right',
           color: it.owned ? JADE : (g.coins >= it.cost ? GOLD : RED),
         });

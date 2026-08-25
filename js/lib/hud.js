@@ -41,6 +41,11 @@ const compassWrap = (a) => {
    heading — a POSITIVE dA — is to your LEFT. Adding it put every mark, tick
    and place name on the side of the strip opposite the thing itself. */
 const compassX = (dA, left, W) => Math.round(left + W / 2 - (dA / COMPASS_HALF) * (W / 2));
+/* How many lines the toast stack may draw from row `oy` before it runs into
+   `bottom`. The overlay has to ask the same question as _toasts when it picks
+   where the stack goes, and the two must not be able to disagree about
+   whether a message is going to be cut. */
+const toastCap = (oy, bottom) => Math.max(1, Math.min(2, Math.floor((bottom - oy - 2) / 9)));
 /** Which name wins the lettering row when two land on the same bearing. */
 const PRI = { FIX: 0, COIN: 1, BOX: 2, POST: 3, CATHY: 4, MACHINE: 5, FIRE: 6, CAMP: 7 };
 const byNeed = (p, q) => {
@@ -221,7 +226,15 @@ export class Hud {
          knows that, so it leaves the measurements for the overlay. */
       this._overlayFit = {
         colBot: Math.max(this._mpLeftBottom || 0, this._mpRightBottom || 0),
-        room, tBot: inst ? 85 : H - 62,
+        tBot: inst ? 85 : H - 62,
+        /* The edges of the gap the columns leave, not the compass' slice of
+           it: the needle has to stay on the middle of the rose and so `room`
+           is only ever twice the shorter side, but a sentence has no such
+           duty. On a 402-wide frame the chore list took 131 and `room` came
+           back 132 where the gap is really 186, and the stack wrapped
+           'FERDI KEEPS THE PEACE - NOBODY DIES HERE' to twenty characters a
+           line, three lines, cut to '...NOBODY DIE.' */
+        bandL: pwLeft + 4, bandR: W - 81,
       };
       return late ? this.c : this._drawOverlay(time);
     }
@@ -280,20 +293,27 @@ export class Hud {
          toast lay across the purse and the stamina bar on one side and the
          chore list on the other. It gets the band between the columns —
          but at 240 across that band is thirteen characters, which is not a
-         sentence, so where it is narrower than the compass' own strip the
-         stack drops below both columns instead, where the full width is
-         free. Either way it stops before the belt or an instrument.
+         sentence. No width on its own can say which of the two it is — 132
+         held a purchase and cut Ferdi's house rule to 'NOBODY DIE.' — so
+         the messages that are up are wrapped into the band first and the
+         stack keeps it only if they come out in the lines it has to draw
+         them in. Anything longer drops below both columns instead, where
+         the full width is free. Either way it stops before the belt or an
+         instrument.
 
          The fit comes from render(), which measured the columns and the
          instruments this frame; the fallbacks only stand in for a first
          call that somehow beats it, and read as a frame with neither. */
       const fit = this._overlayFit || {};
-      const room = fit.room || 0, tBot = fit.tBot ?? H - 62;
-      const band = room >= 132;
-      const tb = this._toasts(W / 2,
-        band ? Math.min(Math.round(H * 0.26), tBot - 26)
-          : Math.max(Math.round(H * 0.26), (fit.colBot || 0) + 3),
-        band ? room : W - 24, tBot);
+      const tBot = fit.tBot ?? H - 62;
+      const bandL = fit.bandL ?? 0, bandR = fit.bandR ?? 0;
+      const bandW = bandR - bandL;
+      const bandY = Math.min(Math.round(H * 0.26), tBot - 26);
+      const band = bandW >= 40 && d.toasts.slice(-2)
+        .every((t) => wrapText(t.text, bandW - 12, 1, 1).length <= toastCap(bandY, tBot));
+      const tb = this._toasts(band ? (bandL + bandR) / 2 : W / 2,
+        band ? bandY : Math.max(Math.round(H * 0.26), (fit.colBot || 0) + 3),
+        band ? bandW : W - 24, tBot);
       if (d.popup) this._popup(W, H, d.popup, tb);
       return this.c;
     }
@@ -1415,7 +1435,7 @@ export class Hud {
   _toasts(cx, oy, maxW = this.c.width - 24, bottom = this.c.height) {
     const x = this.x;
     // as many lines as the budget below the stack can hold, never more than two
-    const cap = Math.max(1, Math.min(2, Math.floor((bottom - oy - 2) / 9)));
+    const cap = toastCap(oy, bottom);
     const rows = this.data.toasts.slice(-2).map((t) => {
       const all = wrapText(t.text, maxW - 12, 1, 1);
       const lines = all.length ? all.slice(0, cap) : [''];

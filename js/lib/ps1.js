@@ -20,6 +20,13 @@ const uJitter = { value: new THREE.Vector2(160, 112) };
 const uJitterOn = { value: 1 };
 const uTime = { value: 0 };
 
+/* The narrowest frame the interface has ever been drawn for: 240 across, which
+   is 4:3 at the 180-line setting. Every screen in the game was laid out and
+   checked from there upward, so below it the text has nowhere to go but off
+   the edge. Exported because the interface canvas is sized from the same
+   number. */
+export const MIN_INTERNAL_W = 240;
+
 export function setTime(t) { uTime.value = t; }
 
 export function setJitterResolution(w, h) {
@@ -407,6 +414,20 @@ export class RetroPipeline {
     } else {
       ih = this.baseHeight;
       iw = Math.round(ih * aspect);
+      /* A portrait or side-by-side window drives the aspect below 4:3 and used
+         to take the interface with it — at 96 across, nearly every screen in
+         the game drew outside the frame. Buy the width back with vertical
+         resolution rather than squashing or letterboxing: at an unchanged
+         aspect, MIN_INTERNAL_W / aspect is precisely the height at which the
+         frame comes out 240 wide, so a tall thin window simply gets a tall
+         thin picture with more lines in it. Something phone-shaped would ask
+         for an absurd height that way, so stop at twice the base — under what
+         NATIVE already hands a 1080-line display — and beyond that take the
+         narrow frame in preference to distorting the picture. */
+      if (iw < MIN_INTERNAL_W) {
+        ih = Math.min(this.baseHeight * 2, Math.ceil(MIN_INTERNAL_W / aspect));
+        iw = Math.round(ih * aspect);
+      }
     }
     iw = Math.max(64, iw | 0);
     ih = Math.max(64, ih | 0);
