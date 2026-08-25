@@ -41,6 +41,7 @@ export const TEMPLE = {
     yBottom: 2.2,        // tread height at the bottom
     steps: 7,
     rise: 0.62,
+    landing: 5.0,        // depth of the flat slab where the flight meets the hall
   },
   daisStair: {
     halfW: 7.5,
@@ -83,8 +84,11 @@ export function templeHeight(x, z) {
     } else if (z > E.zTop) {
       ent = E.yBottom + E.steps * E.rise;
     } else {
-      // the landing tapers into the hall floor
-      ent = E.yBottom * Math.max(0, 1 - (E.zBottom - z) / 5.5);
+      // The landing is a flat slab, so the ground has to stay level under the
+      // whole of it and only taper once it clears the front edge. Sloping from
+      // zBottom put the walkable surface up to two metres below the stone, so
+      // you arrived standing inside the block and walked out through it.
+      ent = E.yBottom * THREE.MathUtils.clamp(1 - ((E.zBottom - E.landing) - z) / 5.5, 0, 1);
     }
   }
 
@@ -129,12 +133,20 @@ export function buildTemple(idolMats, propMats) {
     const p = floorGeo.attributes.position;
     const colors = new Float32Array(p.count * 3);
     const c = new THREE.Color();
+    const E = TEMPLE.entranceStair;
     for (let i = 0; i < p.count; i++) {
       const x = p.getX(i), z = p.getZ(i);
       let h = templeHeight(x, z);
       h += (rng() - 0.5) * 0.16;                       // settled flagstones
+      /* Past the walls the ground rears up to close the horizon, which was
+         harmless while the +Z wall was solid. The doorway now looks straight up
+         the entrance flight, and a skirt there clears the lintel a metre out and
+         buries the stair, so the cut stays open until past the top tread — where
+         the lift resumes and caps the far end of it. */
+      const cut = z > HZ && z <= E.zTop
+        && Math.abs(x - TEMPLE.entrance.x) <= E.halfW + 1.5;
       if (Math.abs(x) > HX) h += (Math.abs(x) - HX) * 3;
-      if (Math.abs(z) > HZ) h += (Math.abs(z) - HZ) * 3;
+      if (Math.abs(z) > HZ && !cut) h += (Math.abs(z) - HZ) * 3;
       p.setY(i, h);
 
       const n = rng();
@@ -159,7 +171,7 @@ export function buildTemple(idolMats, propMats) {
   const wallParts = [];
   const wallSpec = [
     { x: 0, z: -HZ, w: HX * 2, rotY: 0 },
-    { x: 0, z: HZ, w: HX * 2, rotY: Math.PI },
+    { x: 0, z: HZ, w: HX * 2, rotY: Math.PI, gap: 6.0, gapCourses: 4 },
     { x: -HX, z: 0, w: HZ * 2, rotY: Math.PI / 2 },
     { x: HX, z: 0, w: HZ * 2, rotY: -Math.PI / 2 },
   ];
@@ -171,16 +183,34 @@ export function buildTemple(idolMats, propMats) {
     const courses = 9;
     for (let c = 0; c < courses; c++) {
       const y = 0.9 + c * (WH / courses);
+      const tone = STONE.clone().multiplyScalar(0.60 + rng() * 0.30 - c * 0.015);
+      if (W.gap && c < W.gapCourses) {
+        /* The entrance flight passes through this wall. Built as one slab it
+           sealed the top five treads and both balustrades outside the hall,
+           so the grand stair rose two steps and died against blank masonry.
+           The low courses are two jambs; the full courses above are the lintel. */
+        const jw = W.w / 2 - W.gap;
+        for (const sgn of [-1, 1]) {
+          const cx = sgn * (W.gap + jw / 2);
+          const j = box(jw, WH / courses - 0.10, 1.6, 'templeStone', {
+            pos: [W.x + Math.cos(W.rotY) * cx, y, W.z - Math.sin(W.rotY) * cx], rot: [0, W.rotY, 0],
+          });
+          tint(j, tone);
+          wallParts.push(j);
+        }
+        continue;
+      }
       const g = box(W.w, WH / courses - 0.10, 1.6, 'templeStone', {
         pos: [W.x, y, W.z], rot: [0, W.rotY, 0],
       });
-      tint(g, STONE.clone().multiplyScalar(0.60 + rng() * 0.30 - c * 0.015));
+      tint(g, tone);
       wallParts.push(g);
     }
     // pilasters
     const n = Math.round(W.w / 11);
     for (let i = 0; i <= n; i++) {
       const t = (i / n - 0.5) * W.w;
+      if (W.gap && Math.abs(t) < W.gap + 0.85) continue;   // not across the doorway
       const px = W.x + Math.cos(W.rotY) * t;
       const pz = W.z - Math.sin(W.rotY) * t;
       const g = box(1.7, WH, 1.1, 'templeStone', { pos: [px, WH / 2 + 0.6, pz], rot: [0, W.rotY, 0] });
@@ -193,7 +223,11 @@ export function buildTemple(idolMats, propMats) {
   /* ---------- ceiling: coffered slabs with holes punched through ---------- */
   const ceilParts = [];
   const holes = [
-    { x: 0, z: 30, r: 6 },        // above the entrance stair
+    /* The entrance shaft is over the stair, which is only as wide as the
+       landing stone and drops two metres off both sides of it, so its floor
+       pool gets an explicit size instead of the r*1.9 square the open floor
+       can afford. */
+    { x: 0, z: 30, r: 6, poolW: 9.2, poolD: 5 },        // above the entrance stair
     { x: -18, z: 6, r: 5 },
     { x: 20, z: -8, r: 4.5 },
     { x: 8, z: 20, r: 4 },
@@ -222,10 +256,21 @@ export function buildTemple(idolMats, propMats) {
     scene.add(l);
     shafts.push({ light: l, ph: rng() * 6, base: 2.2 });
 
-    const pool = plane(h.r * 1.9, h.r * 1.9, 'sand', {
+    /* One sampled height only works on ground that is flat under the whole
+       quad, and none of it is: the entrance pool hung two metres over the
+       hall floor down each side, and the rest were sliced open by the floor
+       mesh's own ±0.08 vertex jitter, which 0.05 of clearance cannot cover.
+       Segment the quad and drape every vertex onto templeHeight instead. */
+    const pool = plane(h.poolW ?? h.r * 1.9, h.poolD ?? h.r * 1.9, 'sand', {
       rot: [-Math.PI / 2, 0, 0],
-      pos: [h.x, templeHeight(h.x, h.z) + 0.05, h.z],
-    });
+      pos: [h.x, 0, h.z],
+    }, 8, 8);
+    {
+      const pp = pool.attributes.position;
+      for (let i = 0; i < pp.count; i++) {
+        pp.setY(i, templeHeight(pp.getX(i), pp.getZ(i)) + 0.14);
+      }
+    }
     tint(pool, new THREE.Color(0xbfd0a0));
     const pm = new THREE.Mesh(mergeGeos([pool]), new THREE.MeshBasicMaterial({
       map: propMats.opaque.map, vertexColors: true, transparent: true, opacity: 0.16,
@@ -314,6 +359,8 @@ export function buildTemple(idolMats, propMats) {
     else if (side === 1) { x = t * HX; z = HZ - 1.2; }
     else if (side === 2) { x = -HX + 1.2; z = t * HZ; }
     else { x = HX - 1.2; z = t * HZ; }
+    // the +Z wall has a doorway now, so a root there would hang in the opening
+    if (side === 1 && Math.abs(x) < 6.0) continue;
     let y = WH;
     for (let s = 0; s < 5; s++) {
       const len = 2 + rng() * 3;
@@ -406,8 +453,8 @@ export function buildTemple(idolMats, propMats) {
       tint(n, STONE_DK); entParts.push(n);
     }
     // landing where the flight meets the hall
-    const land = box(E.halfW * 2 + 1.0, E.yBottom + 3.0, 5.0, 'templeStone', {
-      pos: [ex, E.yBottom - (E.yBottom + 3.0) / 2, E.zBottom - 2.5],
+    const land = box(E.halfW * 2 + 1.0, E.yBottom + 3.0, E.landing, 'templeStone', {
+      pos: [ex, E.yBottom - (E.yBottom + 3.0) / 2, E.zBottom - E.landing / 2],
     });
     tint(land, STONE.clone().multiplyScalar(0.8)); entParts.push(land);
     // balustrades

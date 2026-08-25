@@ -83,9 +83,13 @@
 })();
 </script>
 
-<!-- ?v is bumped whenever the module graph changes shape, so a browser
-     holding half of the previous build cannot mix it with this one. -->
-<script type="module" src="js/main.js?v=5"></script>
+<!-- Deliberately unversioned. Versioning only the entry is worse than
+     versioning nothing: a reload revalidates index.html but not subresources
+     that are still fresh, so a new ?v would miss cache and pair a brand new
+     main.js with the previous build's children, which is the very mismatch
+     the bootstrap above has to apologise for. Left bare, the whole graph
+     ages out together and a reload replays one build end to end. -->
+<script type="module" src="js/main.js"></script>
 <noscript><div class="screen"><div class="panel"><h2>JAVASCRIPT REQUIRED</h2></div></div></noscript>
 </body>
 </html>

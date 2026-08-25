@@ -84,7 +84,7 @@ export const CELLS = {
 
 /* Cells that need real transparency (cut-out foliage, flames, …). */
 const ALPHA_CELLS = new Set([
-  'palmFrond', 'jungleLeaf', 'leafBush', 'flower', 'vine', 'tuft', 'fernLeaf',
+  'palmFrond', 'jungleLeaf', 'leafBush', 'flower', 'tuft', 'fernLeaf',
   'flame', 'hangVine',
 ]);
 
@@ -268,20 +268,6 @@ export function buildAtlas() {
       x.fillStyle = hsl(88 + rng() * 26, 44 + rng() * 16, 20 + rng() * 18);
       for (let j = 0; j < bh; j++) {
         x.fillRect(bx + (lean * j / bh) | 0, oy + s - 1 - j, 1, 1);
-      }
-    }
-  });
-
-  /* ---- hanging vine ---- */
-  P('vine', (x, ox, oy, s) => {
-    const mid = ox + s / 2;
-    for (let j = 0; j < s; j++) {
-      const w = 1 + ((j % 7 === 0) ? 1 : 0);
-      x.fillStyle = hsl(100 + rng() * 14, 40, 16 + rng() * 12);
-      x.fillRect(mid + Math.sin(j * 0.4) * 2, oy + j, w, 1);
-      if (j % 6 === 3) {
-        x.fillStyle = hsl(108, 44, 24);
-        x.fillRect(mid + Math.sin(j * 0.4) * 2 - 3, oy + j, 7, 2);
       }
     }
   });
@@ -478,6 +464,9 @@ export function buildAtlas() {
     }
   });
 
+  /* Solid green rind, not a cut-out strand: every consumer wraps this cell
+     around a cylinder (trunk collars, hanging stems, ground vines), so it has
+     to fill the cell. The cut-out strand art lives in 'hangVine'. */
   P('vine', (x, ox, oy, s) => {
     noiseFill(x, ox, oy, s, s, 100, 40, 22, 8, rng, 2);
   });
@@ -807,24 +796,32 @@ function paintHectorFace(x, ox, oy, w, h, rng) {
    STANDALONE TILING TEXTURES (terrain / water / big surfaces)
    =========================================================== */
 
+/* The detail sheet is the same seeded noise every time, so paint it once and
+   let each caller wrap it in its own Texture — they need different repeats,
+   not different pixels. */
+let detailCanvas = null;
+
 export function buildDetailTexture() {
-  const S = 64;
-  const { c, x } = cv(S, S);
-  const rng = makeRng(99);
-  // seamless-ish grayscale detail, multiplied over vertex colours
-  for (let j = 0; j < S; j += 2) {
-    for (let i = 0; i < S; i += 2) {
-      const v = 168 + (rng() - 0.5) * 62;
-      x.fillStyle = `rgb(${v|0},${v|0},${v|0})`;
-      x.fillRect(i, j, 2, 2);
+  if (!detailCanvas) {
+    const S = 64;
+    const { c, x } = cv(S, S);
+    const rng = makeRng(99);
+    // seamless-ish grayscale detail, multiplied over vertex colours
+    for (let j = 0; j < S; j += 2) {
+      for (let i = 0; i < S; i += 2) {
+        const v = 168 + (rng() - 0.5) * 62;
+        x.fillStyle = `rgb(${v|0},${v|0},${v|0})`;
+        x.fillRect(i, j, 2, 2);
+      }
     }
+    for (let i = 0; i < 120; i++) {
+      const v = 120 + rng() * 40;
+      x.fillStyle = `rgba(${v|0},${v|0},${v|0},.5)`;
+      x.fillRect((rng() * S) | 0, (rng() * S) | 0, 1 + rng() * 3, 1);
+    }
+    detailCanvas = c;
   }
-  for (let i = 0; i < 120; i++) {
-    const v = 120 + rng() * 40;
-    x.fillStyle = `rgba(${v|0},${v|0},${v|0},.5)`;
-    x.fillRect((rng() * S) | 0, (rng() * S) | 0, 1 + rng() * 3, 1);
-  }
-  const tex = new THREE.CanvasTexture(c);
+  const tex = new THREE.CanvasTexture(detailCanvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestMipmapLinearFilter;

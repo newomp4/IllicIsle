@@ -80,6 +80,13 @@ let CARVES = [];
 export function setCarves(list) {
   CARVES = (list || []).map((c) => ({
     ...c, cos: Math.cos(c.yaw || 0), sin: Math.sin(c.yaw || 0),
+    /* A circular reject to sit in front of the ellipse test. The rotation
+       preserves length, so q is never less than the distance over the larger
+       radius — anything outside this cannot be inside the carve. heightAt is
+       the most-called function in the build and it was running the full
+       ellipse against nine pads of at most 27m for every point of a 560m
+       island. */
+    rej: (1.45 * Math.max(c.rx, c.rz)) ** 2,
   }));
 }
 
@@ -125,10 +132,13 @@ export function heightAt(x, z) {
   for (let i = 0; i < CARVES.length; i++) {
     const c = CARVES[i];
     const dx = x - c.x, dz = z - c.z;
+    if (dx * dx + dz * dz > c.rej) continue;
     const lx = dx * c.cos - dz * c.sin;
     const lz = dx * c.sin + dz * c.cos;
-    const q = Math.hypot(lx / c.rx, lz / c.rz);
-    if (q >= 1.45) continue;
+    const a = lx / c.rx, b = lz / c.rz;
+    const q2 = a * a + b * b;
+    if (q2 >= 1.45 * 1.45) continue;
+    const q = Math.sqrt(q2);
     const k = 1 - THREE.MathUtils.smoothstep(q, 0.70, 1.45);
     // a carve may be a level shelf or a profile that varies across itself
     const target = c.h ? c.h(lx, lz) : c.y;
@@ -212,12 +222,36 @@ export function buildTerrain(atlas) {
   const col = new THREE.Color();
   const tmp = new THREE.Color();
 
+  /* Every vertex used to ask for its slope, and slopeAt goes through
+     normalAt, which is four more heightAt calls — 160k extra evaluations
+     of the most expensive function in the build, to feed two colour
+     branches. But the grid already holds all four of those neighbours, so
+     fill the heights in one pass and difference them instead. The samples
+     are the 2.8m vertex pitch apart rather than normalAt's 0.9m, which is
+     a gentler read of the ground: measured across the mesh it moves no
+     vertex across the 0.42 rock threshold and eight across the 0.28
+     blend, so the bands are left where they were. */
+  const W = SEG + 1;
+  const E = SIZE / SEG;
+  const heights = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const h = heightAt(pos.getX(i), pos.getZ(i));
+    heights[i] = h;
+    pos.setY(i, h);
+  }
+
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
-    const h = heightAt(x, z);
-    pos.setY(i, h);
+    const h = heights[i];
 
-    const slope = slopeAt(x, z);
+    // central difference, except on the rim where only one side exists
+    const ix = i % W, iy = (i / W) | 0;
+    const xm = ix > 0 ? i - 1 : i, xp = ix < SEG ? i + 1 : i;
+    const zm = iy > 0 ? i - W : i, zp = iy < SEG ? i + W : i;
+    const gx = (heights[xp] - heights[xm]) / ((xp - xm) * E);
+    const gz = (heights[zp] - heights[zm]) / (((zp - zm) / W) * E);
+    const slope = 1 - 1 / Math.sqrt(gx * gx + 1 + gz * gz);
+
     const noise = fbm(x * 0.09, z * 0.09, 2);
     const patch = fbm(x * 0.021 + 300, z * 0.021 - 120, 2);
 
@@ -261,10 +295,51 @@ export function buildTerrain(atlas) {
     map: detail,
   }), { flat: false });
 
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = 'terrain';
-  mesh.frustumCulled = false;
-  return mesh;
+  /* One mesh of 80,000 triangles has no sub-object granularity: the camera
+     stands inside its bounding sphere, so every triangle of a 560m plane is
+     transformed every frame to keep the fifth of it that is actually in
+     front of you. Split it into a grid of chunks that three can cull one at
+     a time. Only the index is split — all the chunks assign the same
+     position/normal/uv/colour attribute objects, so the GPU still holds one
+     copy of each buffer, and, because the vertices and the model matrix are
+     shared and identical, the ps1 vertex snap rounds a shared edge to the
+     same pixel from either side and no seam can open. */
+  const CH = 8;                 // SEG divides by this
+  const q = SEG / CH;           // quads down a chunk's edge
+  const src = geo.index.array;
+  const parr = pos.array;
+  const group = new THREE.Group();
+  group.name = 'terrain';
+  for (let cz = 0; cz < CH; cz++) {
+    for (let cx = 0; cx < CH; cx++) {
+      const idx = new Uint32Array(q * q * 6);
+      const box = new THREE.Box3();
+      const v = new THREE.Vector3();
+      for (let j = 0; j < q; j++) {
+        // the plane's own quad rows, copied verbatim so the winding matches
+        const row = (cz * q + j) * SEG + cx * q;
+        idx.set(src.subarray(row * 6, (row + q) * 6), j * q * 6);
+      }
+      for (let j = 0; j <= q; j++) {
+        for (let i = 0; i <= q; i++) {
+          const k = ((cz * q + j) * W + cx * q + i) * 3;
+          box.expandByPoint(v.set(parr[k], parr[k + 1], parr[k + 2]));
+        }
+      }
+      const cg = new THREE.BufferGeometry();
+      cg.setAttribute('position', pos);
+      cg.setAttribute('normal', geo.attributes.normal);
+      cg.setAttribute('uv', geo.attributes.uv);
+      cg.setAttribute('color', geo.attributes.color);
+      cg.setIndex(new THREE.BufferAttribute(idx, 1));
+      /* computeBoundingSphere would walk the shared position attribute and
+         hand every chunk the whole island's sphere, which never culls. */
+      cg.boundingBox = box;
+      cg.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
+      group.add(new THREE.Mesh(cg, mat));
+    }
+  }
+  return group;
 }
 
 /* ===========================================================
@@ -281,37 +356,55 @@ export function buildOcean() {
     color: 0x9fd8e8,
     transparent: true,
     opacity: 0.84,
+    /* Transparent but depth-writing, the sea stamped the whole 1200m plane
+       into the depth buffer ahead of everything ordered to draw over it —
+       the foam at renderOrder 3, the gore stains and the sand writing at 2 —
+       so a passing crest z-rejected them and the surf ring broke into
+       flickering arcs. */
+    depthWrite: false,
   }), { flat: true });
+
+  /* The swell used to be rewritten on the CPU every frame: 4225 vertices,
+     three sin() apiece and a 50KB position re-upload, which measured as more
+     than half of everything the game simulated per frame. Nothing on the CPU
+     ever reads the displaced vertices — buoyancy and the waterline both go
+     through SEA_LEVEL — so the same three waves are evaluated in the vertex
+     shader instead, where flat shading derives its face normals from the
+     result for free. Its own uniform, driven from the tick, so the swell
+     still advances on exactly the frames it always did. */
+  const uWave = { value: 0 };
+  const ps1Hook = mat.onBeforeCompile;
+  mat.onBeforeCompile = (shader, renderer) => {
+    ps1Hook(shader, renderer);
+    shader.uniforms.uWave = uWave;
+    shader.vertexShader = 'uniform float uWave;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
+      {
+        // world position, so the swell stays put if the plane is ever moved
+        vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        transformed.y +=
+          sin(wp.x * 0.045 + uWave * 1.0) * 0.45 +
+          sin(wp.z * 0.033 - uWave * 0.78) * 0.38 +
+          sin((wp.x + wp.z) * 0.019 + uWave * 0.46) * 0.32;
+      }
+      `
+    );
+  };
+  // injected code must not share a compiled program with a material without it
+  const ps1Key = mat.customProgramCacheKey;
+  mat.customProgramCacheKey = () => `${ps1Key()}|wave`;
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = SEA_LEVEL;
   mesh.renderOrder = 1;
+  // the bounding sphere no longer covers the displaced surface
   mesh.frustumCulled = false;
   mesh.name = 'ocean';
 
-  /* The swell, rewritten every frame. Two things used to make this the
-     most expensive thing in the loop by a wide margin:
-
-     computeVertexNormals() walked all 8192 triangles and re-uploaded a
-     51KB normal buffer sixty times a second — for nothing, because the
-     material is flat-shaded and the GPU derives its own face normals from
-     the positions. The per-vertex normals were never read.
-
-     And setY() goes through the BufferAttribute accessor for every one of
-     4225 vertices. Writing the typed array directly is the same work
-     without the call. */
-  const base = geo.attributes.position.array.slice();
-  const arr = geo.attributes.position.array;
-  const N = geo.attributes.position.count;
   mesh.userData.tick = (t) => {
-    for (let i = 0, o = 0; i < N; i++, o += 3) {
-      const x = base[o], z = base[o + 2];
-      arr[o + 1] =
-        Math.sin(x * 0.045 + t * 1.0) * 0.45 +
-        Math.sin(z * 0.033 - t * 0.78) * 0.38 +
-        Math.sin((x + z) * 0.019 + t * 0.46) * 0.32;
-    }
-    geo.attributes.position.needsUpdate = true;
+    uWave.value = t;
     tex.offset.x = t * 0.010;
     tex.offset.y = t * 0.007;
   };
@@ -348,8 +441,32 @@ export function buildSurf() {
     for (let r = rLow; r > 60; r -= 1.0) {
       if (heightAt(cos * r, sin * r) > 1.5) { rHigh = r; break; }
     }
-    rings.push({ a, cos, sin, rLow, rHigh: Math.min(rHigh, rLow - 1) });
+    rHigh = Math.min(rHigh, rLow - 1);
+    /* The sand between those two contours is a median of 21m wide, so foam
+       pinned to a fixed height spent the run-up half of every wave buried in
+       it. Bake the ground along this bearing now — setCarves runs long before
+       buildSurf, so the ground is already final — and the tick can drape the
+       band on it without a single heightAt call. The span covers every radius
+       the sweep and the widest band can reach. */
+    const r0 = rLow + 8;
+    const prof = new Float32Array(Math.ceil(r0 - (rHigh - 15)) + 1);
+    for (let i = 0; i < prof.length; i++) {
+      prof[i] = heightAt(cos * (r0 - i), sin * (r0 - i));
+    }
+    rings.push({ a, cos, sin, rLow, rHigh, r0, prof });
   }
+
+  // the wobble below depends on the bearing and the clock, never on the band
+  const wobBuf = new Float64Array(SEGS + 1);
+
+  /** Ground height along a bearing, read out of the baked profile. */
+  const yAt = (R, r) => {
+    const f = R.r0 - r;
+    if (f <= 0) return R.prof[0];
+    const i = f | 0, g = R.prof;
+    if (i >= g.length - 1) return g[g.length - 1];
+    return g[i] + (g[i + 1] - g[i]) * (f - i);
+  };
 
   const meshes = [];
   for (let b = 0; b < BANDS; b++) {
@@ -357,6 +474,11 @@ export function buildSurf() {
     const mat = new THREE.MeshBasicMaterial({
       map: tex, transparent: true, opacity: 0.7,
       depthWrite: false, side: THREE.DoubleSide, fog: true,
+      /* A transparent DoubleSide material is submitted twice, back faces
+         then front, so the band's own faces blend in order. A band is one
+         flat ribbon — only one facing exists at any pixel — so the second
+         pass is a duplicate draw and a duplicate material bind. */
+      forceSinglePass: true,
       color: b === 0 ? 0xffffff : 0xd8f0fa,
     });
     const m = new THREE.Mesh(geo, mat);
@@ -367,27 +489,40 @@ export function buildSurf() {
       mesh: m, geo, mat, index: b,
       phase: b * (Math.PI * 2 / BANDS),
       width: 5 + b * 3,
-      y: 0.10 + b * 0.02,
+      /* How far the band floats above the ground it rides. The rendered mesh
+         is the 2.8m grid's interpolation of heightAt and sits up to 0.12m
+         above the analytic surface the profile was sampled from, so the old
+         0.10 would still z-fight in the worst places. */
+      y: 0.18 + b * 0.05,
     });
   }
 
   group.userData.tick = (t) => {
+    // a little per-bearing variation so the foam edge isn't a clean circle
+    for (let s = 0; s <= SEGS; s++) {
+      const a = rings[s].a;
+      wobBuf[s] = Math.sin(a * 7 + t * 1.3) * 1.6 + Math.sin(a * 13 - t * 0.9) * 0.9;
+    }
     for (const band of meshes) {
       const p = band.geo.attributes.position;
       // 0 = fully drained, 1 = fully run up
       const k = 0.5 + 0.5 * Math.sin(t * 0.55 + band.phase);
       const ease = k * k * (3 - 2 * k);
       band.mat.opacity = (0.30 + 0.45 * Math.sin(t * 0.55 + band.phase + 1.1)) * 0.9;
+      const lift = band.y;
 
       for (let s = 0; s <= SEGS; s++) {
         const R = rings[s];
-        // a little per-bearing variation so the foam edge isn't a clean circle
-        const wob = Math.sin(R.a * 7 + t * 1.3) * 1.6 + Math.sin(R.a * 13 - t * 0.9) * 0.9;
-        const r = THREE.MathUtils.lerp(R.rLow + 2, R.rHigh, ease) + wob;
+        const r = THREE.MathUtils.lerp(R.rLow + 2, R.rHigh, ease) + wobBuf[s];
         const rIn = r - band.width;
+        /* Ride the sand, but never below the water: the seaward edge goes on
+           floating on the sea exactly as it did and only the landward part
+           climbs the beach. */
+        const yo = Math.max(yAt(R, r), SEA_LEVEL) + lift;
+        const yi = Math.max(yAt(R, rIn), SEA_LEVEL) + lift;
         // vertex row 0 = outer edge, row 1 = inner edge
-        p.setXYZ(s, R.cos * r, band.y, R.sin * r);
-        p.setXYZ(SEGS + 1 + s, R.cos * rIn, band.y, R.sin * rIn);
+        p.setXYZ(s, R.cos * r, yo, R.sin * r);
+        p.setXYZ(SEGS + 1 + s, R.cos * rIn, yi, R.sin * rIn);
       }
       p.needsUpdate = true;
     }
@@ -405,11 +540,17 @@ export function buildSky(top, mid, bot) {
      clipped away and you just see the flat scene.background — which the
      CRT vignette then turns into a pale disc in the middle of the screen. */
   const geo = new THREE.SphereGeometry(400, 32, 20);
+  /* Declared transparent from the start even at full opacity: the first
+     draw picks the opaque program and flipping `transparent` later never
+     recompiles it, so night, the storm and the Castaways blackout would
+     all set an opacity the renderer then threw away. */
   const mat = new THREE.MeshBasicMaterial({
     map: buildSkyTexture(top, mid, bot),
     side: THREE.BackSide,
     fog: false,
     depthWrite: false,
+    transparent: true,
+    opacity: 1,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'sky';
@@ -417,6 +558,12 @@ export function buildSky(top, mid, bot) {
   mesh.renderOrder = -100;
   return mesh;
 }
+
+/* The night ramp below used to re-type 0xf4f0e4 as three sRGB bytes into
+   setRGB, which writes the linear working space the constructor's hex was
+   decoded into — so from the first frame the clouds sat whiter and flatter
+   than the colour the material declares. Decode it once and scale that. */
+const CLOUD_DAY = new THREE.Color(0xf4f0e4);
 
 /* Chunky low-poly clouds that drift. */
 export function buildClouds(rng) {
@@ -457,7 +604,8 @@ export function buildClouds(rng) {
     }
     // white cumulus at midnight looks like a bug; take them down with the sky
     const k = 1 - night * 0.86;
-    mat.color.setRGB(0.957 * k, 0.941 * k, 0.894 * k + night * 0.06);
+    mat.color.copy(CLOUD_DAY).multiplyScalar(k);
+    mat.color.b += night * 0.06;
     mat.opacity = 0.85 - night * 0.35;
   };
   group.frustumCulled = false;

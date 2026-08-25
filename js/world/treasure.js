@@ -51,6 +51,12 @@ export function goodXSpot(heightAt, x, z) {
 /** How long it takes to dig one out, in seconds of holding E. */
 export const DIG_SECONDS = 4.2;
 
+/* The wall a surfaced chest puts on the sand. Both games push a collider of
+   this radius, and the single-player reset finds it again by comparing r
+   exactly — so if the copies of the number ever drift apart the wall is
+   never removed and an undisturbed X keeps an invisible chest on it. */
+export const CHEST_COLLIDER_R = 0.95;
+
 /* ===========================================================
    THE MARK
    =========================================================== */
@@ -214,7 +220,6 @@ export function buildX(rng, mats) {
     taken: false,
   };
   g.userData.state = st;
-  g.userData.chest = chest;
 
   g.userData.tick = (t, dt = 0.016) => {
     const d = st.dug;
@@ -262,10 +267,6 @@ export function buildX(rng, mats) {
     hoard.visible = st.open > 0.15;
     if (hoard.visible) hoard.position.y = 0.30 + Math.sin(t * 2.2) * 0.008;
   };
-
-  /* Once it is out it is a solid object, so you cannot stand inside it.
-     The game asks for this and adds it to its own collider list. */
-  g.userData.colliderAt = (wx, wz) => ({ x: wx, z: wz, r: 0.95 });
 
   return g;
 }

@@ -3,7 +3,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { RetroPipeline, setJitterEnabled, setTime } from './lib/ps1.js';
+import { RetroPipeline, setJitterEnabled, setTime, ps1Clone } from './lib/ps1.js';
 import { buildAtlas, makeRng, buildSignTexture } from './lib/textures.js';
 import { mergeGeos, tint, plane, box, cyl, ico, lumpify, blankUV } from './lib/geo.js';
 import { GameAudio } from './lib/audio.js';
@@ -39,7 +39,7 @@ import {
   buildBar,
 } from './world/bar.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
-import { buildX, X_SPOTS, DIG_SECONDS, goodXSpot } from './world/treasure.js';
+import { buildX, X_SPOTS, DIG_SECONDS, CHEST_COLLIDER_R, goodXSpot } from './world/treasure.js';
 import {
   buildTower, buildCab, buildCamera, TOWER_SPOT, CAB_BOX, CAB_COLLIDERS, CAB_ENTRY,
   cabHeight, CAMERA_FITTED, CAMERA_MAX, FITTED_CAMS, FEED_W, FEED_H, THUMB_W, THUMB_H,
@@ -47,6 +47,22 @@ import {
 import { FOOD, itemById } from './mp/market.js';
 import { Player } from './entities/player.js';
 import { Hector } from './entities/boss.js';
+
+/* The weather palette. `Color.setRGB` writes straight into the LINEAR
+   working space, so the sRGB bytes these endpoints were authored as
+   (0xb4d0d4, 0x8fc4dd — the very hexes the island scene is built with)
+   were rendering a couple of stops too pale: the daytime haze came out
+   #dbe9eb and washed out everything past the fog's near plane. Decode the
+   daylight ends once through the hex constructor and lerp in linear. The
+   dark ends have no hex behind them — they were tuned against what is on
+   screen — so they keep their exact linear values and look unchanged. */
+const DAY_FOG = new THREE.Color(0xb4d0d4);
+const DAY_BG = new THREE.Color(0x8fc4dd);
+const NIGHT_FOG = new THREE.Color().setRGB(0.055, 0.070, 0.115);
+const NIGHT_BG = new THREE.Color().setRGB(0.035, 0.045, 0.070);
+const STORM_FOG = new THREE.Color().setRGB(0.11, 0.13, 0.17);
+const STORM_BG = new THREE.Color().setRGB(0.07, 0.09, 0.13);
+const _terrDir = new THREE.Vector3();
 
 /* ===========================================================
    STORY
@@ -253,6 +269,52 @@ const RELIC_SPOTS = [
 ];
 
 /**
+ * What is solid inside the temple.
+ *
+ * The hall shipped with no collider list at all, so the ten columns, the
+ * dais colonnettes, the mine frames and Hector's own armchair were all
+ * scenery you walked straight through — the one interior in the game that
+ * had nothing but its bounding box. Each radius is the prop's own; the
+ * player's body radius is added on top in player.js.
+ *
+ * The seal on the dais is deliberately absent: the descent cutscene hides
+ * it, and a collider there would leave an invisible wall across the stair.
+ */
+const TEMPLE_COLLIDERS = (() => {
+  const out = [];
+  // the ten hall columns: a 3.0 square base under a 1.15 shaft
+  for (const sx of [-1, 1]) for (let i = 0; i < 5; i++) out.push({ x: sx * 17, z: -20 + i * 11, r: 1.5 });
+  const D = TEMPLE.daisCenter;
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    out.push({ x: D.x + Math.cos(a) * 5.8, z: D.z + Math.sin(a) * 5.8, r: 0.75 });
+  }
+  /* The pedestal takes a radius under its own 2.4, so the idol is still
+     within reach of somebody standing on the platform. */
+  out.push({ x: D.x, z: D.z, r: 2.0 });
+  for (let i = 0; i < 4; i++) out.push({ x: -24, z: 16 - i * 3.4, r: 2.2 });
+  // his camp is a group at (19, 14) turned -0.7: the chair, and the grill
+  const cx = 19, cz = 14, ca = Math.cos(-0.7), sa = Math.sin(-0.7);
+  out.push({ x: cx, z: cz, r: 1.6 });
+  out.push({ x: cx + 4.5 * ca + 3.5 * sa, z: cz - 4.5 * sa + 3.5 * ca, r: 1.4 });
+  return out;
+})();
+
+/**
+ * The room the player is allowed inside.
+ *
+ * TEMPLE.halfX/halfZ are where the wall slabs are CENTRED, and every course
+ * is 1.6 deep, so the inner faces stand 0.8 in from them. Clamping to the
+ * centre-lines put the near half of the body inside the masonry and, in
+ * first person, the eye through it and out into the void.
+ */
+const TEMPLE_INNER = {
+  minX: -(TEMPLE.halfX - 0.8), maxX: TEMPLE.halfX - 0.8,
+  minZ: -(TEMPLE.halfZ - 0.8), maxZ: TEMPLE.halfZ - 0.8,
+  maxY: TEMPLE.wallH,
+};
+
+/**
  * Standing on things the terrain knows nothing about.
  *
  * The ground function is analytic and only describes the island, so a boat
@@ -304,7 +366,9 @@ export function makeGroundWith(platforms, base) {
       if (Math.abs(lx) > p.hw || Math.abs(lz) > p.hd) continue;
       // only if you are at or above it; you cannot stand on the underside
       if (y !== undefined && y < p.y - 0.6) continue;
-      if (p.y > h) h = p.y;
+      // a deck that heels is not one height: ask it about this spot on it
+      const py = p.yAt ? p.yAt(lx, lz) : p.y;
+      if (py > h) h = py;
     }
     return h;
   };
@@ -336,13 +400,14 @@ export class Game {
     this.loadSettings();
 
     this.audio = new GameAudio();
-    this.ui = new UI(this.audio);
+    this.ui = new UI();
     this.screens = new ScreenStack(this);
     this.ui.screens = this.screens;
     attachHud(this.ui.hud);
 
     this.input = { fwd: false, back: false, left: false, right: false, sprint: false, jump: false };
     this.mouse = { locked: false };
+    this._lockFresh = false;
 
     this.coconuts = [];
     this.found = new Set();       // pendulum ids read
@@ -350,6 +415,7 @@ export class Game {
     this.dialState = [0, 0, 0, 0];
     this.dialSel = 0;
     this.doorSolved = false;
+    this._doorArmed = true;
     this.coins = 0;
     this.relics = new Set();
     this.bought = new Set();
@@ -363,8 +429,9 @@ export class Game {
     /* Six minutes round the clock: about two and a quarter minutes of day,
        a bit over three of night, and twenty seconds of dusk and dawn either
        side of them. The old cycle was four minutes flat and the night was
-       gone before you had walked anywhere in it. */
-    this.DAY_LEN = 360;
+       gone before you had walked anywhere in it. Only a default: DAY_LEN is
+       a setting now, and a saved choice has already been loaded by here. */
+    this.DAY_LEN ??= 360;
     this.night = 0;
     this.stats = { deaths: 0, thrown: 0, hits: 0 };
 
@@ -381,6 +448,13 @@ export class Game {
     try { localStorage.setItem('illicisle.settings', JSON.stringify(this.settings)); }
     catch (e) { /* private mode */ }
   }
+
+  /* DAY LENGTH was the one option written straight onto the game rather
+     than into settings, so it was also the one that never survived a
+     reload. It is a setting now; the pair keeps the g.DAY_LEN spelling the
+     clock and the options row both use reading and writing the same thing. */
+  get DAY_LEN() { return this.settings.dayLen; }
+  set DAY_LEN(v) { this.settings.dayLen = v; }
 
   /* ---------- renderer ---------- */
   _initRenderer() {
@@ -432,7 +506,13 @@ export class Game {
        took, which is what made the interface look stretched for a moment
        after every resize. */
     const int = this.pipeline.internal;
-    if (int) this.ui?.hud?.setSize(int.w, int.h);
+    const is = int && this._interfaceSize(int);
+    if (is && this.ui?.hud?.setSize(is.w, is.h)) {
+      /* A resized canvas is a new backing store, and the texture wrapping it
+         is still the size it was. Hand the pipeline a fresh one or the whole
+         interface stays frozen at the old scale. */
+      this.pipeline.setHudCanvas(this.ui.hud.c);
+    }
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     /* The title diorama has its own camera; without this it keeps the old
@@ -441,6 +521,24 @@ export class Game {
       this.titleCam.aspect = this.camera.aspect;
       this.titleCam.updateProjectionMatrix();
     }
+  }
+
+  /**
+   * How big the interface canvas should be for a given framebuffer.
+   *
+   * It used to be the framebuffer exactly, which is fine at 180, 224 and 320
+   * — every HUD coordinate is an absolute pixel, and matching the two sizes
+   * keeps the interface aligned 1:1 with the framebuffer grid so nearest
+   * sampling never shimmers. At NATIVE, though, that made the interface up
+   * to 1920x1080: two million pixels cleared and re-uploaded to the GPU
+   * every single frame for a HUD still drawn in the top-left corner. Cap the
+   * height and take the width from the framebuffer's own aspect, so NATIVE
+   * decouples on to a 320-line interface of the right shape and the three
+   * fixed resolutions — already at or under 320 — are untouched.
+   */
+  _interfaceSize(int) {
+    const h = Math.min(int.h, 320);
+    return { w: Math.max(64, Math.round(int.w * (h / int.h))), h };
   }
 
   /** Push the chosen walk on to every body in the game. */
@@ -728,7 +826,14 @@ export class Game {
       this.player.onFootstep = (b) => this.audio.sfx(
         `step_${b === 'water' ? 'water' : b === 'sand' ? 'sand' : b === 'rock' ? 'rock' : 'jungle'}`);
       this.player.onJump = () => this.audio.sfx('jump');
-      this.player.onLand = (v) => { if (v > 11) this.audio.sfx('land'); };
+      /* A jump leaves the ground at 9.2 and comes back at 9.2, so the old
+         v > 11 gate silenced the landing of every ordinary jump: you heard
+         yourself go up and never come down. Sound the landing from just
+         under a flat jump, and keep the jolt for a real drop. */
+      this.player.onLand = (v) => {
+        if (v > 8.5) this.audio.sfx('land');
+        if (v > 14) this.player.punch(0.3);
+      };
       this.player.onBounds = () => this._boundsWarn();
       this.coconutProto = buildCoconutMesh(this.propMats);
       this.settleLoosePickups();
@@ -758,7 +863,6 @@ export class Game {
       c.mesh.userData.baseY = y;          // the bob hangs off this
       moved++;
     }
-    if (moved) this._loosePickupsMoved = moved;
     return moved;
   }
 
@@ -824,7 +928,17 @@ export class Game {
     wreck.position.set(wg.x, wg.y - 0.3, wg.z);
     wreck.rotation.y = Math.atan2(wg.x, wg.z) + 1.2;
     scene.add(wreck);
-    this.colliders.push({ x: wg.x, z: wg.z, r: 3.2 });
+    /* The hull is fifteen metres long and one circle at the middle only
+       covered the middle fifth of it, so anywhere fore or aft of the mast
+       you walked straight through the planking — and this is the first
+       thing anybody sees. A run of circles down the keel instead, tapering
+       at the ends the way the hull does, and none of them wide enough to
+       swallow the spawn point four metres off her side. */
+    { const wy = wreck.rotation.y, ws = Math.sin(wy), wc = Math.cos(wy);
+      for (let k = -3; k <= 3; k++) {
+        const r = 2.4 - Math.abs(k) * 0.2;
+        this.colliders.push({ x: wg.x + ws * k * 2.2, z: wg.z + wc * k * 2.2, r });
+      } }
 
     const inX = -wg.x / Math.hypot(wg.x, wg.z);
     const inZ = -wg.z / Math.hypot(wg.x, wg.z);
@@ -867,7 +981,6 @@ export class Game {
     help.rotation.y = Math.atan2(helpPos.x, helpPos.z) + Math.PI;
     help.userData.drape(heightAt, helpPos.x, helpPos.z);
     scene.add(help);
-    this.helpPos = helpPos;
 
     // the Rogue Agents' own mark, on a far beach
     const RS = LANDMARKS.rogueSand;
@@ -1047,7 +1160,7 @@ export class Game {
       }
       g.setAttribute('color', new THREE.BufferAttribute(colors, 4));
       g.computeVertexNormals();
-      const dirtMat = this.propMats.decal.clone();
+      const dirtMat = ps1Clone(this.propMats.decal);
       dirtMat.vertexColors = true;
       dirtMat.map = this.atlas;
       dirtMat.transparent = true;
@@ -1105,7 +1218,6 @@ export class Game {
       scene.add(m);
       if (m.userData.tick) this.tickers.push(m);
       this.relicNodes.push({ kind, mesh: m });
-      if (m.userData.tick && !this.tickers.includes(m)) this.tickers.push(m);
       // These are set pieces the size of a car; walking through one reads
       // as the world being made of cardboard.
       this.colliders.push({ x: g.x, z: g.z, r: kind === 'aerlingus' ? 2.8 : 1.5 });
@@ -1200,7 +1312,15 @@ export class Game {
         // and the bridge in from whatever sand is nearest
         const d = Math.hypot(bx, bz) || 1;
         const sx = (bx / d) * (d - 24), sz = (bz / d) * (d - 24);
-        const bridge = buildBoatBridge(rng, this.propMats, sx, sz, bx, bz, heightAt);
+        /* She is ten and a half metres in the beam and lying broadside on,
+           so a bridge built to her ORIGIN spent its last five metres inside
+           her: four plank slabs climbing across the deck, through the rail
+           posts and the carpet, and stopping in mid-air over her middle.
+           End it at her rail instead, and tell it where the deck is so the
+           last bays flatten out level with what you step on to. */
+        const half = 4.85;                       // her half-beam plus the rail
+        const ex = bx - (bx / d) * half, ez = bz - (bz / d) * half;
+        const bridge = buildBoatBridge(rng, this.propMats, sx, sz, ex, ez, heightAt, 0.90);
         scene.add(bridge);
         this.casinoShore = { x: sx, z: sz };
 
@@ -1242,15 +1362,19 @@ export class Game {
            bridge and drop straight through the boat into the sea. */
         const byaw = boat.rotation.y;
         this.casinoPlat = {
-          x: bx, z: bz, y: 0.90, hw: 4.7, hd: 12.4,
+          x: bx, z: bz, y: 0.90, hw: 4.7, hd: 12.8,
           cos: Math.cos(byaw), sin: Math.sin(byaw),
         };
         this.platforms.push(this.casinoPlat);
-        // the bridge, from the sand out to her
-        const mx = (sx + bx) / 2, mz = (sz + bz) / 2;
-        const byaw2 = Math.atan2(bx - sx, bz - sz);
+        /* The bridge, from the sand out to her rail — the same run the
+           planks are built along now. It used to reach her centre line at a
+           flat 0.62 while the planks it stood for climbed to 1.50, which is
+           why you walked through the outer bays before the boat was even
+           involved. Level with the deck it meets, so the two join up. */
+        const mx = (sx + ex) / 2, mz = (sz + ez) / 2;
+        const byaw2 = Math.atan2(ex - sx, ez - sz);
         this.platforms.push({
-          x: mx, z: mz, y: 0.62, hw: 1.1, hd: Math.hypot(bx - sx, bz - sz) / 2,
+          x: mx, z: mz, y: 0.90, hw: 1.1, hd: Math.hypot(ex - sx, ez - sz) / 2,
           cos: Math.cos(byaw2), sin: Math.sin(byaw2),
         });
       }
@@ -1761,8 +1885,7 @@ export class Game {
     if (id === 'floss') {
       // the one that wears off, so it never goes into `ate`
       this.flossUntil = performance.now() / 1000 + 90;
-      this.player.SPEED = this.player.BASE_SPEED * 1.30;
-      this.player.SPRINT = this.player.BASE_SPRINT * 1.30;
+      this._recalcSpeed();
       this.ui.toast('30% FASTER FOR NINETY SECONDS', 'jade', 3000);
     }
   }
@@ -1781,9 +1904,7 @@ export class Game {
     const t = performance.now() / 1000;
     if (this.flossUntil && t > this.flossUntil) {
       this.flossUntil = 0;
-      const vest = this.hasItem?.('vest') ? 0.75 : 1;
-      this.player.SPEED = this.player.BASE_SPEED * vest;
-      this.player.SPRINT = this.player.BASE_SPRINT * vest;
+      this._recalcSpeed();
       this.ui.toast('THE SUGAR HAS GONE', 'bad', 2400);
     }
     if (!this.coinSense && !this.coinNeedle) return;
@@ -1813,7 +1934,7 @@ export class Game {
       if (this.coinSense && d < 70) out.push({ label: '', x: c.x, z: c.z, kind: 'coin' });
       if (d < nearD) { nearD = d; near = c; }
     }
-    if (this.coinNeedle && near) out.push({ label: 'COIN', x: near.x, z: near.z, kind: 'coin' });
+    if (this.coinNeedle && near) out.push({ label: 'COIN', x: near.x, z: near.z, kind: 'coin', icon: 'coin' });
     return out;
   }
 
@@ -1874,11 +1995,15 @@ export class Game {
     const bu = this.buried;
     if (!bu) return;
     const st = bu.state;
-    if (st.dug >= 1 || st.taken) { bu.digging = 0; return; }
+    /* lastSpade is a mark on the digging clock, so it has to be wound back
+       with it. Letting go of E zeroed one and not the other, which left the
+       next attempt owing two seconds before it made a sound — longer than
+       the dig had left, so the rest of it was silent and read as broken. */
+    if (st.dug >= 1 || st.taken) { bu.digging = bu.lastSpade = 0; return; }
     const p = this.player.pos;
     const near = Math.hypot(p.x - bu.x, p.z - bu.z) < 3.2;
     if (!(near && this.holdingE && !this.anyOverlayOpen() && !this.paused)) {
-      bu.digging = 0;
+      bu.digging = bu.lastSpade = 0;
       return;
     }
     bu.digging += dt;
@@ -1893,7 +2018,7 @@ export class Game {
       this.audio.sfx('confirm');
       if (!bu.solid) {
         bu.solid = true;
-        this.colliders.push({ x: bu.x, z: bu.z, r: 0.95 });
+        this.colliders.push({ x: bu.x, z: bu.z, r: CHEST_COLLIDER_R });
         this.player.setColliders(this.colliders);
       }
       this.ui.toast('A CHEST. IT IS NOT LOCKED.', 'gold', 3200);
@@ -1925,13 +2050,37 @@ export class Game {
     }
     document.exitPointerLock?.();
     this.screens.push('mpCathy', { sel: 0 });
-    this.audio.sfx('page');
   }
 
   /** Single player has no market, so her prices are her prices. */
   priceOf(id) { return itemById(id)?.cost || 0; }
 
   hasItem(id) { return this.hasFood(id); }
+
+  /**
+   * Your speeds with nothing temporary running. Ferdi's boots raise the
+   * sprint floor for the rest of the run and the cork vest slows you, so
+   * candy floss has to multiply this rather than BASE_SPRINT — it used to
+   * hand the boots back to him when the sugar wore off.
+   */
+  _baseSpeeds() {
+    const vest = this.hasItem?.('vest') ? 0.75 : 1;
+    const sprint = this.bought?.has('boots') ? 19.5 : this.player.BASE_SPRINT;
+    return { speed: this.player.BASE_SPEED * vest, sprint: sprint * vest };
+  }
+
+  /**
+   * The whole speed stack for this mode, in one place. Everything that used
+   * to write SPEED/SPRINT itself wiped whatever else was running — floss ate
+   * the boots, the boots ate the floss — so they all come through here now.
+   * MPGame overrides it to fold in Quezetriel's tab as well.
+   */
+  _recalcSpeed() {
+    const b = this._baseSpeeds();
+    const floss = this.flossUntil && performance.now() / 1000 < this.flossUntil ? 1.30 : 1;
+    this.player.SPEED = b.speed * floss;
+    this.player.SPRINT = b.sprint * floss;
+  }
 
   /** Buy and eat, in single player. */
   buyItem(id) {
@@ -1950,22 +2099,29 @@ export class Game {
     return true;
   }
 
+  /* Every place carries the name of its own sprite. Named rather than
+     guessed from the label, so renaming a tick cannot quietly lose its
+     picture — and the picture is what survives when the bearing is too
+     crowded for the word. See POI_ICONS in lib/hud.js. */
   _refreshCompass() {
-    const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi' }];
+    const pois = [{ label: 'CAMP', x: this.spawn.x, z: this.spawn.z, kind: 'poi', icon: 'camp' }];
     if (this.metCathy && this.cathy) {
-      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
+      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi', icon: 'cathy' });
     }
     if (this.foundX && this.buried && !this.buried.state.taken) {
-      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal' });
+      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal', icon: 'dig' });
     }
     this._coinPois(pois);
     if (this.hasChart) {
       PENDULUMS.forEach((p, i) => pois.push({
         label: ['I', 'II', 'III', 'IV'][p.order - 1],
-        x: p.world.x, z: p.world.z, kind: 'goal',
+        x: p.world.x, z: p.world.z, kind: 'goal', icon: 'pendulum',
         hidden: this.found.has(p.id), pendIndex: i,
       }));
-      pois.push({ label: 'TEMPLE', x: this.templeDoorPos.x, z: this.templeDoorPos.z, kind: 'goal' });
+      pois.push({
+        label: 'TEMPLE', x: this.templeDoorPos.x, z: this.templeDoorPos.z,
+        kind: 'goal', icon: 'temple',
+      });
     }
     this.ui.setCompassPois(pois);
   }
@@ -2024,12 +2180,14 @@ export class Game {
     window.addEventListener('paste', (e) => {
       const text = e.clipboardData?.getData('text');
       if (!text) return;
-      if (this.screens.paste(text)) e.preventDefault();
+      if (this._deliverPaste(text)) e.preventDefault();
     });
 
     document.addEventListener('pointerlockchange', () => {
       const was = this.mouse.locked;
       this.mouse.locked = document.pointerLockElement === this.canvas;
+      // the browser emits one spurious jump on the first move after a lock
+      if (!was && this.mouse.locked) this._lockFresh = true;
       /* Only pause on a lock we actually had. A request that is refused —
          no user gesture yet, or the browser simply says no — used to read
          as "the player pressed Escape" and dropped them into the pause
@@ -2039,11 +2197,20 @@ export class Game {
       }
     });
 
+    /* The refusal only ever arrives as this event in some browsers — the
+       promise form is undefined in older Firefox — so listen for both. */
+    document.addEventListener('pointerlockerror', () => this._lockRefused());
+
     window.addEventListener('mousemove', (e) => {
       if (!this.mouse.locked || this.paused) return;
       if (this.anyOverlayOpen()) return;
-      const dx = Math.abs(e.movementX) > 220 ? 0 : e.movementX;
-      const dy = Math.abs(e.movementY) > 220 ? 0 : e.movementY;
+      /* That first jump is the only move worth throwing away. The old
+         220px guard applied for the whole session and DROPPED rather than
+         clamped, so a real flick — or a heavy frame's worth of coalesced
+         movement — turned the camera not at all. */
+      if (this._lockFresh) { this._lockFresh = false; return; }
+      const dx = THREE.MathUtils.clamp(e.movementX || 0, -1200, 1200);
+      const dy = THREE.MathUtils.clamp(e.movementY || 0, -1200, 1200);
       this.player?.addPitchYaw(dx, dy);
     });
 
@@ -2063,18 +2230,30 @@ export class Game {
       this.screens.pointer('move', hx, hy);
     });
     window.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
       if (!this.screens.open) return;
       const [hx, hy] = toHud(e);
       this.screens.pointer('up', hx, hy);
     });
-    // the wheel zooms the map
+    /* The wheel used to arrive at whatever screen was on top as a synthetic
+       '+' / '-' key, so one flick of a trackpad over the council chat box
+       typed a run of dashes into the message. Screens opt in to the wheel
+       instead, the way they opt in to pointer and paste. */
     this.canvas.addEventListener('wheel', (e) => {
       if (!this.screens.open) return;
       e.preventDefault();
-      this.screens.key(e.deltaY < 0 ? 'Equal' : 'Minus');
+      this.screens.wheel?.(e.deltaY < 0 ? -1 : 1);
     }, { passive: false });
 
+    /* Nothing on the canvas has a right- or middle-button meaning, and the
+       menus are where the irreversible rows live — a right press used to
+       activate BUY under the browser's own menu, and a middle press armed
+       the autoscroll cursor on top of the game. */
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
     this.canvas.addEventListener('mousedown', (e) => {
+      this.audio.resume();
+      if (e.button !== 0) return;
       if (this.screens.open) {
         const [hx, hy] = toHud(e);
         // a handle takes precedence over a list row underneath it
@@ -2082,11 +2261,11 @@ export class Game {
         this.screens.click(hx, hy);
         return;
       }
-      if (this.state === 'cutscene') { this.skipCutscene(); return; }
+      if (this.state === 'cutscene') { this._skipCutsceneInput(); return; }
       if (!this.playing) return;
       if (!this.mouse.locked) { this._requestLock(); return; }
       if (this.paused || this.anyOverlayOpen()) return;
-      if (e.button === 0) this.throwCoconut();
+      this.throwCoconut();
     });
 
     /* Alt-tabbing out of a menu should do nothing; there is nothing to
@@ -2095,12 +2274,50 @@ export class Game {
       /* Tabbing away never delivers the key-up, so anything being held
          stays held — and a camera head with a key stuck down turns for
          ever. */
-      this.screens.clearHeld();
-      this.input.fwd = this.input.back = this.input.left = this.input.right = false;
-      this.input.sprint = this.input.jump = false;
-      this.holdingE = false;
+      this._clearHeldInput();
+      this._audioAway(true);
       if (this.playing && !this.paused && !this.anyOverlayOpen()) this.pause(true);
     });
+    /* Pausing never touched the sound, so the island theme played on over
+       whatever tab you switched to. Mute rather than suspend the context:
+       the host rules and the peer callbacks keep running in a hidden tab,
+       and everything they schedule against a frozen clock would fire at
+       once on the way back. visibilitychange as well as blur, because a
+       minimise does not always blur. */
+    window.addEventListener('focus', () => this._audioAway(false));
+    document.addEventListener('visibilitychange', () => this._audioAway(document.hidden));
+  }
+
+  _audioAway(away) {
+    if (away) { this.audio?.setEnabled(false); return; }
+    this.audio?.setEnabled(this.settings.audio);
+    this.audio?.resume();
+  }
+
+  /* Ctrl+V reaches us twice where the clipboard read is permitted: once as
+     the browser's own paste event and once as the readText promise we keep
+     as the fallback for a browser that delivers no paste to a page with
+     nothing editable in it. Both screen handlers APPEND, so a room code
+     arrived as itself twice over. Whichever path lands first wins; the
+     other is dropped, and a second deliberate paste a second later is not. */
+  _deliverPaste(text) {
+    if (!text) return false;
+    const t = performance.now();
+    const seen = this._pasteSeen;
+    if (seen && text === seen.text && t - seen.t < 1000) return false;
+    this._pasteSeen = { text, t };
+    return this.screens.paste(text);
+  }
+
+  /* One place for "let go of everything", so a mode that keeps its own held
+     flag can extend it instead of being forgotten here — a round's dig held
+     itself down through an alt-tab because only the single-player flag was
+     ever cleared. */
+  _clearHeldInput() {
+    this.screens.clearHeld();
+    this.input.fwd = this.input.back = this.input.left = this.input.right = false;
+    this.input.sprint = this.input.jump = false;
+    this.holdingE = false;
   }
 
   /* Every state in which there is a world under your feet and a body to
@@ -2123,10 +2340,27 @@ export class Game {
   _requestLock() {
     // Chrome returns a promise here and rejects it when there is no user
     // gesture, or when the canvas is not in the active document.
-    try { this.canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not available */ }
+    try { this.canvas.requestPointerLock?.()?.catch?.(() => this._lockRefused()); }
+    catch (e) { /* not available */ }
+  }
+
+  /* Every browser blocks a re-lock for about a second after the player left
+     the lock themselves with Escape — which is exactly the Escape-to-pause,
+     Escape-to-resume round trip. The request is refused, mouse look is dead
+     and nothing on screen said so. A click re-locks, so say that. */
+  _lockRefused() {
+    if (!this.playing || this.paused || this.screens.open) return;
+    const t = performance.now();
+    if (t - (this._lockToastAt || 0) < 1500) return;   // event and promise both land
+    this._lockToastAt = t;
+    this.ui.toast('CLICK TO LOOK', 'gold', 1800);
   }
 
   _key(e, down) {
+    /* Browsers only let the context start inside a real gesture, and a
+       player who tabs in and never clicks the canvas would otherwise play
+       in silence. resume() early-returns unless it is actually suspended. */
+    this.audio.resume();
     const k = e.code;
     const I = this.input;
 
@@ -2143,14 +2377,23 @@ export class Game {
       // let the browser's own paste through; we listen for it above
       if ((e.metaKey || e.ctrlKey) && k === 'KeyV') {
         navigator.clipboard?.readText?.()
-          .then((t) => { if (t) this.screens.paste(t); })
+          .then((t) => { this._deliverPaste(t); })
           .catch(() => {});
         return;
       }
       if (e.metaKey || e.ctrlKey) return;
-      e.preventDefault();
+      // no screen binds a function key, and swallowing them left a wedged
+      // round with no F5 — the title screen is a screen, so this was true
+      // from boot
+      if (!/^F\d+$/.test(k)) e.preventDefault();
       // shift is a chord on a couple of screens, so it has to travel with the key
-      this.screens.key(k, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey });
+      /* The layout's own character travels with the physical code: a screen
+         that takes typing wants what is printed on the key, not what a US
+         board would have called it. Movement and hotkeys stay on e.code. */
+      this.screens.key(k, {
+        shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, repeat: e.repeat,
+        ch: (typeof e.key === 'string' && e.key.length === 1) ? e.key : null,
+      });
       return;
     }
     switch (k) {
@@ -2169,7 +2412,7 @@ export class Game {
 
     if (!down) return;
 
-    if (this.state === 'cutscene') { this.skipCutscene(); return; }
+    if (this.state === 'cutscene') { if (!e.repeat) this._skipCutsceneInput(); return; }
 
     if (k === 'KeyE') { if (!e.repeat) this.interact(); return; }
 
@@ -2207,6 +2450,16 @@ export class Game {
     document.exitPointerLock?.();
     this.ui.hide();
     this.ui.showBoss(false);
+    /* A temple transition is two awaited fades long and the pause card is
+       reachable through both of them. Orphan any continuation still waiting
+       so it cannot re-parent the player into the temple, grab the pointer
+       and start the temple track on top of the title menu. Bumping the fade
+       token also stops the in-flight fade from driving the screen back to
+       black under the write below. */
+    this._runGen = (this._runGen || 0) + 1;
+    this._fadeToken = (this._fadeToken || 0) + 1;
+    this.transitioning = false;
+    this.player.frozen = false;
     this.pipeline.fade = 1;
     this.pipeline.tintAmt = 0;
     if (this.hector) { this.hector.dispose(); this.hector = null; }
@@ -2224,10 +2477,13 @@ export class Game {
 
   startGame() {
     this.paused = false;
+    // a fresh run orphans anything still awaiting a fade from the old one
+    this._runGen = (this._runGen || 0) + 1;
     this.stats = { started: performance.now(), deaths: 0, thrown: 0, hits: 0 };
     this.found.clear();
     this.hasChart = false;
     this.doorSolved = false;
+    this._doorArmed = true;
     this.dialState = [0, 0, 0, 0];
     this.coconutCount = 3;
     this.coconutMax = 8;
@@ -2239,14 +2495,27 @@ export class Game {
     this.night = 0;
     this.player.maxHp = 5;
     this.player.SPRINT = 15.5;
-    if (this.syncoins) this.syncoins.forEach((c) => { c.taken = false; c.mesh.visible = true; });
+    /* The sense beacons go out with the food that lit them: nothing else
+       turns them off, so a run that ended near an unfound coin left its
+       marker burning through the island for the whole of the next one. */
+    if (this.syncoins) this.syncoins.forEach((c) => {
+      c.taken = false; c.mesh.visible = true; c.mesh.userData.setSense?.(false);
+    });
     if (this.relicNodes) this.relicNodes.forEach((r) => (r.mesh.visible = true));
+    /* The marks a Castaways round leaves behind — the lit lighthouse eye, the
+       stripped fuselage, the towers a wind woke — outlive the scene, so a
+       single-player run started after one used to open with them already done. */
+    for (const r of (this.relicNodes || [])) r.mesh.userData.setFixed?.(false);
+    for (const m of (this.pendulumMeshes || [])) m.userData.reset?.();
     if (this.firstSyncoin) this.firstSyncoin.visible = true;
     if (this.melonNode) this.melonNode.mesh.visible = true;
     if (this.storm) this.storm.stop();
     this.scene = this.islandScene;
 
     this.player.hp = this.player.maxHp;
+    /* takeIdol freezes the player and the ending never thaws them, so
+       PLAY AGAIN used to hand you a beach you could look at but not walk. */
+    this.player.frozen = false;
     this.player.stamina = 1;
     this.player.mesh.removeFromParent();
     this.islandScene.add(this.player.mesh);
@@ -2257,6 +2526,32 @@ export class Game {
     this.interactables.forEach((i) => { if (i.once) i.taken = false; });
     this.pendulumMeshes.forEach((m) => (m.visible = true));
     if (this.satchel) this.satchel.visible = true;
+    /* The chest is not one of the interactables, so nothing above put it
+       back: a second run used to open with the hole already dug, the lid
+       already swung and "Nothing left in it" on the prompt. The collider
+       the dig pushed has to come out with it, or an invisible wall sits on
+       an undisturbed X for the whole run. */
+    if (this.buried) {
+      const bu = this.buried;
+      bu.state.dug = 0; bu.state.open = 0; bu.state.taken = false;
+      bu.digging = 0; bu.lastSpade = 0; bu.said = false;
+      if (bu.solid) {
+        const i = this.colliders.findIndex((c) => c.x === bu.x && c.z === bu.z && c.r === CHEST_COLLIDER_R);
+        if (i >= 0) this.colliders.splice(i, 1);
+        bu.solid = false;
+        this.player.setColliders(this.colliders);
+      }
+    }
+    this.foundX = false;
+    /* Cathy's counter and Ferdi's boots write straight onto the player, so
+       without this the last run's stamina bonus follows you into the next. */
+    this.ate?.clear();
+    this.coinSense = false;
+    this.coinNeedle = false;
+    this.flossUntil = 0;
+    this.player.SPEED = this.player.BASE_SPEED;
+    this.player.staminaDrain = this.player.BASE_DRAIN;
+    this.player.staminaRegen = this.player.BASE_REGEN;
     this.templeDoor.userData.setOpen(0);
     this.hectorDefeated = false;
     this.idolTaken = false;
@@ -2278,6 +2573,10 @@ export class Game {
   /** Enter a scripted-camera sequence. `scene` is what to render under it. */
   playCutscene(spec, scene) {
     this.cutScene = scene || this.scene;
+    /* Cutscenes skip player.update() entirely, so the re-parent that lives
+       down there cannot run — and a camera hanging off the scene we are not
+       drawing never gets its world matrix refreshed. */
+    if (this.camera.parent && this.camera.parent !== this.cutScene) this.cutScene.add(this.camera);
     this.state = 'cutscene';
     this.ui.hide();
     this.ui.setPrompt(null);
@@ -2291,6 +2590,21 @@ export class Game {
     this.cutsceneObj?.skip();
   }
 
+  /* One gesture is one skip. The opening's onDone installs the wake-up
+     cutscene synchronously, so a held key's auto-repeat — or the second
+     click of an ordinary double click — used to land on a cutscene that
+     did not exist when the gesture started and take that one too. The
+     window lives here rather than in skipCutscene() because that is also
+     the phase cut-through for a briefing still running when ROAM lands,
+     and a network state change has no business being debounced. */
+  _skipCutsceneInput() {
+    if (this.state !== 'cutscene') return;
+    const t = performance.now();
+    if (t - (this._lastSkip || 0) < 400) return;
+    this._lastSkip = t;
+    this.skipCutscene();
+  }
+
   updateCutscene(dt) {
     dt = this.rawDt ?? dt;
     // world keeps breathing under the camera
@@ -2300,12 +2614,24 @@ export class Game {
         this._introClose?.(dt);
         this.introStage.userData.tick(this.time, dt, this.camera);
       }
+      /* Only the opening drives the weather. Every later island cutscene — a
+         Pendulum, the descent — still needs the rain and the lightning moved
+         along, because nothing else ticks the storm while we are in here. */
       if (this.introStorm != null && this.state === 'cutscene') this.updateIntroWeather(dt);
+      else this.storm?.tick(this.time, dt, this.camera.position);
     }
     else {
-      this.templeScene.userData.tick?.(this.time, dt);
-      this.sanctumIdol?.userData.tick?.(this.time);
-      if (this.hector) this.hector.update(dt, this.time, this.player);
+      /* This knew about exactly two scenes and treated everything that was
+         not the island as the temple, so a cutscene inside the listening
+         post or the bar froze the room it was playing in — lamps, hologram
+         and flames all stopped — and ticked a temple nobody was standing
+         in. Drive whatever is actually on screen instead. */
+      const cs = this.cutScene;
+      cs?.userData.tick?.(this.time, dt, cs === this.barScene ? this.camera.position : undefined);
+      if (cs === this.templeScene) {
+        this.sanctumIdol?.userData.tick?.(this.time);
+        if (this.hector) this.hector.update(dt, this.time, this.player);
+      }
     }
     this.cutsceneObj?.update(dt);
   }
@@ -2396,25 +2722,31 @@ export class Game {
         { at: 31.6, until: 36.4, text: 'Last night a storm took a ship\nthat had no business out here.' },
         { at: 38.4, until: 43.0, text: 'This morning the sea gives you back.' },
       ],
+      /* Every beat here is theatre, so all of it is `visualOnly`: skipping a
+         second in used to fire fifteen stings on one frame, and the storm bed
+         among them is nine seconds long, so it kept howling over the sunny
+         beach you had just skipped to. The one exception is the 37.8 beat —
+         it is the only place the music comes off `storm`, and the stage
+         teardown at 30.6 is repeated by onDone, so dropping that one is safe. */
       events: [
         { at: 0.0, visualOnly: true, fn: () => this.fade(1, 2000) },
-        { at: 0.5, fn: () => this.audio.sfx('bossIntro') },
-        { at: 6.2, fn: () => { this._introCloseWant = 0.45; this.audio.sfx('cast'); } },
-        { at: 9.0, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 12.2, fn: () => { this._introCloseWant = 1.0; this.audio.sfx('charge'); } },
-        { at: 15.4, fn: () => { this.audio.sfx('slam'); this.ui.flashLightning(); } },
-        { at: 17.6, fn: () => this.audio.sfx('idolRise') },
-        { at: 22.0, fn: () => this.audio.sfx('stinger') },
-        { at: 24.4, fn: () => this.audio.sfx('surfWash') },
-        { at: 28.6, fn: () => this.audio.sfx('orbShatter') },
-        { at: 30.6, fn: () => { ST.visible = false; this.setStageMode(false); this.audio.sfx('stormAmbience'); } },
-        { at: 31.8, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 34.0, fn: () => this.audio.sfx('shipBreak') },
-        { at: 36.0, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
-        { at: 37.0, fn: () => this.audio.sfx('shipBreak') },
+        { at: 0.5, visualOnly: true, fn: () => this.audio.sfx('bossIntro') },
+        { at: 6.2, visualOnly: true, fn: () => { this._introCloseWant = 0.45; this.audio.sfx('cast'); } },
+        { at: 9.0, visualOnly: true, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 12.2, visualOnly: true, fn: () => { this._introCloseWant = 1.0; this.audio.sfx('charge'); } },
+        { at: 15.4, visualOnly: true, fn: () => { this.audio.sfx('slam'); this.ui.flashLightning(); } },
+        { at: 17.6, visualOnly: true, fn: () => this.audio.sfx('idolRise') },
+        { at: 22.0, visualOnly: true, fn: () => this.audio.sfx('stinger') },
+        { at: 24.4, visualOnly: true, fn: () => this.audio.sfx('surfWash') },
+        { at: 28.6, visualOnly: true, fn: () => this.audio.sfx('orbShatter') },
+        { at: 30.6, visualOnly: true, fn: () => { ST.visible = false; this.setStageMode(false); this.audio.sfx('stormAmbience'); } },
+        { at: 31.8, visualOnly: true, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 34.0, visualOnly: true, fn: () => this.audio.sfx('shipBreak') },
+        { at: 36.0, visualOnly: true, fn: () => { this.audio.sfx('thunder'); this.ui.flashLightning(); } },
+        { at: 37.0, visualOnly: true, fn: () => this.audio.sfx('shipBreak') },
         { at: 37.8, fn: () => { this.introClearing = true; this.audio.playMusic('island'); } },
-        { at: 38.2, fn: () => this.audio.sfx('dawn') },
-        { at: 42.4, fn: () => this.audio.sfx('surfWash') },
+        { at: 38.2, visualOnly: true, fn: () => this.audio.sfx('dawn') },
+        { at: 42.4, visualOnly: true, fn: () => this.audio.sfx('surfWash') },
         { at: 44.6, visualOnly: true, fn: () => this.fade(0, 1200) },
       ],
       onDone: () => { ST.visible = false; this.setStageMode(false); this._introClose = null; this.endIntro(); },
@@ -2463,19 +2795,12 @@ export class Game {
     this.introStorm += (target - this.introStorm) * Math.min(1, dt * 0.42);
     const k = this.introStorm;
     const f = this.islandScene.fog;
-    f.color.setRGB(
-      THREE.MathUtils.lerp(0.706, 0.11, k),
-      THREE.MathUtils.lerp(0.816, 0.13, k),
-      THREE.MathUtils.lerp(0.831, 0.17, k));
+    f.color.copy(DAY_FOG).lerp(STORM_FOG, k);
     f.near = THREE.MathUtils.lerp(46, 8, k);
     f.far = THREE.MathUtils.lerp(235, 90, k);
-    this.islandScene.background.setRGB(
-      THREE.MathUtils.lerp(0.561, 0.07, k),
-      THREE.MathUtils.lerp(0.769, 0.09, k),
-      THREE.MathUtils.lerp(0.867, 0.13, k));
+    this.islandScene.background.copy(DAY_BG).lerp(STORM_BG, k);
     if (this.sun) this.sun.intensity = THREE.MathUtils.lerp(1.45, 0.18, k);
     this.sky.material.opacity = 1 - k * 0.95;
-    this.sky.material.transparent = k > 0.02;
     if (this.storm) {
       if (k > 0.5 && !this.storm.active) this.storm.start();
       if (k < 0.25 && this.storm.active && this.found.size < 4) this.storm.stop();
@@ -2517,11 +2842,13 @@ export class Game {
       ],
       events: [
         { at: 0.0, visualOnly: true, fn: () => this.fade(1, 1800) },
-        { at: 0.3, fn: () => this.audio.sfx('surfWash') },
-        { at: 3.4, fn: () => this.audio.sfx('step_sand') },
-        { at: 3.9, fn: () => this.audio.sfx('land') },
-        { at: 8.2, fn: () => this.audio.sfx('stinger') },
-        { at: 5.6, fn: () => this.audio.sfx('surfWash') },
+        // same reasoning as the opening: a player who skipped that one usually
+        // presses again here, and these five would all land on one frame
+        { at: 0.3, visualOnly: true, fn: () => this.audio.sfx('surfWash') },
+        { at: 3.4, visualOnly: true, fn: () => this.audio.sfx('step_sand') },
+        { at: 3.9, visualOnly: true, fn: () => this.audio.sfx('land') },
+        { at: 8.2, visualOnly: true, fn: () => this.audio.sfx('stinger') },
+        { at: 5.6, visualOnly: true, fn: () => this.audio.sfx('surfWash') },
       ],
       onDone: () => this.finishOpening(),
     }, this.islandScene);
@@ -2540,7 +2867,11 @@ export class Game {
   endIntro() {
     setCinemaBars(false);
     this.introClearing = true;
-    this.introStorm = 0;
+    /* null, not 0: this is what tells updateCutscene the opening is over.
+       Left at 0 it kept writing full daylight over every later cutscene, so
+       reading a Pendulum after dark snapped the island to noon. The explicit
+       restore just below writes exactly what the settled lerp would have. */
+    this.introStorm = null;
     if (this.storm && this.found.size < 4) this.storm.stop();
     // restore fair weather explicitly, in case the lerp hasn't settled
     this.islandScene.fog.color.setHex(0xb4d0d4);
@@ -2549,7 +2880,6 @@ export class Game {
     this.islandScene.background.setHex(0x8fc4dd);
     if (this.sun) this.sun.intensity = 1.45;
     this.sky.material.opacity = 1;
-    this.sky.material.transparent = false;
 
     // the storm hands straight over to coming round on the sand
     this.playWakeCutscene();
@@ -2577,7 +2907,7 @@ export class Game {
       ],
       events: [
         { at: 0.2, visualOnly: true, fn: () => this.audio.sfx('rumble') },
-        { at: 3.6, fn: () => this.audio.sfx('descend') },
+        { at: 3.6, visualOnly: true, fn: () => this.audio.sfx('descend') },
         { at: 5.9, visualOnly: true, fn: () => this.fade(0, 700) },
       ],
       onDone: () => {
@@ -2628,10 +2958,12 @@ export class Game {
         { at: 7.2, until: 9.4, text: `${this.found.size} OF 4` },
       ],
       events: [
-        { at: 0.2, fn: () => this.audio.sfx('cast') },
-        { at: 2.9, fn: () => this.audio.sfx('rumble') },
-        { at: 6.2, fn: () => this.audio.sfx('pickup') },
-        { at: 6.4, fn: () => this.audio.sfx('door') },
+        /* Skipping fires every event that has not run yet, so a table of
+           bare cues used to start all four at once. Sound is visualOnly. */
+        { at: 0.2, visualOnly: true, fn: () => this.audio.sfx('cast') },
+        { at: 2.9, visualOnly: true, fn: () => this.audio.sfx('rumble') },
+        { at: 6.2, visualOnly: true, fn: () => this.audio.sfx('pickup') },
+        { at: 6.4, visualOnly: true, fn: () => this.audio.sfx('door') },
       ],
       onDone: () => {
         this._pendBoost = null;
@@ -2645,7 +2977,11 @@ export class Game {
           this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
           setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
         } else {
-          this.ui.setObjective(`Pendulums read: ${this.found.size}/4.`);
+          /* A bare count is what the corner of the HUD already says, and it
+             left the objective line stating no objective for the longest
+             stretch of the game. Keep the instruction and carry the count
+             inside it. */
+          this.ui.setObjective(`Find the Rogue Pendulums — ${this.found.size}/4 read. Press M for the chart.`);
         }
         this.showReader(p.title, p.text);
       },
@@ -2687,24 +3023,28 @@ export class Game {
         { at: 8.2, until: 11.4, text: 'The seal remembers whose it was.' },
       ],
       events: [
+        /* The sound sits beside its state change rather than inside it: a
+           skip has to land the orb and the seal, but firing four cues on one
+           frame stole voices from each other and ducked the temple track the
+           moment onDone started it. */
         {
           at: 0.7, fn: () => {
-            this.audio.sfx('orbShatter');
             const orbMesh = H.parts.orb;
             orbMesh.visible = false;
             H.parts.orbLight.intensity = 0;
           },
         },
-        { at: 1.0, fn: () => this.audio.sfx('bossDie') },
-        { at: 3.2, fn: () => this.audio.sfx('rumble') },
+        { at: 0.7, visualOnly: true, fn: () => this.audio.sfx('orbShatter') },
+        { at: 1.0, visualOnly: true, fn: () => this.audio.sfx('bossDie') },
+        { at: 3.2, visualOnly: true, fn: () => this.audio.sfx('rumble') },
         {
           at: 7.6, fn: () => {
             const s = this.templeSeal;
             s.seal.visible = false;
             s.bars.forEach((b) => (b.visible = false));
-            this.audio.sfx('door');
           },
         },
+        { at: 7.6, visualOnly: true, fn: () => this.audio.sfx('door') },
       ],
       onDone: () => {
         setCinemaBars(false);
@@ -2776,9 +3116,10 @@ I have snacks."`);
         { at: 6.4, until: 10.4, text: 'Cast by people who loved him\nmore than was strictly advisable.' },
       ],
       events: [
-        { at: 0.2, fn: () => this.audio.sfx('idolRise') },
-        { at: 4.2, fn: () => this.audio.sfx('stinger') },
-        { at: 9.6, fn: () => this.audio.sfx('victory') },
+        { at: 0.2, visualOnly: true, fn: () => this.audio.sfx('idolRise') },
+        { at: 4.2, visualOnly: true, fn: () => this.audio.sfx('stinger') },
+        /* showEnding plays the fanfare itself, so a skip used to play it twice. */
+        { at: 9.6, visualOnly: true, fn: () => this.audio.sfx('victory') },
         {
           at: 10.4, fn: () => {
             this.pipeline.tint.setRGB(1, 0.92, 0.7);
@@ -2844,7 +3185,7 @@ I have snacks."`);
       this.ui.toast('YOU HAVE NO CHART', 'bad', 1500);
       return;
     }
-    this.audio.sfx('page');
+    const below = this.state !== 'island';
     this.screens.push('chart', {
       data: {
         heightAt, radius: ISLAND.shore + 14,
@@ -2855,12 +3196,19 @@ I have snacks."`);
           glyph: this.found.has(p.id) ? p.glyph : null,
         })),
         temple: this.templeDoorPos,
-        player: this.player.pos,
-        facing: this.player.facing,
+        /* Every interior is its own local coordinate space, so plotting the
+           live position from inside the temple planted the cross — and the
+           first-open centring — in the middle of the island. Show where you
+           went down instead, and drop `facing`: a room-local yaw means
+           nothing out here, and drawChart only draws the arrow when it is present. */
+        player: below ? (this._islandPos || this.spawn) : this.player.pos,
+        facing: below ? undefined : this.player.facing,
+        inside: below || undefined,
         casino: this.casinoIn > 0.5 ? this.casinoPos : null,
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
+        shop: this.hutPos,
         cathy: this.cathy ? { x: this.cathy.x, z: this.cathy.z } : null,
         // the fire and the mast are the two things you navigate by
         fire: this.campfirePos || this.spawn || null,
@@ -2886,7 +3234,16 @@ I have snacks."`);
 
     if (this.state === 'temple') {
       const de = Math.hypot(p.x - TEMPLE.entrance.x, p.z - TEMPLE.entrance.z);
-      if (de < 5.5) { bestD = de; best = { kind: 'templeExit', prompt: 'Climb back to the jungle' }; }
+      /* The whole entrance flight counts, not just a circle around its foot:
+         off to one side of the treads you are further than 5.5 from the
+         entrance while still inside the doorway, and the prompt to leave
+         disappeared exactly where you were pinned against the clamp. */
+      const E = TEMPLE.entranceStair;
+      const onFlight = Math.abs(p.x - TEMPLE.entrance.x) <= E.halfW + 1 && p.z >= E.zBottom - 1;
+      if (de < 5.5 || onFlight) {
+        bestD = Math.min(de, 1);
+        best = { kind: 'templeExit', prompt: 'Climb back to the jungle' };
+      }
       for (const c of this.templeCaches) {
         if (c.cooldown > 0) continue;
         const d = Math.hypot(p.x - c.x, p.z - c.z);
@@ -2972,7 +3329,6 @@ I have snacks."`);
 
     switch (it.kind) {
       case 'journal':
-        this.audio.sfx('page');
         this.showReader(JOURNAL_INTRO.title, JOURNAL_INTRO.text);
         break;
 
@@ -3202,15 +3558,21 @@ I have snacks."`);
     this.camsHeld = 0;                    // you start with none of your own
   }
 
+  /* Empty channels on the relay, minus the ones already in your hands.
+     The shop greys its camera button on this, and the buy guard and the
+     sale itself both used to count it out longhand and could drift apart. */
+  camsSpare() {
+    this._initCameras();
+    return this.cams.filter((c) => !c.placed).length - (this.camsHeld || 0);
+  }
+
   /**
    * Ferdi sells them by the box. Returns how many you actually got, which
    * is however many empty channels the relay still has — it has ten and
    * four came with the mast, so six of yours is the ceiling.
    */
   gainCamera(n = 1) {
-    this._initCameras();
-    const spare = this.cams.filter((c) => !c.placed).length - (this.camsHeld || 0);
-    const got = Math.min(n, Math.max(0, spare));
+    const got = Math.min(n, Math.max(0, this.camsSpare()));
     if (got <= 0) {
       this.ui.toast('THE RELAY WILL NOT TAKE ANOTHER', 'bad', 2400);
       return 0;
@@ -3296,9 +3658,53 @@ I have snacks."`);
     if (h) { h.rotation.y = cam.yaw; h.rotation.x = 0.16; }
   }
 
+  /**
+   * Take the pixels of whatever the cameras drew LAST frame.
+   *
+   * readRenderTargetPixels is a synchronous glReadPixels: it blocks until
+   * everything already handed to the driver has finished, so reading a feed
+   * on the frame it was rendered paid for that render in full, in the
+   * middle of the frame, and 242x150 of it twenty times a second. A whole
+   * frame later the picture is sitting there for the taking.
+   *
+   * It has to happen at the top of the frame, before the scenery repack
+   * submits anything: a read placed after that waits for the repack too and
+   * the stall comes straight back.
+   */
+  _drainFeeds() {
+    if (this._feedPend) {
+      const p = this._feedPend;
+      this._feedPend = null;
+      const got = this.pipeline.readFeed(this._feedBuf?.buf);
+      this._feedBuf = got;
+      this._feedOf = got ? p : null;
+    }
+    if (this._thumbPend >= 0) {
+      const i = this._thumbPend;
+      this._thumbPend = -1;
+      const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
+      if (got) {
+        this._thumbRaw = got.buf;
+        (this._thumbs || (this._thumbs = []))[i] = this._thumbFrom(got);
+      }
+    }
+    /* Nobody is at the terminal, so what is held is a still of whenever it
+       was last shut — the next session would open on it before its own
+       first read landed. */
+    if (!this.screens.open) { this._feedOf = null; this._thumbs = null; }
+  }
+
   feedPixels(i) {
     const cam = this.cams?.[i];
     if (!cam || !cam.placed) return null;
+    const therm = !!this.camTherm;
+    /* Only ever hand back a picture of the channel being asked for. The
+       terminal files what it gets under the channel it asked about, so the
+       previous camera's shot served here is painted into the new window and
+       marked as belonging there — it would stand for a whole feed period.
+       A miss costs one more frame of the picture already on the glass. */
+    const ready = (this._feedOf && this._feedOf.i === i && this._feedOf.therm === therm)
+      ? this._feedBuf : null;
     const fc = this._aimFeedCam(cam);
 
     /* The island keeps running whether or not anybody is in it, so this
@@ -3311,11 +3717,11 @@ I have snacks."`);
     const rig = this.islandScene.userData.rig;
     rig?.update(0, fc, true);
     this.pipeline.renderFeed(this.islandScene, fc, FEED_W, FEED_H);
-    this._feedBuf = this.pipeline.readFeed(this._feedBuf?.buf);
+    this._feedPend = { i, therm };
     this._restoreAfterFeed(was);
     this._cullBack();
     rig?.update(0, this.camera, true);
-    return this._feedBuf;
+    return ready;
   }
 
   /**
@@ -3324,12 +3730,43 @@ I have snacks."`);
    * for its own view or its picture is missing every tree that happens to
    * be behind YOU — and then put them back, or your own view is.
    */
+  /** How far a scatter instance can stand and still show through the fog. */
+  get _scatterFogFar() { return this.islandScene?.fog?.far || 0; }
+
+  /**
+   * The same cut for the ground the scatter pass makes for the trees.
+   *
+   * The terrain is a grid of chunks the frustum can now drop one at a time,
+   * but the frustum from the beach still holds most of the island and a
+   * third of what it holds is behind the fog's far plane, drawn to come out
+   * solid fog colour. Cut along the camera's forward axis, exactly as
+   * cullScatter does — a radial test would throw away the ground you are
+   * standing on the moment you look away from the middle of the island.
+   */
+  _cullTerrainFog(cam) {
+    const chunks = this.terrain?.children;
+    if (!chunks || !chunks.length) return;
+    const far = this._scatterFogFar;
+    const eye = cam.position;
+    cam.getWorldDirection(_terrDir);
+    for (const ch of chunks) {
+      const s = ch.geometry.boundingSphere;
+      if (!s) { ch.visible = true; continue; }
+      const along = (s.center.x - eye.x) * _terrDir.x
+                  + (s.center.y - eye.y) * _terrDir.y
+                  + (s.center.z - eye.z) * _terrDir.z;
+      ch.visible = far <= 0 || along <= far + s.radius;
+    }
+  }
+
   _cullFor(cam) {
-    if (this.scatterMeshes) cullScatter(this.scatterMeshes, cam, true);
+    if (this.scatterMeshes) cullScatter(this.scatterMeshes, cam, true, this._scatterFogFar);
+    this._cullTerrainFog(cam);
   }
 
   _cullBack() {
-    if (this.scatterMeshes) cullScatter(this.scatterMeshes, this.camera, true);
+    if (this.scatterMeshes) cullScatter(this.scatterMeshes, this.camera, true, this._scatterFogFar);
+    this._cullTerrainFog(this.camera);
   }
 
   /**
@@ -3381,24 +3818,54 @@ I have snacks."`);
     const fc = this._aimFeedCam(cam, w / h);
     this._cullFor(fc);
     const was = this._showIslandForFeed();
+    /* Same reason the big feed does it: the rig is dealt for wherever you
+       are, and every world light lives in one of its twelve slots — a stamp
+       rendered with the rig parked round the mast is an unlit island. The
+       restore is not tidiness: the big feed only re-renders when it is due,
+       so on a thumb-only frame nothing else would deal the rig back and
+       your own view would go dark for a frame. */
+    const rig = this.islandScene.userData.rig;
+    rig?.update(0, fc, true);
     this.pipeline.renderFeed(this.islandScene, fc, w, h, 'thumb');
-    const got = this.pipeline.readFeed(this._thumbRaw, 'thumb');
+    this._thumbPend = i;
     this._restoreAfterFeed(was);
+    rig?.update(0, this.camera, true);
     this._cullBack();
     this._aimFeedCam(cam);                    // put it back for the big one
-    if (!got) return null;
-    this._thumbRaw = got.buf;
+    /* The strip files what it gets under the channel it asked about, so the
+       stamp drained at the top of this frame can only go back to the camera
+       it was taken on — which is this one, last time it came round. A turn
+       of the multiplexer of lag is what not stalling on the read costs, and
+       these are stamps three pixels square, not the picture. */
+    return this._thumbs?.[i] || null;
+  }
+
+  /** One stamp, from the bytes the thumb target gave back. */
+  _thumbFrom(got) {
+    const w = got.w, h = got.h;
     /* Colour, three bytes a pixel, top row first — the strip is a set of
        little monitors off the same cameras and a green stamp beside a
        colour picture reads as a fault rather than a style. */
+    /* The read back is linear, and the big picture only looks right because
+       it exposes for its own frame. A fixed doubling clipped a bright beach
+       to white and left a dusk shot — where the big window has pushed its
+       gain to four or five — a black stamp beside the picture it mirrors.
+       Same target mean and same clamps as the feed; no smoothing, because a
+       stamp is one shot every third of a second with no gain to smooth. */
+    let sum = 0, n = 0;
+    for (let k = 0; k < got.buf.length; k += 16) {
+      sum += got.buf[k] * 0.3 + got.buf[k + 1] * 0.6 + got.buf[k + 2] * 0.1; n++;
+    }
+    const mean = (sum / n) / 255 || 0.01;
+    const gn = THREE.MathUtils.clamp(0.42 / Math.max(0.02, mean), 0.8, 5.5);
     const out = new Uint8Array(w * h * 3);
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
         const o = ((h - 1 - py) * w + px) * 4;         // read back is bottom-up
         const d = (py * w + px) * 3;
-        out[d] = Math.min(255, got.buf[o] * 2.0);
-        out[d + 1] = Math.min(255, got.buf[o + 1] * 2.0);
-        out[d + 2] = Math.min(255, got.buf[o + 2] * 2.0);
+        out[d] = Math.min(255, got.buf[o] * gn);
+        out[d + 1] = Math.min(255, got.buf[o + 1] * gn);
+        out[d + 2] = Math.min(255, got.buf[o + 2] * gn);
       }
     }
     return out;
@@ -3566,7 +4033,7 @@ I have snacks."`);
 
     if (id === 'heart') { this.player.maxHp += 1; this.player.hp = this.player.maxHp; }
     if (id === 'satchel') { this.coconutMax = 14; }
-    if (id === 'boots') { this.player.SPRINT = 19.5; this.player.staminaDrain = this.player.BASE_DRAIN * 0.65; }
+    if (id === 'boots') { this.player.staminaDrain = this.player.BASE_DRAIN * 0.65; this._recalcSpeed(); }
 
     this.ui.toast(`FERDI: ${item.name}. NO REFUNDS.`, 'jade', 3000);
     return true;
@@ -3665,14 +4132,18 @@ I have snacks."`);
     if (this.transitioning) return;
     this.transitioning = true;
     this.player.frozen = true;
+    const gen = this._runGen || 0;
     await this.fade(0, 400);
+    // quit or restart while the screen was dark: this run is over, and
+    // whoever ended it already owns `transitioning` and the pointer
+    if ((this._runGen || 0) !== gen) return;
 
     this.state = 'temple';
     this.scene = this.templeScene;
     this.player.mesh.removeFromParent();
     this.templeScene.add(this.player.mesh);
-    this.player.setColliders([]);
-    this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z) + 0.5,
+    this.player.setColliders(TEMPLE_COLLIDERS);
+    this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z - 2) + 0.5,
       TEMPLE.entrance.z - 2, Math.PI);
     this.clearCoconuts();
 
@@ -3709,12 +4180,13 @@ I have snacks."`);
     this.ui.show();
     this.ui.setObjective('Something has been living down here for eleven years.');
     this.ui.setCompassPois([
-      { label: 'OUT', x: TEMPLE.entrance.x, z: TEMPLE.entrance.z, kind: 'poi' },
-      { label: 'IDOL', x: TEMPLE.daisCenter.x, z: TEMPLE.daisCenter.z, kind: 'goal' },
+      { label: 'OUT', x: TEMPLE.entrance.x, z: TEMPLE.entrance.z, kind: 'poi', icon: 'out' },
+      { label: 'IDOL', x: TEMPLE.daisCenter.x, z: TEMPLE.daisCenter.z, kind: 'goal', icon: 'idol' },
     ]);
 
     this.player.frozen = false;
     await this.fade(1, 650);
+    if ((this._runGen || 0) !== gen) return;
     this.transitioning = false;
     this._requestLock();
   }
@@ -3728,15 +4200,26 @@ I have snacks."`);
     }
     this.transitioning = true;
     this.player.frozen = true;
+    const gen = this._runGen || 0;
     await this.fade(0, 500);
+    if ((this._runGen || 0) !== gen) return;
 
     this.state = 'island';
     this.scene = this.islandScene;
     this.player.mesh.removeFromParent();
     this.islandScene.add(this.player.mesh);
     this.player.setColliders(this.colliders);
+    /* Scaling the door's position by 1.03 put you two and a bit metres out
+       along a radius that has nothing to do with which way the doorway
+       faces — in the facade's own space, still standing in the open door,
+       inside the auto-enter trigger, and pointed ninety degrees off. So the
+       fade-in ended and the fade-out started again, forever. Six metres
+       straight out along the facade's forward, facing the same way, which
+       is flat plaza and clear of the braziers. */
     const d = this.templeDoorPos;
-    this.player.teleport(d.x * 1.03, d.y + 2, d.z * 1.03, Math.atan2(d.x, d.z));
+    const yaw = this.templeDoor.rotation.y;
+    this.player.teleport(d.x + Math.sin(yaw) * 6, d.y + 1.0, d.z + Math.cos(yaw) * 6, yaw);
+    this._doorArmed = false;
     this.clearCoconuts();
 
     this.audio.playMusic('island');
@@ -3745,6 +4228,7 @@ I have snacks."`);
 
     this.player.frozen = false;
     await this.fade(1, 600);
+    if ((this._runGen || 0) !== gen) return;
     this.transitioning = false;
     this._requestLock();
   }
@@ -3818,7 +4302,10 @@ I have snacks."`);
 
   updateCoconuts(dt) {
     const inTemple = this.state === 'temple';
-    const groundOf = inTemple ? templeHeight : heightAt;
+    /* The mast hut has its own floor and its own local coordinates, so a
+       coconut thrown up there was measured against the island terrain
+       twenty-five metres below and splatted on the frame it left your hand. */
+    const groundOf = this.state === 'cab' ? cabHeight : (inTemple ? templeHeight : heightAt);
     for (let i = this.coconuts.length - 1; i >= 0; i--) {
       /* The killing blow on Hector clears every coconut in flight from
          inside this very loop, so by the next iteration the array is
@@ -3850,6 +4337,11 @@ I have snacks."`);
 
   hurtPlayer(n) {
     if (!this.player.damage(n)) return;
+    /* Every hit in the game came through here and none of them moved the
+       camera: an impact was a red wash and a steady shot. The guard above
+       has already eaten the invulnerable frames, so this only fires on
+       damage that actually landed. */
+    this.player.punch(Math.min(1, 0.35 + 0.15 * n));
     this.audio.sfx('hurt');
     this.ui.flashDamage();
     this.pipeline.tint.setRGB(0.7, 0.05, 0.02);
@@ -3899,10 +4391,16 @@ I have snacks."`);
   }
 
   respawn() {
+    /* Dying with the pause card up throws that card away without ever going
+       back through pause(false), so without this you wash ashore frozen. */
+    this.paused = false;
     this.screens.clear();
     this.ui.show();
     this.player.hp = this.player.maxHp;
     this.player.invuln = 2;
+    /* Dying inside a freeze window — either temple fade, the idol — would
+       otherwise wash you ashore unable to move. */
+    this.player.frozen = false;
     this.player.stamina = 1;
 
     if (this.hector && this.hector.active && !this.hector.dead) {
@@ -3918,7 +4416,7 @@ I have snacks."`);
 
     if (this.deathScene === this.templeScene) {
       this.state = 'temple';
-      this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z) + 0.5,
+      this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z - 2) + 0.5,
         TEMPLE.entrance.z - 2, Math.PI);
       this.audio.playMusic('temple');
     } else {
@@ -3998,6 +4496,10 @@ I have snacks."`);
     const frozen = this.paused || this.anyOverlayOpen();
     const inTemple = this.state === 'temple';
     const inCab = this.state === 'cab';
+    /* The last place you actually stood outdoors, kept as a copy so it does
+       not follow you into a room the way a live Vector3 would. The chart has
+       no way to draw an interior, and every interior is its own local space. */
+    if (this.state === 'island') this._islandPos = { x: this.player.pos.x, z: this.player.pos.z };
     // whatever Cathy sold you, keeping up with where you are
     if (!frozen && !inTemple) this._tickFood();
 
@@ -4014,16 +4516,14 @@ I have snacks."`);
         groundOf: inCab ? cabHeight : (inTemple ? templeHeight : (this.groundOf || heightAt)),
         water: !inTemple && !inCab,
         bounds: !inTemple && !inCab,
-        insideBox: inCab ? CAB_BOX : (inTemple
-          ? { minX: -TEMPLE.halfX, maxX: TEMPLE.halfX, minZ: -TEMPLE.halfZ, maxZ: TEMPLE.halfZ }
-          : null),
+        insideBox: inCab ? CAB_BOX : (inTemple ? TEMPLE_INNER : null),
       });
       if (!inTemple && !inCab) { this._tide(dt); this._tickDig(dt); }
       if (inCab) this.cabScene.userData.tick(this.time);
       this.updateCoconuts(dt);
       this.updateCoinFx(dt);
     } else {
-      this.player.updateCamera(dt, inTemple ? templeHeight : heightAt);
+      this.player.updateCamera(dt, inCab ? cabHeight : (inTemple ? templeHeight : heightAt));
     }
 
     if (inTemple) this.updateTemple(dt, frozen);
@@ -4056,8 +4556,17 @@ I have snacks."`);
     const eye = this.camera.position;
     for (const g of this.tickers) g.userData?.tick?.(t, dt, eye);
     if (this.campfire && !this.doused) {
-      this.campfire.userData.light.intensity = 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
+      this.campfire.userData.light.intensity =
+        this._fireFlare() + 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
     }
+  }
+
+  /* The fire jumping when somebody feeds it. Two per-frame writers own that
+     light, so the flare cannot be a write — it has to be a decaying term
+     both of them add. Undefined until the first fire chore, hence the `|| 0`. */
+  _fireFlare() {
+    const r = ((this.fireFlareUntil || 0) - this.time) / 1.4;
+    return r > 0 ? 4.2 * Math.min(1, r) : 0;
   }
 
   /**
@@ -4096,7 +4605,12 @@ I have snacks."`);
        the edge of the playable water, the bounds clamp hauls you back, and
        you drop into the sea for the crime of playing a slot at dawn. */
     const plat = this.casinoPlat;
-    if (plat && this.player) {
+    /* Only for someone actually standing out on her deck. Every interior is
+       its own local space, so a player below decks sits at coordinates that
+       can land inside the deck box by accident — and now that the clock runs
+       down there too, that put them "aboard" and threw them into the sea from
+       inside a room. */
+    if (plat && this.player && this.state === 'island' && !this.player.insideBox) {
       const p = this.player.pos;
       const rx = p.x - plat.x, rz = p.z - plat.z;
       const lx = rx * plat.cos - rz * plat.sin;
@@ -4124,6 +4638,24 @@ I have snacks."`);
     const moving = Math.abs(want - k) > 0.01;
     this.casino.position.y = -0.55 - (moving ? 0.12 : 0);
 
+    /* The deck platform takes her attitude with her. Left flat it sat at one
+       height while the planks under it rolled, so your feet sank into them at
+       one end of the roll and hovered above them at the other. Row 1 of her
+       rotation (Euler XYZ) turned into three numbers, evaluated at the deck
+       top — 1.45 in her own frame, the 1.3 bay plus half its 0.3. plat.y stays
+       the flat 0.90 the AABB reject and the underside test want. */
+    if (plat) {
+      const ca = Math.cos(this.casino.rotation.x), sa = Math.sin(this.casino.rotation.x);
+      const cy = Math.cos(this.casino.rotation.y), sy = Math.sin(this.casino.rotation.y);
+      const cr = Math.cos(this.casino.rotation.z), sr = Math.sin(this.casino.rotation.z);
+      plat.m10 = ca * sr + sa * cr * sy;
+      plat.m11 = ca * cr - sa * sr * sy;
+      plat.m12 = -sa * cy;
+      plat.y0 = this.casino.position.y;
+      // built once: it reads the numbers above off the platform every call
+      if (!plat.yAt) plat.yAt = (lx, lz) => plat.y0 + plat.m10 * lx + plat.m11 * 1.45 + plat.m12 * lz;
+    }
+
     // the horn, once, on each turn of the tide
     if (prev !== undefined && ((prev < 0.02 && k >= 0.02) || (prev > 0.98 && k <= 0.98))) {
       this.audio?.sfx?.('horn');
@@ -4131,28 +4663,51 @@ I have snacks."`);
     }
   }
 
-  updateDayNight(dt) {
-    this.clock24 = (this.clock24 + dt) % this.DAY_LEN;
+  /* The hour itself, split out of the day/night pass so it can be ticked from
+     anywhere. Every interior branch skips updateDayNight — it has no sky to
+     write — and the clock froze the whole time you were down there, so a night
+     spent in the bar was a night that never happened. Callers that tick it
+     themselves also still reach updateDayNight, so the second call in a frame
+     is refused: two advances a frame runs the island at double speed. */
+  tickClock(dt) {
+    if (this._clockAt === this.time) return;
+    this._clockAt = this.time;
+    /* The phases used to be absolute seconds (131/19/191 out of 360), so
+       every DAY LENGTH but the default cut them wrong: 4 MIN never reached
+       dawn and snapped from midnight to noon in a frame, and ALWAYS DAY —
+       a 99999 s cycle — went dark after two minutes and stayed dark for
+       hours. Keep the 6 MIN proportions and scale them, and make ALWAYS DAY
+       literal without skipping the writes below, which storm darkness and
+       the douse sabotage both depend on. */
+    const always = this.DAY_LEN > 5000;
+    const L = always ? 360 : Math.max(120, this.DAY_LEN);
+    this.clock24 = (this.clock24 + dt) % L;
     const t = this.clock24;                        // seconds through the cycle
-    /* Written in seconds rather than fractions, because that is the unit the
-       length of a night is actually argued about in. */
-    const DAY = 131, DUSK = 19, NIGHT = 191;       // and DAWN is the remainder
+    const DAY = L * 0.364, DUSK = L * 0.053, NIGHT = L * 0.531;  // DAWN is the remainder
     let n;
-    if (t < DAY) n = 0;
+    if (always || t < DAY) n = 0;
     else if (t < DAY + DUSK) n = (t - DAY) / DUSK;
     else if (t < DAY + DUSK + NIGHT) n = 1;
-    else n = 1 - (t - DAY - DUSK - NIGHT) / (this.DAY_LEN - DAY - DUSK - NIGHT);
+    else n = 1 - (t - DAY - DUSK - NIGHT) / (L - DAY - DUSK - NIGHT);
     this.night = n * n * (3 - 2 * n);                 // smooth the ramp
-
-    this._sailCasino(dt);
 
     /* A new day. The clock wraps at DAY_LEN, so a dawn is the moment the
        phase steps backwards — Ferdi marks a different line down each one. */
     {
-      const ph = this.clock24 / this.DAY_LEN;
+      const ph = this.clock24 / L;
       if (this._lastDawn !== undefined && ph < this._lastDawn - 0.5) this.rollSale?.();
       this._lastDawn = ph;
     }
+  }
+
+  updateDayNight(dt) {
+    this.tickClock(dt);
+    this.applyDayNight(dt);
+  }
+
+  /** Everything the hour LOOKS like: the sky, the fog, the lamps, the boat. */
+  applyDayNight(dt) {
+    this._sailCasino(dt);
 
     const k = this.night;
     const storm = this.storm && this.storm.active ? 1 : 0;
@@ -4168,15 +4723,8 @@ I have snacks."`);
 
     // sky and fog
     const f = this.islandScene.fog;
-    f.color.setRGB(
-      THREE.MathUtils.lerp(0.706, 0.055, dark),
-      THREE.MathUtils.lerp(0.816, 0.070, dark),
-      THREE.MathUtils.lerp(0.831, 0.115, dark));
+    f.color.copy(DAY_FOG).lerp(NIGHT_FOG, dark);
     f.far = THREE.MathUtils.lerp(235, 110, dark);
-    this.islandScene.background.setRGB(
-      THREE.MathUtils.lerp(0.561, 0.030, dark),
-      THREE.MathUtils.lerp(0.769, 0.042, dark),
-      THREE.MathUtils.lerp(0.867, 0.082, dark));
 
     // sun becomes a cold moon
     if (this.sun) {
@@ -4189,16 +4737,10 @@ I have snacks."`);
     if (this.ambient) this.ambient.intensity = THREE.MathUtils.lerp(1.05, 0.28, dark);
     if (this.hemi) this.hemi.intensity = THREE.MathUtils.lerp(0.75, 0.20, dark);
     this.sky.material.opacity = 1 - dark * 0.92;
-    this.sky.material.transparent = dark > 0.02;
     /* The scene background is what shows THROUGH the sky dome, so it has to
        darken too — otherwise the horizon stays a bright blue band during a
        storm and none of the rest of it convinces. */
-    if (this.islandScene.background?.setRGB) {
-      this.islandScene.background.setRGB(
-        THREE.MathUtils.lerp(0.561, 0.035, dark),
-        THREE.MathUtils.lerp(0.769, 0.045, dark),
-        THREE.MathUtils.lerp(0.867, 0.070, dark));
-    }
+    this.islandScene.background.copy(DAY_BG).lerp(NIGHT_BG, dark);
 
     /* Everything that burns. `doused` is the Castaways sabotage: without
        this guard the day/night pass would relight every torch on the next
@@ -4221,18 +4763,19 @@ I have snacks."`);
     if (this.campfire) {
       if (this.campfire.userData.flames) this.campfire.userData.flames.visible = true;
       this.campfire.userData.light.intensity =
-        (1.4 + dark * 1.6) + Math.sin(this.time * 11) * 0.4;
+        this._fireFlare() + (1.4 + dark * 1.6) + Math.sin(this.time * 11) * 0.4;
     }
   }
 
   updateIslandLogic(dt, frozen) {
     this.updateDayNight(dt);
 
-    /* beacons: on once you have the chart, off as each is read */
-    if (this.hasChart) {
-      for (const b of this.beacons) b.node.visible = !this.found.has(b.id);
-      this.templeBeacon.visible = this.found.size >= 4;
-    }
+    /* beacons: on once you have the chart, off as each is read. Written
+       every frame rather than only while you hold the chart — the scene is
+       built once, so a run that ended with them lit left them burning over
+       the temple from the moment you washed ashore on the next one. */
+    for (const b of this.beacons) b.node.visible = this.hasChart && !this.found.has(b.id);
+    this.templeBeacon.visible = this.hasChart && this.found.size >= 4;
     // the Pendulums themselves burn brighter after dark
     for (const m of (this.pendulumMeshes || [])) {
       if (m.userData.setNight) m.userData.setNight(this.night);
@@ -4241,7 +4784,6 @@ I have snacks."`);
     /* the storm rolls in when the last Pendulum is read */
     if (this.found.size >= 4 && !this.storm.active) {
       this.storm.start();
-      this.stormLerp = 0;
       this.ui.toast('THE SKY TURNS OVER', 'bad', 4200);
       this.audio.sfx('thunder');
     }
@@ -4257,8 +4799,12 @@ I have snacks."`);
     if (door.open !== want) door.setOpen(THREE.MathUtils.clamp(door.open + dt * 0.4 * (want ? 1 : -1), 0, 1));
 
     if (this.doorSolved && door.open > 0.85 && !this.transitioning && !frozen) {
-      const d = Math.hypot(this.player.pos.x - this.templeDoorPos.x, this.player.pos.z - this.templeDoorPos.z);
-      if (d < 3.2) this.enterTemple();
+      const dd = Math.hypot(this.player.pos.x - this.templeDoorPos.x, this.player.pos.z - this.templeDoorPos.z);
+      /* Three and a bit metres is a generous mouth, and whoever comes out of
+         the temple starts inside it. Walk clear once before it will take you
+         again, so leaving is never undone by the act of leaving. */
+      if (dd > 5) this._doorArmed = true;
+      if (this._doorArmed && dd < 3.2) this.enterTemple();
     }
   }
 
@@ -4291,8 +4837,13 @@ I have snacks."`);
     if (!frozen) this.hector.update(dt, t, this.player);
     if (this.hector.active && !this.hector.dead) {
       this.ui.setBoss(this.hector.hpFrac);
-      const d = Math.hypot(this.player.pos.x - this.hector.pos.x, this.player.pos.z - this.hector.pos.z);
-      if (d < 2.3 && this.hector.state !== 'defeat') this.hurtPlayer(1);
+      /* His touch has to freeze with the rest of him. Invulnerability only
+         counts down inside player.update, which is skipped while frozen, so
+         pausing within reach of him drained a heart on every single frame. */
+      if (!frozen) {
+        const d = Math.hypot(this.player.pos.x - this.hector.pos.x, this.player.pos.z - this.hector.pos.z);
+        if (d < 2.3 && this.hector.state !== 'defeat') this.hurtPlayer(1);
+      }
     }
   }
 
@@ -4313,18 +4864,39 @@ I have snacks."`);
   render(dt) {
     // keep the HUD canvas matched to the framebuffer and re-upload it
     const int = this.pipeline.internal;
-    if (int) this.ui.hud.setSize(int.w, int.h);
+    const is = int && this._interfaceSize(int);
+    if (is && this.ui.hud.setSize(is.w, is.h)) this.pipeline.setHudCanvas(this.ui.hud.c);
     this.ui.hud.update(dt);
+    /* Before anything below submits work of its own — see _drainFeeds. */
+    this._drainFeeds();
     /* Repack the scenery to the view before drawing it. It costs nothing
        on the frames where the camera has not moved, and on the ones where
        it has it is the difference between a million triangles and two
-       hundred thousand. */
-    if (this.state === 'island' && this.scatterMeshes) {
-      cullScatter(this.scatterMeshes, this.camera);
+       hundred thousand.
+
+       Keyed on the scene about to be DRAWN, not on the state name. Gating
+       this on state === 'island' meant the shot lists — which draw the
+       island under state 'cutscene' — kept whatever packing the player's
+       last camera left behind, so every cutscene that cut to a new angle
+       opened on a jungle with most of its trees missing. Mirrors the
+       dispatch in render() below; the title branch matters because after a
+       run this.scene is still islandScene while titleScene is what draws. */
+    const drawing = (this.state === 'title' || this.state === 'ending') ? this.titleScene
+                  : (this.state === 'cutscene' && this.cutScene) ? this.cutScene
+                  : this.scene;
+    if (drawing === this.islandScene && this.scatterMeshes) {
+      cullScatter(this.scatterMeshes, this.camera, false, this._scatterFogFar);
     }
+    if (drawing === this.islandScene) this._cullTerrainFog(this.camera);
     this.ui.hud.render(this.time);
     this.screens.update(dt);
     this.screens.draw(this.ui.hud.x, this.ui.hud.c.width, this.ui.hud.c.height);
+    /* A full-frame screen paints over the toasts the HUD pass just drew, so
+       a refusal raised at Ferdi's counter was invisible behind his own shop.
+       The toasts and the popup are one pass of their own and it belongs
+       here, after the screens, every frame — render() stands down for the
+       frames this one makes, so the stack is composited exactly once. */
+    this.ui.hud.renderOverlay(this.time);
     this.ui.hud.renderCinema(this.time);
     this.pipeline.markHudDirty();
 

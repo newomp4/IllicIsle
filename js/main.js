@@ -6,7 +6,6 @@
    =========================================================== */
 
 import { MPGame } from './mp/mpgame.js';
-import { heightAt } from './world/terrain.js';
 
 const $ = (id) => document.getElementById(id);
 let game = null;
@@ -23,6 +22,11 @@ async function boot() {
 
   const touchOnly = matchMedia('(pointer: coarse)').matches
     && !matchMedia('(pointer: fine)').matches;
+  /* Told before the work, not after it: building the world costs a phone
+     many seconds of texture and geometry work, and it is the one machine
+     that is about to be told it cannot play. The load runs underneath, so
+     TRY ANYWAY still drops straight into a game that is already coming up. */
+  if (touchOnly) $('nomobile').classList.remove('hidden');
 
   try {
     game = new MPGame(canvas);
@@ -33,7 +37,6 @@ async function boot() {
     return;
   }
   window.__game = game;
-  window.__heightAt = heightAt;   // used by the placement audit harness
 
   const fill = $('load-fill');
   const text = $('load-text');
@@ -85,7 +88,6 @@ async function boot() {
   await new Promise((r) => setTimeout(r, 260));
   $('loading').classList.add('going');
   setTimeout(() => $('loading').classList.add('hidden'), 400);
-  if (touchOnly) $('nomobile').classList.remove('hidden');
 }
 
 $('nomobile-anyway')?.addEventListener('click', () => {

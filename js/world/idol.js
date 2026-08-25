@@ -422,12 +422,25 @@ export function buildIdolShrine(mats, propMats, opts = {}) {
     });
   }
   sparkGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  // Points are drawn into a 224px-tall buffer and then upscaled, so anything
-  // above ~0.03 world units turns into a fistful of confetti.
+  /* three attenuates a point against the height handed to setSize, but the
+     scene is drawn into a 224-line target and upscaled after, so every spark
+     came out canvasHeight/224 too big and changed size with the window and
+     the RESOLUTION setting. The size below is the old 0.032 carried through
+     the reference it was eyeballed at (224 lines in a 1080-line window); the
+     hook then scales it against whichever target is really bound, which keeps
+     the mast's camera feeds — a target of their own — honest too. */
+  const SPARK_SIZE = 0.154;
   const sparkMat = new THREE.PointsMaterial({
-    color: 0xfff3c0, size: 0.032, sizeAttenuation: true, transparent: true, opacity: 0.85, fog: false,
+    color: 0xfff3c0, size: SPARK_SIZE, sizeAttenuation: true, transparent: true, opacity: 0.85, fog: false,
   });
   const sparks = new THREE.Points(sparkGeo, sparkMat);
+  const drawBuf = new THREE.Vector2();
+  sparks.onBeforeRender = (renderer) => {
+    const rt = renderer.getRenderTarget();
+    renderer.getDrawingBufferSize(drawBuf);
+    const ih = rt ? rt.height : drawBuf.y;
+    sparkMat.size = SPARK_SIZE * ih / Math.max(1, drawBuf.y);
+  };
   group.add(sparks);
 
   // Scenes that already light the idol (the title rig) should turn this

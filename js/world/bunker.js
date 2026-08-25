@@ -342,7 +342,7 @@ export function buildBunkerRoom(mats) {
   holo.position.set(0, 1.9, 1.5);
   const ringMat = new THREE.MeshBasicMaterial({
     color: 0x6fd0e0, transparent: true, opacity: 0.5, fog: false,
-    blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
   });
   for (let i = 0; i < 4; i++) {
     const r = 0.5 + i * 0.42;
@@ -387,7 +387,7 @@ export function buildBunkerRoom(mats) {
     cg.rotateX(-Math.PI / 2);
     compass.add(new THREE.Mesh(cg, new THREE.MeshBasicMaterial({
       color: 0x9fe0f0, transparent: true, opacity: 0.35, fog: false,
-      blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
     })));
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
@@ -408,7 +408,7 @@ export function buildBunkerRoom(mats) {
   for (let i = 0; i < 10; i++) {
     const m = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({
       color: 0xffffff, transparent: true, opacity: 0.9, fog: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.AdditiveBlending, depthWrite: false,
     }));
     m.visible = false;
     holo.add(m);

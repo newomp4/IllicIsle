@@ -108,6 +108,12 @@ export class TaskFx {
   }
 
   update(dt) {
+    /* Sideways drag has to be a rate, not a per-frame factor: as a
+       flat 0.96 a spark keeps 0.06 of its speed over a 60 fps burst
+       and 0.25 of it at 30 fps, so the same burst throws itself
+       twice as wide on a slower machine. */
+    const drag = Math.pow(0.96, dt * 60);
+
     for (let i = this.live.length - 1; i >= 0; i--) {
       const f = this.live[i];
       f.t += dt;
@@ -123,7 +129,7 @@ export class TaskFx {
         const b = f.bits[j];
         b.vy -= 13 * dt;
         b.px += b.vx * dt; b.py += b.vy * dt; b.pz += b.vz * dt;
-        b.vx *= 0.96; b.vz *= 0.96;
+        b.vx *= drag; b.vz *= drag;
         this._v.set(b.px, Math.max(0.05, b.py), b.pz);
         this._q.setFromAxisAngle(UP, f.t * b.spin);
         const sc = Math.max(0.001, 1 - k);

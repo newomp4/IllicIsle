@@ -44,6 +44,15 @@ export function buildPistol() {
   return g;
 }
 
+/* Unparenting a mesh is not enough to get rid of it: three keeps its VAO and
+   attribute buffers keyed by geometry id until the geometry's own dispose event
+   fires, so the meshes built fresh per shot and per stun have to be disposed on
+   the way out or their GPU buffers sit there until the context is lost. */
+function scrap(root) {
+  root.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  root.removeFromParent();
+}
+
 /* ---------- the flare, once it is in the air ---------- */
 export class Flare {
   constructor(scene) {
@@ -88,8 +97,8 @@ export class Flare {
       f.head.position.copy(f.pos);
       if (f.t > 1.1) {
         f.onArrive?.(f.pos);
-        f.head.removeFromParent();
-        for (const t of f.trail) t.removeFromParent();
+        scrap(f.head);
+        for (const t of f.trail) scrap(t);
         this.live.splice(i, 1);
       }
     }
@@ -124,7 +133,7 @@ export class Dizzy {
   remove(id) {
     const r = this.rigs.get(id);
     if (!r) return;
-    r.group.removeFromParent();
+    scrap(r.group);
     this.rigs.delete(id);
   }
 
@@ -144,7 +153,7 @@ export class Dizzy {
   }
 
   clear() {
-    for (const [, r] of this.rigs) r.group.removeFromParent();
+    for (const [, r] of this.rigs) scrap(r.group);
     this.rigs.clear();
   }
 }

@@ -6,7 +6,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { applyCell, applyRegion, STAMPED } from './textures.js';
+import { applyCell, STAMPED } from './textures.js';
 
 /* Geometry destined for an atlas-mapped material MUST have its UVs stamped
    into one cell. Raw primitive UVs span 0..1, which samples the entire
@@ -14,7 +14,7 @@ import { applyCell, applyRegion, STAMPED } from './textures.js';
 export function markStamped(geo) { STAMPED.add(geo); return geo; }
 export function isStamped(geo) { return STAMPED.has(geo); }
 
-/** Merge non-indexed geometries carrying position/normal/uv/color. */
+/** Merge geometries carrying position/normal/uv/color. */
 export function mergeGeos(list) {
   const parts = [];
   /* The tint has to be carried alongside the geometry, not read off it
@@ -26,6 +26,7 @@ export function mergeGeos(list) {
      the same three browns. */
   const tints = [];
   let total = 0;
+  let idxTotal = 0;
 
   for (const g of list) {
     if (!g) continue;
@@ -35,14 +36,26 @@ export function mergeGeos(list) {
       console.warn('[geo] merging geometry with un-stamped UVs; ' +
         'call applyCell()/applyRegion() or blankUV() first', g.type);
     }
-    const ng = g.index ? g.toNonIndexed() : g;
-    if (!ng.attributes.normal) ng.computeVertexNormals();
+    /* Keep each part's index. Flattening every box and cylinder into a
+       triangle soup gave every triangle three private corners: 46,710
+       vertices across the island scatter where 18,000 unique ones say the
+       same thing, and no post-transform cache reuse at all on a vertex
+       shader that is the whole cost of a frame here. The one part that
+       still has to be de-indexed is one with no normals of its own —
+       computeVertexNormals() averages across shared corners, so an index
+       there would quietly turn a flat-shaded part smooth. */
+    let ng = g;
+    if (!ng.attributes.normal) {
+      ng = g.index ? g.toNonIndexed() : g;
+      ng.computeVertexNormals();
+    }
     if (!ng.attributes.uv) {
       ng.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(ng.attributes.position.count * 2), 2));
     }
     parts.push(ng);
     tints.push(g.userData?.tint || null);
     total += ng.attributes.position.count;
+    idxTotal += ng.index ? ng.index.count : ng.attributes.position.count;
   }
   if (!parts.length) return null;
 
@@ -50,8 +63,12 @@ export function mergeGeos(list) {
   const normal = new Float32Array(total * 3);
   const uv = new Float32Array(total * 2);
   const color = new Float32Array(total * 3);
+  /* Every scatter prop welds down to well under 65k vertices, so a short
+     index costs half the bandwidth of a full one; the one-off temple and
+     casino merges are the only ones that ever need the wider type. */
+  const idx = total < 65536 ? new Uint16Array(idxTotal) : new Uint32Array(idxTotal);
 
-  let o = 0;
+  let o = 0, io = 0;
   const white = new THREE.Color(1, 1, 1);
   for (let pi = 0; pi < parts.length; pi++) {
     const g = parts[pi];
@@ -73,6 +90,12 @@ export function mergeGeos(list) {
         color[(o + i) * 3 + 2] = tint.b;
       }
     }
+    /* A part with no index of its own — every ico(), and anything that had
+       to be de-indexed above — still needs one here, or the merged index
+       comes out short and the tail of the prop simply never draws. */
+    const gi = g.index;
+    const ic = gi ? gi.count : count;
+    for (let k = 0; k < ic; k++) idx[io++] = o + (gi ? gi.getX(k) : k);
     o += count;
   }
 
@@ -81,6 +104,7 @@ export function mergeGeos(list) {
   out.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   out.setAttribute('color', new THREE.BufferAttribute(color, 3));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
   return out;
 }
 
@@ -94,28 +118,44 @@ export function mergeGeos(list) {
  * they were built separately. Nothing is added, so nothing is wasted.
  */
 export function weldGeos(list) {
-  const parts = list.filter(Boolean).map((g) => (g.index ? g.toNonIndexed() : g));
+  /* Same bargain as mergeGeos: the index stays, because throwing it away
+     triples the vertex count for nothing. Only a part with no normals of
+     its own gets flattened, so computeVertexNormals() keeps giving it the
+     flat faces it has always had. */
+  const parts = list.filter(Boolean).map((g) => {
+    if (g.attributes.normal) return g;
+    const ng = g.index ? g.toNonIndexed() : g;
+    ng.computeVertexNormals();
+    return ng;
+  });
   if (!parts.length) return null;
   if (parts.length === 1) return parts[0];
-  let total = 0;
-  for (const g of parts) total += g.attributes.position.count;
+  let total = 0, idxTotal = 0;
+  for (const g of parts) {
+    total += g.attributes.position.count;
+    idxTotal += g.index ? g.index.count : g.attributes.position.count;
+  }
   const position = new Float32Array(total * 3);
   const normal = new Float32Array(total * 3);
   const uv = new Float32Array(total * 2);
-  let o = 0;
+  const idx = total < 65536 ? new Uint16Array(idxTotal) : new Uint32Array(idxTotal);
+  let o = 0, io = 0;
   for (const g of parts) {
-    if (!g.attributes.normal) g.computeVertexNormals();
     const p = g.attributes.position, n = g.attributes.normal, t = g.attributes.uv;
     const c = p.count;
     position.set(p.array.subarray(0, c * 3), o * 3);
     normal.set(n.array.subarray(0, c * 3), o * 3);
     if (t) uv.set(t.array.subarray(0, c * 2), o * 2);
+    const gi = g.index;
+    const ic = gi ? gi.count : c;
+    for (let k = 0; k < ic; k++) idx[io++] = o + (gi ? gi.getX(k) : k);
     o += c;
   }
   const out = new THREE.BufferGeometry();
   out.setAttribute('position', new THREE.BufferAttribute(position, 3));
   out.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
   return markStamped(out);
 }
 
@@ -202,10 +242,6 @@ export function plane(w, h, cell, opts, segsW = 1, segsH = 1) {
   const g = new THREE.PlaneGeometry(w, h, segsW, segsH);
   if (cell) applyCell(g, cell); else blankUV(g);
   return place(g, opts);
-}
-
-export function region(geo, col, row, cols, rows, flipV) {
-  return applyRegion(geo, col, row, cols, rows, flipV);
 }
 
 /** A tapered cylinder stretched between two points — arms, legs, staffs. */

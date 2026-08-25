@@ -9,7 +9,7 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { Game, makeGroundWith, setHidden } from '../game.js';
+import { Game, PENDULUMS, makeGroundWith, setHidden } from '../game.js';
 import { Net, makeRoomCode } from '../net/net.js';
 import { C, S, PHASE, ROLE } from '../net/protocol.js';
 import { HostSession, MirrorSession } from './session.js';
@@ -18,8 +18,8 @@ import { TASK_DEFS, SABOTAGE_DEFS, TASK_FX, taskById, taskStage, taskSteps } fro
 import { TaskFx } from './taskfx.js';
 import { Gore } from './gore.js';
 import {
-  STOCK, FOOD, STAGE_PAY_MIN, STAGE_PAY_MAX, SANCTUARY_R, itemById, VENDOR_IDS,
-  SCHLARNA_UP, SCHLARNA_N, drinkById,
+  STOCK, FOOD, STAGE_PAY_MIN, STAGE_PAY_MAX, SANCTUARY_R, itemById,
+  SCHLARNA_UP, SCHLARNA_N, drinkById, shelf,
 } from './market.js';
 
 /* How often the wire carries anything.
@@ -33,9 +33,18 @@ const NET_TICK_MS = 40;
 /** Bought and immediately in force; nothing to press. */
 const PASSIVE_AT_BUY = new Set(['lantern', 'tonic', 'soles', 'whetstone', 'chart', 'vest',
   'spyglass', 'rounds', 'nightglass']);
+/* Worn or held rather than carried: it belongs in `owned`, not on the belt.
+   The CORK VEST is tagged ONE USE but takes effect the moment it is bought,
+   so routing it by tag put it on a number key — and pressing that key threw
+   the 25% weight away while the host kept the protection. */
+const keptOnYou = (it) => !!it && (it.tag === 'PASSIVE' || PASSIVE_AT_BUY.has(it.id));
 /** Bought and carried until you choose the moment. These fill the belt. */
 const BELT_IDS = ['gun', 'scanner', 'printer', 'whistle', 'speaker', 'flask', 'alibi',
   'skeleton', 'chaff', 'shroud', 'blackout', 'ticket', 'nightfall'];
+/* What one pull of Ferdi's machines costs. The mpVend screen prints the same
+   figure off a copy of its own — it draws the cabinet before it has asked the
+   game anything at all — so the two have to be kept in step by hand. */
+const VEND_COST = 6;
 import { buildPistol, Flare, Dizzy } from './pistol.js';
 import { heightAt, ISLAND } from '../world/terrain.js';
 import { buildSyncoin } from '../world/extras.js';
@@ -51,9 +60,9 @@ import {
 } from '../world/tower.js';
 import * as BJ from './blackjack.js';
 import { buildStranger, STRANGER_OPENERS, STRANGER_CLOSERS } from './stranger.js';
-import { setTime } from '../lib/ps1.js';
+import { setTime, ps1Clone } from '../lib/ps1.js';
 import { rigScene } from '../lib/lights.js';
-import { setCinemaBars } from '../lib/cutscene.js';
+import { Cutscene, setCinemaBars } from '../lib/cutscene.js';
 import { LANDMARKS } from '../world/props.js';
 
 const now = () => performance.now() / 1000;
@@ -81,7 +90,6 @@ export class MPGame extends Game {
       host: null,          // HostSession when we are the host
       view: new MirrorSession(),   // what we render from, host included
       room: null,
-      myName: 'CASTAWAY',
       avatars: new Map(),  // id -> Avatar
       bodies: new Map(),   // id -> Body
       sites: {},           // taskId -> {x,y,z}
@@ -92,10 +100,15 @@ export class MPGame extends Game {
       taskProgress: null,  // { taskId, t, secs }
       killTarget: null,
       reportTarget: null,
-      notice: '',
-      noticeT: 0,
     };
 
+    /* Castaways keeps its own held-E flag for chores, and Game's blur
+       handler — which exists for exactly this hazard — knows nothing about
+       it. Tabbing away never delivers the key-up, so a chore held at that
+       moment charged on behind the pause card and finished itself into the
+       wire, and the flag was still set when you came back: standing near the
+       X was then enough to dig the chest with no key down at all. */
+    window.addEventListener('blur', () => { if (this.mp) this.mp.holdingE = false; });
   }
 
   /* ===========================================================
@@ -105,6 +118,7 @@ export class MPGame extends Game {
     const M = this.mp;
     clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
+    M.kicked = false;
     /* 7226 opens a workshop: one player, no minimum, a full purse, the
        listening post already on your chart and a readout of what the rules
        think is going on. It exists so the island can be tested without
@@ -112,10 +126,20 @@ export class MPGame extends Game {
     M.dev = String(room || '').trim() === '7226';
     M.cool = {};
     M.chat.length = 0;
-    M.myName = name;
     M.room = room || makeRoomCode();
     M.net = new Net();
-    M.net.onStatus = (t) => this.screens.top && (this.screens.top.status = t);
+    /* `status` is drawn in exactly one place — mpMenu, and only while it
+       is still dialling (`s.busy`); the lobby only replaces it once the
+       connection has resolved. Everything the transport says after that (the broker
+       dropping, the room code being lost for good) was being written onto
+       whatever screen happened to be on top, which draws no such field, so
+       the host was never told its code had stopped working. Anything that
+       arrives once we are past the connect screen goes to a toast instead. */
+    M.net.onStatus = (t) => {
+      if (this.screens.name === 'mpMenu' && this.screens.top) this.screens.top.status = t;
+      else this._notice(t);
+    };
+    M.net.onError = (e) => this._notice('NETWORK: ' + (e?.type || 'ERROR'));
     M.net.onHostGone = () => {};
     await M.net.host(M.room);
 
@@ -126,15 +150,17 @@ export class MPGame extends Game {
       onTasks: (d, t) => { M.view.tasksDone = d; M.view.tasksTotal = t; },
       onTaskOk: (id, step, done) => {
         if (done) M.view.doneTasks.add(id); else M.view.taskStep.set(id, step);
-        this._taskDone(id, done);
+        // the wire carries the NEW step, so the one just finished is behind it
+        this._taskDone(id, done, done ? step : Math.max(0, step - 1));
       },
       onCooldown: (secs, grace) => {
         M.myKillReady = now() + secs;
         M.killTotal = Math.max(secs, 0.001);
         if (grace) M.graceEnds = now() + grace;
       },
-      onKilled: (id, x, y, z) => this._onKilled(id, x, y, z),
+      onKilled: (id, x, y, z) => this._onKilled(id, x, y, z, M.host.players.get(id)?.room),
       onSaved: (id) => this._onSaved(id),
+      onBodyGone: (id) => this._removeBody(id),
       onBunker: (i) => { M.bunkerIndex = i; if (M.started) this._placeBunker(i); },
       onSpeaker: (x, z, secs) => this._onSpeaker(x, z, secs),
       onChaff: (secs) => { M.chaffUntil = now() + secs; },
@@ -143,32 +169,58 @@ export class MPGame extends Game {
       onReceipt: (r) => this._onReceipt(r),
       onDig: (d) => this._onDig(d),
       onNightfall: () => this._onNightfall(),
+      isNight: () => (this.night || 0) > 0.5,
+      /* The host's hour, so the snapshot can carry it and every other
+         machine can ease onto it. Without this hook the field is simply
+         absent and each client keeps running its own day. */
+      clock24: () => this.clock24,
       onChest: (byId, gold) => this._onChest(byId, gold),
       onBlackout: (secs) => this._onBlackout(secs),
       onStranger: (on, x, z) => this._onStranger(on, x, z),
       onRiddle: (text) => this._onRiddle(text),
-      namedSites: () => this.mp.named || {},
-      onDrop: (x, y, z, c, id) => this._onDrop(x, y, z, c, id),
+      /* `named` is snapshotted at round start and the Flopper sails, so
+         these two are folded in here instead — the hook is read when the
+         Stranger is asked, not when the round begins. Offshore, the boat is
+         not a place anybody can be told to look. */
+      namedSites: () => ({
+        ...(this.mp.named || {}),
+        ...(this.casinoPos && this.casinoIn > 0.5
+          ? { casino: { x: this.casinoPos.x, z: this.casinoPos.z } } : {}),
+        ...(M.bunker ? { post: { x: M.bunker.x, z: M.bunker.z } } : {}),
+      }),
+      onDrop: (x, y, z, c, id, did) => this._onDrop(x, y, z, c, id, did),
+      onDropGone: (did, byId) => this._onDropGone(did, byId),
+      onVend: (i, byId, itemId) => this._onVend(i, byId, itemId),
+      onWorldFx: (at, last) => this._onWorldFx(at, last),
       onShot: (by, vid, at, secs) => this._onShot(by, vid, at, secs),
+      onSnapDeny: (why) => this._onSnapDeny(why),
       onSnapOpen: (vid, by, secs, voters) => this._onSnapOpen(vid, by, secs, voters),
       onSnapTally: (y, n2, need) => this._onSnapTally(y, n2, need),
-      onSnapDone: (vid, ex, wasAgent, y, n2) => this._onSnapDone(vid, ex, wasAgent, y, n2),
+      onSnapDone: (vid, ex, wasAgent, y, n2) =>
+        this._onSnapDone(vid, ex, wasAgent, y, n2, M.host.settings.revealOnExile),
       onCouncil: (by, body) => this._onCouncil(by, body),
       onVotes: (counts, voted) => { M.view.votes = { counts, voted }; },
       onExile: (id, wasAgent) => this._onExile({ targetId: id, wasAgent, reveal: M.host.settings.revealOnExile }),
       onChat: (m) => this._onChat(m),
       onSabotage: (k, s2, f, sites, half) => this._onSabotage(k, s2, f, sites, half),
-      onFixed: (k, cd) => {
-        M.view.sabotage = null; this._notice('REPAIRED'); this._applySabotage(k, false);
+      onFixed: (k, cd, why) => {
+        M.view.sabotage = null; this._fixedNotice(why); this._applySabotage(k, false);
+        /* Somebody else got there first: the bar would run to the end and
+           fire a C.FIX the host drops on the floor. */
+        if (M.taskProgress?.fix) M.taskProgress = null;
         if (cd) (M.cool = M.cool || {})[k] = now() + cd;
         this._compassForTasks();
       },
-      onFixProgress: (k, d, n) => this._fixProgress(k, d, n),
+      onFixProgress: (k, d, n, at) => this._fixProgress(k, d, n, at),
       siteOf: (at) => this._namedSite(at),
       onOver: (w, a, r) => this._onOver(w, a, r),
       onEvent: (e) => { if (e.kind === 'left') this._notice(`${e.name} LEFT`); },
     });
     M.host.addLocal(name);
+    /* The host never sends itself a WELCOME, so its mirror's settings stayed
+       the defaults for the whole session while the lobby edited the host's
+       copy. One object, so what it renders is what it edits. */
+    M.view.settings = M.host.settings;
     M.view.selfId = 'host';
     if (M.dev) {
       M.host.dev = true;
@@ -199,16 +251,32 @@ export class MPGame extends Game {
     const M = this.mp;
     clearInterval(M.netTimer); clearInterval(M.hostTimer);
     M.finished = false;
+    M.kicked = false;
     M.cool = {};
     M.chat.length = 0;
-    M.myName = name;
     M.room = room;
     M.net = new Net();
-    M.net.onStatus = (t) => this.screens.top && (this.screens.top.status = t);
+    /* `status` is drawn in exactly one place — mpMenu, and only while it
+       is still dialling (`s.busy`); the lobby only replaces it once the
+       connection has resolved. Everything the transport says after that (the broker
+       dropping, the room code being lost for good) was being written onto
+       whatever screen happened to be on top, which draws no such field, so
+       the host was never told its code had stopped working. Anything that
+       arrives once we are past the connect screen goes to a toast instead. */
+    M.net.onStatus = (t) => {
+      if (this.screens.name === 'mpMenu' && this.screens.top) this.screens.top.status = t;
+      else this._notice(t);
+    };
+    M.net.onError = (e) => this._notice('NETWORK: ' + (e?.type || 'ERROR'));
     M.net.onMessage = (msg) => this._clientMsg(msg);
     M.net.onHostGone = () => {
+      /* The channel closes a moment after a kick or the last S.OVER, so this
+         used to stamp itself over the honest reason — a guest read THE HOST
+         LEFT THE ISLAND where the results card or the kick had just been. */
+      if (M.finished) return;
       M.finished = true;
       this._notice('THE HOST LEFT');
+      if (this.state === 'cutscene') this.skipCutscene();
       this.screens.replace('mpEnd', { winner: null, reason: 'THE HOST LEFT THE ISLAND', agents: [] });
     };
     await M.net.join(room);
@@ -247,14 +315,19 @@ export class MPGame extends Game {
              could not see the host, and the host's body was parented to
              the island scene the whole time. */
           hp.room = this.roomId;
-          hp.anim = 0;
+          /* Standing at a chore and standing over a body look identical
+             otherwise, and telling those two apart across the island is most
+             of what Castaways is. The flag has always been on the wire; both
+             ends were hard-wiring it to nothing. */
+          hp.anim = M.taskProgress ? 1 : 0;
         }
         this._applySnapshot({ p: M.host.snapshot() });
       } else if (M.view.phase === PHASE.ROAM && this.player) {
         this._send({
           t: C.MOVE,
           x: +this.player.pos.x.toFixed(2), y: +this.player.pos.y.toFixed(2),
-          z: +this.player.pos.z.toFixed(2), yaw: +this.player.facing.toFixed(2), anim: 0,
+          z: +this.player.pos.z.toFixed(2), yaw: +this.player.facing.toFixed(2),
+          anim: M.taskProgress ? 1 : 0,
           room: this.roomId,
         });
       }
@@ -263,17 +336,24 @@ export class MPGame extends Game {
 
   _clientMsg(msg) {
     const M = this.mp;
+    if (M.kicked) return;
     M.view.handle(msg);
     switch (msg.t) {
+      /* The hole outlives its round on the host, and a joiner who was told
+         nothing about it stood in front of an X the island had already dug
+         out. The mirror takes youAre and the dials; the depth is ours. */
+      case S.WELCOME: this._onDig(msg.dug); break;
       case S.ROSTER: this._roster([...M.view.players.values()]); break;
       case S.PHASE: this._phase(msg.phase, msg.endsAt, msg.meta); break;
       case S.SNAPSHOT: this._applySnapshot(msg); break;
-      case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z); break;
+      case S.KILLED: this._onKilled(msg.victimId, msg.x, msg.y, msg.z, msg.room); break;
+      case S.BODY_GONE: this._removeBody(msg.victimId); break;
       case S.BUNKER: M.bunkerIndex = msg.index; if (M.started) this._placeBunker(msg.index); break;
       case S.SPEAKER: this._onSpeaker(msg.x, msg.z, msg.secs); break;
       case S.CHAFF: M.chaffUntil = now() + msg.secs; break;
       case S.SAVED: this._onSaved(msg.victimId); break;
       case S.PURSE: this._onPurse(msg.coins, msg.gained); break;
+      case S.SALE: this._applySale(msg); break;
       case S.LEDGER: this._onLedger(msg.rows); break;
       case S.NIGHTFALL: this._onNightfall(); break;
       case S.DIG: this._onDig(msg.dug); break;
@@ -282,11 +362,17 @@ export class MPGame extends Game {
       case S.BLACKOUT: this._onBlackout(msg.secs); break;
       case S.STRANGER: this._onStranger(msg.on, msg.x, msg.z); break;
       case S.RIDDLE: this._onRiddle(msg.text); break;
-      case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
+      case S.DROP: this._onDrop(msg.x, msg.y, msg.z, msg.coins, msg.id, msg.did); break;
+      case S.DROPGONE: this._onDropGone(msg.did, msg.byId); break;
+      case S.VEND: this._onVend(msg.index, msg.byId, msg.itemId); break;
+      case S.WORLDFX: this._onWorldFx(msg.at, msg.last !== false); break;
       case S.SHOT: this._onShot(msg.byId, msg.victimId, msg, msg.secs); break;
+      case S.SNAPDENY: this._onSnapDeny(msg.why); break;
       case S.SNAPOPEN: this._onSnapOpen(msg.victimId, msg.byId, msg.secs, msg.voters); break;
       case S.SNAPTALLY: this._onSnapTally(msg.yes, msg.no, msg.need); break;
-      case S.SNAPDONE: this._onSnapDone(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no); break;
+      case S.SNAPDONE:
+        this._onSnapDone(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no, msg.reveal);
+        break;
       case S.COUNCIL: this._onCouncil(msg.calledBy, msg.bodyOf); break;
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
@@ -294,16 +380,21 @@ export class MPGame extends Game {
         if (msg.refused) { this.ui.toast('THAT ONE IS STILL COOLING', 'bad', 1600); this.audio.sfx('deny'); break; }
         this._onSabotage(msg.kind, msg.secs, msg.fatal, msg.sites, msg.half);
         break;
-      case S.FIXPROGRESS: this._fixProgress(msg.kind, msg.done, msg.need); break;
+      case S.FIXPROGRESS: this._fixProgress(msg.kind, msg.done, msg.need, msg.at); break;
       case S.FIXED:
-        this._notice('REPAIRED'); this._applySabotage(msg.kind, false);
+        this._fixedNotice(msg.why); this._applySabotage(msg.kind, false);
+        if (M.taskProgress?.fix) M.taskProgress = null;
         if (msg.cooldown) (M.cool = M.cool || {})[msg.kind] = now() + msg.cooldown;
         this._compassForTasks();
         break;
       case S.TASK_OK:
-        if (!msg.done) M.view.taskStep.set(msg.taskId, msg.step);
-        this._taskDone(msg.taskId, msg.done !== false);
+      {
+        const done = msg.done !== false;
+        if (!done) M.view.taskStep.set(msg.taskId, msg.step);
+        const step = msg.step | 0;
+        this._taskDone(msg.taskId, done, done ? step : Math.max(0, step - 1));
         break;
+      }
       case S.COOLDOWN:
         M.myKillReady = now() + (msg.secs || 0);
         M.killTotal = Math.max(msg.secs || 0, 0.001);
@@ -312,6 +403,10 @@ export class MPGame extends Game {
       case S.OVER: this._onOver(msg.winner, msg.agents, msg.reason); break;
       case S.KICK:
         M.finished = true;
+        /* The host closes the channel a beat later, but anything already in
+           flight — a REVEAL, a phase — would still be acted on, and a guest
+           who had just been thrown out started the round anyway. */
+        M.kicked = true;
         this._notice(msg.reason);
         this.screens.replace('mpEnd', { winner: null, reason: msg.reason, agents: [] });
         break;
@@ -321,7 +416,6 @@ export class MPGame extends Game {
 
   get isHost() { return !!this.mp.host; }
   get me() { return this.mp.view.players.get(this.mp.view.selfId); }
-  get myRole() { return this.mp.view.role; }
   get amAgent() { return this.mp.view.role === ROLE.AGENT; }
   get amAlive() {
     const m = this.me;
@@ -346,6 +440,10 @@ export class MPGame extends Game {
         M.avatars.set(r.id, av);
       } else if (av) av.setRecord(r);
     }
+    /* The mirror prunes itself from S.ROSTER on a guest; the host never
+       receives that message, so the departed have to be dropped here or
+       they stay on the HUD, on the ballot, and at the origin of the plot. */
+    for (const id of [...M.view.players.keys()]) if (!seen.has(id)) M.view.players.delete(id);
     for (const [id, av] of M.avatars) {
       if (!seen.has(id)) { av.dispose(); M.avatars.delete(id); }
     }
@@ -356,6 +454,17 @@ export class MPGame extends Game {
     const t = now();
     // the interpolation delay is derived from how these actually arrive
     noteSnapshot(t);
+    /* One island, one hour. Every machine ran the day off its own join time
+       and a throttled tab woke up whole minutes behind, so dusk fell at a
+       different moment on each screen — and the Flopper sails on dusk. Ease
+       onto the host's hour the short way round the ring; a snap would jump
+       the sky and the tide with it. Absent on the host's own call, which
+       passes only the rows. */
+    if (Number.isFinite(msg.c24)) {
+      const L = this.DAY_LEN > 5000 ? 360 : Math.max(120, this.DAY_LEN);
+      const d = (((msg.c24 - this.clock24) % L) + L * 1.5) % L - L / 2;
+      this.clock24 = (((this.clock24 + d * 0.05) % L) + L) % L;
+    }
     const mine = this.roomId;
     for (const [id, x, y, z, yaw, anim, alive, room] of msg.p) {
       if (id === M.view.selfId) continue;
@@ -369,7 +478,7 @@ export class MPGame extends Game {
       const theirs = room | 0;
       av.room = theirs;
       const together = theirs === mine;
-      av.mesh.visible = together && av.alive !== false;
+      av.setVisible(this._avatarVisible(av));
       if (together) {
         const sc = this.scene;
         if (sc && av.mesh.parent !== sc) sc.add(av.mesh);
@@ -408,22 +517,42 @@ export class MPGame extends Game {
         this._requestLock();
       }
       setCinemaBars(false);
+      /* Your meeting count changes at the close of every council and at the
+         start of every round, and nothing else rebuilds the compass — so the
+         BELL tick sat on the ring pointing at a council you had spent. The
+         guard matters: only REVEAL builds the island, so a client that took
+         ROAM without it has no camp to point at. */
+      if (M.started) this._compassForTasks();
     } else if (phase === PHASE.COUNCIL || phase === PHASE.VOTE) {
+      /* Only the guests' mirror clears its own tally on S.PHASE; the host
+         never receives that message, so without this its second meeting
+         opened showing the last one's counts and voter list. */
+      if (phase === PHASE.COUNCIL) M.view.votes = { counts: {}, voted: [] };
       // a council pulls everybody to the fire, wherever they were
       this.leaveRoom();
       this._teleportToCamp();
       document.exitPointerLock?.();
-      if (this.screens.name !== 'mpCouncil') this.screens.replace('mpCouncil', {});
+      /* Unless the body is still being shown. The card gets its few seconds
+         and then update() puts the council up itself. */
+      const onBody = this.screens.name === 'mpBodyFound' && M.bodyCardUntil && now() < M.bodyCardUntil;
+      if (!onBody && this.screens.name !== 'mpCouncil') this.screens.replace('mpCouncil', {});
     } else if (phase === PHASE.RESULT) {
       // the exile card is pushed by _onExile
     } else if (phase === PHASE.LOBBY) {
       /* Another round. Everything the last one left on the island comes
          off, and everybody goes back to the list of names. */
       M.started = false;
+      /* A rematch is not the last round's ending. Left standing, `finished`
+         kept the council watchdog from ever re-arming and `cool` refused
+         every sabotage the host would have allowed. */
+      M.finished = false;
+      M.cool = {};
       this.leaveRoom?.();
       this._clearBodies();
       this.paused = false;
       this.state = 'title';
+      // _onOver stopped the music for the results card; nothing else starts it
+      this.audio.playMusic('title');
       document.exitPointerLock?.();
       this.ui.hide();
       this.screens.replace('mpLobby', {});
@@ -446,8 +575,88 @@ export class MPGame extends Game {
       M.host.toLobby();
     } else {
       this.audio.sfx('select');
-      this.ui.toast('WAITING FOR THE HOST TO SET ANOTHER ROUND', 'jade', 3200);
     }
+  }
+
+  /**
+   * Escape out of the dialling screen. leaveMultiplayer() begins on
+   * `M.active`, which is only set once the connect has resolved, so it did
+   * nothing at all here and left the hung Peer and its heartbeat running
+   * for the rest of the session.
+   */
+  cancelConnect() {
+    const M = this.mp;
+    clearInterval(M.netTimer); M.netTimer = null;
+    clearInterval(M.hostTimer); M.hostTimer = null;
+    try { M.net?.destroy(); } catch (e) { /* already gone */ }
+    M.net = null;
+    M.host = null;
+    M.active = false;
+  }
+
+  /**
+   * Put the session down.
+   *
+   * Nothing ever did: quitting to the title left the socket open, both
+   * timers ticking, the avatars in the scene and the mirror holding the
+   * last round's roster, so the next game started on top of the old one.
+   */
+  leaveMultiplayer() {
+    const M = this.mp;
+    if (!M.active) return;
+    // first, because the net tick and every `if (!this.mp.active)` read it
+    M.active = false;
+    // quitting inside a live sabotage otherwise doused, jammed or stormed
+    // the single-player run that follows it
+    this._clearSabotageWorld();
+    this.leaveRoom?.();          // state, scene and walls back on the island
+    clearInterval(M.netTimer); M.netTimer = null;
+    clearInterval(M.hostTimer); M.hostTimer = null;
+    M.finished = true;           // the council watchdog stops re-arming
+    try { M.net?.destroy(); } catch (e) { /* already gone */ }
+    M.net = null; M.host = null; M.started = false;
+    for (const a of M.avatars.values()) a.dispose();
+    M.avatars.clear();
+    this._clearBodies();
+    M.taskProgress = null;
+    M.marked = null;
+    /* Quitting inside the three seconds after a knife would otherwise leave
+       the shot driving the camera and the mattes up for the rest of the
+       session, on a title screen it knows nothing about. */
+    if (this.deathShot) this._endDeathShot();
+    /* Only render() ever takes the ghost material off again, and it is gated
+       on mp.active — which has just gone false. Quitting while dead used to
+       leave the single-player castaway translucent for the session. */
+    this._setSelfGhost(false);
+    M.spectate = null;
+    /* The round's props came off the island with it. Nothing in single
+       player owns any of them and nothing there ever takes them away, so
+       a quit mid-round left the beacons, the purses, the boombox and the
+       Stranger standing in the next run's world. The two built-once nodes
+       are hidden rather than removed — their builders only ever run once,
+       and re-adding the speaker's light to a live scene is the shader
+       recompile _buildSpeakerNode exists to avoid. */
+    for (const b of (M.beaconNodes || [])) {
+      b.removeFromParent(); b.geometry.dispose(); b.material.dispose();
+    }
+    M.beaconNodes = null;
+    for (const d of (M.drops || [])) this._retireDrop(d);
+    M.drops = [];
+    M.speaker = null;
+    if (M.speakerNode) setHidden(M.speakerNode, true);
+    if (M.strangerNode) {
+      M.strangerNode.userData.setFade(0);
+      M.strangerNode.userData.at = null;   // or he glides in from last round's spot
+    }
+    M.stranger = null;
+    M.strangerGone = 0;
+    M.view = new MirrorSession();
+    this.ui.hud.data.mp = null;
+  }
+
+  quitToTitle() {
+    this.leaveMultiplayer();
+    super.quitToTitle();
   }
 
   /**
@@ -519,18 +728,22 @@ export class MPGame extends Game {
         { at: 12.8, until: 15.4, text: 'Find a body, or ring the bell at the camp.' },
         { at: 15.8, until: 17.4, text: 'Then everyone talks, and somebody goes in the sea.' },
       ],
+      /* The five stings are `visualOnly` for the same reason the opening's
+         are: a skip fires every unfired beat on one frame, and this flight
+         is skipped from the second round on. The music and the role card
+         are not theatre — they are the only place either is set. */
       events: [
         { at: 0.2, fn: () => this.audio.playMusic('island') },
-        { at: 3.5, fn: () => this.audio.sfx('surfWash') },
-        { at: 7.0, fn: () => this.audio.sfx('page') },
-        { at: 10.2, fn: () => this.audio.sfx('stinger') },
-        { at: 12.8, fn: () => this.audio.sfx('door') },
-        { at: 15.8, fn: () => this.audio.sfx('rumble') },
+        { at: 3.5, visualOnly: true, fn: () => this.audio.sfx('surfWash') },
+        { at: 7.0, visualOnly: true, fn: () => this.audio.sfx('page') },
+        { at: 10.2, visualOnly: true, fn: () => this.audio.sfx('stinger') },
+        { at: 12.8, visualOnly: true, fn: () => this.audio.sfx('door') },
+        { at: 15.8, visualOnly: true, fn: () => this.audio.sfx('rumble') },
         /* The card comes up over the last shot rather than after it. Hanging
            it off the phase timer meant a slow machine could spend the whole
            reveal on the flight and never show anybody what they were. */
         { at: 16.4, fn: () => {
-          if (this.mp.view.phase !== PHASE.REVEAL) return;
+          if (this.mp.finished || this.mp.view.phase !== PHASE.REVEAL) return;
           this.screens.replace('mpRole', {});
           this.audio.sfx('descend');
           setTimeout(() => this.audio.sfx(this.amAgent ? 'bossIntro' : 'idolRise'), 1250);
@@ -543,10 +756,17 @@ export class MPGame extends Game {
           this.state = 'island';
           this.scene = this.islandScene;
         }
+        /* A final card is already up — the results, a kick, the host leaving
+           — and it is the only way on from here. A round that ends during the
+           reveal used to have its results thrown away by this line and left
+           the player frozen on the island with nothing but the pause menu. */
+        if (this.mp.finished) return;
         // whatever is left of the reveal is theirs to sit with the card
         if (this.mp.view.phase === PHASE.REVEAL) {
           if (this.screens.name !== 'mpRole') this.screens.replace('mpRole', {});
-        } else { this.screens.clear(); this.ui.show(); this._requestLock(); }
+        } else if (this.mp.view.phase === PHASE.ROAM) {
+          this.screens.clear(); this.ui.show(); this._requestLock();
+        }
       },
     }, this.islandScene);
   }
@@ -576,13 +796,24 @@ export class MPGame extends Game {
     this.player.teleport(c.x + 4, Math.max(heightAt(c.x, c.z), 0.6) + 0.6, c.z, 0);
   }
 
-  _onKilled(id, x, y, z) {
+  _onKilled(id, x, y, z, room) {
     const M = this.mp;
     const rec = M.view.players.get(id) || { id, colour: 'red', name: '?' };
-    const gy = Math.max(y, heightAt(x, z));
+    /* An interior kill happened in that room's own coordinates, so the body
+       goes into that room and not onto the island, where it would be a
+       corpse on the beach nobody died on. It still has to exist: the host
+       lets you report a body you are standing next to in a room. */
+    const outside = (room | 0) === 0;
+    const here = (room | 0) === this.roomId;
+    // the terrain is under the island only; a room has its own floor
+    const gy = outside ? Math.max(y, heightAt(x, z)) : y;
 
     if (!M.bodies.has(id) && this.islandScene) {
-      const body = new Body(this.islandScene, this.propMats, rec, x, gy, z);
+      // parked on the island until we walk into their room; _rehomeAvatars
+      // moves it into the right scene the moment we do
+      const body = new Body(here && !outside ? this.scene : this.islandScene, this.propMats, rec, x, gy, z);
+      body.room = room | 0;
+      body.mesh.visible = here;
       body.fall = 0;                       // they drop, they do not appear
       M.bodies.set(id, body);
     }
@@ -590,21 +821,259 @@ export class MPGame extends Game {
     if (av) { av.setShell(null); av.setVisible(false); }
 
     // blood, on the ground, where it happened
-    this.gore?.splat(x, gy, z, colourHex(rec.colour));
+    if (outside) this.gore?.splat(x, gy, z, colourHex(rec.colour));
 
     if (id === M.view.selfId) {
-      this._notice('YOU WERE KILLED');
-      this.audio.sfx('hurt');
-      this.audio.sfx('splat');
-      this.player.punch?.(1);
-      this.pipeline.tint.setHex(0xb00c06);
-      this.pipeline.tintAmt = 0.95;
-      this.ui.hud.data.hp = 0;
-      // the world tips as you go down
-      this.deathTilt = 1.4;
-    } else {
+      /* The blow interrupts whatever you were holding down. The hold no
+         longer cancels itself for being dead — a ghost has chores of its
+         own — so without this the chore you were on would go on charging
+         and finish itself over your body. */
+      M.taskProgress = null;
+      this._beginDeathShot(x, gy, z);
+    } else if (!this.amAlive
+      || (here && Math.hypot(this.player.pos.x - x, this.player.pos.z - z) < 30)) {
+      /* Only for someone who could have seen it. Played to the whole island
+         it handed every living player the one fact the Agent pays a
+         cooldown to keep quiet, and spoiled finding the body afterwards.
+         The dead keep it: a ghost can already watch whoever it likes. */
       this.audio.sfx('splat');
     }
+  }
+
+  /* ===========================================================
+     THE LAST THING YOU SEE
+
+     Three seconds of camera between the knife and the afterlife. It is
+     deliberately NOT a `state = 'cutscene'` cutscene, for three reasons the
+     shape of this mode forces:
+
+       - the cutscene branch of update() returns before _updateAvatars, so
+         everybody else on the island would stand perfectly still for the
+         whole shot, including whoever just did it;
+       - leaveRoom() keys off this.state, so a council called inside those
+         three seconds would leave you parented to a room you had already
+         been pulled out of, colliding with furniture that is no longer
+         under you;
+       - the killing blow that ends a round sends KILLED and OVER in the
+         same tick, and the results card would come up underneath the
+         letterbox mattes.
+
+     Driving only the camera leaves the state machine, the room tick, the
+     avatars, the gore and the day clock exactly as they were. A council or
+     the round ending simply cuts the shot short.
+     =========================================================== */
+  _beginDeathShot(x, y, z) {
+    this.mp.holdingE = false;
+    /* The blow lands whether or not the shot gets to play. A player knifed
+       with the chart, a shop card or the pause menu up has a screen on the
+       stack, and render() ends the shot before its first update — so
+       anything living in the cutscene's events fired never, and being
+       murdered was completely silent. Feedback here, camera and captions
+       there. */
+    this.audio.sfx('hurt');
+    this.audio.sfx('splat');
+    this.player.punch?.(1);
+    this.pipeline.tint.setHex(0xb00c06);
+    this.pipeline.tintAmt = 0.95;
+    this.deathTilt = 1.4;
+    this._notice('YOU WERE KILLED');
+    const V = (a, b, c) => new THREE.Vector3(a, b, c);
+    /* Framed off your OWN last heading, never off the killer's. S.KILLED
+       carries no killer id on purpose — you are not meant to learn who it
+       was, and a camera that swung round to look at him would tell you. */
+    const a = this.player.yaw || 0;
+    const back = (r, h) => V(x - Math.sin(a) * r, y + h, z - Math.cos(a) * r);
+    const body = V(x, y + 0.35, z);
+
+    this.deathShot = new Cutscene(this.camera, {
+      skippable: false,
+      shots: [
+        // the ground coming up, close and shaking
+        { dur: 0.9, ease: 'easeOut', shake: 0.30,
+          from: back(1.4, 1.55), to: back(2.0, 0.5), look: V(x, y + 0.9, z) },
+        // and away, so you see where you fell
+        { dur: 1.4, ease: 'smooth',
+          from: back(2.0, 0.5), to: back(4.4, 2.4), look: body },
+        // up to where a ghost stands
+        { dur: 0.9, ease: 'smooth',
+          from: back(4.4, 2.4), to: back(4.8, 6.2), look: body },
+      ],
+      text: [
+        { at: 0.30, until: 2.10, text: 'SOMEBODY GOT YOU.' },
+        { at: 2.35, until: 3.15, text: 'Stay. Watch. The work still counts.' },
+      ],
+      events: [
+        { at: 1.80, visualOnly: true, fn: () => this.audio.sfx('deny') },
+      ],
+      onDone: () => this._endDeathShot(),
+    });
+    setCinemaBars(true, false);      // no skip hint: this one cannot be skipped
+    this.ui.hide();
+    this.ui.setPrompt(null);
+    document.exitPointerLock?.();
+  }
+
+  /* Driven from render rather than update so the room, the avatars, the
+     gore and the day clock have all had their say first and the camera is
+     the last word on the frame — the whole reason this is not a real
+     cutscene is that everybody else has to keep moving while you watch. */
+  render(dt) {
+    if (this.deathShot) {
+      if (this.screens.open || this.mp.finished) this._endDeathShot();
+      /* Real time where there is any, the frame's own step otherwise. rawDt
+         is zero until the loop has run a frame, and a tab that was hidden at
+         the moment of the knife would otherwise hold the shot at t = 0 for
+         as long as it stayed hidden — `??` does not catch a zero. */
+      else this.deathShot.update(this.rawDt > 0 ? this.rawDt : dt);
+      /* You are lying at your own feet: the corpse is its own mesh, and the
+         one the controller drives is still standing up in the middle of the
+         shot. Hidden here rather than at the blow because player.update()
+         rewrites visible from thirdPerson every frame. */
+      if (this.deathShot && this.player?.mesh) this.player.mesh.visible = false;
+      /* The roll goes on last, on the same clock as the shot: the cutscene's
+         lookAt rewrites the orientation every frame, so anything applied
+         before it is thrown away. */
+      if (this.deathShot) this._tickDeathTilt(this.rawDt > 0 ? this.rawDt : dt);
+    }
+    /* Your own body goes see-through with everybody else's. Done here for
+       the same reason the line above is: player.update() rewrites the mesh
+       from thirdPerson every frame, and the material swap has to sit after
+       whatever it decided. */
+    if (this.mp.active) this._setSelfGhost(!this.amAlive && this.mp.started);
+    super.render(dt);
+  }
+
+  /* ===========================================================
+     SPECTATING
+
+     Being dead used to mean walking the island on foot, which is a long way
+     to go to watch somebody who is already somewhere else. F picks a living
+     castaway up and pins you to them; F again steps to the next one; a
+     movement key lets go and gives you the island back.
+
+     Following means going where they went, so this also walks the rooms:
+     the bar sits behind the High Roller room, so reaching it is island ->
+     high roller -> bar, and every hop goes through the same enter/leave
+     methods a living player uses rather than writing state by hand.
+     =========================================================== */
+  get _spectateTargets() {
+    const M = this.mp;
+    return [...M.view.players.values()]
+      .filter((p) => p.alive !== false && p.id !== M.view.selfId)
+      .sort((a, b) => (a.id < b.id ? -1 : 1));      // a stable ring to step round
+  }
+
+  /** F: take the next living castaway, or drop the one we have. */
+  cycleSpectate() {
+    const M = this.mp;
+    const list = this._spectateTargets;
+    if (!list.length) {
+      this.audio.sfx('deny');
+      this.ui.toast('NOBODY LEFT TO WATCH', 'bad', 1600);
+      return;
+    }
+    const at = list.findIndex((p) => p.id === M.spectate);
+    const next = list[(at + 1) % list.length];
+    M.spectate = next.id;
+    this.audio.sfx('select');
+    this.ui.toast(`WATCHING ${next.name || '?'}`, 'jade', 1800);
+    this._followSpectate(true);
+  }
+
+  stopSpectate(quiet) {
+    if (!this.mp.spectate) return;
+    this.mp.spectate = null;
+    if (!quiet) this.ui.toast('ON YOUR OWN AGAIN', 'gold', 1400);
+  }
+
+  /** Put ourselves in the room the target is in. True if we got there. */
+  _spectateRoom(room) {
+    if (this.roomId === room) return true;
+    this.leaveRoom();                       // always back to the island first
+    if (room === 1) this.enterBunker();
+    else if (room === 2) this.enterHighRoller();
+    else if (room === 3) { this.enterHighRoller(); this.enterBar(); }
+    else if (room === 4) this.enterCab();
+    return this.roomId === room;
+  }
+
+  /**
+   * Sit just behind and above them, looking where they look.
+   * @param {boolean} snap  true on the first frame, so we arrive rather than glide
+   */
+  _followSpectate(snap) {
+    const M = this.mp;
+    if (!M.spectate) return;
+    const rec = M.view.players.get(M.spectate);
+    const av = M.avatars.get(M.spectate);
+    if (!rec || rec.alive === false) {
+      /* They died while we were watching. Somebody else is still worth
+         watching, so step on rather than dumping us back on the beach. */
+      this.stopSpectate(true);
+      if (this._spectateTargets.length) this.cycleSpectate();
+      else this.ui.toast('NOBODY LEFT TO WATCH', 'bad', 1600);
+      return;
+    }
+    /* Which space they are in comes off the AVATAR, not the roster: the
+       roster broadcast carries name, colour, alive and the perks, and has
+       never carried a room, so reading it here quietly said 'island' for
+       everybody and the follow stayed on the beach while they went down the
+       hatch. The snapshot is what knows, twelve times a second. */
+    if (!this._spectateRoom((av ? av.room : 0) | 0)) { this.stopSpectate(); return; }
+    /* The avatar is the only thing that knows where they are — the roster
+       carries no coordinates at all. Its interpolation runs off the snapshot
+       buffer whether or not it is being drawn, so this is still right for
+       somebody we cannot see yet, which is every target for the one frame
+       between arriving in their room and the next snapshot. */
+    if (!av || !av.buf.length) return;
+    const p = av.pos;
+    const yaw = av.yaw;
+    const bx = p.x - Math.sin(yaw) * 2.6;
+    const bz = p.z - Math.cos(yaw) * 2.6;
+    if (snap) this.player.teleport(bx, (p.y || 0) + 0.2, bz, yaw);
+    else {
+      /* Eased, so somebody sprinting does not drag the camera in jerks —
+         but hard-snapped past four metres, which is a ladder or a hatch
+         rather than a walk, and gliding across it looks like a bug. */
+      const k = Math.min(1, (this.rawDt > 0 ? this.rawDt : 1 / 60) * 6);
+      const far = Math.hypot(this.player.pos.x - bx, this.player.pos.z - bz) > 4;
+      this.player.pos.x += (bx - this.player.pos.x) * (far ? 1 : k);
+      this.player.pos.z += (bz - this.player.pos.z) * (far ? 1 : k);
+      this.player.pos.y = (p.y || 0) + 0.2;
+    }
+  }
+
+  /** Your own castaway, rendered through — the same swap the avatars get. */
+  _setSelfGhost(on) {
+    if (this._selfGhost === !!on || !this.player?.mesh) return;
+    this._selfGhost = !!on;
+    const mat = on ? this._ghostMat : null;
+    this.player.mesh.traverse((o) => {
+      if (!o.isMesh) return;
+      if (on) {
+        if (!o.userData.solidMat) o.userData.solidMat = o.material;
+        o.material = mat;
+      } else if (o.userData.solidMat) {
+        o.material = o.userData.solidMat;
+      }
+    });
+  }
+
+  _endDeathShot() {
+    if (!this.deathShot) return;
+    this.deathShot = null;
+    setCinemaBars(false);
+    /* The red is left to update()'s own decay rather than wiped. A player
+       knifed with a screen up ends the shot on the frame it began, and
+       zeroing here took the hit flash with it — the blow landed in silence
+       and full colour. The decay clears it in two thirds of a second either
+       way. */
+    this.ui.show();
+    /* Only take the pointer back if nothing claimed the frame while the shot
+       was running. The kill that ends a round sends OVER in the same tick as
+       KILLED, and a body can be reported inside the three seconds — in both
+       cases there is a card up that the player is in the middle of reading. */
+    if (!this.screens.open && !this.mp.finished) this._requestLock();
   }
 
   /** The host is the authority on what is in your pocket. */
@@ -618,7 +1087,7 @@ export class MPGame extends Game {
   }
 
   /** What the Agent left behind, lying where they fell. */
-  _onDrop(x, y, z, coins, id) {
+  _onDrop(x, y, z, coins, id, did) {
     if (!coins || !this.islandScene) return;
     const M = this.mp;
     M.drops = M.drops || [];
@@ -632,7 +1101,10 @@ export class MPGame extends Game {
     g.position.set(f.x, gy + 0.4, f.z);
     this.islandScene.add(g);
     this.tickers.push(g);
-    M.drops.push({ mesh: g, x: f.x, z: f.z, coins, taken: false });
+    /* The host names every purse, and that name is the only way to ask for
+       this one rather than some other. A drop with no name is one nothing can
+       claim, so it is left on the ground rather than handed out twice. */
+    M.drops.push({ did: did || null, mesh: g, x: f.x, z: f.z, coins, taken: false });
     this.taskFx?.burst(f.x, gy, f.z, 0xffd24a, 'done', 3.0);
   }
 
@@ -645,18 +1117,36 @@ export class MPGame extends Game {
     if (id === M.view.selfId) {
       this.owned?.delete('vest');
       this.carry = (this.carry || []).filter((c) => c !== 'vest');
-      // the weight goes with it
-      this.player.SPEED = this.player.BASE_SPEED;
-      this.player.SPRINT = this.player.BASE_SPRINT;
+      /* The weight goes with it — but only the weight. This used to write
+         the flat base speeds back, so a strike survived while you were on
+         Quezetriel's OWN or Cathy's floss silently threw away the quarter
+         or the third you had paid for, and you got it back at the moment
+         the drink wore off. */
+      this._recalcSpeed();
       this.player.punch?.(1);
       this.pipeline.tint.setHex(0xffd24a);
       this.pipeline.tintAmt = 0.85;
       this.ui.showPopup('THE CORK VEST HELD', 'SOMEBODY JUST TRIED FOR YOU', 'vest', 'YOU ARE ALIVE');
+      const p = this.player.pos;
+      this.taskFx?.burst(p.x, heightAt(p.x, p.z), p.z, 0xffd24a, 'done', 3.4);
     } else {
       this.ui.toast(`${rec?.name || 'SOMEBODY'} SURVIVED A STRIKE`, 'jade', 2600);
+      /* At the man who was struck, not at you. Somebody else's vest used to
+         set off a gold shockwave under your own feet, wherever you were. */
+      const av = M.avatars.get(id);
+      // an avatar in another interior is holding room-local coordinates
+      if (av && (av.room | 0) === this.roomId) {
+        this.taskFx?.burst(av.pos.x, heightAt(av.pos.x, av.pos.z), av.pos.z, 0xffd24a, 'done', 3.4);
+      }
     }
-    const p = this.player.pos;
-    this.taskFx?.burst(p.x, heightAt(p.x, p.z), p.z, 0xffd24a, 'done', 3.4);
+  }
+
+  /** One body off the sand: whoever it was has left the island for good. */
+  _removeBody(id) {
+    const b = this.mp.bodies.get(id);
+    if (!b) return;
+    b.dispose();
+    this.mp.bodies.delete(id);
   }
 
   _clearBodies() {
@@ -705,27 +1195,29 @@ export class MPGame extends Game {
     const M = this.mp;
     const p = msg.targetId ? M.view.players.get(msg.targetId) : null;
     if (p) p.alive = false;
-    let line;
-    if (!msg.targetId) line = 'NOBODY WAS EXILED';
-    else if (!msg.reveal) line = `${p?.name || '?'} WAS THROWN TO THE SEA`;
-    else line = `${p?.name || '?'} WAS ${msg.wasAgent ? '' : 'NOT '}A ROGUE AGENT`;
     /* `name` is the screen stack's own identity field — passing the exiled
-       player's name in it renamed the screen to them. */
+       player's name in it renamed the screen to them. And what they were is
+       gated here rather than left to the sender, so a host running with the
+       reveal off cannot leak it through the card. */
     this.screens.replace('mpExile', {
-      line, wasAgent: msg.wasAgent, targetId: msg.targetId, who: p?.name || msg.name || '?',
+      wasAgent: msg.reveal ? msg.wasAgent : null,
+      targetId: msg.targetId, who: p?.name || msg.name || '?',
     });
     this.audio.sfx('descend');
-    if (msg.targetId === M.view.selfId) this.ui.hud.data.hp = 0;
   }
 
-  _fixProgress(kind, done, need) {
+  _fixProgress(kind, done, need, at) {
     const sab = this.mp.view.sabotage;
     if (sab && sab.kind === kind) { sab.done = done; sab.need = need; }
     this.audio.sfx('gemHit');
     this.ui.toast(`${done} OF ${need} REPAIRED`, 'jade', 1800);
-    if (this.taskFx) {
-      const p = this.player.pos;
-      this.taskFx.burst(p.x, heightAt(p.x, p.z), p.z, 0x8fe8c8);
+    /* Where the repair actually happened, not where YOU are standing. This
+       used to throw a five-metre ring out of the ground at the feet of
+       everybody on the island — and across an interior floor if you were
+       below decks — for work being done somewhere else. */
+    const site = at ? this._namedSite(at) : null;
+    if (this.taskFx && site) {
+      this.taskFx.burst(site.x, heightAt(site.x, site.z), site.z, 0x8fe8c8);
     }
   }
 
@@ -776,6 +1268,16 @@ export class MPGame extends Game {
          are stripped back to what the job is, so you have to walk the
          island and recognise the place rather than read a label. */
       this.scattered = on;
+      // drawn once and kept for the run of it; reshuffling every frame
+      // would make the panel a slot machine
+      if (on) {
+        const ids = [...this.mp.view.tasks];
+        for (let i = ids.length - 1; i > 0; i--) {
+          const j = (Math.random() * (i + 1)) | 0;
+          const t2 = ids[i]; ids[i] = ids[j]; ids[j] = t2;
+        }
+        this.mp.scatterOrder = ids;
+      } else this.mp.scatterOrder = null;
       this._compassForTasks();
       this.audio.sfx(on ? 'deny' : 'confirm');
       if (on) {
@@ -799,8 +1301,6 @@ export class MPGame extends Game {
     }
     if (kind === 'shut') {
       this.shopShut = on;
-      // the host enforces the sanctuary, so the host has to know
-      if (this.mp.host) this.mp.host.shopShut = on;
       const hut = this.hutNode;
       if (hut) {
         if (!hut.userData.boards) {
@@ -825,7 +1325,7 @@ export class MPGame extends Game {
     if (kind === 'jam') {
       this.jammed = on;
       // its own track: two notes a semitone apart over a heartbeat
-      this.audio.playMusic(on ? 'alarm' : 'island');
+      this.audio.playMusic(on ? 'alarm' : this._islandTrack());
       for (const m of (this.pendulumMeshes || [])) {
         if (m.userData.setJammed) m.userData.setJammed(on);
       }
@@ -838,9 +1338,39 @@ export class MPGame extends Game {
         this.audio.playMusic('storm');
         this.ui.toast('THE WORK IS SCRAMBLED', 'bad', 3000);
       } else {
-        this.audio.playMusic(this.night > 0.5 ? 'night' : 'island');
+        this.audio.playMusic(this._islandTrack());
       }
     }
+  }
+
+  /**
+   * Undo every world effect a sabotage left standing, without the repair
+   * fanfare. `_applySabotage(kind, false)` is the only other way back and it
+   * runs from S.FIXED alone, which a round that ends mid-sabotage never
+   * sends — the host nulls its own sabotage silently.
+   */
+  _clearSabotageWorld() {
+    this.doused = false;
+    this.jammed = false;
+    this.stormOn = false;
+    this.blinded = false;
+    this.scattered = false;
+    this.shopShut = false;
+    this.mp.scatterOrder = null;
+    if (this.storm) this.storm.stop();
+    for (const m of (this.pendulumMeshes || [])) m.userData.setJammed?.(false);
+    if (this.hutNode?.userData.boards) this.hutNode.userData.boards.visible = false;
+    /* The fog and the lights come back on their own — updateDayNight rewrites
+       them every frame — but the mist leaves these behind. */
+    this._fogWas = null;
+    if (this.sky) this.sky.material.opacity = 1;
+    if (this._lanternLight) this._lanternLight.intensity = 0;
+    for (const av of this.mp.avatars.values()) av.setShell(null);
+    // a blackout timer from last round would otherwise flip doused mid-round
+    clearTimeout(this._blackoutT); this._blackoutT = null;
+    /* The guest mirror only clears on S.FIXED too, and left standing it
+       prints a dead banner on the HUD and denies every pull all round. */
+    if (this.mp.view) this.mp.view.sabotage = null;
   }
 
   _onOver(winner, agents, reason) {
@@ -848,6 +1378,10 @@ export class MPGame extends Game {
     this.audio.stopMusic();
     this.audio.sfx(winner === 'castaways' ? 'victory' : 'bossDie');
     document.exitPointerLock?.();
+    /* A round can end during the reveal, and nothing else cuts the briefing
+       short once the phase timer has stopped — so the results card sat over
+       a scenic flight for the rest of its twenty-three seconds. */
+    if (this.state === 'cutscene') this.skipCutscene();
     this.screens.replace('mpEnd', { winner, agents, reason });
   }
 
@@ -861,12 +1395,21 @@ export class MPGame extends Game {
    * and weight of camera shake, so winding a Pendulum does not land like
    * folding a sail.
    */
-  _taskDone(id, finished = true) {
+  _taskDone(id, finished = true, atStep = null) {
     const M = this.mp;
-    this._buildTaskBeacons();
-    const stage = this._taskStage(id);
+    /* The beacons are NOT rebuilt here. _updateTaskBeacons re-reads the done
+       list and the stage's landmark every frame, so a finished step darkens
+       and moves its pillar on its own — building a fresh set for every step
+       of every chore only threw away geometry nobody disposed of. */
+    /* The stage that was just DONE, passed in, not read back out of
+       taskStep — both callers have already advanced that map by the time
+       they get here, so every payoff used to fire at the NEXT landmark:
+       the crate flashed at the campfire, and splicing the optic threw the
+       ridge Pendulum's shockwave with nobody standing under it. */
+    const stage = (atStep === null ? this._taskStage(id) : taskStage(id, atStep))
+      || { name: 'THE TASK', verb: 'WORKING', secs: 3, at: null, fx: 'spark' };
     const fx = TASK_FX[stage.fx] || TASK_FX.spark;
-    const site = this._taskSite(id);
+    const site = this._namedSite(stage.at) || M.sites[id] || null;
 
     if (site && this.taskFx) {
       this.taskFx.burst(site.x, Math.max(site.y, heightAt(site.x, site.z)), site.z, fx.colour, 'done', fx.ring);
@@ -882,7 +1425,8 @@ export class MPGame extends Game {
     this.audio.sfx(fx.sfx);
     this.audio.sfx(finished ? 'confirm' : 'select');
 
-    this._taskWorldFx(id, stage);
+    const next = atStep === null ? taskById(id)?.then : taskStage(id, atStep + 1);
+    this._taskWorldFx(id, stage, next);
     /* Work pays. Agents' lists are a cover, so their "work" pays nothing —
        if they want anything off Ferdi they have to go and find coins on
        the ground like a scavenger, which puts them out in the open. */
@@ -893,11 +1437,28 @@ export class MPGame extends Game {
       this.coins = (this.coins || 0) + pay;
       this.ui.toast(`+${pay} SYNCOIN`, 'gold', 1600);
       this._payInstalment();
+      /* Every other move of this purse tells the host. Chore pay never did,
+         so the command table's ledger read zero for the hardest workers, the
+         Stranger's rich/poor clue sorted numbers that were not real, and an
+         Agent who killed one of them looted nothing. After the instalment,
+         so the one packet carries the figure the round ends up with. */
+      this._send({ t: C.PURSE, coins: this.coins });
     }
 
-    const def = taskById(id);
-    if (!finished && def?.then) {
-      this.ui.showPopup(def.then.name, 'NOW TAKE IT THERE', 'task', 'HALF DONE');
+    const cleared = finished && M.view.tasks.length
+      && M.view.tasks.every((t) => M.view.doneTasks.has(t));
+    if (!finished && next && next !== stage) {
+      this.ui.showPopup(next.name, 'NOW TAKE IT THERE', 'task', 'HALF DONE');
+    } else if (cleared) {
+      /* The last chore on your own list used to get the same card as the
+         first, so the moment every Castaway reaches was the flattest one in
+         the round. The rest of the work is other people's from here. */
+      this.audio.sfx('victory');
+      this.ui.showPopup(
+        'YOUR LIST IS CLEAR',
+        `${Math.max(0, (M.view.tasksTotal || 0) - (M.view.tasksDone || 0))} STEPS LEFT ON THE ISLAND`,
+        'task', 'NOTHING LEFT TO DO BUT WATCH',
+      );
     } else {
       this.ui.showPopup(stage.name, 'THAT IS ONE OFF THE LIST', 'task', 'TASK DONE');
     }
@@ -908,30 +1469,25 @@ export class MPGame extends Game {
    * What the island does about it. A ring of light is generic; this is the
    * bit that makes each chore feel like a different job.
    */
-  _taskWorldFx(id, stage) {
+  _taskWorldFx(id, stage, next) {
     const at = stage?.at;
-    const relic = (k) => (this.relicNodes || []).find((r) => r.kind === k)?.mesh;
+    /* Both three-part chores spend their first two stages on the same
+       landmark, so the pair below would fire twice on the way through. Only
+       the last stage there gets to throw it. */
+    const last = !next || next.at !== at;
 
-    if (id === 'tasha' && at === 'tasha') {
-      relic('tasha')?.userData.setFixed?.(true);
-      this.audio.sfx('orbShatter');
-    }
-    if (id === 'plane' && at === 'aerlingus') {
-      relic('aerlingus')?.userData.setFixed?.(true);
-      this.audio.sfx('slam');
-    }
-    if (at && at.startsWith('pend')) {
-      // the Pendulum you just wound throws a shockwave and flares
-      const i = Number(at.slice(4)) - 1;
-      const m = (this.pendulumMeshes || [])[i];
-      m?.userData.activate?.();
-    }
+    /* The relic and the Pendulum are not here any more: what they do LATCHES,
+       and this path is private to whoever did the work, so the island only
+       ever lit up for one person and everybody else walked past a dead tower
+       all round. They ride S.WORLDFX now — see _onWorldFx. The bang stays,
+       because a noise is for the one who made it. */
+    if (id === 'tasha' && at === 'tasha' && last) this.audio.sfx('orbShatter');
+    if (id === 'plane' && at === 'aerlingus' && last) this.audio.sfx('slam');
     if (id === 'crate' && at === 'crates') {
       // the crate you just shouldered comes off the stack
       const loose = this.hutNode?.userData.crate;
       if (loose && loose.visible) {
         loose.visible = false;
-        this.audio.sfx('door');
         setTimeout(() => { if (loose) loose.visible = true; }, 45000);
       }
     }
@@ -942,7 +1498,11 @@ export class MPGame extends Game {
         f.scale.setScalar(1.9);
         setTimeout(() => f.scale.setScalar(1), 1400);
       }
-      if (this.campfire?.userData.light) this.campfire.userData.light.intensity = 6;
+      /* A clock, not a value. Two per-frame writers own this light —
+         tickIslandWorld and updateDayNight — so a direct write here was
+         overwritten before the frame ended and the fire never jumped at
+         all. Nothing to brighten if the lights are out. */
+      if (!this.doused) this.fireFlareUntil = this.time + 1.4;
     }
     if (id === 'brazier' && this.templeDoor) {
       for (const fl of (this.templeDoor.userData.fires || [])) {
@@ -953,6 +1513,30 @@ export class MPGame extends Game {
     if (id === 'sweep' && this.templeDoor?.userData.light) {
       this.templeDoor.userData.light.intensity = 4.2;
       setTimeout(() => { if (this.templeDoor) this.templeDoor.userData.light.intensity = 1.1; }, 1800);
+    }
+  }
+
+  /**
+   * The mark a finished step leaves on the island, told to everybody.
+   *
+   * All that crosses the wire is the landmark — no doer, no position, since
+   * knowing a chore was done is not knowing who was standing there — so the
+   * latch is keyed on the place. Every one of these is idempotent, which is
+   * what lets a landmark that carries two stages of the same chore say so
+   * twice without any of it mattering.
+   */
+  /* `last` matters because a two-part chore spends both stages at the same
+     landmark: the relic is the finished job, not the opened panel. */
+  _onWorldFx(at, last = true) {
+    if (!at) return;
+    if (last && (at === 'tasha' || at === 'aerlingus')) {
+      (this.relicNodes || []).find((r) => r.kind === at)?.mesh.userData.setFixed?.(true);
+    }
+    if (at.startsWith('pend')) {
+      // found by landmark, because the meshes are built in PENDULUMS order,
+      // not pend1..4
+      const i = PENDULUMS.findIndex((pd) => pd.place === at);
+      if (i >= 0) (this.pendulumMeshes || [])[i]?.userData.activate?.();
     }
   }
 
@@ -969,10 +1553,23 @@ export class MPGame extends Game {
     return this._namedSite(stage.at) || this.mp.sites[id] || null;
   }
 
+  /* A toast, and only a toast. This also wrote the line into mp.notice on a
+     three second clock for a banner that was never built and nothing ever
+     read, and the channel carries routine chatter — REPAIRED, NETWORK, a
+     name leaving — so it is not a thing to put across the picture either. */
   _notice(text) {
-    this.mp.notice = String(text).toUpperCase();
-    this.mp.noticeT = 3;
     this.ui.toast(text, 'jade', 2600);
+  }
+
+  /**
+   * S.FIXED is how a sabotage ends, and only one of the ways it ends is
+   * somebody fixing it. REPAIRED over a storm that simply ran out was free
+   * cover for the Agent who pulled it; over a fatal one it sat next to the
+   * results card, and over a meeting it announced a repair nobody did.
+   */
+  _fixedNotice(why) {
+    if (!why || why === 'fix') this._notice('REPAIRED');
+    else if (why === 'expired') this._notice('IT PASSED ON ITS OWN');
   }
 
   /* ===========================================================
@@ -1032,20 +1629,114 @@ export class MPGame extends Game {
     M2.sabLog = [];
     M2.ledger = null;
     M2.ledgerPending = 0;
+    /* The end of a round leaves both of these standing: `finished` stops the
+       council ever re-arming, and `cool` is the client's copy of the sabotage
+       timers, which the host already forgot in toLobby(). */
+    M2.finished = false;
+    M2.cool = {};
     for (const d of (M2.drops || [])) this._retireDrop(d);
     M2.drops = [];
     M2.chaffUntil = 0;
     M2.speaker = null;
     if (M2.speakerNode) setHidden(M2.speakerNode, true);
+    /* And the one on the treeline, who is otherwise still standing where he
+       was when the last round ended, and glides across the island from there
+       the moment the host places him again. */
+    M2.stranger = null;
+    M2.strangerGone = 0;
+    if (M2.strangerNode) {
+      M2.strangerNode.userData.setFade(0);
+      M2.strangerNode.userData.at = null;
+    }
     for (const v of (this.vendors || [])) v.spent = false;
     this._buildSpeakerNode();
     this.knowsBunker = !!M2.dev;
-    this.blinded = false;
-    this.scattered = false;
-    this.shopShut = false;
+    /* A round that ends inside a live sabotage never sees the S.FIXED that
+       would have undone it, so the douse, the jam and the storm used to run
+       on into the next round — and into single player after a quit. */
+    this._clearSabotageWorld();
     this.flask = false;
+    this.coins = 0;
     this.owned = new Set();
     this.carry = [];
+    /* And the state those items put on the player. Emptying the pockets
+       without undoing what was in them left last round's vest weight, last
+       round's Schlarna debt and last round's drawn pistol on you — and the
+       vest was gone, so you were slower for a protection you no longer had. */
+    this.player.SPEED = this.player.BASE_SPEED;
+    this.player.SPRINT = this.player.BASE_SPRINT;
+    this.player.staminaDrain = this.player.BASE_DRAIN;
+    this.player.staminaRegen = this.player.BASE_REGEN;
+    this.player.drift = 0;
+    this.plan = null;
+    this.pistolOut = false;
+    // and the shell back in the breech, or the pistol reads spent for ever
+    if (this.pistolModel) {
+      this.pistolModel.visible = false;
+      this.pistolModel.userData.flare.visible = true;
+    }
+    this.printerOn = false;
+    this.scannerOn = false;
+    this.scanLock = null;
+    // alive again, and not watching over anybody's shoulder
+    this.mp.spectate = null;
+    this._setSelfGhost(false);      // reverts the material, not just the flag
+    this.alibiUntil = 0;
+    this.freePulls = 0;
+    this.nightEyes = false;
+    this.doubleCoins = false;
+    this.bigMeals = false;
+    // Cathy's permanent plates, and the one that wears off
+    this.ate = new Set();
+    this.coinSense = false;
+    this.coinNeedle = false;
+    this.flossUntil = 0;
+    this.drunkUntil = 0;
+    this.drunkPeak = 0;
+    this.tab = null;                // last round's bar tab does not follow you
+    if (this.pipeline) this.pipeline.drunk = 0;
+    /* The hole is filled in again for a new round, the same as the host's
+       side does (see HostSession.start). The X node's state object lives for
+       the whole session, so without this round two found an open, empty
+       chest that nobody could dig, open or hear on the scanner. */
+    if (this.buried) {
+      const bs = this.buried;
+      bs.state.dug = 0; bs.state.open = 0; bs.state.taken = false;
+      bs.said = false; bs.saidHalf = false;
+      bs.digging = 0; bs.lastSpade = 0; bs.sent = 0;
+      if (bs.collider) {
+        const i = this.colliders.indexOf(bs.collider);
+        if (i >= 0) this.colliders.splice(i, 1);
+        bs.collider = null;
+      }
+      bs.solid = false;
+      this.player.setColliders(this.colliders);
+    }
+    this.foundX = false;
+    this._saidSanct = false;
+    /* The two durable marks a chore leaves — the lit lighthouse eye and the
+       stripped fuselage — and the towers a wind woke. Nothing else ever puts
+       any of them back, so they stayed on for the rest of the session and
+       `activate`'s own guard then silently refused every later wind. */
+    for (const r of (this.relicNodes || [])) r.mesh.userData.setFixed?.(false);
+    for (const m of (this.pendulumMeshes || [])) m.userData.reset?.();
+    /* The money on the ground, back where it was. Only the single-player
+       start ever undid a pickup, so every coin anybody walked over stayed
+       taken and invisible for the rest of the session — and an Agent, whose
+       chores pay nothing, had no income at all from round two on. */
+    this.coinFx = this.coinFx || [];
+    this.coinFx.length = 0;
+    for (const c of (this.syncoins || [])) {
+      c.taken = false;
+      const m = c.mesh;
+      if (!m) continue;
+      m.visible = true;
+      // a flourish cut short by the round ending owns the coin's tick for ever
+      m.userData.flourish = false;
+      m.scale.setScalar(1);
+      m.position.set(c.x, m.userData.baseY ?? m.position.y, c.z);
+      m.userData.setSense?.(false);
+    }
     // she keeps her own hours; start her wherever the clock says she is
     if (this.casinoDock) this.casinoIn = this.night > 0.34 ? 1 : 0;
     /* The relay, back to how it was fitted. `_initCameras` builds once and
@@ -1074,6 +1765,16 @@ export class MPGame extends Game {
        while the reveal card is still up, rather than the first time
        somebody finishes a chore or somebody dies. */
     try {
+      /* The man on the treeline, built now rather than on the frame he first
+         appears. His body is the only transparent ps1-Lambert in the scene,
+         so nothing else warms that program — and the ghost material every
+         dead castaway wears has the same cache key and rides along for
+         free. buildStranger ends on setFade(0), so he is hidden already. */
+      if (this.islandScene && !M2.strangerNode) {
+        M2.strangerNode = buildStranger(this.propMats);
+        this.islandScene.add(M2.strangerNode);
+        this.tickers.push(M2.strangerNode);
+      }
       /* Anything built since the loading screen may have brought a light
          with it. Put those on the rig BEFORE compiling, or this compiles
          every material for a light count the game will never render at
@@ -1104,6 +1805,9 @@ export class MPGame extends Game {
     const M = this.mp;
     const named = {
       camp: this.campfirePos || this.spawn,
+      /* Not for a chore — the host's emergency-meeting check asks siteOf
+         for it, and the bell hangs at the camp, not at the spawn. */
+      bell: this.campPos || this.spawn,
       crates: this.cratePos || this.hutPos,
       wreck: this.wreckPos,
       hut: this.hutPos,
@@ -1119,11 +1823,23 @@ export class MPGame extends Game {
       }) || this.coconutPiles?.[0] || LANDMARKS.lagoon,
       lagoon: LANDMARKS.lagoon,
     };
-    const pend = this.interactables.filter((i) => i.kind === 'pendulum');
-    pend.forEach((p, i) => { named['pend' + (i + 1)] = { x: p.x, z: p.z }; });
+    /* Keyed by the tower's own landmark, not by where it sits in the list.
+       PENDULUMS is declared in the order pend2, pend3, pend1, pend4, so
+       numbering them off the array made WIND THE WEST point at the north
+       ridge and gave the Stranger the wrong tower to name in council. */
+    for (const it of this.interactables) {
+      if (it.kind !== 'pendulum') continue;
+      const place = PENDULUMS[it.index]?.place;
+      if (place) named[place] = { x: it.x, z: it.z };
+    }
     for (const it of this.interactables) {
       if (it.kind === 'relic') named[it.relic] = { x: it.x, z: it.z };
     }
+    /* Not chores either. The host refuses a pull you are not standing at, and
+       a machine it cannot place is not one it can refuse anybody at — without
+       these two the check reads `where` as null and waves everybody through
+       from anywhere on the island. */
+    (this.vendors || []).forEach((v, i) => { named['vend' + (i + 1)] = { x: v.x, z: v.z }; });
     M.named = named;
 
     M.sites = {};
@@ -1145,7 +1861,12 @@ export class MPGame extends Game {
    */
   _buildTaskBeacons() {
     const M = this.mp;
-    for (const b of (M.beaconNodes || [])) b.removeFromParent();
+    /* Detaching them is not freeing them: three keeps the buffers until
+       something disposes of the geometry, and a rematch builds a whole new
+       set over the top of the last one. */
+    for (const b of (M.beaconNodes || [])) {
+      b.removeFromParent(); b.geometry.dispose(); b.material.dispose();
+    }
     M.beaconNodes = [];
     for (const id of M.view.tasks) {
       const geo = new THREE.CylinderGeometry(0.5, 1.5, 90, 8, 1, true);
@@ -1188,8 +1909,21 @@ export class MPGame extends Game {
   /** Your own chores get compass ticks. Nobody else's do. */
   _compassForTasks() {
     const M = this.mp;
-    const bell = this.campfirePos || this.campPos || this.spawn;
-    const pois = [{ label: 'FIRE', x: bell.x, z: bell.z, kind: 'poi' }];
+    const fire = this.campfirePos || this.campPos || this.spawn;
+    /* Every tick carries the name of its own sprite. Named rather than
+       guessed from the label, so renaming one cannot quietly lose its
+       picture — and on a crowded bearing the picture is the half that
+       survives. See POI_ICONS in lib/hud.js. */
+    const pois = [{ label: 'FIRE', x: fire.x, z: fire.z, kind: 'poi', icon: 'fire' }];
+    /* The bell is a three-metre circle round the camp with nothing standing
+       in it, and it is NOT where the campfire tick points — the fire can sit
+       a good way off the camp centre. Give it its own tick, and only while
+       you have a meeting left to call, so it is never an offer you cannot
+       take. */
+    const bell = this.campPos || this.spawn;
+    if ((this.me?.emergencies ?? 0) > 0) {
+      pois.push({ label: 'BELL', x: bell.x, z: bell.z, kind: 'poi', icon: 'bell' });
+    }
     for (const id of M.view.tasks) {
       const site = this._taskSite(id);
       if (!site) continue;
@@ -1201,25 +1935,25 @@ export class MPGame extends Game {
     /* Wherever the current sabotage has to be repaired, marked in red and
        blinking. Being told the island is on fire without being told where
        the bucket is was not much of a callout. */
-    if (M.speaker) pois.push({ label: 'BOX', x: M.speaker.x, z: M.speaker.z, kind: 'poi' });
+    if (M.speaker) pois.push({ label: 'BOX', x: M.speaker.x, z: M.speaker.z, kind: 'poi', icon: 'box' });
     if ((this.knowsBunker || this.state === 'bunker') && M.bunker) {
-      pois.push({ label: 'POST', x: M.bunker.x, z: M.bunker.z, kind: 'poi' });
+      pois.push({ label: 'POST', x: M.bunker.x, z: M.bunker.z, kind: 'poi', icon: 'post' });
     }
     // Ferdi's delivery notes: his two outlying machines
     if (this.hasItem('rounds')) {
       for (const v of (this.vendors || [])) {
         if (v.spent) continue;
-        pois.push({ label: 'MACHINE', x: v.x, z: v.z, kind: 'poi' });
+        pois.push({ label: 'MACHINE', x: v.x, z: v.z, kind: 'poi', icon: 'machine' });
       }
     }
     /* Once you have spoken to her, Cathy is on your compass. Before that
        she is on the map and nowhere else, which is the whole point of her
        being out there. */
     if (this.metCathy && this.cathy) {
-      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi' });
+      pois.push({ label: 'CATHY', x: this.cathy.x, z: this.cathy.z, kind: 'poi', icon: 'cathy' });
     }
     if (this.foundX && this.buried && !this.buried.state.taken) {
-      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal' });
+      pois.push({ label: 'X', x: this.buried.x, z: this.buried.z, kind: 'goal', icon: 'dig' });
     }
 
     /* Cathy's sauce puts a needle on the nearest loose coin, and her eggs
@@ -1231,10 +1965,9 @@ export class MPGame extends Game {
       const def = SABOTAGE_DEFS[sab.kind];
       for (const at of (def?.fixAt || [])) {
         const site = this._namedSite(at);
-        if (site) pois.push({ label: 'FIX', x: site.x, z: site.z, kind: 'fix' });
+        if (site) pois.push({ label: 'FIX', x: site.x, z: site.z, kind: 'fix', icon: 'fix' });
       }
     }
-    this._taskPois = pois;
     this.ui.setCompassPois(pois);
   }
 
@@ -1251,23 +1984,37 @@ export class MPGame extends Game {
     /* Ghosts can work. They cannot report, ring the bell, or be seen — but
        leaving them with nothing to do for the rest of a round was a
        punishment for having been murdered. */
+    let bodyD = Infinity, bodyBest = null;
     if (this.amAlive) {
+      /* The host drops a REPORT during a fatal sabotage without a word, so
+         the prompt has to say why rather than offer a button that does
+         nothing. */
+      const jam = !!M.view.sabotage?.fatal;
       // a body to report
       for (const b of M.bodies.values()) {
+        if ((b.room | 0) !== this.roomId) continue;   // theirs is another room
         const d = Math.hypot(p.x - b.mesh.position.x, p.z - b.mesh.position.z);
-        if (d < 4.0 && d < bestD) {
-          bestD = d;
-          best = { kind: 'mpReport', bodyId: b.id, prompt: `REPORT ${b.name}` };
+        if (d < 4.0 && d < bodyD) {
+          bodyD = d;
+          bodyBest = {
+            kind: 'mpReport', bodyId: b.id,
+            prompt: jam ? 'NO REPORTS - PENDULUMS JAMMED' : `REPORT ${b.name}`,
+          };
         }
       }
+      if (bodyBest) { bestD = bodyD; best = bodyBest; }
       /* The bell hangs at the camp, not at the spawn point — the spawn is
          four metres from the wreck, so a bell there sat on top of the two
          chores that live in the hull and neither could ever be reached. */
       const bell = this.campPos || this.spawn;
       const dc = Math.hypot(p.x - bell.x, p.z - bell.z);
-      if (dc < 3.4 && dc < bestD && (this.me?.emergencies ?? 1) > 0) {
+      if (dc < 3.4 && dc < bestD) {
         bestD = dc;
-        best = { kind: 'mpBell', prompt: 'CALL A COUNCIL' };
+        /* Say so rather than offering nothing: standing at a bell that gives
+           no prompt reads as a bug. `none` falls through interact(). */
+        best = (this.me?.emergencies ?? 0) > 0
+          ? { kind: 'mpBell', prompt: jam ? 'NO COUNCIL - PENDULUMS JAMMED' : 'CALL A COUNCIL' }
+          : { kind: 'none', prompt: 'NO COUNCILS LEFT' };
       }
     }
 
@@ -1285,7 +2032,12 @@ export class MPGame extends Game {
         taskBest = { kind: 'mpTask', taskId: id, prompt: stage.name };
       }
     }
-    if (taskBest) { bestD = taskD; best = taskBest; }
+    /* ...except a corpse that is literally nearer than the chore site. The
+       report reaches 4.0 m and a chore 4.6, so a body dropped on one of your
+       own sites used to be unreportable from anywhere at all — there was no
+       spot left to stand in. Step towards it and it wins; stand on the site
+       and the chore still does. */
+    if (taskBest && !(bodyBest && bodyD < taskD)) { bestD = taskD; best = taskBest; }
 
     // sabotage repair
     const sab = M.view.sabotage;
@@ -1435,11 +2187,20 @@ export class MPGame extends Game {
     // Ferdi's counter
     if (this.amAlive && this.hutPos && !this.shopShut) {
       const dh = Math.hypot(p.x - this.hutPos.x, p.z - this.hutPos.z);
+      /* The safe circle is thirteen metres wide and nothing anywhere told
+         anybody it existed — Castaways never learned they were safe and
+         Agents only learned the key had stopped working. Taught off
+         `inSanctuary` rather than the 7.5m prompt radius, so a shut shop
+         correctly says nothing. */
+      if (!this._saidSanct && this.inSanctuary(p.x, p.z)) {
+        this._saidSanct = true;
+        this.ui.toast('FERDI KEEPS THE PEACE - NOBODY DIES HERE', 'jade', 3400);
+      }
       if (dh < 7.5 && dh < bestD) { bestD = dh; best = { kind: 'mpShop', prompt: 'FERDI STEINMAN' }; }
     }
 
     // a dead player's purse, lying where they fell
-    for (const d of (M.drops || [])) {
+    if (this.amAlive) for (const d of (M.drops || [])) {
       if (d.taken) continue;
       const dd = Math.hypot(p.x - d.x, p.z - d.z);
       if (dd < 6.0 && dd < bestD) { bestD = dd; best = { kind: 'purse', drop: d, prompt: `${d.coins} SYNCOIN` }; }
@@ -1448,7 +2209,7 @@ export class MPGame extends Game {
     /* Coins are collected by walking into them (see _sweepCoins); the
        prompt only exists so you know one is nearby if you walk past
        looking the other way. */
-    for (const c of (this.syncoins || [])) {
+    if (this.amAlive) for (const c of (this.syncoins || [])) {
       if (c.taken) continue;
       const d = Math.hypot(p.x - c.x, p.z - c.z);
       if (d < 6.0 && d < bestD) { bestD = d; best = { kind: 'coin', coin: c, prompt: 'SYNCOIN' }; }
@@ -1471,6 +2232,16 @@ export class MPGame extends Game {
     switch (it.kind) {
       case 'mpTask': {
         const stage = this._taskStage(it.taskId);
+        /* The Flopper's Flask is sold as "no holding, no puzzle", so it has
+           to fire before the puzzle window opens rather than after it has
+           already returned — the puzzle stages are the ones it is bought for. */
+        if (this.flask) {
+          this.flask = false;
+          this._send({ t: C.DO_TASK, taskId: it.taskId });
+          this.audio.sfx('victory');
+          this.ui.toast("THE FLOPPER'S FLASK", 'jade', 1800);
+          break;
+        }
         /* Some stages are a puzzle rather than a hold. They take longer,
            and — the point — they take your eyes off the world while you
            are doing them. */
@@ -1485,15 +2256,7 @@ export class MPGame extends Game {
             step: step + 1, steps: taskSteps(it.taskId),
           });
           document.exitPointerLock?.();
-          this.audio.sfx('page');
           return;
-        }
-        if (this.flask) {
-          this.flask = false;
-          this._send({ t: C.DO_TASK, taskId: it.taskId });
-          this.audio.sfx('victory');
-          this.ui.toast("THE FLOPPER'S FLASK", 'jade', 1800);
-          break;
         }
         M.taskProgress = {
           taskId: it.taskId, t: 0, secs: stage.secs || 3, verb: stage.verb || 'WORKING',
@@ -1504,9 +2267,27 @@ export class MPGame extends Game {
         this.audio.sfx('charge');
         break;
       }
-      case 'mpReport': this._send({ t: C.REPORT, bodyId: it.bodyId }); break;
-      case 'mpBell': this._send({ t: C.REPORT, bodyId: null }); break;
-      case 'mpFix': this._send({ t: C.FIX, kind: it.fix, at: it.at }); break;
+      case 'mpReport':
+      case 'mpBell':
+        /* The host refuses meetings while a fatal sabotage runs and says
+           nothing, so pressing E on a body simply did nothing at all. */
+        if (M.view.sabotage?.fatal) {
+          this.audio.sfx('deny');
+          this.ui.toast('NOBODY MEETS WHILE THE PENDULUMS ARE STOPPED', 'bad', 2600);
+          break;
+        }
+        this._send({ t: C.REPORT, bodyId: it.kind === 'mpReport' ? it.bodyId : null });
+        break;
+      case 'mpFix': {
+        M.taskProgress = {
+          fix: it.fix, at: it.at, t: 0, secs: SABOTAGE_DEFS[it.fix]?.fixSecs ?? 3,
+          verb: 'REPAIRING', name: 'REPAIR',
+          x: this.player.pos.x, z: this.player.pos.z,
+        };
+        this.player.playThrow();
+        this.audio.sfx('charge');
+        break;
+      }
       case 'mpHatch': {
         this.enterBunker();
         break;
@@ -1528,13 +2309,11 @@ export class MPGame extends Game {
            Standing at deck height you could never see the drums. */
         this.screens.push('mpSlot', { slot: it.slot });
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpTable2': {
         this.screens.push('mpBlackjack', {});
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpDoorOut': {
@@ -1563,19 +2342,16 @@ export class MPGame extends Game {
       case 'mpBar': {
         this.screens.push('mpBar', { sel: 0 });
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpDarts': {
         this.screens.push('mpDarts', {});
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpFlopper': {
         this.screens.push('mpFlopper', {});
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpCathy': {
@@ -1586,7 +2362,6 @@ export class MPGame extends Game {
         }
         this.screens.push('mpCathy', { sel: 0 });
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpStranger': {
@@ -1598,13 +2373,11 @@ export class MPGame extends Game {
            what you get. Browsing a vending machine was never the idea. */
         this.screens.push('mpVend', { vendor: it.vendor || null });
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       }
       case 'mpShop':
         this.screens.push('mpShop', { sel: 0, side: 0 });
         document.exitPointerLock?.();
-        this.audio.sfx('page');
         break;
       case 'coin': this._takeCoin(it.coin); break;
       case 'purse': this._takePurse(it.drop); break;
@@ -1616,9 +2389,30 @@ export class MPGame extends Game {
   tryKill() {
     const M = this.mp;
     if (!this.amAgent || !this.amAlive || M.view.phase !== PHASE.ROAM) return;
+    /* On the sand and seeing stars. The pistol has always refused while a
+       flare is on you and the knife never did, so a stunned Agent could
+       still take somebody out of the middle of the vote about him. */
+    if (this.stunnedUntil && now() < this.stunnedUntil) { this.audio.sfx('deny'); return; }
     if (M.myKillReady && now() < M.myKillReady) return;
+    /* The host edits `host.settings` directly and never receives a WELCOME,
+       so its mirror copy is still the defaults — read the authority when we
+       are it, the mirror when we are not. Reading only the mirror meant the
+       host's own knife was refused by the host with no word at all. */
+    const sset = M.host?.settings || M.view.settings;
+    if (sset?.nightOnly && (this.night || 0) <= 0.5) {
+      this.audio.sfx('deny');
+      this._notice('NOT IN DAYLIGHT');
+      return;
+    }
     const target = this._nearestVictim();
-    if (!target) return;
+    if (!target) {
+      if (this._sanctBlocked && (!this._sanctSaid || now() - this._sanctSaid > 2.5)) {
+        this._sanctSaid = now();
+        this.audio.sfx('deny');
+        this._notice("FERDI'S COUNTER IS NEUTRAL GROUND");
+      }
+      return;
+    }
     this._send({ t: C.KILL, targetId: target.id });
     this.player.playThrow();
   }
@@ -1632,13 +2426,28 @@ export class MPGame extends Game {
   _nearestVictim() {
     const M = this.mp;
     const p = this.player.pos;
-    if (this.inSanctuary(p.x, p.z)) return null;
-    let best = null, bestD = 4.6;
+    /* Why the refusal is remembered rather than just returned: a kill inside
+       the ring drew no outline, printed no prompt and made no sound, so the
+       one key the whole role is built around simply did nothing. tryKill
+       reads this immediately after calling us, so a flag costs no allocation
+       on a path that runs twice a frame. */
+    this._sanctBlocked = false;
+    if (this.inSanctuary(p.x, p.z)) { this._sanctBlocked = true; return null; }
+    let best = null, bestD = Infinity;
     for (const av of M.avatars.values()) {
       const rec = M.view.players.get(av.id);
       if (!rec || rec.alive === false) continue;
-      if (this.inSanctuary(av.pos.x, av.pos.z)) continue;
+      // somebody in another interior is not in front of you; the host
+      // refuses those kills without a word
+      if ((av.room | 0) !== this.roomId) continue;
       const d = Math.hypot(p.x - av.pos.x, p.z - av.pos.z);
+      /* Whoever is already outlined keeps it out to the host's own limit.
+         One reach for both meant somebody standing at 4.6 was marked and
+         dropped frame after frame, and the outline strobed. */
+      if (d > (av === M.marked ? 4.8 : 4.6)) continue;
+      // tested after the reach, or somebody protected three rooms away
+      // would claim the refusal
+      if (this.inSanctuary(av.pos.x, av.pos.z)) { this._sanctBlocked = true; continue; }
       if (d < bestD) { bestD = d; best = av; }
     }
     return best;
@@ -1696,13 +2505,15 @@ export class MPGame extends Game {
       .map((id) => ({ id, site: this._taskSite(id), done: M.view.doneTasks.has(id) }))
       .filter((j) => j.site);
     const left = jobs.filter((j) => !j.done).length;
-    this.audio.sfx('page');
+    const below = this.state !== 'island';
     this.screens.push('chart', {
       agentSide: this.amAgent,
-      subtitle: this.scattered ? 'THE MARKERS ARE GONE. FROM MEMORY, THEN.'
-        : (this.amAgent
-          ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
-          : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE')),
+      // below decks the cross is where you went down, not where you are
+      subtitle: below ? 'BELOW DECKS. THE CROSS IS THE WAY YOU CAME IN.'
+        : (this.scattered ? 'THE MARKERS ARE GONE. FROM MEMORY, THEN.'
+          : (this.amAgent
+            ? 'THE LIST IS A COVER. WALK IT ANYWAY.'
+            : (left ? `${left} STILL TO DO` : 'YOUR WORK IS DONE'))),
       data: {
         heightAt, radius: ISLAND.shore + 14,
         /* The listening post, once you have paid for the chart that shows
@@ -1711,7 +2522,7 @@ export class MPGame extends Game {
            the chart never put one there. */
         marks: [
           ...((this.knowsBunker && M.bunker)
-            ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true }]
+            ? [{ x: M.bunker.x, z: M.bunker.z, label: 'LISTENING POST', found: true, icon: 'post' }]
             : []),
         ],
         /* The machines get their own picture rather than a red cross
@@ -1729,8 +2540,15 @@ export class MPGame extends Game {
         fire: this.campfirePos || this.spawn || null,
         tower: this.tower ? { x: this.tower.x, z: this.tower.z } : null,
         casino: this.casinoIn > 0.5 ? this.casinoPos : null,
-        player: this.player.pos,
-        facing: this.player.facing,
+        /* Every interior is its own local coordinate space, so plotting the
+           live position while you are below decks planted the pip — and the
+           first-open centring — in the middle of the island. Show where you
+           went down instead, and drop `facing` entirely: drawChart only
+           draws the arrow when it is present, and a room-local yaw means
+           nothing out here. */
+        player: below ? (this._islandPos || this.spawn || { x: 0, z: 0 }) : this.player.pos,
+        facing: below ? undefined : this.player.facing,
+        inside: below || undefined,
         wreck: this.wreckPos,
         rogue: this.rogueSandPos,
         hut: this.hutPos,
@@ -1750,7 +2568,11 @@ export class MPGame extends Game {
           .map((a) => {
             const rec = M.view.players.get(a.id);
             const bx = M.speaker && now() < M.speaker.until ? M.speaker : null;
-            const at = bx || rec?.decoy || a.pos;   // the box and the alibi both lie
+            /* Same local-space trap on the other side: a ghost watching the
+               round saw everybody who had gone below stacked on the island's
+               origin. Plot them at the way in instead. The box and the alibi
+               are already island coordinates, and both still lie first. */
+            const at = bx || rec?.decoy || this._roomAnchor(a.room) || a.pos;
             return { x: at.x, z: at.z, colour: colourHex(a.colour) };
           }),
       },
@@ -1758,17 +2580,34 @@ export class MPGame extends Game {
     document.exitPointerLock?.();
   }
 
+  /* Castaways reads its own held-E flag, so Game's "let go of everything"
+     has to reach it too — a chore held through a pause or an alt-tab kept
+     charging otherwise. The guard is for construction order: Game's
+     constructor binds its events before `this.mp` exists. */
+  _clearHeldInput() {
+    super._clearHeldInput();
+    if (this.mp) this.mp.holdingE = false;
+  }
+
   _key(e, down) {
     const M = this.mp;
     // a chore is something you hold down, not something you tap once
     if (M.active && e.code === 'KeyE') M.holdingE = down;
     // Q toggles: pressing it again on the wheel should put it away
-    if (M.active && down && e.code === 'KeyQ' && this.screens.name === 'mpSabotage') {
+    if (M.active && down && !e.repeat && e.code === 'KeyQ' && this.screens.name === 'mpSabotage') {
       this.screens.pop();
       this.afterOverlayClose();
       return;
     }
     if (M.active && down && !this.screens.open && this.playing) {
+      /* A held key is one press. The browser repeats a keydown about thirty
+         times a second and every branch below is a one-shot: the belt spends
+         a different item on each repeat, V empties the camera bundle at your
+         feet, and the printer toggle puts a C.PERK — and the roster
+         broadcast that ends that case — on the wire per repeat. Swallowed
+         here rather than guarded on the `if` above, because a repeat that
+         falls through reaches Game._key, where KeyF still opens the chart. */
+      if (e.repeat && /^(Digit[1-9]|Key[GVBNFQ])$/.test(e.code)) return;
       /* The belt. 1-9 uses what you are carrying — the one thing the game
          had no way of doing at all. */
       if (/^Digit[1-9]$/.test(e.code)) { this.useBeltSlot(+e.code.slice(5)); return; }
@@ -1777,6 +2616,9 @@ export class MPGame extends Game {
       if (e.code === 'KeyB' && this.scannerOn) { this.scanNext(1); return; }
       if (e.code === 'KeyN' && this.printerOn) { this.receiptBack(); return; }
       if (e.code === 'KeyF') {
+        /* The dead have no use for the knife or the flare, and every reason
+           to want to be somewhere else. Same key, different job. */
+        if (!this.amAlive) { this.cycleSpectate(); return; }
         if (this.pistolOut) this.fireFlare(); else this.tryKill();
         return;
       }
@@ -1789,6 +2631,7 @@ export class MPGame extends Game {
         else if (!this.amAlive) this.ui.toast('THE DEAD DO NOTHING', 'bad', 1400);
         else if (M.view.phase !== PHASE.ROAM) this.audio.sfx('deny');
         else if (M.view.sabotage) this.ui.toast('ONE AT A TIME', 'bad', 1400);
+        else if (this.stunnedUntil && now() < this.stunnedUntil) this.ui.toast('YOU ARE SEEING STARS', 'bad', 1400);
         else {
           this.screens.push('mpSabotage');
           document.exitPointerLock?.();
@@ -1807,6 +2650,8 @@ export class MPGame extends Game {
    * be something you run over.
    */
   _sweepCoins(dt) {
+    // the dead were harvesting the island: nothing here guarded on being alive
+    if (!this.amAlive) return;
     const p = this.player.pos;
     for (const d of (this.mp.drops || [])) {
       if (d.taken) continue;
@@ -1847,17 +2692,40 @@ export class MPGame extends Game {
     d.mesh = null;
   }
 
+  /**
+   * Reach for one. Two people standing over the same purse both credited
+   * themselves and the same coins ended up in two pockets, so this asks and
+   * waits: the host says who got there first, and S.DROPGONE is what pays.
+   *
+   * The ask is held for a second rather than for good — the sweep runs every
+   * frame, and a refusal (a position a tick out of date, four metres from the
+   * one the host is holding) says nothing back, so a flag that never lapsed
+   * would leave the purse lying there untakeable for the rest of the round.
+   */
   _takePurse(d) {
-    if (d.taken) return;
+    if (!d || d.taken || !d.did) return;
+    if (d.pending && now() < d.pending) return;
+    d.pending = now() + 1;
+    this._send({ t: C.TAKEDROP, did: d.did });
+  }
+
+  /** The host's answer: whose it was. */
+  _onDropGone(did, byId) {
+    const M = this.mp;
+    const d = (M.drops || []).find((x) => x.did === did);
+    if (!d || d.taken) return;
     d.taken = true;
-    const got = this.doubleCoins ? d.coins * 2 : d.coins;
-    this.coins = (this.coins || 0) + got;
-    this._send({ t: C.PURSE, coins: this.coins });
-    this.audio.sfx('coin');
-    this.ui.toast(`+${got} SYNCOIN`, 'gold', 1800);
-    this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
-    this.player.punch?.(0.2);
-    this._payInstalment();
+    d.pending = 0;
+    if (byId === M.view.selfId) {
+      const got = this.doubleCoins ? d.coins * 2 : d.coins;
+      this.coins = (this.coins || 0) + got;
+      this._send({ t: C.PURSE, coins: this.coins });
+      this.audio.sfx('coin');
+      this.ui.toast(`+${got} SYNCOIN`, 'gold', 1800);
+      this.taskFx?.burst(d.x, heightAt(d.x, d.z), d.z, 0xffd24a, 'done', 3.2);
+      this.player.punch?.(0.2);
+      this._payInstalment();
+    }
     this._retireDrop(d);
   }
 
@@ -1865,7 +2733,6 @@ export class MPGame extends Game {
     c.taken = true;
     // black rum, and the falling down: every coin counts twice
     this.coins = (this.coins || 0) + (this.doubleCoins ? 2 : 1);
-    this.wallet = this.coins;
     this.audio.sfx('coin');
     this.startCoinFlourish(c);
     this.ui.toast(`SYNCOIN  x${this.coins}`, 'gold', 1200);
@@ -1879,21 +2746,35 @@ export class MPGame extends Game {
      THE DAY'S SALE
 
      Ferdi marks one line down every morning, by as little as a tenth and
-     as much as the whole price. He does not explain how he decides.
+     as much as all but the last Syncoin of it. He does not explain how he
+     decides.
      ========================================================= */
 
-  /** Pick the day's offer. Called on each dawn, and once at round start. */
+  /**
+   * Pick the day's offer. Called on each dawn, and once at round start.
+   *
+   * Rolled by the host alone. Math.random() on every client gave every
+   * player a different item at a different cut, and the shop prints the
+   * figure and C.BOUGHT carries the buyer's own price to every printer on
+   * the island — so a docket could show a price nobody could have paid.
+   * The host's own rng is the same stream that deals the chores, so nothing
+   * new has to go on the wire to seed it.
+   */
   rollSale() {
+    if (!this.isHost) return;                 // clients wait to be told
     const M = this.mp;
-    const open = STOCK.filter((i) => !i.night || (this.night || 0) > 0.5);
-    const pool = open.length ? open : STOCK;
-    const it = pool[(Math.random() * pool.length) | 0];
+    const rng = this.mp.host.rng;
+    /* Off the open counter, the way the Schlarna line below is picked. The
+       roll used to run over the whole of STOCK, so about one dawn in four
+       announced a markdown on a back-room line that nobody standing at the
+       open shelf could find — and the toast goes to everybody. */
+    const open = shelf('open', (this.night || 0) > 0.5);
+    const pool = open.length ? open : shelf('open', true);
+    const it = pool[(rng() * pool.length) | 0];
     if (!it) return;
-    // ten to a hundred per cent, in fives, so the figure reads cleanly
-    const cut = 10 + ((Math.random() * 19) | 0) * 5;
-    M.sale = { id: it.id, cut, day: M.saleDay = (M.saleDay || 0) + 1, at: now() };
-    this.ui.toast(`FERDI HAS MARKED SOMETHING DOWN ${cut}%`, 'gold', 4200);
-    this.audio.sfx('stinger');
+    // ten to a hundred per cent, in fives, so the figure reads cleanly;
+    // priceOf holds the floor at one Syncoin, so nothing is ever free
+    const cut = 10 + ((rng() * 19) | 0) * 5;
 
     /* ---- and the day's Schlarna line ----
        Somebody sold Ferdi a card reader. One item a day can be taken away in
@@ -1902,10 +2783,21 @@ export class MPGame extends Game {
        giving things away. */
     const open2 = STOCK.filter((i) => i.side === 'open' && i.id !== it.id
       && (!i.night || (this.night || 0) > 0.5));
-    if (open2.length) {
-      const pick = open2[(Math.random() * open2.length) | 0];
-      M.after = { id: pick.id };
-    }
+    const after = open2.length ? open2[(rng() * open2.length) | 0].id : null;
+
+    const msg = { t: S.SALE, id: it.id, cut, day: (M.saleDay || 0) + 1, after };
+    this.mp.host.net.broadcast(msg);
+    this._applySale(msg);                     // the host is a player too
+  }
+
+  /** One shop, one sale: both sides come through here. */
+  _applySale(m) {
+    const M = this.mp;
+    M.saleDay = m.day | 0;
+    M.sale = { id: m.id, cut: m.cut | 0, day: M.saleDay, at: now() };
+    M.after = m.after ? { id: m.after } : null;
+    this.ui.toast(`FERDI HAS MARKED SOMETHING DOWN ${m.cut | 0}%`, 'gold', 4200);
+    this.audio.sfx('stinger');
   }
 
   /* =========================================================
@@ -1928,8 +2820,12 @@ export class MPGame extends Game {
 
   /** Whether this line is on the plan today, and you are not already on one. */
   schlarnaOn(id) {
+    /* A plan cannot be part-refunded the way buyItem refunds a short box, so
+       a camera box only goes on the card if the whole box will fit — and the
+       card is not advertised for a purchase that would then be refused. */
+    if (id === 'camera' && this.camsSpare() < CAMERA_BUNDLE) return false;
     return this.mp.after?.id === id && !this.plan
-      && !(this.owned?.has(id) && itemById(id)?.tag === 'PASSIVE');
+      && !(this.owned?.has(id) && keptOnYou(itemById(id)));
   }
 
   /** Take something away now and settle it over the round. */
@@ -1942,14 +2838,27 @@ export class MPGame extends Game {
       this.ui.toast(`THE FIRST PAYMENT IS ${each} SYNCOIN`, 'bad', 2200);
       return false;
     }
+    if (id === 'camera' && this.camsSpare() < CAMERA_BUNDLE) {
+      this.audio.sfx('deny');
+      this.ui.toast('THE RELAY WILL NOT TAKE A WHOLE BOX', 'bad', 2400);
+      return false;
+    }
     this.coins -= each;
     this._send({ t: C.PURSE, coins: this.coins });
+    /* Same counter, same shelf, same docket. The plan sent only the purse,
+       so taking the day's line on the card was the one way to buy over
+       Ferdi's open counter without a printer anywhere seeing it. The figure
+       is what actually left the purse, because the docket says PAID. */
+    this._send({ t: C.BOUGHT, id, price: each });
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
 
-    if (it.tag === 'PASSIVE') { this.owned = this.owned || new Set(); this.owned.add(id); }
-    else this.carry = [...(this.carry || []), id];
-    if (PASSIVE_AT_BUY.has(id)) this.applyItem(id);
+    /* The camera's effect lives in applyItem now. On the belt it was four
+       payments for nothing: nothing incremented the relay's spare count and
+       pressing its number key simply destroyed the box. */
+    if (keptOnYou(it)) { this.owned = this.owned || new Set(); this.owned.add(id); }
+    else if (id !== 'camera') this.carry = [...(this.carry || []), id];
+    if (id === 'camera' || PASSIVE_AT_BUY.has(id)) this.applyItem(id);
 
     this.plan = {
       id, name: it.name, each,
@@ -1972,7 +2881,11 @@ export class MPGame extends Game {
   _payInstalment() {
     const pl = this.plan;
     if (!pl || !this.coins) return;
-    const take = Math.min(this.coins, pl.each, Math.max(1, Math.ceil(this.coins / 2)));
+    /* Floor, not ceil: on an odd purse the ceiling took more than the half
+       the plan promises to leave you — three coins in hand and it took two.
+       Clamped to what is still owed as well, or the last payment collects
+       past the total the card quoted. */
+    const take = Math.min(this.coins, pl.each, pl.owed, Math.max(1, Math.floor(this.coins / 2)));
     if (take <= 0) return;
     this.coins -= take;
     pl.owed -= take;
@@ -1994,7 +2907,11 @@ export class MPGame extends Game {
     if (!it) return 0;
     const sale = this.mp.sale;
     if (!sale || sale.id !== id) return it.cost;
-    return Math.max(0, Math.round(it.cost * (1 - sale.cut / 100)));
+    /* Never nothing. A hundred per cent off rounded to zero, and `coins <
+       price` is false at zero — so a ONE USE line, which is neither owned
+       nor `once`, could be tapped off the counter without limit for the
+       rest of the day. */
+    return Math.max(1, Math.round(it.cost * (1 - sale.cut / 100)));
   }
 
   /** Buy something. Nothing here is a number you cannot feel. */
@@ -2002,7 +2919,7 @@ export class MPGame extends Game {
     const it = itemById(id);
     if (!it) return false;
     this.owned = this.owned || new Set();
-    if (this.owned.has(id) && (it.tag === 'PASSIVE' || it.once)) {
+    if (this.owned.has(id) && (keptOnYou(it) || it.once)) {
       this.audio.sfx('deny');
       this.ui.toast('YOU HAVE ALREADY HAD THAT', 'bad', 1600);
       return false;
@@ -2013,12 +2930,27 @@ export class MPGame extends Game {
       this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
       return false;
     }
+    /* Whether the relay has room for a box at all, asked BEFORE any money
+       moves. The refund further down handed the coins back to you and told
+       nobody, so the host went on believing you were six poorer and took it
+       off you again the next time it was the authority on your purse — and
+       a docket for a sale that never happened had already gone to every
+       printer on the island. */
+    if (id === 'camera') {
+      if (this.camsSpare() <= 0) {
+        this.ui.toast('THE RELAY WILL NOT TAKE ANOTHER', 'bad', 2400);
+        this.audio.sfx('deny');
+        return false;
+      }
+    }
     this.coins -= price;
     this._send({ t: C.PURSE, coins: this.coins });
     /* Over the counter, in front of whoever is watching, and on the
        docket of anybody carrying a printer. Under the counter, nothing is
-       written down — that is what the black market is for. */
-    if (it.side !== 'black') this._send({ t: C.BOUGHT, id, price });
+       written down — that is what the black market is for. Named rather
+       than "not black", because itemById reaches Cathy's food too and her
+       stall is across the island from Ferdi's, not part of it. */
+    if (it.side === 'open' || it.side === 'both') this._send({ t: C.BOUGHT, id, price });
     this.audio.sfx('confirm');
     this.audio.sfx('coin');
 
@@ -2031,7 +2963,14 @@ export class MPGame extends Game {
          get those and pay for those — nobody should be charged six coins
          for a box that half of will not fit. */
       const got = this.gainCamera(CAMERA_BUNDLE);
-      if (!got) { this.coins += price; this.audio.sfx('deny'); return false; }
+      // the check above should have caught this; if it ever does not, the
+      // host still has to be told the money came back
+      if (!got) {
+        this.coins += price;
+        this._send({ t: C.PURSE, coins: this.coins });
+        this.audio.sfx('deny');
+        return false;
+      }
       if (got < CAMERA_BUNDLE) {
         const back = Math.round(price * (1 - got / CAMERA_BUNDLE));
         this.coins += back;
@@ -2045,7 +2984,7 @@ export class MPGame extends Game {
     }
 
     const isFood = FOOD.some((f) => f.id === id);
-    if (it.tag === 'PASSIVE' || it.once) this.owned.add(id);
+    if (keptOnYou(it) || it.once) this.owned.add(id);
     else if (isFood) { /* the floss is eaten and gone */ }
     else this.carry = [...(this.carry || []), id];
     if (isFood) {
@@ -2078,6 +3017,11 @@ export class MPGame extends Game {
 
   /** What an item actually does. Called at the counter, or off the belt. */
   applyItem(id) {
+    /* The one entry point for a box of cameras. buyItem has its own path
+       with a partial refund and returns before it reaches here; every other
+       way of coming by one — the plan, the chest, the dev kit — used to hand
+       you a belt slot that did nothing at all. */
+    if (id === 'camera') { this.gainCamera(CAMERA_BUNDLE); return; }
     // Cathy's food does the same thing in both modes, so it lives on Game
     if (FOOD.some((f) => f.id === id)) this.applyFood(id);
     if (id === 'soles') this._send({ t: C.PERK, perk: 'quiet', on: true });
@@ -2086,8 +3030,7 @@ export class MPGame extends Game {
       this._send({ t: C.PERK, perk: 'vest', on: true });
       /* Cork and canvas over your chest is heavy. A quarter off both your
          walk and your sprint is the price of the strike it eats. */
-      this.player.SPEED = this.player.BASE_SPEED * 0.75;
-      this.player.SPRINT = this.player.BASE_SPRINT * 0.75;
+      this._recalcSpeed();
       this.ui.toast('THE VEST IS HEAVY - YOU ARE 25% SLOWER', 'jade', 3200);
     }
     if (id === 'chart') {
@@ -2098,9 +3041,11 @@ export class MPGame extends Game {
       const b = this.mp.bunker;
       this.ui.toast(b ? `THE POST: ${b.name}` : 'THE POST IS ON YOUR MAP', 'jade', 3200);
     }
-    if (id === 'whetstone' && this.mp.myKillReady) {
-      this.mp.myKillReady -= Math.max(0, (this.mp.myKillReady - now()) * 0.34);
-    }
+    /* The host is the authority on the cooldown and knew nothing about the
+       stone, so shaving the local clock only made the ring disagree with the
+       knife: it read READY and the strike was dropped in silence. Tell the
+       host instead and let S.COOLDOWN bring the ring back. */
+    if (id === 'whetstone') this._send({ t: C.PERK, perk: 'whetstone', on: true });
     if (id === 'lantern') this.ui.toast('THE LANTERN IS LIT', 'jade', 2000);
     if (id === 'spyglass') this.ui.toast('YOU CAN READ THEM FROM 68 METRES', 'jade', 2600);
     if (id === 'nightglass') this.ui.toast('THE DARK STOPS MATTERING', 'jade', 2600);
@@ -2121,14 +3066,24 @@ export class MPGame extends Game {
   /** What is on the belt right now, grouped, in a stable order. */
   beltSlots(out = (this._belt = this._belt || [])) {
     out.length = 0;
-    const seen = new Map();
+    /* The rows live in a pool of their own, and so does the Map. The HUD
+       asks for the belt every frame, so a fresh literal per carried item was
+       a few hundred objects a second for a list that hardly ever changes —
+       and the pool is a separate array because the alibi row comes and goes
+       on a clock, which would keep trimming `out` back down. */
+    const pool = (this._beltPool = this._beltPool || []);
+    const seen = (this._beltSeen = this._beltSeen || new Map());
+    seen.clear();
     for (const id of (this.carry || [])) {
       const at = seen.get(id);
       if (at !== undefined) { out[at].count++; continue; }
       const it = itemById(id);
       if (!it) continue;
+      const row = pool[out.length] || (pool[out.length] = {});
+      row.id = id; row.icon = it.icon; row.name = it.name;
+      row.count = 1; row.active = false; row.secs = 0;
       seen.set(id, out.length);
-      out.push({ id, icon: it.icon, name: it.name, count: 1, active: false });
+      out.push(row);
     }
     // the pistol shows whether it is drawn
     for (const sl of out) if (sl.id === 'gun') sl.active = !!this.pistolOut;
@@ -2136,10 +3091,10 @@ export class MPGame extends Game {
        to end it. It is not an item you hold — it is a thing that is
        happening to you. */
     if (this.alibiUntil && now() < this.alibiUntil) {
-      out.push({
-        id: 'alibi-live', icon: 'alibi', name: 'ALIBI RUNNING',
-        count: 1, active: true, secs: Math.ceil(this.alibiUntil - now()),
-      });
+      const row = pool[out.length] || (pool[out.length] = {});
+      row.id = 'alibi-live'; row.icon = 'alibi'; row.name = 'ALIBI RUNNING';
+      row.count = 1; row.active = true; row.secs = Math.ceil(this.alibiUntil - now());
+      out.push(row);
     } else if (this.alibiUntil) {
       this.alibiUntil = 0;
     }
@@ -2175,44 +3130,71 @@ export class MPGame extends Game {
      ========================================================= */
 
   /**
-   * Take the money and decide what comes out. Returns the item, or null if
-   * it cannot be paid for — the screen turns the drum, then calls
-   * vendDeliver when the drum stops.
+   * Pull the handle. Each machine holds ONE thing, so what falls out is the
+   * host's to roll and the host's to refuse: two people pulling in the same
+   * second each rolled their own item and both walked away with it.
+   *
+   * `true` tells the screen the ask is away and the item is coming back on
+   * the reply. Nothing leaves your purse here either — the six went the
+   * moment E went down, so a machine somebody had already emptied charged
+   * you for a drum that stopped on nothing.
    */
   vendPay(vendor) {
-    const COST = 6;
-    if (vendor && vendor.spent) return null;
-    if ((this.coins || 0) < COST) {
+    if (!vendor || vendor.spent) return null;
+    if ((this.coins || 0) < VEND_COST) {
       this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
       return null;
     }
-    this.coins -= COST;
-    this._send({ t: C.PURSE, coins: this.coins });
-    const pool = VENDOR_IDS.map((id) => itemById(id)).filter(Boolean);
-    return pool[(Math.random() * pool.length) | 0] || null;
+    const index = (this.vendors || []).indexOf(vendor);
+    if (index < 0) return null;
+    this._send({ t: C.VEND, index });
+    return true;
   }
 
-  /** The drum has stopped: hand it over and empty the machine. */
-  vendDeliver(item) {
-    if (!item) return;
-    const it = itemById(item.id) || item;
-    if (it.tag === 'PASSIVE') {
+  /** The host's answer: which machine, who pulled it, and what was in it. */
+  _onVend(index, byId, itemId) {
+    const M = this.mp;
+    /* The cabinet empties for EVERYBODY. It used to be emptied by whoever
+       was standing within four and a half metres of it, which meant a
+       machine somebody else had already cleaned out still lit up and still
+       offered you a pull when you walked up to it. */
+    const v = (this.vendors || [])[index | 0];
+    if (v) {
+      v.spent = true;
+      v.node?.userData?.vend?.(0xffd24a);
+      if (v.node) v.node.userData.empty = true;
+    }
+    if (byId !== M.view.selfId) return;
+    const it = itemById(itemId);
+    // charged for what fell out, and only once something has
+    if (!it) return;
+    this.coins = Math.max(0, (this.coins || 0) - VEND_COST);
+    this._send({ t: C.PURSE, coins: this.coins });
+    /* Tag is the wrong question: the cork vest is tagged ONE USE and so went
+       on the belt, which meant applyItem never ran and the host was never
+       told — a vest out of a machine protected you from nothing. */
+    if (keptOnYou(it)) {
       this.owned = this.owned || new Set();
       this.owned.add(it.id);
-      this.applyItem(it.id);
     } else {
       this.carry = [...(this.carry || []), it.id];
     }
-    const near = this.nearestInteractable?.();
-    const v = near && near.kind === 'mpVendor' ? near.vendor : null;
-    for (const vd of (this.vendors || [])) {
-      if (v && vd !== v) continue;
-      if (Math.hypot(this.player.pos.x - vd.x, this.player.pos.z - vd.z) < 4.5) {
-        vd.spent = true;
-        vd.node?.userData?.vend?.(0xffd24a);
-        if (vd.node) vd.node.userData.empty = true;
-      }
-    }
+    if (PASSIVE_AT_BUY.has(it.id)) this.applyItem(it.id);
+    /* A host answers its own pull inside the same call that sent it, before
+       the screen has so much as started its drum — and the line after that
+       call clears `got`. Handing the item over on the next turn of the loop
+       is what lets one path serve both ends of the wire. */
+    setTimeout(() => {
+      const s = this.screens.name === 'mpVend' ? this.screens.top : null;
+      if (s && s.phase === 'turning' && !s.got) s.got = it;
+      else this.vendDeliver(it);
+    }, 0);
+  }
+
+  /** The drum has stopped: the card that names what fell out. */
+  vendDeliver(item) {
+    if (!item) return;
+    const it = itemById(item.id) || item;
     const belt = BELT_IDS.includes(it.id);
     const slot = belt ? this.beltSlots().findIndex((sl) => sl.id === it.id) + 1 : 0;
     this.ui.showPopup(it.name, belt ? `PRESS ${slot} TO USE IT` : 'IN FORCE NOW',
@@ -2252,8 +3234,6 @@ export class MPGame extends Game {
       this.scannerOn = !this.scannerOn;
       if (this.scannerOn) {
         this.audio.sfx('terminal');
-        this.scanSweep = 0;
-        this.scanPing = 0;
         this.ui.toast('SCANNER ON - IT IS LISTENING', 'jade', 2400);
       } else {
         this.audio.sfx('select');
@@ -2295,7 +3275,8 @@ export class MPGame extends Game {
       this.audio.sfx('slam');
       this.ui.toast('EVERY FIRE ON THE ISLAND IS OUT', 'jade', 3000);
     } else if (id === 'ticket') {
-      // a book of three, so using one leaves two on the belt
+      // the whole book at once: the pulls are counted on the Flopper, and
+      // the ticket itself is one use and gone
       this.freePulls = (this.freePulls || 0) + 3;
       this.audio.sfx('coin');
       this.ui.toast(`${this.freePulls} FREE PULLS ON THE FLOPPER`, 'jade', 2600);
@@ -2311,7 +3292,7 @@ export class MPGame extends Game {
       this._send({ t: C.PERK, perk: 'alibi', on: true, x: +jx.toFixed(1), z: +jz.toFixed(1) });
       this.alibiUntil = now() + 180;
       this.audio.sfx('cast');
-      this.ui.toast('THEY WILL SWEAR YOU WERE ELSEWHERE - PRESS AGAIN TO DROP IT', 'jade', 4200);
+      this.ui.toast('ALIBI SET - PRESS AGAIN TO DROP IT', 'jade', 4200);
     } else {
       // anything without its own moment just takes effect
       this.applyItem(id);
@@ -2368,6 +3349,9 @@ export class MPGame extends Game {
       }
     }
     this.pistolModel.visible = this.pistolOut;
+    /* The model is built once and keeps last shot's empty breech, so a second
+       pistol bought after firing the first came out of the holster spent. */
+    if (this.pistolOut) this.pistolModel.userData.flare.visible = !!this.carry?.includes('gun');
     this.audio.sfx(this.pistolOut ? 'charge' : 'select');
     this.ui.toast(this.pistolOut ? 'FLARE PISTOL  -  CLICK OR F TO FIRE' : 'HOLSTERED', 'gold', 2200);
   }
@@ -2379,13 +3363,21 @@ export class MPGame extends Game {
     const fwd = new THREE.Vector3();
     cam.getWorldDirection(fwd);
     const eye = cam.position;
+    const p = this.player.pos;
     let best = null, bestDot = 0.93;
     for (const av of M.avatars.values()) {
       const rec = M.view.players.get(av.id);
       if (!rec || rec.alive === false) continue;
+      // as with the knife: another interior is not in front of you, and the
+      // host refuses those shots without a word
+      if ((av.room | 0) !== this.roomId) continue;
+      /* Horizontally, from the body — which is how the host measures it.
+         Measured from the eye the camera's own 4.6 m of trail came off the
+         top of the range, so the last five metres of an advertised thirty
+         answered NOBODY IN YOUR SIGHTS. */
+      if (Math.hypot(av.pos.x - p.x, av.pos.z - p.z) >= 30) continue;
+      // the cone is about what is under the crosshair, so that stays on the eye
       const to = new THREE.Vector3(av.pos.x - eye.x, av.pos.y + 1 - eye.y, av.pos.z - eye.z);
-      const d = to.length();
-      if (d > 34) continue;
       to.normalize();
       const dot = to.dot(fwd);
       if (dot > bestDot) { bestDot = dot; best = av; }
@@ -2403,7 +3395,13 @@ export class MPGame extends Game {
       this.ui.toast('NOBODY IN YOUR SIGHTS', 'bad', 1400);
       return;
     }
-    if (!this.useCarried('gun')) { this.audio.sfx('deny'); return; }
+    /* Checked, not spent. The host has the last word on a shot — it refuses
+       one across rooms, one past thirty metres, and one with nobody but the
+       shooter to vote on it — and it refuses silently. Spending the shell
+       here meant a refused shot destroyed a bought item and did nothing at
+       all. It comes off the belt in _onShot instead, when the host has said
+       the shot happened. */
+    if (!this.carry?.includes('gun')) { this.audio.sfx('deny'); return; }
 
     const cam = this.camera;
     const dir = new THREE.Vector3();
@@ -2425,6 +3423,9 @@ export class MPGame extends Game {
 
   _onShot(byId, victimId, at, secs) {
     const M = this.mp;
+    /* The shell is spent here rather than at the trigger, because this is
+       the first word we have that the host let the shot through. */
+    if (byId === M.view.selfId) this.useCarried('gun');
     const rec = M.view.players.get(victimId);
     this.dizzy?.add(victimId, colourHex(rec?.colour));
     M.stunned = M.stunned || new Map();
@@ -2444,6 +3445,22 @@ export class MPGame extends Game {
     }
   }
 
+  /* The shot never happened, so the shell is still worth what it cost. But
+     the shell and the draw are two different things: a deny can arrive after
+     the shooter has been knifed, flared or pulled into a council, and putting
+     the pistol back in his hand there drew it on a corpse or over a vote. */
+  _onSnapDeny(why) {
+    const loaded = !!this.carry?.includes('gun');
+    if (this.pistolModel && loaded) this.pistolModel.userData.flare.visible = true;
+    if (loaded && this.amAlive && this.mp.view.phase === PHASE.ROAM
+        && !(this.stunnedUntil && now() < this.stunnedUntil)) {
+      this.pistolOut = true;
+      if (this.pistolModel) this.pistolModel.visible = true;
+    }
+    this.audio.sfx('deny');
+    this.ui.toast(why, 'bad', 1800);
+  }
+
   _onSnapOpen(victimId, byId, secs, voters) {
     const M = this.mp;
     const me = M.view.selfId;
@@ -2453,6 +3470,10 @@ export class MPGame extends Game {
       mine: null,
     };
     if ((voters || []).includes(me)) {
+      /* replace() throws away whatever was on the stack, and a pause card
+         put up by Escape owns this.paused — left set, the vote's own exits
+         refuse to take the pointer back and you stand frozen with no card. */
+      this.paused = false;
       this.screens.replace('mpSnap', {});
       document.exitPointerLock?.();
       this.audio.sfx('stinger');
@@ -2465,19 +3486,55 @@ export class MPGame extends Game {
     this.audio.sfx('select');
   }
 
-  _onSnapDone(victimId, exiled, wasAgent, yes, no) {
+  _onSnapDone(victimId, exiled, wasAgent, yes, no, reveal) {
     const M = this.mp;
+    // read before the vote is dropped: it decides who gets a card and who
+    // is simply told
+    const voters = M.snap?.voters || [];
     M.snap = null;
     this.dizzy?.remove(victimId);
     M.stunned?.delete(victimId);
     if (victimId === M.view.selfId) this.stunnedUntil = 0;
-    if (this.screens.name === 'mpSnap') this.screens.clear();
+    /* The vote card took the pointer when it opened (_onSnapOpen calls
+       exitPointerLock), so clearing it without asking for the lock back
+       left you standing in a live round unable to turn your head. Only
+       back into a live round, though: a snap that resolves straight into a
+       council or a results card would otherwise steal the pointer off the
+       screen that is about to open. */
+    if (this.screens.name === 'mpSnap') {
+      this.screens.clear();
+      if (M.view.phase === PHASE.ROAM) this.afterOverlayClose();
+    }
     const rec = M.view.players.get(victimId);
+    const who = rec?.name || '?';
     if (exiled) {
-      this.screens.replace('mpExile', {
-        line: '', wasAgent, targetId: victimId, who: rec?.name || '?',
-      });
-      setTimeout(() => { if (this.screens.name === 'mpExile') { this.screens.clear(); this.ui.show(); } }, 8000);
+      const me = M.view.selfId;
+      /* Only the people the flare already had by the throat see the
+         cinematic, and a short cut of it. S.SNAPDONE goes to everybody, so
+         the full card froze the whole island for eight seconds — a player
+         at the temple who never saw the flare lost control mid-round, and
+         the stack clear took his shop screen or his minigame with it. */
+      if (voters.includes(me) || victimId === me) {
+        const card = this.screens.replace('mpExile', {
+          line: '', wasAgent: reveal ? wasAgent : null, targetId: victimId, who, snap: true,
+        });
+        /* Held by identity, not by name: a body reported while the card is
+           up puts the council on the stack, and mpExile is in the FINAL
+           list, so a blind clear would take the council down with it. */
+        setTimeout(() => {
+          if (this.screens.top === card) { this.screens.clear(); this.ui.show(); this.afterOverlayClose(); }
+        }, 2500);
+      } else {
+        this.ui.toast(`${who} WAS THROWN TO THE SEA`, 'bad', 3000);
+        /* And what they were, when the host reveals it at all. The council
+           tells the whole island; a snap vote must not be a private reveal
+           for the two who called it. */
+        if (reveal) {
+          this.ui.toast(`${who} WAS ${wasAgent ? '' : 'NOT '}A ROGUE AGENT`,
+            wasAgent ? 'jade' : 'gold', 3400);
+        }
+        this.audio.sfx('descend');
+      }
     } else {
       this.ui.toast(`THE VOTE FAILED  ${yes}-${no}`, 'gold', 3000);
       this.audio.sfx('deny');
@@ -2565,7 +3622,7 @@ export class MPGame extends Game {
     this._backOnDeck();
     this._rehomeAvatars();
     this.audio.sfx('door');
-    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+    this.audio.playMusic(this._islandTrack());
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.4;
   }
@@ -2619,7 +3676,7 @@ export class MPGame extends Game {
     setTimeout(() => { this._cabCooldown = false; }, 1800);
     this.audio.sfx('ladder');
     this._rehomeAvatars();
-    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+    this.audio.playMusic(this._islandTrack());
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.4;
   }
@@ -2655,15 +3712,19 @@ export class MPGame extends Game {
     out.length = 0;
     const M = this.mp;
     const p = this.player.pos;
+    /* Pooled, like the belt: the set is re-read every frame while it is
+       switched on, and a carrier per frame per source is garbage for
+       nothing. The sort below permutes `out`, never the pool. */
+    const pool = (this._scanPool = this._scanPool || []);
     const push = (kind, name, x, z, band, power) => {
       const d = Math.hypot(p.x - x, p.z - z);
       if (d > power * 1.6) return;                 // out of its range entirely
-      out.push({
-        kind, name, x, z, band,
-        dist: d,
-        // how loud it reads: inverse square, near enough, clamped
-        strength: THREE.MathUtils.clamp(1 - (d / (power * 1.6)), 0.04, 1),
-      });
+      const r = pool[out.length] || (pool[out.length] = {});
+      r.kind = kind; r.name = name; r.x = x; r.z = z; r.band = band;
+      r.dist = d;
+      // how loud it reads: inverse square, near enough, clamped
+      r.strength = THREE.MathUtils.clamp(1 - (d / (power * 1.6)), 0.04, 1);
+      out.push(r);
     };
 
     /* THE X. This used to be the mast, which is a fixed point you can see
@@ -2726,21 +3787,22 @@ export class MPGame extends Game {
     const step = lock.dist > 100 ? 20 : lock.dist > 40 ? 5 : 1;
     const shown = Math.max(step, Math.round(lock.dist / step) * step);
 
-    this.scanLock = {
-      kind: lock.kind,
-      name: lock.name,
-      note: lock.kind === 'him' ? 'HUMANOID HEAT'
-        : lock.kind === 'cam' ? 'RELAY CAMERA'
-          : lock.kind === 'x' ? 'WORTH DIGGING' : 'BURIED SET',
-      dist: lock.dist,
-      shown,
-      strength: lock.strength,
-      band: lock.band,
-      bearing,
-      spread,
-      count: list.length,
-      index: list.indexOf(lock) + 1,
-    };
+    // one object, kept, because the steer is rewritten every frame the set is on
+    const lk = (this._scanLockObj = this._scanLockObj || {});
+    lk.kind = lock.kind;
+    lk.name = lock.name;
+    lk.note = lock.kind === 'him' ? 'HUMANOID HEAT'
+      : lock.kind === 'cam' ? 'RELAY CAMERA'
+        : lock.kind === 'x' ? 'WORTH DIGGING' : 'BURIED SET';
+    lk.dist = lock.dist;
+    lk.shown = shown;
+    lk.strength = lock.strength;
+    lk.band = lock.band;
+    lk.bearing = bearing;
+    lk.spread = spread;
+    lk.count = list.length;
+    lk.index = list.indexOf(lock) + 1;
+    this.scanLock = lk;
 
     /* It clicks faster the closer you are, like a geiger counter — which
        is the part that actually walks you in, because you can hear it
@@ -2786,13 +3848,13 @@ export class MPGame extends Game {
     const bu = this.buried;
     if (!bu) return;
     const st = bu.state;
-    if (st.dug >= 1 || st.taken) { bu.digging = 0; return; }
+    if (st.dug >= 1 || st.taken) { bu.digging = bu.lastSpade = 0; return; }
     const p = this.player.pos;
     const near = Math.hypot(p.x - bu.x, p.z - bu.z) < 3.2;
     const want = near && this.mp.holdingE && this.amAlive
       && !this.screens.open && this.mp.view.phase === PHASE.ROAM;
     if (!want) {
-      bu.digging = 0;
+      bu.digging = bu.lastSpade = 0;
       return;
     }
     bu.digging += dt;
@@ -2809,23 +3871,49 @@ export class MPGame extends Game {
       this.taskFx?.burst(bu.x, bu.y + 0.3, bu.z, 0xd8c79c, 'puff', 1.1);
       this.player.punch?.(0.05);
     }
-    if (st.dug >= 1 && !bu.said) {
-      bu.said = true;
-      this.audio.sfx('confirm');
-      this.audio.sfx('rumble');
-      /* It is a solid object once it is standing on the sand, and it was
-         not one — you could walk straight through it, and the camera went
-         through it too. */
-      if (!bu.solid) {
-        bu.solid = true;
-        this.colliders.push({ x: bu.x, z: bu.z, r: 0.95 });
-        this.player.setColliders(this.colliders);
-      }
-      this.ui.showPopup('A CHEST', 'IT IS NOT LOCKED', 'coin', 'OUT OF THE SAND');
-    } else if (st.dug > 0.62 && !bu.saidHalf) {
+    /* The chest breaking the surface is handled in _onDig — the depth only
+       ever changes there, and by the time it reaches 1 this method has
+       already returned at its own guard. Half way up is still here, because
+       it is a message for whoever is standing over the hole. */
+    if (st.dug > 0.62 && !bu.saidHalf) {
       bu.saidHalf = true;
       this.audio.sfx('stinger');
       this.ui.toast('SOMETHING IS COMING UP', 'gold', 2600);
+    }
+  }
+
+  /**
+   * Out of the sand.
+   *
+   * This lived at the bottom of _tickDig, where it could only ever fire on
+   * the host's own machine and only if the host put in the last spadeful:
+   * everywhere else the depth arrives between frames and the next _tickDig
+   * returns at its guard. So a guest dug the chest out in silence and then
+   * walked through it, camera and all.
+   */
+  _chestSurfaced() {
+    const bu = this.buried;
+    if (!bu || bu.said) return;
+    bu.said = true;
+    /* It is a solid object once it is standing on the sand, and every
+       machine has to agree about that wherever its own player is standing. */
+    if (!bu.solid) {
+      bu.solid = true;
+      // kept, because the hole is filled in again at the start of the next
+      // round and the chest must not leave an invisible wall on the sand
+      bu.collider = { x: bu.x, z: bu.z, r: 0.95 };
+      this.colliders.push(bu.collider);
+      /* Only if we are standing on the island. Every door back out sets the
+         island list again, and handing it to somebody inside a room would
+         give them the beach's walls in the bar. */
+      if (this.state === 'island') this.player.setColliders(this.colliders);
+    }
+    // the card belongs to the people at the hole, not to the whole island
+    const p = this.player.pos;
+    if (bu.digging > 0 || Math.hypot(p.x - bu.x, p.z - bu.z) < 6) {
+      this.audio.sfx('confirm');
+      this.audio.sfx('rumble');
+      this.ui.showPopup('A CHEST', 'IT IS NOT LOCKED', 'coin', 'OUT OF THE SAND');
     }
   }
 
@@ -2873,13 +3961,14 @@ export class MPGame extends Game {
        it depends on what they already own. Never the flare pistol: a free
        gun found in a hole is not a thing this round needs. */
     const pool = STOCK.filter((i) => i.side === 'open' && i.id !== 'gun'
-      && !(this.owned?.has(i.id)));
+      && !(this.owned?.has(i.id))
+      && (i.id !== 'camera' || this.camsSpare() > 0));
     const prize = pool.length ? pool[(Math.random() * pool.length) | 0] : null;
     if (prize) {
       this.owned = this.owned || new Set();
-      if (prize.tag === 'PASSIVE') this.owned.add(prize.id);
-      else this.carry = [...(this.carry || []), prize.id];
-      if (PASSIVE_AT_BUY.has(prize.id)) this.applyItem(prize.id);
+      if (keptOnYou(prize)) this.owned.add(prize.id);
+      else if (prize.id !== 'camera') this.carry = [...(this.carry || []), prize.id];
+      if (prize.id === 'camera' || PASSIVE_AT_BUY.has(prize.id)) this.applyItem(prize.id);
     }
     /* The card names the prize, so a toast saying it again is two messages
        for one event — and "AND A THE PARTY BOX" is not a sentence. */
@@ -2897,7 +3986,16 @@ export class MPGame extends Game {
    * so nobody is standing in a different hour to anybody else.
    */
   _onNightfall() {
-    const DAY = 131;                       // seconds of daylight in the cycle
+    /* ALWAYS DAY is a cycle so long the clock never reaches dusk, so the
+       light no longer follows it — winding it forward would darken nothing. */
+    if (this.DAY_LEN > 5000) {
+      this.ui.toast('THE SUN IS NOT SETTING TODAY', 'bad', 2000);
+      return;
+    }
+    /* game.js scales the day's phases off the cycle instead of the old
+       absolute 131 seconds, so dusk has to be derived the same way or the
+       flare lands in the wrong hour at every DAY LENGTH but 6 MIN. */
+    const DAY = Math.max(120, this.DAY_LEN) * 0.364;
     if (this.clock24 > DAY - 8 && this.night > 0.5) {
       // already dark; do not wind it forward into the dawn
       this.ui.toast('IT IS ALREADY DARK', 'bad', 2000);
@@ -2915,6 +4013,7 @@ export class MPGame extends Game {
     const bu = this.buried;
     if (!bu) return;
     bu.state.dug = Math.max(bu.state.dug || 0, Math.min(1, +dug || 0));
+    if (bu.state.dug >= 1) this._chestSurfaced();
   }
 
   /* =========================================================
@@ -2961,7 +4060,7 @@ export class MPGame extends Game {
     }
     if (id === 'quiet') {
       this._send({ t: C.PERK, perk: 'quiet', on: true });
-      this.ui.toast('YOUR FEET MAKE NO SOUND', 'jade', 2600);
+      this.ui.toast('NOBODY CAN READ YOUR NAME', 'jade', 2600);
     }
     if (id === 'rum' || id === 'falling') {
       this.doubleCoins = true;
@@ -2969,8 +4068,7 @@ export class MPGame extends Game {
     }
     if (id === 'own' || id === 'falling') {
       this.bigMeals = true;
-      this.player.SPEED = this.player.BASE_SPEED * 1.25;
-      this.player.SPRINT = this.player.BASE_SPRINT * 1.25;
+      this._recalcSpeed();
       this.ui.toast('FASTER, AND THE WORK PAYS DOUBLE', 'jade', 2800);
     }
     if (id === 'falling') {
@@ -2978,6 +4076,24 @@ export class MPGame extends Game {
       this.nightEyes = true;
       this._send({ t: C.PERK, perk: 'quiet', on: true });
     }
+  }
+
+  /**
+   * The whole multiplier stack, in one place.
+   *
+   * Every one of these used to write the speeds itself from the base, so
+   * whichever spoke last wiped the others: taking the vest off threw away
+   * the drink, the drink threw away the vest. The drink is read off the
+   * tab rather than off bigMeals, because Cathy's burger sets bigMeals too
+   * and a burger has never made anybody faster.
+   */
+  _recalcSpeed() {
+    const t = now();
+    const vest = this.hasItem('vest') ? 0.75 : 1;
+    const floss = this.flossUntil && t < this.flossUntil ? 1.30 : 1;
+    const own = this.tab && (t < (this.tab.own || 0) || t < (this.tab.falling || 0)) ? 1.25 : 1;
+    this.player.SPEED = this.player.BASE_SPEED * vest * floss * own;
+    this.player.SPRINT = this.player.BASE_SPRINT * vest * floss * own;
   }
 
   /** One clock for the whole tab. Called every frame from update(). */
@@ -3015,22 +4131,31 @@ export class MPGame extends Game {
 
   _endDrink(id) {
     const d = drinkById(id);
-    if (id === 'pint' || id === 'falling') {
+    /* _tickDrink has already dropped the expired key, so anything still on
+       the tab and still in the future is a drink you are still paying for.
+       Only speed ever asked: THE FALLING DOWN is ninety seconds against the
+       others' two and three minutes, so it expired first and cancelled the
+       quiet water, the pint and the rum you had running alongside it —
+       which the tab then kept marked as live for ever. */
+    const t = now();
+    const live = (k) => !!this.tab && t < (this.tab[k] || 0);
+    const still = (k) => live(k) || live('falling');
+
+    if ((id === 'pint' || id === 'falling') && !still('pint')) {
       // back to whatever you had before the drink, popcorn included
       this.player.staminaDrain = this.hasItem('tonic')
         ? this.player.BASE_DRAIN * 0.2 : this.player.BASE_DRAIN;
     }
-    if (id === 'lamp' || id === 'falling') this.nightEyes = this.hasItem('nightglass') || false;
-    if (id === 'quiet' || id === 'falling') {
+    if ((id === 'lamp' || id === 'falling') && !still('lamp')) {
+      this.nightEyes = this.hasItem('nightglass') || false;
+    }
+    if ((id === 'quiet' || id === 'falling') && !still('quiet')) {
       if (!this.hasItem('soles')) this._send({ t: C.PERK, perk: 'quiet', on: false });
     }
-    if (id === 'rum' || id === 'falling') this.doubleCoins = false;
+    if ((id === 'rum' || id === 'falling') && !still('rum')) this.doubleCoins = false;
     if (id === 'own' || id === 'falling') {
-      if (!this.hasItem('burger')) this.bigMeals = false;
-      const vest = this.hasItem('vest') ? 0.75 : 1;
-      const floss = this.flossUntil && now() < this.flossUntil ? 1.30 : 1;
-      this.player.SPEED = this.player.BASE_SPEED * vest * floss;
-      this.player.SPRINT = this.player.BASE_SPRINT * vest * floss;
+      if (!still('own') && !this.hasItem('burger')) this.bigMeals = false;
+      this._recalcSpeed();          // unconditional: it reads the tab itself
     }
     if (d) this.ui.toast(`${d.name} HAS WORN OFF`, 'bad', 2400);
   }
@@ -3107,6 +4232,25 @@ export class MPGame extends Game {
    * in a little wooden room instead of on the open deck. The open deck, the
    * rails, the torches and the slot machines are all at negative z.
    */
+  /**
+   * What the outdoors sounds like right now.
+   *
+   * Every door out of a room hard-played island/night, which put the island
+   * theme on the Flopper's deck — and `M.aboard` was already true, so the
+   * latch that starts her own track never re-fired and the only way back to
+   * it was to walk ashore and board again. Anything restoring the open-air
+   * track has to ask rather than guess. Jam and storm outrank the speaker
+   * because they set the world state the day/night block is gated on.
+   */
+  _islandTrack() {
+    const M = this.mp;
+    if (M.aboard) return 'flopper';
+    if (this.jammed) return 'alarm';
+    if (this.stormOn) return 'storm';
+    if (M.speaker && now() < M.speaker.until) return 'title';
+    return (this.night || 0) > 0.55 ? 'night' : 'island';
+  }
+
   _backOnDeck(lz = -1.2) {
     const plat = this.casinoPlat;
     /* SHE MAY HAVE SAILED.
@@ -3209,7 +4353,7 @@ export class MPGame extends Game {
     setTimeout(() => { if (this.state === 'island') this.audio.sfx('hatch'); }, 700);
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.5;
-    this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+    this.audio.playMusic(this._islandTrack());
   }
 
   /**
@@ -3220,19 +4364,56 @@ export class MPGame extends Game {
    * the ladder stood perfectly still, because nothing was advancing their
    * interpolation.
    */
+  /* One ghost material for every dead castaway. Cloned off the shared
+     `opaque` the whole island is built from — via ps1Clone, or the copy comes
+     back perspective-correct and un-snapped while the world around it wobbles
+     — and made once, on the first death of a session, so a round with nobody
+     dead in it never compiles the program at all. depthWrite off so two
+     ghosts standing together read as two, not as whichever drew first. */
+  get _ghostMat() {
+    if (!this._ghostMaterial) {
+      const m = ps1Clone(this.propMats.opaque);
+      m.transparent = true;
+      m.opacity = 0.34;
+      m.depthWrite = false;
+      this._ghostMaterial = m;
+    }
+    return this._ghostMaterial;
+  }
+
   _updateAvatars(dt) {
     const M = this.mp;
     const t = now();
-    const ghost = !this.amAlive;
-    const mine = this.roomId;
     for (const av of M.avatars.values()) {
       av.update(dt, t);
+      av.setVisible(this._avatarVisible(av));
+      /* Only the dead ever see a ghost — the living cannot see them at all,
+         so their solid form never reaches a living screen either way. */
       const rec = M.view.players.get(av.id);
-      // the dead can see the dead; the living cannot — and nobody sees
-      // anybody who is in a different room from them
-      const alive = rec ? (rec.alive !== false || ghost) : true;
-      av.setVisible(alive && (av.room | 0) === mine);
+      /* Asked for only when it is wanted: evaluating the getter as an
+         argument for every avatar on every frame built the material on the
+         first frame of the round, whether or not anybody ever died. */
+      const dead = rec ? rec.alive === false : av.alive === false;
+      av.setGhost(dead, dead ? this._ghostMat : null);
     }
+  }
+
+  /**
+   * The dead can see the dead; the living cannot — and nobody sees anybody
+   * who is in a different room from them.
+   *
+   * One rule, asked from all three places that decide it, because
+   * setVisible's early-out is only safe if nothing writes mesh.visible
+   * behind its back. The snapshot used to do exactly that, with no ghost
+   * term in it: it hid another ghost directly on the mesh, left av.visible
+   * saying true, and setVisible then refused to put them back. Two dead
+   * players standing together could not see each other for the rest of the
+   * round.
+   */
+  _avatarVisible(av) {
+    const rec = this.mp.view.players.get(av.id);
+    const isAlive = rec ? rec.alive !== false : av.alive !== false;
+    return (isAlive || !this.amAlive) && (av.room | 0) === this.roomId;
   }
 
   /**
@@ -3245,15 +4426,14 @@ export class MPGame extends Game {
     const sc = this.scene;
     for (const av of M.avatars.values()) {
       const together = (av.room | 0) === mine;
-      av.mesh.visible = together && av.alive !== false;
+      av.setVisible(this._avatarVisible(av));
       if (together && sc && av.mesh.parent !== sc) sc.add(av.mesh);
     }
     for (const b of M.bodies.values()) {
-      // bodies stay where they fell, which is always the island
-      b.mesh.visible = mine === 0;
-      if (mine === 0 && this.islandScene && b.mesh.parent !== this.islandScene) {
-        this.islandScene.add(b.mesh);
-      }
+      // a body stays where it fell, which may be an interior
+      const together = (b.room | 0) === mine;
+      b.mesh.visible = together;
+      if (together && sc && b.mesh.parent !== sc) sc.add(b.mesh);
     }
   }
 
@@ -3316,7 +4496,6 @@ export class MPGame extends Game {
     const close = STRANGER_CLOSERS[(Math.random() * STRANGER_CLOSERS.length) | 0];
     this.screens.push('mpRiddle', { lines: [open, text, close] });
     document.exitPointerLock?.();
-    this.audio.sfx('page');
     this.mp.riddleHeard = text;
   }
 
@@ -3329,7 +4508,6 @@ export class MPGame extends Game {
   /** Somebody set off a blackout charge. Every fire on the island, out. */
   _onBlackout(secs) {
     this.doused = true;
-    this.blackoutUntil = now() + (secs || 45);
     this.audio.sfx('slam');
     this.audio.sfx('rumble');
     this.pipeline.tint.setHex(0x000000);
@@ -3396,7 +4574,6 @@ export class MPGame extends Game {
     const M = this.mp;
     M.ledger = new Map();
     for (const [id, coins] of (rows || [])) M.ledger.set(id, coins | 0);
-    M.ledgerAt = now();
   }
 
   /** Ask for it. Cheap, and only ever while the table is open. */
@@ -3426,6 +4603,16 @@ export class MPGame extends Game {
     else if (this.state === 'cab') this.leaveCab();
     else if (this.state === 'bar') { this.leaveBar(); this.leaveHighRoller(); }
     else if (this.state === 'highroller') this.leaveHighRoller();
+  }
+
+  /** Where a room comes out on the island — nothing inside one is on the chart. */
+  _roomAnchor(room) {
+    const r = room | 0;
+    if (!r) return null;
+    if (r === 1) return this.mp.bunker || null;
+    if (r === 2 || r === 3) return this.casinoPlat || this.casinoPos || null;
+    if (r === 4) return this.tower || null;
+    return null;
   }
 
   get roomId() {
@@ -3476,7 +4663,9 @@ export class MPGame extends Game {
       alive: roster.filter((r) => r.alive).length,
       total: roster.length,
       work: `${M.view.tasksDone || 0} / ${M.view.tasksTotal || 0}`,
-      sabotage: M.view.sabotage ? (SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '') : null,
+      sabotage: M.view.sabotage
+        ? (SABOTAGE_DEFS[M.view.sabotage.kind]?.short
+          || SABOTAGE_DEFS[M.view.sabotage.kind]?.name || '') : null,
       shop: this.shopShut ? 'SHUTTERED' : 'TRADING',
       weather: this.stormOn ? 'STORM' : (this.blinded ? 'MIST' : (this.night > 0.55 ? 'NIGHT' : 'CLEAR')),
       bunker: M.bunker?.name || '',
@@ -3489,8 +4678,11 @@ export class MPGame extends Game {
   /** Fixed points the plot draws, so the ring of pips means something. */
   _tableMarks() {
     const m = [];
-    const L = this.landmarks || LANDMARKS;
-    if (L?.wreck) m.push({ x: L.wreck.x, z: L.wreck.z, label: 'CAMP', kind: 'camp' });
+    /* The generated fire, not LANDMARKS.wreck: that is only the seed the
+       placer starts from, and the hull it settles on can end up fifteen
+       metres from the camp the pip claims to mark. */
+    const camp = this.campfirePos || this.campPos || this.spawn || this.wreckPos;
+    if (camp) m.push({ x: camp.x, z: camp.z, label: 'CAMP', kind: 'camp' });
     if (this.templeDoorPos) m.push({ x: this.templeDoorPos.x, z: this.templeDoorPos.z, label: 'TEMPLE', kind: 'temple' });
     if (this.hutPos) m.push({ x: this.hutPos.x, z: this.hutPos.z, label: 'FERDI', kind: 'shop' });
     if (this.casinoPos) m.push({ x: this.casinoPos.x, z: this.casinoPos.z, label: 'FLOPPER', kind: 'boat' });
@@ -3560,17 +4752,6 @@ export class MPGame extends Game {
     if (win >= 60) {
       this.ui.showPopup(`${win} SYNCOIN`, 'TIM WILL BE FURIOUS', 'coin', 'THE FLOPPER PAYS');
     }
-  }
-
-  /** The old one-key pull, kept for anything that bypasses the screen. */
-  playSlot(slot) {
-    const out = this.pullSlot(slot);
-    if (!out) { this.audio.sfx('deny'); return; }
-    setTimeout(() => {
-      this.settleSlot(slot, out.win);
-      if (out.win) { this.audio.sfx('victory'); this.ui.toast(`${out.win} SYNCOIN`, 'gold', 2000); }
-      else { this.audio.sfx('deny'); this.ui.toast('NOTHING', 'bad', 1400); }
-    }, 1900);
   }
 
   /** A boombox on the sand, and everybody knows exactly where it is. */
@@ -3697,8 +4878,10 @@ export class MPGame extends Game {
 
   sendChat(text) { this._send({ t: C.CHAT, text }); }
   sendVote(targetId) { this._send({ t: C.VOTE, targetId }); this.audio.sfx('confirm'); }
-  sendReady(on) { this._send({ t: C.READY, ready: !!on }); this.audio.sfx(on ? 'confirm' : 'select'); }
-  sendSabotage(kind) { this._send({ t: C.SABOTAGE, kind }); this.audio.sfx('charge'); }
+  /* No local cue: on the host `_send` is a synchronous loopback, so the
+     echo's own `charge` in _onSabotage landed on the same frame and the pull
+     was heard at double amplitude. Let the authoritative echo be the sound. */
+  sendSabotage(kind) { this._send({ t: C.SABOTAGE, kind }); }
 
   /** Where a given sabotage has to be repaired, in world coordinates. */
   sabotageSites(kind) {
@@ -3718,10 +4901,48 @@ export class MPGame extends Game {
     this.knowsBunker = true;
     this.owned = this.owned || new Set();
     for (const it of STOCK) {
-      if (it.tag === 'PASSIVE') this.owned.add(it.id);
+      if (keptOnYou(it)) { this.owned.add(it.id); this.applyItem(it.id); }
+      else if (it.id === 'camera') this.applyItem(it.id);
       else this.carry = [...(this.carry || []), it.id, it.id, it.id];
     }
     this.ui.toast('DEV MODE - EVERYTHING UNLOCKED', 'jade', 4000);
+  }
+
+  /**
+   * A body drops rather than appearing already laid out.
+   *
+   * This ran at the bottom of update(), below every interior branch's
+   * `return`, so a corpse in the listening post was simply there, fully
+   * slumped, in the frame it was made — and then played its drop when
+   * somebody climbed out. It only touches the mesh, so it belongs above
+   * the branches with the rest of the things that are true in any room.
+   */
+  _tickBodies(dt) {
+    for (const b of this.mp.bodies.values()) {
+      if (b.fall === undefined || b.fall >= 1) continue;
+      b.fall = Math.min(1, b.fall + dt * 2.6);
+      const k = 1 - Math.pow(1 - b.fall, 3);
+      b.mesh.rotation.z = Math.PI * 0.46 * k;
+      b.mesh.position.y = b.restY + (1 - k) * 0.9;
+    }
+  }
+
+  /**
+   * The world tipping as you go down.
+   *
+   * The roll is ABSOLUTE, not accumulated — the death shot's lookAt rewrites
+   * the whole orientation every frame — so this has to be called from
+   * render(), after the shot has had the camera, and it has to come back
+   * to nothing on its own. The old ramp grew to its full twenty-nine
+   * degrees and then simply stopped being applied, which snapped the
+   * horizon upright in a single frame; a sine over the same 1.4 seconds
+   * tips you over and unwinds you, and is exactly zero at both ends.
+   */
+  _tickDeathTilt(dt) {
+    if (!this.deathTilt) return;
+    this.deathTilt = Math.max(0, this.deathTilt - dt);
+    const k = 1 - this.deathTilt / 1.4;
+    this.camera.rotateZ(0.5 * Math.sin(Math.PI * k));
   }
 
   /* ===========================================================
@@ -3731,10 +4952,27 @@ export class MPGame extends Game {
     if (!this.mp.active) return super.update(dt);
     const M = this.mp;
 
+    /* A body does not walk itself out of its own shot. Zeroed here, above
+       every branch, because each room branch reads the input for itself. */
+    if (this.deathShot) {
+      const I = this.input;
+      I.fwd = I.back = I.left = I.right = false;
+      I.jump = I.sprint = false;
+    }
+
+    /* Spectating. Wanting to walk is how you say you are done watching, so
+       any movement key lets go — checked before the follow writes over the
+       position, or the step you asked for would be undone in the same frame. */
+    if (M.spectate) {
+      const I = this.input;
+      if (I.fwd || I.back || I.left || I.right || I.jump) this.stopSpectate();
+      else if (!this.amAlive && M.view.phase === PHASE.ROAM) this._followSpectate(false);
+      else this.stopSpectate(true);
+    }
+
     this.time += dt;
     setTime(this.time);
     if (this.pipeline.tintAmt > 0) this.pipeline.tintAmt = Math.max(0, this.pipeline.tintAmt - dt * 1.4);
-    if (M.noticeT > 0) M.noticeT -= dt;
 
     if (this.isHost) {
       // rules on M.hostTimer, wire on M.netTimer; this loop only mirrors
@@ -3774,6 +5012,23 @@ export class MPGame extends Game {
        island, down the hatch. It is one clock and it is ticked here, above
        every branch, so there is no room you can stand in to sober up. */
     this._tickDrink(dt);
+    /* And so does the hour. Only the island branch reaches updateDayNight,
+       so a night spent in the bar or down the hatch was a night that never
+       happened — you came up at the same minute you went down while the
+       host had rolled over into dawn. Real time rather than the capped
+       physics step, because the host's clock runs on a wall-clock timer;
+       tickClock refuses a second advance in the same frame, so the island
+       branch's own updateDayNight still paints the sky without double
+       winding it. */
+    this.tickClock(this.rawDt > 0 ? this.rawDt : dt);
+    this._tickBodies(dt);
+
+    /* And so does the flare. The host allows a shot in a room — it only
+       refuses one across two different rooms — but the stun was read in the
+       island branch alone, so a victim taken in the listening post walked up
+       the ladder and away while the room voted on him. */
+    const stunned = !!this.stunnedUntil && now() < this.stunnedUntil;
+    if (this.stunnedUntil && !stunned) this.stunnedUntil = 0;
 
     if (this.state === 'cutscene') {
       this.updateCutscene(dt);
@@ -3786,8 +5041,7 @@ export class MPGame extends Game {
     /* The room behind the painting. Its own scene, its own walls, and the
        island keeps running above you exactly as it does in the bunker. */
     if (this.state === 'highroller') {
-      if (this.isHost) M.host.update(0);
-      const froze2 = this.paused || this.screens.open;
+      const froze2 = this.paused || this.screens.open || stunned;
       if (!froze2) {
         this.player.update(dt, this.input, {
           groundOf: hrHeight, water: false, bounds: false, insideBox: HR_BOX,
@@ -3795,10 +5049,11 @@ export class MPGame extends Game {
       } else {
         this.player.insideBox = HR_BOX;
         this.player.updateCamera(dt, hrHeight);
+        if (stunned) this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
       }
       this.hrScene.userData.tick(this.time, dt);
       this._updateAvatars(dt);
-      this._mpHud();
+      this._mpHud(dt);
       const bit2 = froze2 ? null : this.nearestInteractable();
       this.ui.setPrompt(bit2 ? bit2.prompt : null);
       return;
@@ -3806,8 +5061,7 @@ export class MPGame extends Game {
 
     /* The hut at the head of the mast. Same shape again. */
     if (this.state === 'cab') {
-      if (this.isHost) M.host.update(0);
-      const frozeC = this.paused || this.screens.open;
+      const frozeC = this.paused || this.screens.open || stunned;
       if (!frozeC) {
         this.player.update(dt, this.input, {
           groundOf: cabHeight, water: false, bounds: false, insideBox: CAB_BOX,
@@ -3815,10 +5069,11 @@ export class MPGame extends Game {
       } else {
         this.player.insideBox = CAB_BOX;
         this.player.updateCamera(dt, cabHeight);
+        if (stunned) this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
       }
       this.cabScene.userData.tick(this.time, dt);
       this._updateAvatars(dt);
-      this._mpHud();
+      this._mpHud(dt);
       const bitC = frozeC ? null : this.nearestInteractable();
       this.ui.setPrompt(bitC ? bitC.prompt : null);
       return;
@@ -3827,8 +5082,7 @@ export class MPGame extends Game {
     /* The bar behind the high rollers room. Same shape again: its own scene,
        its own walls, and the island carrying on without you. */
     if (this.state === 'bar') {
-      if (this.isHost) M.host.update(0);
-      const frozeB = this.paused || this.screens.open;
+      const frozeB = this.paused || this.screens.open || stunned;
       if (!frozeB) {
         this.player.update(dt, this.input, {
           groundOf: barHeight, water: false, bounds: false, insideBox: BAR_BOX,
@@ -3836,17 +5090,17 @@ export class MPGame extends Game {
       } else {
         this.player.insideBox = BAR_BOX;
         this.player.updateCamera(dt, barHeight);
+        if (stunned) this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
       }
       this.barScene.userData.tick(this.time, dt, this.camera.position);
       this._updateAvatars(dt);
-      this._mpHud();
+      this._mpHud(dt);
       const bitB = frozeB ? null : this.nearestInteractable();
       this.ui.setPrompt(bitB ? bitB.prompt : null);
       return;
     }
     if (this.state === 'bunker') {
-      if (this.isHost) M.host.update(0);
-      const froze = this.paused || this.screens.open;
+      const froze = this.paused || this.screens.open || stunned;
       if (!froze) {
         this.player.update(dt, this.input, {
           groundOf: bunkerHeight, water: false, bounds: false,
@@ -3856,6 +5110,7 @@ export class MPGame extends Game {
         // frozen behind a screen, but the walls still apply
         this.player.insideBox = BUNKER_BOX;
         this.player.updateCamera(dt, bunkerHeight);
+        if (stunned) this.camera.rotateZ(Math.sin(this.time * 4) * 0.09);
       }
       /* The hologram wants positions, nothing else. bunkerReadout() builds
          the whole dossier and it is not cheap to do sixty times a second. */
@@ -3865,10 +5120,17 @@ export class MPGame extends Game {
         this.screens.top?.name === 'mpTable'
       );
       this._updateAvatars(dt);
-      this._mpHud();
+      this._mpHud(dt);
       const bit = froze ? null : this.nearestInteractable();
       this.ui.setPrompt(bit ? bit.prompt : null);
       return;
+    }
+
+    /* The last place you actually stood outdoors, kept as a copy so it does
+       not follow you into a room the way a live Vector3 would. The chart has
+       no way to draw an interior, and every interior is its own local space. */
+    if (this.state === 'island') {
+      this._islandPos = { x: this.player.pos.x, z: this.player.pos.z };
     }
 
     /* Whatever happened — a pause card, an alt-tab, a stray Escape — if the
@@ -3898,7 +5160,6 @@ export class MPGame extends Game {
     const inPlay = M.view.phase === PHASE.ROAM;
     const frozen = this.paused || this.screens.open || !inPlay;
 
-    const stunned = this.stunnedUntil && now() < this.stunnedUntil;
     if (stunned) {
       // on the sand: you can look, and that is all
       this.player.updateCamera(dt, this.groundOf || heightAt);
@@ -3922,20 +5183,39 @@ export class MPGame extends Game {
     if (M.taskProgress) {
       const tp = M.taskProgress;
       const moved = Math.hypot(this.player.pos.x - tp.x, this.player.pos.z - tp.z) > 1.6;
-      if (moved || !inPlay || !this.amAlive) {
+      /* Being dead is NOT a reason to drop it. Ghosts are given a list and
+         twelve of the nineteen chores contain a hold, so cancelling on the
+         first frame left the murdered with a list they could not touch and
+         a toast telling them they had moved. Death clears the hold once,
+         where the blow lands. */
+      if (moved || !inPlay) {
         M.taskProgress = null;
         this.audio.sfx('deny');
-        this.ui.toast('YOU MOVED - START AGAIN', 'bad', 1400);
+        // !inPlay is a council opening or the round ending, not a step taken
+        this.ui.toast(moved ? 'YOU MOVED - START AGAIN' : 'THAT WILL HAVE TO WAIT', 'bad', 1400);
+      } else if (frozen) {
+        /* Behind a card or a pause the world is frozen, so the hold freezes
+           with it. No key-up ever arrives when Escape is pressed with E
+           down, and the bar used to charge on and fire the chore into the
+           wire from behind the pause card. Nothing drains either — a body
+           card popping up must not bin your chore for you. */
+        tp.slack = 0;
       } else if (!M.holdingE) {
         // let go and it drains, so you cannot start six chores at once
         tp.t = Math.max(0, tp.t - dt * 1.6);
         tp.slack = (tp.slack || 0) + dt;
-        if (tp.slack > 1.1) { M.taskProgress = null; this.audio.sfx('deny'); }
+        if (tp.slack > 1.1) {
+          M.taskProgress = null;
+          this.audio.sfx('deny');
+          // the commonest way to lose a chore, and the only one that said nothing
+          this.ui.toast('YOU LET GO - START AGAIN', 'bad', 1400);
+        }
       } else {
         tp.slack = 0;
         tp.t += dt;
         if (tp.t >= tp.secs) {
-          this._send({ t: C.DO_TASK, taskId: tp.taskId });
+          if (tp.fix) this._send({ t: C.FIX, kind: tp.fix, at: tp.at });
+          else this._send({ t: C.DO_TASK, taskId: tp.taskId });
           M.taskProgress = null;
           this.audio.sfx('pickup');
         }
@@ -3950,7 +5230,7 @@ export class MPGame extends Game {
       if (now() > M.speaker.until) {
         M.speaker = null;
         if (M.speakerNode) setHidden(M.speakerNode, true);
-        this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+        this.audio.playMusic(this._islandTrack());
         this._compassForTasks();
       } else if (M.speakerNode) {
         const beat = 1 + Math.abs(Math.sin(this.time * 4.2)) * 0.14;
@@ -3982,7 +5262,6 @@ export class MPGame extends Game {
       const av = M.avatars.get(id);
       return av ? av.pos : null;
     });
-    if (this.stunnedUntil && now() >= this.stunnedUntil) this.stunnedUntil = 0;
     this.updateCoinFx(dt);      // the pickup flourish never ran in this mode
     /* Her own music, while you are on her deck. The Flopper is a gambling
        barge and she should sound like one from the moment you step aboard —
@@ -3999,7 +5278,7 @@ export class MPGame extends Game {
         this.audio.playMusic('flopper');
       } else if (!aboard && M.aboard) {
         M.aboard = false;
-        this.audio.playMusic(this.night > 0.55 ? 'night' : 'island');
+        this.audio.playMusic(this._islandTrack());
       }
     }
 
@@ -4034,20 +5313,6 @@ export class MPGame extends Game {
         node.userData.at = null;
       }
     }
-    // a body drops rather than appearing already laid out
-    for (const b of M.bodies.values()) {
-      if (b.fall === undefined || b.fall >= 1) continue;
-      b.fall = Math.min(1, b.fall + dt * 2.6);
-      const k = 1 - Math.pow(1 - b.fall, 3);
-      b.mesh.rotation.z = Math.PI * 0.46 * k;
-      b.mesh.position.y = b.restY + (1 - k) * 0.9;
-    }
-    // and the world tips as you go down with them
-    if (this.deathTilt > 0) {
-      this.deathTilt = Math.max(0, this.deathTilt - dt);
-      this.camera.rotateZ(Math.min(0.5, (1.4 - this.deathTilt) * 0.4));
-    }
-
     // world + avatars
     this.tickIslandWorld(dt);
     this.updateDayNight(dt);
@@ -4056,8 +5321,10 @@ export class MPGame extends Game {
     if (!this.stormOn && !this.jammed && M.view.phase === PHASE.ROAM) {
       const wantNight = (this.night || 0) > 0.55;
       if (wantNight !== this._nightMusic) {
+        /* The latch is kept current even aboard, or stepping off after dusk
+           finds it stale and the flip never fires again. */
         this._nightMusic = wantNight;
-        this.audio.playMusic(wantNight ? 'night' : 'island');
+        if (!M.aboard) this.audio.playMusic(this._islandTrack());
       }
     }
     /* The storm sabotage started the weather and then nothing drove it, so
@@ -4095,7 +5362,7 @@ export class MPGame extends Game {
       f.far = lit ? 22 : 8.5;
       f.color.setRGB(0.055, 0.065, 0.085);
       this.islandScene.background?.setRGB?.(0.045, 0.055, 0.075);
-      if (this.sky) { this.sky.material.transparent = true; this.sky.material.opacity = 0.03; }
+      if (this.sky) this.sky.material.opacity = 0.03;
       if (this.ambient) this.ambient.intensity = lit ? 0.42 : 0.22;
       if (this.hemi) this.hemi.intensity = lit ? 0.24 : 0.10;
       /* The light itself is built once at load and left in the scene with
@@ -4122,7 +5389,7 @@ export class MPGame extends Game {
     this._updateAvatars(dt);
 
     // HUD
-    this._mpHud();
+    this._mpHud(dt);
     this._markTarget();
     if (M.taskProgress) {
       this.ui.setPrompt(null);
@@ -4212,7 +5479,8 @@ export class MPGame extends Game {
       if (rec.whistle > 0) { addFar(av.mesh, rec.name || '?', colourHex(rec.colour)); continue; }
       add(av.mesh, rec.name || '?', colourHex(rec.colour), false);
     }
-    for (const b of M.bodies.values()) add(b.mesh, 'BODY', 0xb03a2e, true);
+    // room-local coordinates land anywhere, so only tag the ones we can see
+    for (const b of M.bodies.values()) if (b.mesh.visible) add(b.mesh, 'BODY', 0xb03a2e, true);
     return out;
   }
 
@@ -4224,13 +5492,17 @@ export class MPGame extends Game {
    * eventually has to be collected, which is felt as the game stopping for
    * a moment. Everything below is written into structures that persist.
    */
-  _mpHud() {
+  _mpHud(dt = 1 / 60) {
     const M = this.mp;
     const h = this.ui.hud.data;
     // In the lobby and on the results card there is no world behind the
     // panel worth annotating, and a half-drawn HUD leaking out from under
     // a full-screen menu just looks broken.
-    if (!M.started || M.view.phase !== PHASE.ROAM) {
+    /* The death shot runs inside ROAM and puts its own mattes and caption
+       up, so the belt and the hearts have to go with the rest of the
+       interface — this runs every frame and would otherwise switch the HUD
+       straight back on underneath the bars. */
+    if (!M.started || M.view.phase !== PHASE.ROAM || this.deathShot) {
       h.visible = false; h.mp = null;
       return;
     }
@@ -4238,14 +5510,18 @@ export class MPGame extends Game {
 
     const d = M.hudData || (M.hudData = {
       role: null, alive: true, tasksDone: 0, tasksTotal: 0,
-      myTasks: [], killIn: 0, killTotal: 1, graceIn: 0, cools: [],
-      sabotage: null, task: null, players: [], coins: 0, selfId: null,
+      myTasks: [], killIn: 0, killTotal: 1, graceIn: 0, cools: [], sanct: false,
+      sabotage: null, task: null, coins: 0,
       belt: [], passives: [],
       tags: [], phase: null, flash: null,
     });
 
     d.role = M.view.role;
     d.alive = this.amAlive;
+    /* Who we are shadowing, if anybody — and the nudge that says the key
+       exists, because a ghost with nothing to read assumes it has nothing
+       to do. Names only; the HUD does the wording. */
+    d.watching = M.spectate ? (M.view.players.get(M.spectate)?.name || '?') : null;
     d.tasksDone = M.view.tasksDone;
     d.tasksTotal = M.view.tasksTotal;
     d.coins = this.coins || 0;
@@ -4263,8 +5539,11 @@ export class MPGame extends Game {
       sc.facing = this.player?.yaw ?? this.player?.facing ?? 0;
       // the whole band, so the panel can draw every carrier on it
       sc.bars.length = 0;
+      const pool = sc.bars._pool || (sc.bars._pool = []);
       for (const q of (this.scanList || [])) {
-        sc.bars.push({ band: q.band, strength: q.strength, kind: q.kind });
+        const bar = pool[sc.bars.length] || (pool[sc.bars.length] = {});
+        bar.band = q.band; bar.strength = q.strength; bar.kind = q.kind;
+        sc.bars.push(bar);
       }
       const L = this.scanLock;
       sc.lock = !!L;
@@ -4285,10 +5564,8 @@ export class MPGame extends Game {
       pr.on = true;
       pr.list = this.receipts || [];
       pr.at = Math.min(this.receiptAt || 0, Math.max(0, pr.list.length - 1));
-      pr.t = (pr.t || 0) + 0.016;
+      pr.t = (pr.t || 0) + dt;
     } else if (d.printer) d.printer.on = false;
-    d.receipts = null;
-    d.selfId = M.view.selfId;
     d.phase = M.view.phase;
     d.flash = M.doneFlash ? M.doneFlash.id : null;
 
@@ -4300,14 +5577,19 @@ export class MPGame extends Game {
       if (it) d.passives.push(it.icon);
     }
 
-    // chores, written into the rows that are already there
-    const ids = M.view.tasks;
+    /* Chores, written into the rows that are already there — and while the
+       tools are scattered, in the shuffled order, saying only what the job
+       is. The sabotage took the markers, the beacons and the chart jobs
+       away and then left the panel printing WIND THE RIDGE, which is the
+       label the Agent paid fifty seconds to take away. */
+    const ids = (this.scattered && M.scatterOrder) || M.view.tasks;
     d.myTasks.length = ids.length;
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       const row = d.myTasks[i] || (d.myTasks[i] = {});
+      const stage = this._taskStage(id);
       row.id = id;
-      row.name = this._taskStage(id).name;
+      row.name = this.scattered ? (stage.verb || stage.name) : stage.name;
       row.done = M.view.doneTasks.has(id);
       row.half = !row.done && (M.view.taskStep.get(id) || 0) >= 1;
       row.step = M.view.taskStep.get(id) || 0;
@@ -4318,6 +5600,10 @@ export class MPGame extends Game {
     d.killIn = this.amAgent && M.myKillReady ? Math.max(0, M.myKillReady - now()) : 0;
     d.killTotal = M.killTotal || 1;
     d.graceIn = this.amAgent && M.graceEnds ? Math.max(0, M.graceEnds - now()) : 0;
+    /* Standing on neutral ground the knife is refused, and the panel used to
+       go on reading KNIFE READY over a key that did nothing. */
+    d.sanct = this.amAgent && this.amAlive
+      && this.inSanctuary(this.player.pos.x, this.player.pos.z);
 
     // sabotage cooldowns
     d.cools.length = 0;
@@ -4348,19 +5634,9 @@ export class MPGame extends Game {
       d.task.holding = !!M.holdingE;
     } else d.task = null;
 
-    // the roster, in place
-    let n = 0;
-    for (const p of M.view.players.values()) {
-      const row = d.players[n] || (d.players[n] = {});
-      row.id = p.id; row.name = p.name; row.colour = p.colour; row.alive = p.alive;
-      n++;
-    }
-    d.players.length = n;
-
     this._tags(d.tags);
     h.mp = d;
 
-    this.ui.setHearts(this.amAlive ? 1 : 0, 1);
     this.ui.updateCompass(this.player.yaw, this.player.pos.x, this.player.pos.z);
     this.ui.setStamina(this.player.stamina);
   }

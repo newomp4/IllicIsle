@@ -10,12 +10,6 @@
    =========================================================== */
 
 import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
-import { COLOURS } from '../net/protocol.js';
-
-/** id -> 6-digit hex, for the Castaways roster pips. */
-const COLOUR_HEX = Object.fromEntries(
-  COLOURS.map((c) => [c.id, c.hex.toString(16).padStart(6, '0')])
-);
 
 const GOLD = '#ffd24a';
 const GOLD_LT = '#fff3c4';
@@ -35,6 +29,27 @@ const HEART = [
   '....2....',
 ].map((r) => r.padEnd(9, '.'));
 
+/* Compass geometry and ordering, out here because the strip is redrawn
+   every frame and none of it depends on the frame. */
+const COMPASS_HALF = 1.9;                 // radians visible either side
+const compassWrap = (a) => {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+};
+/* Screen-right is (-cos yaw, sin yaw), so a bearing counter-clockwise of your
+   heading — a POSITIVE dA — is to your LEFT. Adding it put every mark, tick
+   and place name on the side of the strip opposite the thing itself. */
+const compassX = (dA, left, W) => Math.round(left + W / 2 - (dA / COMPASS_HALF) * (W / 2));
+/** Which name wins the lettering row when two land on the same bearing. */
+const PRI = { FIX: 0, COIN: 1, BOX: 2, POST: 3, CATHY: 4, MACHINE: 5, FIRE: 6, CAMP: 7 };
+const byNeed = (p, q) => {
+  const cardP = p.kind === 'card' || p.kind === 'inter';
+  const cardQ = q.kind === 'card' || q.kind === 'inter';
+  if (cardP !== cardQ) return cardP ? -1 : 1;      // cardinals have their own row
+  return (PRI[p.label] ?? 9) - (PRI[q.label] ?? 9);
+};
+
 export class Hud {
   constructor() {
     this.c = document.createElement('canvas');
@@ -42,10 +57,17 @@ export class Hud {
     this.x = this.c.getContext('2d');
     this.x.imageSmoothingEnabled = false;
 
+    /* The compass strip is a fixed 132x17 ordered dither whose pixels never
+       change, yet painting it a pixel at a time cost 2,244 fills of every
+       frame. Bake it once here; only the left edge it lands on moves. */
+    this._compassBg = document.createElement('canvas');
+    this._compassBg.width = 132; this._compassBg.height = 17;
+    ditherRect(this._compassBg.getContext('2d'), 0, 0, 132, 17, '#140d06', '#241708', 0.5, 1);
+
     this.data = {
       visible: false,
       hp: 5, maxHp: 5, stamina: 1,
-      ammo: 0, ammoMax: 8,
+      ammo: 0,
       pendulums: 0, relics: 0, coins: 0,
       objective: '', prompt: null, timer: 0,
       boss: null,           // { frac, chip, name, phase }
@@ -53,15 +75,25 @@ export class Hud {
       compass: null,        // { yaw, marks:[{label,angle,kind}] }
       popup: null,          // { title, sub, icon, t }
       cinema: false, cinemaText: '', cinemaFade: 0, cinemaSkip: false,
-      hurtT: 0, night: 0,
+      hurtT: 0,
     };
     this._wobble = 0;
+    /* Flat x0/x1 pairs of whatever the compass has already lettered this
+       frame. Reused, because it is refilled sixty times a second. */
+    this._compassTaken = [];
   }
 
+  /* Returns true when the canvas actually changed size, because the caller
+     has to act on that: assigning to canvas.width reallocates the backing
+     store, and the CanvasTexture wrapping it keeps its old GL allocation
+     until somebody builds a new one. Without that the composite pass goes
+     on sampling the interface at the size it had before, which reads as the
+     previous screen burned in behind the new one at the wrong scale. */
   setSize(w, h) {
-    if (this.c.width === w && this.c.height === h) return;
+    if (this.c.width === w && this.c.height === h) return false;
     this.c.width = w; this.c.height = h;
     this.x.imageSmoothingEnabled = false;
+    return true;
   }
 
   /** Wipe the stack. Used when a room change would otherwise pile four up. */
@@ -93,6 +125,9 @@ export class Hud {
       if (d.popup.t > d.popup.dur) d.popup = null;
     }
     if (d.hurtT > 0) d.hurtT -= dt;
+    /* The purse flinch decays on the clock rather than per draw, so it
+       lasts the same fraction of a second whatever the frame rate. */
+    if (this._purseKick > 0) this._purseKick = Math.max(0, this._purseKick - dt * 1.2);
     this._wobble += dt;
   }
 
@@ -100,6 +135,9 @@ export class Hud {
      DRAW
      =========================================================== */
   render(time) {
+    /* Whether the caller made the overlay pass itself for the frame before;
+       see the handoff at the end of this method. */
+    const late = this._overlayLate; this._overlayLate = false;
     const x = this.x;
     const W = this.c.width, H = this.c.height;
     x.clearRect(0, 0, W, H);
@@ -116,38 +154,151 @@ export class Hud {
          this HUD is up for the whole round and it should sit at the edges
          of the picture, not across it. */
       this._mpTags(d.mp);
-      this._mpLeft(3, 3 + wob, d.mp);
+      const pwLeft = this._mpLeft(3, 3 + wob, d.mp);
       this._mpRight(W - 3, 3 + wob, d.mp);
-      this._compass(W / 2, 2, d.compass);
-      this._mpBanner(W, H, d.mp);
-      this._mpBelt(4, H - 52, d.mp);
+      /* The strip is centred on the frame and used to be a flat 132 wide,
+         so at 240 across it painted over the chore list on one side and the
+         purse on the other — a chore row you can read eight characters of
+         is not a chore list. It gets whatever the two columns actually
+         leave, measured symmetrically about the centre so the needle stays
+         on the middle of the rose, and goes altogether if that is nothing. */
+      const room = 2 * Math.min(W / 2 - (pwLeft + 4), W / 2 - 81);
+      if (room >= 40) this._compass(W / 2, 2, d.compass, room);
+      this._mpBanner(W, H, d.mp, pwLeft);
       /* Clear of the toast stack above it (two at 13 apiece from 58, so
-         84 at the worst) and clear of the belt caption below it at 164. */
+         84 at the worst). Below it is the belt: an instrument is 78 tall
+         from y 85 and the belt's plate starts at H - 62, so on a 180-tall
+         frame the two want the same pixels and the belt was losing it,
+         buried under the case along with the keys that spend it. Nothing
+         above them can move, so where the frame cannot hold both, the belt
+         stands down to a line naming its keys — the instrument you have
+         just switched on is the thing you are reading. */
+      const inst = !!(d.mp.scanner?.on || d.mp.printer?.on);
+      const beltRow = !inst || H - 62 >= 162;
+      if (beltRow) this._mpBelt(4, H - 52, d.mp);
+      else if (d.mp.belt?.length) {
+        drawText(x, '1-9  BELT', { x: 4, y: 164, scale: 1, color: '#8a7a52' });
+      }
+      /* The knife panel hangs off the bottom right corner and the till
+         roll's case ends at 163, so on a 180-tall frame the panel was drawn
+         last and over the top of the docket — the price, how long ago it
+         was and the key that reads it back all went under it. The panel
+         takes whichever bottom corner the belt has already vacated, and
+         where neither is free the roll stands down to a line naming its
+         key, the way the belt does above. */
+      const agent = d.mp.role === 'agent';
+      const aPH = 30 + Math.min(3, (d.mp.cools || []).length) * 7;
+      const clash = agent && !!d.mp.printer?.on && H - 16 - aPH < 163;
+      const agentLeft = clash && !d.mp.scanner?.on && !beltRow;
       if (d.mp.scanner?.on) this._scanner(4, 86, d.mp.scanner);
       /* The till roll, mirroring the scanner on the other side. Both are
          belt instruments and both are read the same way. */
-      if (d.mp.printer?.on) this._printer(W - 102, 86, d.mp.printer);
-      if (d.mp.role === 'agent') this._mpAgent(W - 5, H - 16, d.mp);
+      if (d.mp.printer?.on) {
+        if (clash && !agentLeft) {
+          drawText(x, 'N  TILL ROLL', {
+            x: W - 4, y: H - 16, scale: 1, align: 'right', color: '#8a7a52',
+          });
+        } else this._printer(W - 102, 86, d.mp.printer);
+      }
+      if (agent) this._mpAgent(agentLeft ? 116 : W - 5, H - 16, d.mp);
       /* An Agent has a knife panel in the bottom right corner, and a long
          prompt centred on the screen runs straight into it — "QUEZETRIEL
          QUEBOLIUS" printed the S of SABOTAGE off. Centre the prompt in
-         whatever room is actually left. */
-      if (d.prompt) this._prompt(d.mp.role === 'agent' ? (W - 118) / 2 : W / 2, H - 34, d.prompt);
-      this._toasts(W / 2, Math.round(H * 0.26));
-      if (d.popup) this._popup(W, H, d.popup);
-      return this.c;
+         whatever room is actually left.
+
+         And an instrument owns rows 85 to 163, which is where a 17-tall
+         panel at H - 34 lands on a 180-tall frame: it covered the range,
+         the caption and the key under it. There is nothing 17 tall between
+         the toasts and the case, so the prompt stands down to its own key
+         and its own line, under everything, the way the belt does. */
+      const flat = inst && H - 34 < 163;
+      if (d.prompt) {
+        this._prompt(flat || !agent ? W / 2 : (W - 118) / 2,
+          flat ? H - 9 : H - 34, d.prompt, 'E', flat);
+      }
+      /* Where the toast stack can sit is decided by what the columns and
+         the instrument band actually took this frame, and only this pass
+         knows that, so it leaves the measurements for the overlay. */
+      this._overlayFit = {
+        colBot: Math.max(this._mpLeftBottom || 0, this._mpRightBottom || 0),
+        room, tBot: inst ? 85 : H - 62,
+      };
+      return late ? this.c : this._drawOverlay(time);
     }
 
     this._hearts(4, 4 + wob);
     this._stamina(4, 4 + HEART.length * 2 + 5 + wob);
     this._right(W - 4, 4 + wob);
-    this._compass(W / 2, 3, d.compass);
+    /* The same fixed strip, and the same trouble: 132 centred on a 320-wide
+       frame lands on the heart row, and a sixth heart bought from Ferdi
+       vanished under it entirely. Measure the room the heart row leaves on
+       one side and the counters on the other — of those only PEND n/4 and
+       the ammo figure reach these rows, both inside 52 pixels of the edge. */
+    const l = 4 + d.maxHp * 21 + 2, r = W - 52;
+    const room = 2 * Math.min(W / 2 - l, r - W / 2);
+    if (room >= 40) this._compass(W / 2, 3, d.compass, room);
+    /* Centred, the strip only ever gets twice the shorter side, and at 240
+       across with five hearts that is eighteen pixels — the narrowest frame
+       had no compass at all, and buying a sixth heart took it away at 288.
+       Off-centre it still reads: the needle is the middle of the rose, not
+       the middle of the screen. */
+    else if (r - l >= 40) this._compass((l + r) / 2, 3, d.compass, r - l);
     if (d.boss) this._boss(W / 2, 26, d.boss);
-    this._objective(4, H - 4);
+    const objH = this._objective(4, H - 4);
     this._timer(W - 4, H - 4);
-    if (d.prompt) this._prompt(W / 2, H - 44, d.prompt);
-    this._toasts(W / 2, Math.round(H * 0.30));
-    if (d.popup) this._popup(W, H, d.popup);
+    /* The prompt panel is opaque and centred, and it owns rows H-44 to
+       H-28 — exactly where a three-line OBJECTIVE sits. It comes up clear
+       of whatever the objective actually took, and never goes lower than it
+       already was, so it still stays off the timer. */
+    if (d.prompt) this._prompt(W / 2, Math.min(H - 44, H - 4 - objH - 20), d.prompt);
+    return late ? this.c : this._drawOverlay(time);
+  }
+
+  /* Toasts and the popup composite over whatever is already on the canvas,
+     so they are a pass of their own. Screens draw onto this same canvas
+     after the HUD and most of them open with an opaque full-frame fill, so
+     anything raised while one is up — the toast for a camera bought from
+     Ferdi with a full relay — was painted out before the player saw it.
+     The pass therefore belongs to the caller, run after the screens have
+     drawn. A caller that only makes it while a screen is open would leave
+     the toasts undrawn on every other frame, so render() still makes the
+     pass itself on any frame the caller made none for the frame before —
+     never both, so the stack is never composited twice and the panel behind
+     it keeps the alpha it was drawn with. No clearRect: it is drawn on top,
+     not instead. */
+  renderOverlay(time) {
+    this._overlayLate = true;
+    return this._drawOverlay(time);
+  }
+
+  _drawOverlay(time) {
+    if (!this.data.visible) return this.c;
+    const d = this.data;
+    const W = this.c.width, H = this.c.height;
+    if (d.mp) {
+      /* The stack is centred and was measured against nothing, so a long
+         toast lay across the purse and the stamina bar on one side and the
+         chore list on the other. It gets the band between the columns —
+         but at 240 across that band is thirteen characters, which is not a
+         sentence, so where it is narrower than the compass' own strip the
+         stack drops below both columns instead, where the full width is
+         free. Either way it stops before the belt or an instrument.
+
+         The fit comes from render(), which measured the columns and the
+         instruments this frame; the fallbacks only stand in for a first
+         call that somehow beats it, and read as a frame with neither. */
+      const fit = this._overlayFit || {};
+      const room = fit.room || 0, tBot = fit.tBot ?? H - 62;
+      const band = room >= 132;
+      const tb = this._toasts(W / 2,
+        band ? Math.min(Math.round(H * 0.26), tBot - 26)
+          : Math.max(Math.round(H * 0.26), (fit.colBot || 0) + 3),
+        band ? room : W - 24, tBot);
+      if (d.popup) this._popup(W, H, d.popup, tb);
+      return this.c;
+    }
+    const tb = this._toasts(W / 2, Math.round(H * 0.30));
+    if (d.popup) this._popup(W, H, d.popup, tb);
     return this.c;
   }
 
@@ -213,18 +364,26 @@ export class Hud {
     const x = this.x;
     const agent = mp.role === 'agent';
     const tasks = mp.myTasks || [];
+    /* The list is a reminder, not a document — and it is also what the
+       compass has to fit beside, so the cap comes down with the framebuffer
+       instead of always being 136 and being painted over for its trouble. */
+    const CAP = Math.max(56, Math.min(136, (this.c.width >> 1) - 78));
     /* Measured without building an array of strings first. This runs every
        frame; anything it allocates has to be collected later, and a
        collection mid-round is a visible stutter. */
-    const CAP = 136;   // the list is a reminder, not a document
     let widest = textWidth(agent ? 'ROGUE AGENT' : 'CASTAWAY', 1);
     for (const t of tasks) {
       const w = textWidth(t.name, 1) + (t.steps > 1 ? 24 : 0);
       if (w > widest) widest = w;
     }
     const pw = Math.min(CAP, Math.max(64, widest + 15));
-    const ph = 12 + tasks.length * 8 + (agent ? 8 : 0);
+    /* The key hint under the list is drawn whichever side you are on, so
+       the plate has to be tall enough for it either way — a Castaway's
+       TAB MAP was printed on the sand a row below its own backing. */
+    const ph = 12 + tasks.length * 8 + 8;
     plate(x, ox - 2, oy - 2, pw, ph);
+    /* What the banner and the toasts have to clear. */
+    this._mpLeftBottom = oy - 2 + ph;
 
     drawText(x, agent ? 'ROGUE AGENT' : 'CASTAWAY', {
       x: ox, y: oy, scale: 1, color: agent ? '#ff6a5a' : '#8fe8c8',
@@ -251,8 +410,15 @@ export class Hud {
        chores did not move the bar, which is exactly the tell the crew
        learned to force. They count now, and the line has to say so,
        because the cost is the whole decision. */
-    if (agent) drawText(x, 'THESE COUNT FOR THEM', { x: ox, y: y + 1, scale: 1, color: '#c08a5c' });
-    else drawText(x, 'TAB  MAP', { x: ox, y: y + 1, scale: 1, color: '#7a6a4a' });
+    /* Every chore row above is cut to the plate; this line was not, and at
+       240 across it ran sixty-five pixels past the edge of its own backing
+       and onto the world. It says as much of itself as the plate can hold. */
+    const foot = agent
+      ? (['THESE COUNT FOR THEM', 'COUNTS FOR THEM', 'THEY COUNT', 'COUNTS']
+        .find((t) => textWidth(t, 1) <= pw - 4) || 'COUNTS')
+      : 'TAB  MAP';
+    drawText(x, foot, { x: ox, y: y + 1, scale: 1, color: agent ? '#c08a5c' : '#7a6a4a' });
+    return pw;                 // render() sizes the compass against this
   }
 
   /* ===========================================================
@@ -335,11 +501,17 @@ export class Hud {
     /* ---- what is locked ---- */
     const NY = oy + 27;
     if (!sc.lock) {
+      /* Dark green on the case's dark grey came out at 1.7:1 on five-by-seven
+         glyphs — and these are the lines you read when nothing is happening,
+         so they are the ones read most. Both lifted, the headline further
+         than the line under it so the order still reads. The caption is
+         shorter too: twenty characters is 119 pixels on a 98-wide case, and
+         it hung off both sides onto the world. */
       drawText(x, 'BAND CLEAR', {
-        x: ox + W / 2, y: NY + 10, scale: 1, align: 'center', color: '#4a7a5c',
+        x: ox + W / 2, y: NY + 10, scale: 1, align: 'center', color: '#8fe8a0',
       });
-      drawText(x, 'NOTHING TRANSMITTING', {
-        x: ox + W / 2, y: NY + 20, scale: 1, align: 'center', color: '#2e5a42',
+      drawText(x, 'NOTHING ON BAND', {
+        x: ox + W / 2, y: NY + 20, scale: 1, align: 'center', color: '#5f9a78',
       });
       return;
     }
@@ -370,8 +542,12 @@ export class Hud {
     const SY = NY + 10;
     const SH = 15;
     x.fillStyle = '#04120a'; x.fillRect(BX, SY, BW, SH);
-    // how far off your heading the bearing is, wrapped to +/- pi
-    let rel = sc.bearing - sc.facing;
+    /* How far off your heading the bearing is, wrapped to +/- pi, and
+       signed the way the tape reads: screen-right is (-cos yaw, sin yaw), so
+       a bearing counter-clockwise of your heading sits to your LEFT. Taken
+       the other way round the bob and the arrow both pointed away from the
+       carrier, and turning toward it drove the marker further out. */
+    let rel = sc.facing - sc.bearing;
     rel = ((rel % 6.283185) + 9.424778) % 6.283185 - 3.141593;
     const HALF = 1.5708;                   // a quarter turn, either side
     const mid = BX + BW / 2;
@@ -442,7 +618,7 @@ export class Hud {
        screws in the bottom corners of the case. */
     drawText(x, on ? 'ON THE NOSE' : (sc.note || 'B  STEP').slice(0, 14), {
       x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center',
-      color: on ? '#8fe8a0' : (him ? '#c09a3a' : '#2e6a48'),
+      color: on ? '#8fe8a0' : (him ? '#c09a3a' : '#5f9a78'),
     });
   }
 
@@ -518,10 +694,10 @@ export class Hud {
     const DX = ox + 15, DW = W - 20;
     if (!r) {
       drawText(x, 'NO SALES YET', {
-        x: ox + W / 2, y: oy + 34, scale: 1, align: 'center', color: '#4a7a5c',
+        x: ox + W / 2, y: oy + 34, scale: 1, align: 'center', color: '#8fe8a0',
       });
-      drawText(x, 'OVER THE COUNTER ONLY', {
-        x: ox + W / 2, y: oy + 44, scale: 1, align: 'center', color: '#2e5a42',
+      drawText(x, 'OVER THE COUNTER', {
+        x: ox + W / 2, y: oy + 44, scale: 1, align: 'center', color: '#5f9a78',
       });
       return;
     }
@@ -572,7 +748,7 @@ export class Hud {
     x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(DX, bot, DW, 1);
 
     drawText(x, list.length > 1 ? 'N  READ BACK' : 'N', {
-      x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center', color: '#2e6a48',
+      x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center', color: '#5f9a78',
     });
   }
 
@@ -591,13 +767,21 @@ export class Hud {
 
     const grace = mp.graceIn || 0;
     const cd = mp.killIn || 0;
-    const left = grace > 0 ? grace : cd;
+    /* The grace window is folded into the kill clock rather than measured
+       against itself: left/total was grace/grace for the whole two minutes,
+       so the bar sat at a hard zero and then leapt to full in the last
+       second. killReady is never earlier than graceEnds, so this is the
+       same wait, drawn as one monotone fill. */
+    const left = Math.max(grace, cd);
     const ready = left <= 0;
-    const total = grace > 0 ? Math.max(grace, 1) : Math.max(mp.killTotal || 1, 1);
+    const total = Math.max(mp.killTotal || 1, 1);
 
-    drawKnife(x, ox + 3, oy + 3, ready);
-    drawText(x, ready ? 'KNIFE READY' : 'KILL COOLDOWN', {
-      x: ox + 14, y: oy + 3, scale: 1, color: ready ? '#ff8a7a' : '#a87a70',
+    /* On neutral ground the kill is refused however cold the clock is, and
+       the panel went on promising a knife over a key that did nothing. */
+    const sanct = !!mp.sanct;
+    drawKnife(x, ox + 3, oy + 3, ready && !sanct);
+    drawText(x, sanct ? 'NEUTRAL GROUND' : (ready ? 'KNIFE READY' : 'KILL COOLDOWN'), {
+      x: ox + 14, y: oy + 3, scale: 1, color: ready && !sanct ? '#ff8a7a' : '#a87a70',
     });
     const bw = PW - 6, bx = ox + 3, by2 = oy + 12;
     x.fillStyle = INK; x.fillRect(bx - 1, by2 - 1, bw + 2, 6);
@@ -628,15 +812,20 @@ export class Hud {
       x: ox + 15, y: ky + 2, scale: 1, color: sabReady ? GOLD_LT : '#7a6a4a' });
 
     let cy = oy + 31;
+    /* Six glyphs reach ox+38 with their shadow, and the bar was started at
+       ox+30 and filled after them, so SCATTER printed as SCAT and two
+       stubs. The bar starts clear of the label field and gives up the
+       width, rather than the label giving up its last two letters. */
+    const LX = 40;
     for (const c of cools.slice(0, 3)) {
-      const cbw = PW - 36;
+      const cbw = PW - 46;
       drawText(x, (c.kind || '').toUpperCase().slice(0, 6), { x: ox + 3, y: cy, scale: 1, color: '#7a5a54' });
-      x.fillStyle = INK; x.fillRect(ox + 30, cy, cbw + 2, 5);
-      x.fillStyle = '#20100c'; x.fillRect(ox + 31, cy + 1, cbw, 3);
+      x.fillStyle = INK; x.fillRect(ox + LX, cy, cbw + 2, 5);
+      x.fillStyle = '#20100c'; x.fillRect(ox + LX + 1, cy + 1, cbw, 3);
       const nn = Math.round((1 - Math.min(1, c.left / Math.max(1, c.total))) * cbw);
       for (let i = 0; i < nn; i += 3) {
         x.fillStyle = i % 6 ? '#6a4a24' : '#c39a2c';
-        x.fillRect(ox + 31 + i, cy + 1, 2, 3);
+        x.fillRect(ox + LX + 1 + i, cy + 1, 2, 3);
       }
       cy += 7;
     }
@@ -652,7 +841,6 @@ export class Hud {
    */
   _mpRight(ox, oy, mp) {
     const x = this.x;
-    const players = mp.players || [];
     const PW = 74;
 
     /* the purse's own animation, kept here rather than in the game so it
@@ -664,7 +852,6 @@ export class Hud {
       this._purseKick = 1;
       this._purse = coins;
     }
-    if (this._purseKick > 0) this._purseKick = Math.max(0, this._purseKick - 0.02);
     const kick = this._purseKick;
     const gain = this._purseDelta > 0;
 
@@ -690,22 +877,6 @@ export class Hud {
     drawText(x, String(coins), {
       x: ox - 4, y: oy + 8, scale: 2, align: 'right', color: numCol,
     });
-    /* What just happened to it, floating clear of the plate rather than
-       printing on top of the figure — over it you got "9090/919". */
-    if (kick > 0 && this._purseDelta) {
-      const rise = Math.round((1 - kick) * 8);
-      const label = (this._purseDelta > 0 ? '+' : '') + this._purseDelta;
-      const lw = textWidth(label, 1);
-      const lx = ox - 4 - lw;
-      const ly = oy - 4 - rise;
-      if (ly > 0) {
-        x.fillStyle = 'rgba(8,6,3,.85)';
-        x.fillRect(lx - 2, ly - 1, lw + 4, 9);
-        drawText(x, label, {
-          x: lx, y: ly, scale: 1, color: gain ? '#8fe8a0' : '#ff8a7a',
-        });
-      }
-    }
 
     /* --- the island's work --- */
     let y = oy + PH + 1;
@@ -717,19 +888,47 @@ export class Hud {
        it — a nine-thousand-job dev lobby used to render as "WOR0/9999". */
     const cnt = total ? `${mp.tasksDone || 0}/${total}` : '--';
     const cntW = textWidth(cnt, 1);
-    if (cntW + textWidth('WORK', 1) + 10 <= PW) {
-      drawText(x, 'WORK', { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
+    /* An Agent's own chores count toward this bar, and it filled in gold and
+       went JADE at a hundred — the colour of a win — on the frame he lost.
+       Named and coloured for whose bar it is, so pitching in to look busy is
+       a trade he can see he is making. */
+    const them = mp.role === 'agent';
+    /* 'THEIR WORK' is 59 pixels of a 74-pixel plate and would have taken the
+       label off the panel entirely once the count is beside it. */
+    const word = them ? 'THEIRS' : 'WORK';
+    if (cntW + textWidth(word, 1) + 10 <= PW) {
+      drawText(x, word, { x: px0 + 4, y: y + 2, scale: 1, color: '#c9b98a' });
     }
     drawText(x, cnt, {
       x: ox - 4, y: y + 2, scale: 1, align: 'right',
-      color: frac >= 1 ? JADE : '#c9b98a',
+      color: !them && frac >= 1 ? JADE : '#c9b98a',
     });
     const bw = PW - 8, bx = px0 + 4;
     x.fillStyle = INK; x.fillRect(bx - 1, y + 11, bw + 2, 6);
     x.fillStyle = '#231708'; x.fillRect(bx, y + 12, bw, 4);
     for (let i = 0; i < Math.round(frac * bw); i += 3) {
-      x.fillStyle = i % 6 ? '#c39a2c' : GOLD;
+      x.fillStyle = them ? (i % 6 ? '#8a2018' : '#c03a2c') : (i % 6 ? '#c39a2c' : GOLD);
       x.fillRect(bx + i, y + 12, 2, 4);
+    }
+
+    /* What just happened to the purse, floating clear of the figure rather
+       than printing on top of it — over it you got "9090/919". It used to
+       float ABOVE the plate, and the plate is three pixels from the top of
+       the frame: ly was never once greater than zero and nobody has ever
+       seen this. It floats below instead, under the panel it belongs to and
+       drawn after it so the panel cannot bury it in turn; the backing keeps
+       it legible over the work count for the second the kick lasts. */
+    if (kick > 0 && this._purseDelta) {
+      const rise = Math.round((1 - kick) * 5);
+      const label = (this._purseDelta > 0 ? '+' : '') + this._purseDelta;
+      const lw = textWidth(label, 1);
+      const lx = ox - 4 - lw;
+      const ly = oy + PH + 4 - rise;
+      x.fillStyle = 'rgba(8,6,3,.85)';
+      x.fillRect(lx - 2, ly - 1, lw + 4, 9);
+      drawText(x, label, {
+        x: lx, y: ly, scale: 1, color: gain ? '#8fe8a0' : '#ff8a7a',
+      });
     }
 
     /* --- your stamina, where you can actually see it ---
@@ -762,6 +961,8 @@ export class Hud {
       x.fillStyle = 'rgba(224,69,58,.35)';
       x.fillRect(sx, y + 12, sw, 4);
     }
+    /* What the banner and the toasts have to clear. */
+    this._mpRightBottom = y + SH;
   }
 
   /**
@@ -784,10 +985,10 @@ export class Hud {
        beside the count, so it printed over it. Anything past nine is shown
        as a tally instead. */
     const MAX = 9;
-    const shown = belt.slice(0, MAX);
-    const spare = belt.length - shown.length;
-    if (shown.length) {
-      const w = Math.max(shown.length * SLOT + 4 + (spare > 0 ? 18 : 0),
+    const shown = Math.min(belt.length, MAX);
+    const spare = belt.length - shown;
+    if (shown) {
+      const w = Math.max(shown * SLOT + 4 + (spare > 0 ? 18 : 0),
         textWidth('BELT', 1) + 10);
       plate(x, ox, oy - 10, w, SLOT + 16);
       drawText(x, 'BELT', { x: ox + 3, y: oy - 8, scale: 1, color: '#8a7a52' });
@@ -796,7 +997,8 @@ export class Hud {
           x: ox + w - 4, y: oy - 8, scale: 1, align: 'right', color: '#8a7a52',
         });
       }
-      shown.forEach((sl, i) => {
+      for (let i = 0; i < shown; i++) {
+        const sl = belt[i];
         const sx = ox + 2 + i * SLOT;
         // the well
         x.fillStyle = sl.active ? '#3a2a10' : '#140e06';
@@ -823,7 +1025,7 @@ export class Hud {
           x.fillStyle = 'rgba(255,210,74,.28)';
           x.fillRect(sx, oy + 2, SLOT - 2, SLOT - 2);
         }
-      });
+      }
     }
 
     /* Passives are facts about you rather than keys you press. They used to
@@ -831,7 +1033,7 @@ export class Hud {
        and no label — from a distance that reads as one small brown button
        nobody can identify. Labelled and plated now. */
     if (passives.length) {
-      const py = oy + (shown.length ? SLOT + 10 : 0);
+      const py = oy + (shown ? SLOT + 10 : 0);
       const pw = Math.max(passives.length * 11 + 6, textWidth('ON YOU', 1) + 10);
       plate(x, ox, py - 10, pw, 21);
       drawText(x, 'ON YOU', { x: ox + 3, y: py - 8, scale: 1, color: '#8a7a52' });
@@ -842,14 +1044,48 @@ export class Hud {
   }
 
   /** Centre-bottom: whatever is currently urgent. */
-  _mpBanner(W, H, mp) {
+  _mpBanner(W, H, mp, pwLeft = 0) {
     const x = this.x;
+
+    /* The dead get a line of their own, above everything else the banner
+       does. Being murdered is not the end of the round for you and the game
+       should say so — the chores still count, and F puts you on somebody's
+       shoulder rather than making you walk the island to find them. */
+    if (mp.alive === false) {
+      const msg = mp.watching ? `WATCHING ${mp.watching}` : 'YOU ARE A GHOST';
+      /* Sized from its own text and centred on the frame, this was 205 wide
+         on a 240-wide frame: three chore rows on one side and the whole of
+         WORK on the other went under it, told by the banner that the chores
+         still count. It gets the room the two columns actually leave — the
+         same measurement the compass is given — and where the hint will not
+         fit on one line it goes on two, split at the keys rather than
+         wrapped, because "SOMEBODY E" is not a hint. */
+      const room = 2 * Math.min(W / 2 - (pwLeft + 4), W / 2 - 81);
+      const inner = Math.max(30, room - 14);
+      const long = mp.watching ? 'F  NEXT     MOVE  LET GO' : 'F  WATCH SOMEBODY     E  WORK ON';
+      const hint = textWidth(long, 1) <= inner ? [long]
+        : (mp.watching ? ['F  NEXT', 'MOVE  LET GO'] : ['F  WATCH', 'E  WORK ON']);
+      const lines = [...wrapText(msg, inner, 1, 1), ...hint];
+      const gw = Math.min(room, lines.reduce((m, s2) => Math.max(m, textWidth(s2, 1)), 0) + 14);
+      const gx = Math.round((W - gw) / 2), gy = 22;
+      plate(x, gx, gy, gw, 4 + lines.length * 10);
+      const named = lines.length - hint.length;
+      lines.forEach((s2, i) => drawText(x, s2, {
+        x: W / 2, y: gy + 3 + i * 10, scale: 1, align: 'center',
+        color: i < named ? '#8fd8ff' : '#6a7a8a',
+      }));
+    }
 
     // task hold — a single framed panel, not a bar with captions above and
     // an interaction prompt fighting it below
     if (mp.task) {
       const t2 = mp.task;
-      const pw = Math.max(96, textWidth(t2.name || '', 1) + 14);
+      /* The bottom line is the verb, which can be longer than the name the
+         plate was measured from — SHOULDERING HOLD STILL ran twenty pixels
+         off each end of its own backing onto the world. */
+      const hold = `${t2.verb || ''}  HOLD STILL`;
+      const pw = Math.min(W - 8,
+        Math.max(96, textWidth(t2.name || '', 1) + 14, textWidth(hold, 1) + 14));
       const px = Math.round((W - pw) / 2), py = H - 56;
       plate(x, px, py, pw, 27);
       x.fillStyle = JADE;
@@ -867,7 +1103,7 @@ export class Hud {
       // a chaser so it never looks frozen when progress is slow
       const cx2 = bx + ((performance.now() / 9) % bw | 0);
       x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 5);
-      drawText(x, t2.holding ? `${t2.verb}  HOLD STILL` : 'HOLD E',
+      drawText(x, t2.holding ? hold : 'HOLD E',
         { x: W / 2, y: py + 19, scale: 1, align: 'center',
           color: t2.holding ? '#9fd8c4' : (Math.floor(performance.now() / 200) % 2 ? GOLD : '#8a7a52') });
     }
@@ -886,12 +1122,6 @@ export class Hud {
       drawText(x, label, {
         x: W / 2, y: by + 2, scale: 1, align: 'center',
         color: s.fatal ? (flash ? '#fff3c4' : '#ffb0a4') : GOLD_LT,
-      });
-    }
-
-    if (!mp.alive) {
-      drawText(x, 'YOU ARE A GHOST - WATCH, AND WAIT', {
-        x: W / 2, y: mp.sabotage ? H - 32 : H - 21, scale: 1, align: 'center', color: '#8fb0c8',
       });
     }
   }
@@ -955,27 +1185,24 @@ export class Hud {
      Wider arc and a tick strip, so it visibly sweeps as you turn. With
      only four cardinals and a narrow window it showed one letter at a
      time and read as stuck. */
-  _compass(cx, oy, c) {
+  _compass(cx, oy, c, w = 132) {
     if (!c) return;
     const x = this.x;
-    const W = 132, H = 17;
+    /* The caller says how much room it has; the strip used to take 132
+       whatever the frame was and print it over its neighbours. The baked
+       plate is blitted from its own centre outwards rather than scaled, so
+       a narrow strip is the same pixels with less of them either side and
+       everything below still measures against the width in hand. */
+    const W = Math.max(40, Math.min(132, w | 0)), H = 17;
     const left = Math.round(cx - W / 2);
     x.fillStyle = INK; x.fillRect(left - 1, oy - 1, W + 2, H + 2);
-    ditherRect(x, left, oy, W, H, '#140d06', '#241708', 0.5, 1);
-
-    const HALF = 1.9;                       // radians visible either side
-    const toX = (dA) => Math.round(left + W / 2 + (dA / HALF) * (W / 2));
-    const wrap = (a) => {
-      while (a > Math.PI) a -= Math.PI * 2;
-      while (a < -Math.PI) a += Math.PI * 2;
-      return a;
-    };
+    x.drawImage(this._compassBg, (132 - W) >> 1, 0, W, H, left, oy, W, H);
 
     // degree ticks every 15 degrees, taller every 45
     for (let deg = 0; deg < 360; deg += 15) {
-      const dA = wrap(deg * Math.PI / 180 - c.yaw);
-      if (Math.abs(dA) > HALF) continue;
-      const tx = toX(dA);
+      const dA = compassWrap(deg * Math.PI / 180 - c.yaw);
+      if (Math.abs(dA) > COMPASS_HALF) continue;
+      const tx = compassX(dA, left, W);
       const major = deg % 45 === 0;
       x.fillStyle = major ? '#7a6a3c' : '#4a3a1c';
       x.fillRect(tx, oy + H - (major ? 5 : 3), 1, major ? 5 : 3);
@@ -985,26 +1212,17 @@ export class Hud {
        other — CAMP and COIN at the same angle came out as "CCOAIMNP". The
        place labels share one row, so they are drawn in order of how much you
        need them and anything that would land on top of one already there is
-       dropped. The pip or diamond still draws; only the lettering goes. */
-    const PRI = { FIX: 0, COIN: 1, BOX: 2, POST: 3, CATHY: 4, MACHINE: 5, FIRE: 6, CAMP: 7 };
-    const taken = [];
-    const roomFor = (px, w) => {
-      for (const [a, b] of taken) if (px - w / 2 < b + 2 && px + w / 2 > a - 2) return false;
-      taken.push([px - w / 2, px + w / 2]);
-      return true;
-    };
-    const ordered = c.marks.slice().sort((p, q) => {
-      const cardP = p.kind === 'card' || p.kind === 'inter';
-      const cardQ = q.kind === 'card' || q.kind === 'inter';
-      if (cardP !== cardQ) return cardP ? -1 : 1;      // cardinals have their own row
-      return (PRI[p.label] ?? 9) - (PRI[q.label] ?? 9);
-    });
+       dropped. The pip or diamond still draws; only the lettering goes.
+       Sorted where it lies: ui.js refills the same pooled marks in the same
+       slots every frame, so a permuted pool is indistinguishable. */
+    c.marks.sort(byNeed);
+    this._compassTaken.length = 0;
 
-    for (const m of ordered) {
-      const dA = wrap(m.angle - c.yaw);
-      if (Math.abs(dA) > HALF) continue;
-      const px = toX(dA);
-      const near = 1 - Math.abs(dA) / HALF;
+    for (const m of c.marks) {
+      const dA = compassWrap(m.angle - c.yaw);
+      if (Math.abs(dA) > COMPASS_HALF) continue;
+      const px = compassX(dA, left, W);
+      const near = 1 - Math.abs(dA) / COMPASS_HALF;
       const col = m.kind === 'card' ? GOLD
         : m.kind === 'inter' ? '#8a7a52'
           : m.kind === 'goal' ? '#ffe07a'
@@ -1035,11 +1253,47 @@ export class Hud {
       /* Cardinals on the top line, places on the bottom. They used to share
          a row and spell nonsense wherever a landmark lined up with a letter. */
       const card = m.kind === 'card' || m.kind === 'inter';
-      if (!card && !roomFor(px, textWidth(m.label, 1))) continue;
-      drawText(x, m.label, {
-        x: px, y: oy + (card ? 1 : 9), scale: 1, align: 'center', color: col, shadow: false,
-      });
-      if (!card) { x.fillStyle = col; x.fillRect(px, oy + 7, 1, 2); }
+      if (card) {
+        const cw = textWidth(m.label, 1);
+        drawText(x, m.label, {
+          x: Math.max(left + cw / 2, Math.min(left + W - cw / 2, px)),
+          y: oy + 1, scale: 1, align: 'center', color: col, shadow: false,
+        });
+        continue;
+      }
+      /* Picture first, name second, and the name is the part that gives way.
+         A place costs seven pixels as a sprite and up to thirty-five as a
+         word, so on a crowded bearing the word is what will not fit — and a
+         campfire you can recognise is worth more than a blank gap where
+         CAMP used to be dropped for want of room. */
+      const icon = m.icon && POI_ICONS[m.icon] ? m.icon : null;
+      const lw = textWidth(m.label, 1);
+      const iw = icon ? POI_ICON_W + 2 : 0;   // two clear pixels, or the halo touches the first letter
+      /* A mark survives to within a twentieth of the end of the strip, so a
+         word centred on it lettered clean off the plate — onto a heart on
+         one side and the purse's coin pip on the other, with no shadow
+         under it. It slides inboard until it is on its own backing, and
+         claims the span it will actually occupy rather than the one it
+         asked for, or two labels clamped to the same end re-collide. */
+      const lo = left + 1, hi = left + W - 1;
+      const place = (wd) => Math.max(lo, Math.min(hi - wd, Math.round(px - wd / 2)));
+      let showLabel = !!m.label;
+      let wide = iw + lw;
+      let x0 = place(wide);
+      if (wide > hi - lo || !this._compassRoom(x0, wide)) {
+        if (!icon) continue;                 // nothing to fall back on
+        showLabel = false;
+        wide = POI_ICON_W;
+        x0 = place(wide);
+        if (!this._compassRoom(x0, wide)) continue;
+      }
+      if (icon) drawPoiIcon(x, icon, x0, oy + 9, performance.now() / 1000);
+      if (showLabel) {
+        drawText(x, m.label, {
+          x: x0 + iw, y: oy + 9, scale: 1, align: 'left', color: col, shadow: false,
+        });
+      }
+      x.fillStyle = col; x.fillRect(px, oy + 7, 1, 2);
     }
 
     // needle and frame
@@ -1050,12 +1304,34 @@ export class Hud {
     x.fillRect(left, oy, 1, H); x.fillRect(left + W - 1, oy, 1, H);
   }
 
+  /** True if a label of width w starting at x0 clears everything already
+      lettered on the compass this frame, and claims the span if it does. */
+  _compassRoom(x0, w) {
+    const t = this._compassTaken;
+    for (let i = 0; i < t.length; i += 2) {
+      if (x0 < t[i + 1] + 2 && x0 + w > t[i] - 2) return false;
+    }
+    t.push(x0, x0 + w);
+    return true;
+  }
+
   /* ---------- boss bar ---------- */
   _boss(cx, oy, b) {
     const x = this.x;
     const W = 150, H = 8;
     const left = Math.round(cx - W / 2);
-    drawText(x, b.name, { x: cx, y: oy, scale: 1, align: 'center', color: '#ffb46a' });
+    /* The counters on one side of this row and the stamina bar on the other
+       own it: at 240 across HECTOR - EL BASS PRESIDENTE printed its tail
+       over RELIC and its head on the bar. The name gets what they leave,
+       measured symmetrically about the centre so it stays over its own
+       bar — the bar itself is 150 and the row above is not. */
+    const room = this.c.width - 128;
+    let nm = normalize(b.name);
+    if (textWidth(nm, 1, 1) > room) {
+      const fit = Math.max(2, Math.floor((room + 1) / 6));
+      nm = `${nm.slice(0, fit - 1).trimEnd()}.`;
+    }
+    drawText(x, nm, { x: cx, y: oy, scale: 1, align: 'center', color: '#ffb46a' });
     const by = oy + 11;
     x.fillStyle = INK; x.fillRect(left - 2, by - 2, W + 4, H + 4);
     x.fillStyle = '#2a1006'; x.fillRect(left, by, W, H);
@@ -1075,13 +1351,14 @@ export class Hud {
   /* ---------- objective ---------- */
   _objective(ox, byBottom) {
     const d = this.data;
-    if (!d.objective) return;
+    if (!d.objective) return 0;
     const x = this.x;
     const lines = wrapText(d.objective, 150, 1, 1);
     let y = byBottom - lines.length * 9 - 10;
     drawText(x, 'OBJECTIVE', { x: ox, y, scale: 1, color: GOLD_DK });
     y += 10;
     for (const ln of lines) { drawText(x, ln, { x: ox, y, scale: 1, color: GOLD_LT }); y += 9; }
+    return lines.length * 9 + 10;    // what the prompt above it has to clear
   }
 
   _timer(ox, byBottom) {
@@ -1094,10 +1371,19 @@ export class Hud {
   }
 
   /* ---------- interaction prompt ---------- */
-  _prompt(cx, cy, text, key = 'E') {
+  _prompt(cx, cy, text, key = 'E', flat = false) {
     const x = this.x;
     const label = String(text).toUpperCase();
     const capW = keycapWidth(key);
+    /* Stood down to a line, because the caller has an instrument up and its
+       case owns every row a 17-tall panel could have sat in. The key is
+       still named, which is the part you are reading it for. */
+    if (flat) {
+      drawText(x, `${key}  ${label}`, {
+        x: cx, y: cy, scale: 1, align: 'center', color: GOLD_LT,
+      });
+      return;
+    }
     const w = textWidth(label, 1, 1) + capW + 20;
     const h = 17;
     // never off either edge, whatever it has been asked to centre on
@@ -1107,32 +1393,60 @@ export class Hud {
     drawText(x, label, { x: left + 10 + capW, y: cy + 6, scale: 1, color: GOLD_LT });
   }
 
-  /* ---------- toasts ---------- */
-  _toasts(cx, oy) {
+  /* ---------- toasts ----------
+     Two at a time, newest kept. An uncapped stack grows down the middle of
+     the screen and there is no panel you can put anywhere below it that a
+     tall enough stack will not eventually reach — the scanner sits under
+     this and was getting walked on.
+
+     Nothing measured the width either. A toast is centred on cx and was
+     drawn at whatever length it happened to be, so THEY WILL SWEAR YOU WERE
+     ELSEWHERE - PRESS AGAIN TO DROP IT was a 365-pixel plate on a 240-pixel
+     frame: nine characters off the left of the picture, ten off the right,
+     and the whole width blanked for eleven rows. It wraps into the room the
+     caller says it has, two lines at most so the stack cannot walk any
+     further down than it did, and it stops at `bottom` — dropping the older
+     toast rather than the one that has just arrived.
+
+     Returns the y the stack finished at, so the popup card can stay off it. */
+  _toasts(cx, oy, maxW = this.c.width - 24, bottom = this.c.height) {
     const x = this.x;
+    // as many lines as the budget below the stack can hold, never more than two
+    const cap = Math.max(1, Math.min(2, Math.floor((bottom - oy - 2) / 9)));
+    const rows = this.data.toasts.slice(-2).map((t) => {
+      const all = wrapText(t.text, maxW - 12, 1, 1);
+      const lines = all.length ? all.slice(0, cap) : [''];
+      // the same '.' the printer's dockets end a cut line with
+      if (all.length > cap) lines[cap - 1] = `${lines[cap - 1].slice(0, -1)}.`;
+      return {
+        t,
+        lines,
+        w: lines.reduce((m, l) => Math.max(m, textWidth(l, 1, 1)), 0) + 12,
+        h: lines.length * 9 + 2,
+      };
+    });
     let y = oy;
-    /* Two at a time, newest kept. An uncapped stack grows down the
-       middle of the screen and there is no panel you can put anywhere
-       below it that a tall enough stack will not eventually reach — the
-       scanner sits under this and was getting walked on. */
-    for (const t of this.data.toasts.slice(-2)) {
-      const w = textWidth(t.text, 1, 1) + 12;
-      const left = Math.round(cx - w / 2);
-      const fade = Math.min(1, t.life * 3);
-      if (fade < 0.5 && Math.floor(t.life * 12) % 2 === 0) { y += 13; continue; }
+    while (rows.length > 1
+      && y + rows.reduce((n, r) => n + r.h + 2, 0) - 2 > bottom) rows.shift();
+    for (const r of rows) {
+      const left = Math.round(Math.max(3, Math.min(this.c.width - r.w - 3, cx - r.w / 2)));
+      const fade = Math.min(1, r.t.life * 3);
+      if (fade < 0.5 && Math.floor(r.t.life * 12) % 2 === 0) { y += r.h + 2; continue; }
       x.fillStyle = 'rgba(8,5,3,.82)';
-      x.fillRect(left, y, w, 11);
-      const col = t.kind === 'bad' ? RED : t.kind === 'jade' ? JADE : GOLD;
-      x.fillStyle = col; x.fillRect(left, y, 2, 11);
-      drawText(x, t.text, { x: left + 6, y: y + 2, scale: 1, color: t.kind === 'bad' ? '#ffbdb7' : GOLD_LT });
-      y += 13;
+      x.fillRect(left, y, r.w, r.h);
+      const col = r.t.kind === 'bad' ? RED : r.t.kind === 'jade' ? JADE : GOLD;
+      x.fillStyle = col; x.fillRect(left, y, 2, r.h);
+      const tc = r.t.kind === 'bad' ? '#ffbdb7' : GOLD_LT;
+      r.lines.forEach((ln, i) => drawText(x, ln, { x: left + 6, y: y + 2 + i * 9, scale: 1, color: tc }));
+      y += r.h + 2;
     }
+    return y;
   }
 
   /* ===========================================================
      COLLECTIBLE POPUP — a drawn card with its own pixel icon
      =========================================================== */
-  _popup(W, H, p) {
+  _popup(W, H, p, toastBot = 0) {
     const x = this.x;
     /* CENTRED, and 110 wide.
 
@@ -1140,13 +1454,33 @@ export class Hud {
        till roll now lives — and the scanner is on the left. The middle of
        that band, 105 to 215, is the one place nothing else uses, so the
        card drops into it from above instead of sliding in from the side. */
-    const CW = 110, CH = 52;
+    /* Both were flat numbers, and the text field inside 110 is 68 pixels —
+       eleven characters — so YOU ARE SEEING STARS was cut to YOU ARE SEEING
+       and THEY ARE DECIDING ABOUT YOU lost ABOUT YOU. The card takes the
+       width its own header needs and grows downwards for the lines it
+       actually has, down being the one direction with room in it. */
+    const head = p.head || 'RELIC FOUND';
+    const CW = Math.max(110, Math.min(W - 24, textWidth(head, 1, 1) + 40));
+    const TL = wrapText(p.title, CW - 42, 1, 1).slice(0, 3);
+    const SL = p.sub ? wrapText(p.sub, CW - 42, 1, 1).slice(0, 3) : [];
+    const CH = Math.max(52, 24 + (TL.length + SL.length) * 8 + (SL.length ? 2 : 0));
     const inT = Math.min(1, p.t / 0.28);
     const outT = p.t > p.dur - 0.5 ? (p.dur - p.t) / 0.5 : 1;
     const k = Math.min(inT, Math.max(0, outT));
     const ease = 1 - Math.pow(1 - k, 3);
     const left = Math.round(W / 2 - CW / 2);
-    const top = Math.round(H / 2 - CH / 2 - (1 - ease) * 26);
+    /* The card is opaque and lands on the middle of the frame, which is
+       where the second toast still is at 180 tall — it cut it in half, and
+       buying at Ferdi's fires a toast and a card together. It drops to
+       just under whatever the stack actually used, and no further than the
+       furniture below it; with one toast or none it does not move at all,
+       and when it has been pushed it comes up from below rather than
+       sweeping down through the stack it was moved off. */
+    const rest = Math.round(H / 2 - CH / 2);
+    const floor = (this.data.mp ? H - 62 : H - 44) - CH - 2;
+    const restY = Math.min(Math.max(rest, toastBot + 2), Math.max(rest, floor));
+    const push = restY > rest;
+    const top = Math.round(restY + (push ? 1 : -1) * (1 - ease) * 26);
 
     panel(x, left, top, CW, CH, { border: 2, dither: 0.45, hi: GOLD, lo: '#3a2610' });
 
@@ -1166,16 +1500,15 @@ export class Hud {
     const tx = left + 36;
     // the header is whatever the caller says it is; it used to always claim
     // a relic had been found, including when you had just stoked a fire
-    drawText(x, p.head || 'RELIC FOUND', { x: tx, y: top + 6, scale: 1, color: GOLD });
+    drawText(x, head, { x: tx, y: top + 6, scale: 1, color: GOLD });
     x.fillStyle = '#5c3f1c'; x.fillRect(tx, top + 13, CW - 42, 1);
-    const lines = wrapText(p.title, CW - 42, 1, 1).slice(0, 2);
     let ty = top + 17;
-    for (const ln of lines) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 8; }
-    if (p.sub) {
+    for (const ln of TL) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 8; }
+    if (SL.length) {
       ty += 2;
       // laid out in sequence; clamping each line to the bottom edge stacked
       // them all on the same row
-      for (const ln of wrapText(p.sub, CW - 42, 1, 1).slice(0, 2)) {
+      for (const ln of SL) {
         if (ty > top + CH - 9) break;
         drawText(x, ln, { x: tx, y: ty, scale: 1, color: '#9fd8c4' });
         ty += 8;
@@ -1197,9 +1530,32 @@ function plate(x, ox, oy, w, h) {
   x.fillRect(ox, oy, w, h);
   // a single dithered row along each edge, so it fades out rather than
   // stopping dead against the world
-  ditherRect(x, ox, oy, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
-  ditherRect(x, ox, oy + h - 2, w, 2, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
-  ditherRect(x, ox + w - 2, oy, 2, h, 'rgba(0,0,0,0)', 'rgba(8,6,3,.90)', 0.5, 1);
+  plateEdge(x, ox, oy, w, 2);
+  plateEdge(x, ox, oy + h - 2, w, 2);
+  plateEdge(x, ox + w - 2, oy, 2, h);
+}
+
+/* Those edges are a 2x2 checkerboard of one colour and nothing, and dithering
+   them a pixel at a time meant thousands of 1x1 fills a frame, half of them
+   painting a fully transparent colour over what was already there. The
+   pattern repeats every two pixels, so one cached tile covers a strip in a
+   single fill; translating to the strip's own corner first keeps it in the
+   phase ditherRect gave it, which is measured from the rect, not the canvas. */
+let PLATE_EDGE = null;
+function plateEdge(x, ox, oy, w, h) {
+  if (!PLATE_EDGE) {
+    const t = document.createElement('canvas');
+    t.width = 2; t.height = 2;
+    const tx = t.getContext('2d');
+    tx.fillStyle = 'rgba(8,6,3,.90)';
+    tx.fillRect(0, 0, 1, 1); tx.fillRect(1, 1, 1, 1);
+    PLATE_EDGE = x.createPattern(t, 'repeat');
+  }
+  x.save();
+  x.translate(ox, oy);
+  x.fillStyle = PLATE_EDGE;
+  x.fillRect(0, 0, w, h);
+  x.restore();
 }
 
 /* ===========================================================
@@ -1214,6 +1570,80 @@ function plate(x, ox, oy, w, h) {
    =========================================================== */
 export function keycapWidth(key = 'E') {
   return textWidth(String(key).toUpperCase(), 1, 1) + 6;
+}
+
+/* ===========================================================
+   POI SPRITES
+
+   Seven by seven, because the compass row is seventeen tall and the glyphs
+   beside them are five by seven — anything bigger pushes the strip out of
+   shape. Each is a list of [dx, dy, w, h, colour] rects in the same shape
+   as the chart's larger MAP_ICONS, and 'BLINK' is a colour that alternates,
+   for the things that are meant to catch your eye.
+
+   The point of them is room as much as recognition: a name on the compass
+   costs twenty-three to thirty-five pixels of a hundred and thirty-two, and
+   eight places in view at once do not fit. A picture costs seven, so when
+   the row is crowded the label goes and the picture stays — which is more
+   than the old behaviour left, a bare one-by-two pip and no clue at all.
+   =========================================================== */
+export const POI_ICONS = {
+  // a campfire: two logs and a flame
+  fire: [[0, 5, 7, 2, '#5a3a1e'], [1, 4, 5, 1, '#6b4626'], [2, 2, 3, 2, '#e06a1a'],
+    [3, 0, 1, 2, '#f0a020'], [2, 3, 1, 1, '#fff0b0']],
+  // where you all washed up: a tent
+  camp: [[3, 0, 1, 1, '#8a7452'], [2, 1, 3, 1, '#8a7452'], [1, 2, 5, 2, '#a08a5e'],
+    [0, 4, 7, 3, '#7a6444'], [3, 4, 1, 3, '#2a2018']],
+  // Cathy's: a parasol over a burger
+  cathy: [[0, 0, 7, 2, '#c4402e'], [2, 0, 1, 2, '#f0e4c4'], [5, 0, 1, 2, '#f0e4c4'],
+    [1, 3, 5, 1, '#e8b04a'], [1, 4, 5, 1, '#7a3a20'], [1, 5, 5, 2, '#c98a3a']],
+  // the temple: flat-topped and squarely stepped, so it is not the tent
+  temple: [[0, 5, 7, 2, '#8a7a54'], [1, 3, 5, 2, '#7a6a44'], [2, 1, 3, 2, '#6a5a34'],
+    [2, 0, 3, 1, '#9a8a64'], [3, 4, 1, 3, '#150f06']],
+  // the little gold man himself
+  idol: [[2, 0, 3, 2, '#ffd24a'], [1, 2, 5, 3, '#e0a92b'], [0, 5, 7, 2, '#a8761c']],
+  // the listening post: a hatch with an aerial
+  post: [[0, 4, 7, 3, '#4a5a4a'], [1, 5, 5, 1, '#2e3a2e'], [3, 0, 1, 4, '#8a8478'],
+    [2, 0, 1, 1, '#8a8478'], [4, 0, 1, 1, '#8a8478']],
+  // one of Ferdi's outlying machines
+  machine: [[1, 0, 5, 7, '#2e4a5a'], [2, 1, 3, 3, '#7ad0e0'], [2, 5, 3, 1, '#c9b98a']],
+  // somebody put a boombox down
+  box: [[0, 1, 7, 5, '#3a3a44'], [1, 2, 2, 3, '#8fd8ff'], [4, 2, 2, 3, '#8fd8ff'],
+    [3, 0, 1, 1, '#8a8478']],
+  // a hammer, for whatever the Agents broke. Blinks with the alarm.
+  fix: [[1, 0, 5, 2, 'BLINK'], [0, 0, 1, 1, 'BLINK'], [3, 2, 1, 5, '#c98a3a']],
+  // loose money
+  coin: [[2, 0, 3, 1, '#ffd24a'], [1, 1, 5, 5, '#ffd24a'], [2, 6, 3, 1, '#ffd24a'],
+    [3, 2, 1, 3, '#8a6a20']],
+  // the X, and what is under it
+  dig: [[0, 0, 2, 2, '#8a1a10'], [5, 0, 2, 2, '#8a1a10'], [2, 2, 3, 3, '#8a1a10'],
+    [0, 5, 2, 2, '#8a1a10'], [5, 5, 2, 2, '#8a1a10']],
+  // a Rogue Pendulum: the bob on its wire
+  pendulum: [[3, 0, 1, 2, '#8a8478'], [3, 2, 1, 1, '#d0a0ff'], [2, 3, 3, 1, '#9a6ad0'],
+    [1, 4, 5, 1, '#9a6ad0'], [2, 5, 3, 1, '#9a6ad0'], [3, 6, 1, 1, '#d0a0ff']],
+  // the way out of wherever you are
+  out: [[0, 0, 5, 7, '#4a3a22'], [1, 1, 3, 5, '#150f06'], [5, 3, 2, 1, '#ffd24a'],
+    [5, 2, 1, 1, '#ffd24a'], [5, 4, 1, 1, '#ffd24a']],
+  // the bell you ring to call everybody in
+  bell: [[2, 0, 3, 1, '#8a8478'], [1, 1, 5, 4, '#c9a03a'], [0, 5, 7, 1, '#e8c060'],
+    [3, 6, 1, 1, '#8a6a20']],
+};
+
+export const POI_ICON_W = 7;
+
+/** One POI sprite, with the same pale halo the chart's larger icons carry. */
+export function drawPoiIcon(x, icon, ox, oy, t = 0) {
+  const spec = POI_ICONS[icon];
+  if (!spec) return false;
+  const px = Math.round(ox), py = Math.round(oy);
+  x.fillStyle = 'rgba(20,13,6,.85)';
+  for (const [dx, dy, w, h] of spec) x.fillRect(px + dx - 1, py + dy - 1, w + 2, h + 2);
+  const blink = Math.floor(t * 3) % 2 ? '#ff5a4a' : '#ffd0c0';
+  for (const [dx, dy, w, h, col] of spec) {
+    x.fillStyle = col === 'BLINK' ? blink : col;
+    x.fillRect(px + dx, py + dy, w, h);
+  }
+  return true;
 }
 
 export function keycap(x, ox, oy, key = 'E') {
@@ -1272,13 +1702,6 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
       p(11, 6, 1, 1, C('#ffffff', '#555'));
       p(12, 4, 1, 2, C('#dfefff', '#555'));
     }
-  } else if (kind === 'tonic') {
-    p(5, 0, 2, 2, C('#8a7a52', '#40382a'));
-    p(4, 2, 4, 2, C('#6a5a3a', '#332c22'));
-    p(3, 4, 6, 7, C('#3a6a4a', '#22332a'));
-    const lvl = 4 + Math.round(beat * 1);
-    p(4, lvl + 1, 4, 9 - lvl, C('#7ec850', '#3a5a2c'));
-    p(4, lvl, 4, 1, C('#bfffa0', '#4a6a3a'));
   /* ---- Cathy's counter ----
      Five things she cooks, each recognisable at twelve pixels. */
   } else if (kind === 'popcorn') {
@@ -1412,26 +1835,6 @@ export function drawShopIcon(x, kind, ox, oy, size, lit, t) {
       const w = Math.round(Math.sin(beat * 6.283) * 2);
       p(3 + w, 4, 6, 1, C('#9a4aaa', '#48244f'));
     }
-  } else if (kind === 'pint') {
-    // a straight glass with a handle, a head on it, and a bead of condensation
-    p(2, 2, 7, 9, C('#d8901c', '#5a4014'));
-    p(2, 1, 7, 2, C('#f6efe0', '#6a6458'));
-    p(1, 1, 9, 10, C('rgba(0,0,0,0)', 'rgba(0,0,0,0)'));
-    p(1, 1, 1, 10, C('#cfe0e8', '#585c60'));
-    p(9, 1, 1, 10, C('#cfe0e8', '#585c60'));
-    p(1, 11, 9, 1, C('#a8bcc4', '#484c50'));
-    p(10, 3, 2, 1, C('#a8bcc4', '#484c50'));
-    p(11, 4, 1, 4, C('#a8bcc4', '#484c50'));
-    p(10, 8, 2, 1, C('#a8bcc4', '#484c50'));
-    if (beat > 0.5) p(3, 4, 1, 1, C('#ffe0a0', '#6a5a34'));
-  } else if (kind === 'shot') {
-    // a small heavy glass, a third full of something serious
-    p(3, 3, 7, 8, C('#cfe0e8', '#585c60'));
-    p(4, 6, 5, 5, C('#8a3418', '#3a1a0c'));
-    p(4, 6, 5, 1, C('#c05a28', '#4a2412'));
-    p(3, 11, 7, 1, C('#a8bcc4', '#484c50'));
-    p(3, 3, 1, 8, C('#e8f4fa', '#686c70'));
-    if (beat > 0.6) p(6, 2, 2, 1, C('#ffd8a0', '#5a4a30'));
   } else if (kind === 'soles') {
     p(3, 1, 4, 6, C('#3a3a42', '#24242a'));
     p(3, 7, 4, 3, C('#2a2a30', '#1c1c22'));
@@ -1546,18 +1949,6 @@ function drawKnife(x, ox, oy, ready) {
   p(4, 6, 2, 4, ready ? '#6a4a28' : '#3a2a18');
 }
 
-/** A labelled progress bar, hard-edged and segmented. */
-function panelBar(x, bx, by, bw, k, label) {
-  x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 9);
-  x.fillStyle = '#231708'; x.fillRect(bx, by, bw, 7);
-  const n = Math.round(Math.max(0, Math.min(1, k)) * bw);
-  for (let i = 0; i < n; i += 3) {
-    x.fillStyle = i % 6 ? '#3f8f6a' : JADE;
-    x.fillRect(bx + i, by, 2, 7);
-  }
-  drawText(x, label, { x: bx + bw / 2, y: by - 11, scale: 1, align: 'center', color: JADE });
-}
-
 export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
   const u = size / 16;
   const px = (gx, gy, w, h, col) => {
@@ -1632,5 +2023,20 @@ export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
     px(5, 4, 6, 8, '#d8c070');
     px(6, 5, 4, 6, '#f0dc9a');
     px(7, 6, 2, 4, '#8a6c2a');
+
+  } else if (kind === 'lantern') {
+    px(6, 1, 4, 1, '#8a7a52');        // handle
+    px(7, 2, 2, 1, '#8a7a52');
+    px(4, 3, 8, 10, '#6a5a3a');       // brass cage
+    px(5, 4, 6, 8, '#1a1408');
+    px(7, 5, 2, 6, '#ffd88a');        // flame
+    px(6, 6, 4, 3, '#ffb04a');
+    px(4, 13, 8, 1, '#8a7a52');
+
+  } else {
+    /* The market names icons the popup does not all draw, and an unknown
+       one left a bought item celebrating with an empty box. */
+    px(6, 6, 4, 4, '#8a6c2a');
+    px(7, 7, 2, 2, '#f0dc9a');
   }
 }

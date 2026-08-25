@@ -456,6 +456,13 @@ export function buildBar(mats, flameFactory) {
   const q = new THREE.Group();
   q.position.set(BAR_KEEP.x, 0, BAR_KEEP.z);
   q.rotation.y = Math.PI / 2;            // facing across the bar, at you
+  /* Everything of him that turns hangs off this pivot rather than off `q`
+     itself: the bearing to you is measured with q.worldToLocal, so turning q
+     would feed its own answer back into the measurement, and turning just the
+     merged silhouette left his hands and his lit eyes bolted to the room while
+     his head swung out from under them. */
+  const qBody = new THREE.Group();
+  q.add(qBody);
   {
     const DARK = G(0x0e0a0c), DARK_L = G(0x1c1418), VEST = G(0x2a1a20);
     const Q = [];
@@ -483,7 +490,7 @@ export function buildBar(mats, flameFactory) {
     Q.push(tint(cyl(0.075, 0.085, 0.20, 7, 'clothTat', { pos: [0, 1.88, 0.03] }), DARK));
     Q.push(tint(box(0.30, 0.40, 0.28, 'clothTat', { pos: [0.02, 2.14, 0.03], rot: [0, 0, -0.07] }), DARK));
     Q.push(tint(box(0.32, 0.10, 0.30, 'clothTat', { pos: [0.02, 2.35, 0.03], rot: [0, 0, -0.07] }), DARK_L));
-    q.add(new THREE.Mesh(mergeGeos(Q), mats.opaque));
+    qBody.add(new THREE.Mesh(mergeGeos(Q), mats.opaque));
   }
   // his hands: the only part of him with any light on it, and they move
   const qHands = [];
@@ -493,7 +500,7 @@ export function buildBar(mats, flameFactory) {
       new THREE.MeshLambertMaterial({ color: 0x7a6a62 })
     );
     h.position.set(sx * 0.36, 1.14, 0.30);
-    q.add(h);
+    qBody.add(h);
     qHands.push(h);
   }
   // and his eyes, which are lit and which follow you
@@ -504,7 +511,7 @@ export function buildBar(mats, flameFactory) {
       new THREE.MeshBasicMaterial({ color: 0xffd06a })
     );
     e.position.set(sx + 0.02, 2.17, 0.18);
-    q.add(e);
+    qBody.add(e);
     qEyes.push(e);
   }
   scene.add(q);
@@ -665,8 +672,7 @@ export function buildBar(mats, flameFactory) {
       _look.set(camPos.x, camPos.y, camPos.z);
       q.worldToLocal(_look);
       const yaw = THREE.MathUtils.clamp(Math.atan2(_look.x, _look.z), -0.6, 0.6);
-      for (const e of qEyes) e.position.z = 0.18;
-      q.children[0].rotation.y = yaw * 0.35;
+      qBody.rotation.y = yaw * 0.35;
     }
     const blink = Math.sin(t * 0.71) > 0.972;
     for (const e of qEyes) {

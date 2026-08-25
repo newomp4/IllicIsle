@@ -33,14 +33,37 @@ let peerLibPromise = null;
 function loadPeerLib() {
   if (window.Peer) return Promise.resolve(window.Peer);
   if (peerLibPromise) return peerLibPromise;
-  peerLibPromise = new Promise((res, rej) => {
+  /* A wifi handoff, a waking laptop or a captive portal makes this one fetch
+     fail, and a cached rejection then re-rejects every later HOST or JOIN for
+     the life of the page — the player retries, gets the same instant error
+     seconds after the network came back, and only a reload helps. Forget the
+     failure so the next press builds a fresh <script> and really refetches.
+     A stalled request is the same dead end from the other side: it fires
+     neither handler, and the menu swallows every key while it is busy, so
+     give up on the same 15s the join timeout uses. */
+  const p = peerLibPromise = new Promise((res, rej) => {
     const s = document.createElement('script');
+    let done = false;
+    const fail = (m) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      // Ours only — a late failure must not wipe a newer load already in flight.
+      if (peerLibPromise === p) peerLibPromise = null;
+      s.remove();
+      rej(new Error(m));
+    };
+    const timer = setTimeout(() => fail('Could not load vendor/peerjs.min.js'), 15000);
     s.src = 'vendor/peerjs.min.js';
-    s.onload = () => (window.Peer ? res(window.Peer) : rej(new Error('PeerJS did not register')));
-    s.onerror = () => rej(new Error('Could not load vendor/peerjs.min.js'));
+    s.onload = () => {
+      if (done) return;
+      if (window.Peer) { done = true; clearTimeout(timer); res(window.Peer); }
+      else fail('PeerJS did not register');
+    };
+    s.onerror = () => fail('Could not load vendor/peerjs.min.js');
     document.head.appendChild(s);
   });
-  return peerLibPromise;
+  return p;
 }
 
 /**
@@ -94,9 +117,25 @@ export class Net {
     this.peer = new Peer(BROKER_PREFIX + room, { debug: 0 });
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      // A broker that accepts the socket and then never answers fires neither
+      // 'error' nor 'open', and the connect screen swallows every key while it
+      // is busy — so without a watchdog the player sits on OPENING ROOM with no
+      // message and no way out. join() has had one all along; match it.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.destroy();
+        reject(new Error('The matchmaking broker did not answer.'));
+      }, 15000);
       const fail = (e) => {
-        if (this.closed) return;
+        if (this.closed || settled) return;
+        settled = true;
+        clearTimeout(timer);
         const taken = e && (e.type === 'unavailable-id');
+        // Nothing will ever use this peer again, and a broker that fails us
+        // before 'open' otherwise leaves a socket and a reconnect backoff alive.
+        this.destroy();
         reject(new Error(taken
           ? 'That room code is already in use. Try another.'
           : (e?.message || 'Could not reach the matchmaking broker.')));
@@ -105,8 +144,30 @@ export class Net {
         if (!this.open) fail(e);
         else this.onError?.(e);
       });
+      // The broker socket can drop under us — sleep/wake, a wifi handoff, the
+      // free broker restarting. PeerJS reacts by releasing our room id and
+      // firing 'disconnected'; the existing data channels survive, so the round
+      // carries on and nothing on screen changes while the code we read out to
+      // our friends quietly stops resolving. Nothing reclaims the id unless we
+      // ask, and asking too eagerly loops, so back off and eventually give up
+      // honestly rather than hammering a dead network.
+      let backoff = 1000;
+      this.peer.on('disconnected', () => {
+        if (this.closed) return;             // destroy() is tearing us down on purpose
+        if (backoff > 16000) { this._status('ROOM CODE LOST - RESTART TO REOPEN'); return; }
+        this._status('BROKER DROPPED - RECONNECTING');
+        const wait = backoff;
+        backoff *= 2;
+        setTimeout(() => {
+          if (this.closed) return;
+          try { this.peer.reconnect(); } catch (e) { this._status('ROOM CODE LOST - RESTART TO REOPEN'); }
+        }, wait);
+      });
       this.peer.on('open', () => {
+        clearTimeout(timer);
+        settled = true;
         this.open = true;
+        backoff = 1000;                      // a successful reconnect re-fires 'open'
         this._status('ROOM OPEN');
         this.onOpen?.('host');
         resolve(room);
@@ -116,6 +177,15 @@ export class Net {
   }
 
   _acceptClient(conn) {
+    /* 'host' is our own sentinel id, and a peer picks its own broker id. The
+       session refuses one that claimed it, but only from 'open' — by then the
+       channel is wired and anything sent in the same burst arrives at the
+       session tagged as the host, moving and killing with the host's record.
+       Refuse before a listener exists so there is no window at all. */
+    if (conn.peer === 'host') {
+      try { conn.close(); } catch (e) { /* already gone */ }
+      return;
+    }
     conn.on('open', () => {
       this.conns.set(conn.peer, conn);
       this.onPeerJoin?.(conn.peer);
@@ -125,6 +195,7 @@ export class Net {
       if (msg) this.onMessage?.(msg, conn.peer);
     });
     const bye = () => {
+      if (this.closed) return;               // we are the ones leaving; nobody left us
       if (this.conns.delete(conn.peer)) this.onPeerLeave?.(conn.peer);
     };
     conn.on('close', bye);
@@ -147,6 +218,13 @@ export class Net {
       const giveUp = (m) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
+        // A wrong code or a silent room used to leave the Peer, its broker
+        // socket and its ping loop alive for the life of the page, and a
+        // connection that opened after we gave up would still register with
+        // the host as a player that never says hello. Tearing the peer down
+        // is the only thing that stops both.
+        this.destroy();
         reject(new Error(m));
       };
       const timer = setTimeout(() => giveUp('No answer from that room. Check the code.'), 15000);
@@ -180,7 +258,10 @@ export class Net {
           const msg = decode(raw);
           if (msg) this.onMessage?.(msg, 'host');
         });
-        conn.on('close', () => { this.open = false; this.onHostGone?.(); });
+        // destroy() closes this channel itself, and that close is us quitting,
+        // not the host vanishing — announcing it would slam a results card over
+        // the title screen the player just asked for.
+        conn.on('close', () => { if (this.closed) return; this.open = false; this.onHostGone?.(); });
         conn.on('error', () => { if (!settled) giveUp('Could not open a channel to the host.'); });
       });
     });
@@ -218,6 +299,20 @@ export class Net {
     else this.sendHost(msg);
   }
 
+  /**
+   * Host -> drop one client for good, the way a refused joiner should be.
+   * A kicked peer used to keep its channel and go on receiving every
+   * snapshot, chat and reveal for the rest of the round. The map entry goes
+   * first so no further broadcast can reach them, and so the real 'close'
+   * event does not announce a leave for someone who never joined.
+   */
+  close(peerId) {
+    const c = this.conns.get(peerId);
+    if (!c) return;
+    this.conns.delete(peerId);
+    try { c.close({ flush: true }); } catch (e) { try { c.close(); } catch (e2) { /* already gone */ } }
+  }
+
   get peerCount() { return this.isHost ? this.conns.size : (this.open ? 1 : 0); }
 
   destroy() {
@@ -244,16 +339,4 @@ function decode(raw) {
     try { return JSON.parse(raw); } catch (e) { return null; }
   }
   return null;
-}
-
-/* ===========================================================
-   RATE LIMITER — position updates are the only chatty message.
-   =========================================================== */
-export class Ticker {
-  constructor(hz) { this.interval = 1 / hz; this.acc = 0; }
-  ready(dt) {
-    this.acc += dt;
-    if (this.acc >= this.interval) { this.acc %= this.interval; return true; }
-    return false;
-  }
 }

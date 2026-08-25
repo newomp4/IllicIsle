@@ -10,6 +10,7 @@ import {
   mergeGeos, box, cyl, ico, sphere, plane, place, tint, limb, jitterVerts, facePatch,
 } from '../lib/geo.js';
 import { applyRegion, applyCell, CELLS, makeRng } from '../lib/textures.js';
+import { ps1Clone } from '../lib/ps1.js';
 
 const SKIN = new THREE.Color(0xc98d5e);
 const SKIN_BURN = new THREE.Color(0xd08055);
@@ -76,9 +77,11 @@ export function buildHector(sharedMats) {
 
   // Hector owns his materials so flashing him white on a hit doesn't
   // flash the entire island white with him.
+  // clone() drops onBeforeCompile, which would leave him unsnapped and
+  // perspective-correct inside a temple that wobbles; ps1Clone re-applies it.
   const mats = {
-    opaque: sharedMats.opaque.clone(),
-    cutoutStill: sharedMats.cutoutStill.clone(),
+    opaque: ps1Clone(sharedMats.opaque),
+    cutoutStill: ps1Clone(sharedMats.cutoutStill),
   };
   parts.mats = mats;
 
@@ -338,6 +341,7 @@ class Pool {
   dispose() {
     this.scene.remove(this.mesh);
     this.mesh.geometry.dispose();
+    this.mesh.dispose();   // the instanceMatrix buffer; the material is the shared one, not ours
   }
 }
 
@@ -358,9 +362,11 @@ export class Hector {
 
     this.pos = new THREE.Vector3(0, 0, -6);
     this.pos.y = arena.groundAt ? arena.groundAt(this.pos.x, this.pos.z) : arena.floorY;
-    this.homeZ = -6;
     this.facing = 0;
     this.vel = new THREE.Vector3();
+    // atArenaEdge() now reads chargeDir unconditionally, so it must exist from
+    // birth even though only a charge ever writes a meaningful direction into it.
+    this.chargeDir = new THREE.Vector3(0, 0, 1);
 
     this.maxHp = 150;
     this.hp = 150;
@@ -374,6 +380,9 @@ export class Hector {
     this.walkPhase = 0;
     this.bob = 0;
     this.castCharge = 0;
+    // The charge needed its own load scalar: castCharge raises the staff arm, which
+    // is the tell for a ranged cast, and nothing zeroes it on the way into a charge.
+    this.windup = 0;
 
     this.burgers = [];
     this.fries = [];
@@ -397,6 +406,21 @@ export class Hector {
       m.visible = false;
       scene.add(m);
       this.ringPool.push(m);
+    }
+
+    // charge lane: the ground he would run over. The rings above are fry-rain's —
+    // they expire into fries — so the charge gets marks of its own.
+    this.laneGeo = new THREE.PlaneGeometry(2.8, 1.1);
+    this.laneGeo.rotateX(-Math.PI / 2);
+    this.laneMat = new THREE.MeshBasicMaterial({
+      color: 0xff3a1a, transparent: true, opacity: 0.6, side: THREE.DoubleSide, fog: false, depthWrite: false,
+    });
+    this.lanePool = [];
+    for (let i = 0; i < 7; i++) {
+      const m = new THREE.Mesh(this.laneGeo, this.laneMat.clone());
+      m.visible = false;
+      scene.add(m);
+      this.lanePool.push(m);
     }
 
     // grease shockwave rings
@@ -449,10 +473,11 @@ export class Hector {
     this.burgers.length = 0;
     this.fries.length = 0;
     this.nuggets.length = 0;
-    this.waves.forEach((w) => this.scene.remove(w.mesh));
+    this.waves.forEach((w) => { this.scene.remove(w.mesh); w.mesh.material.dispose(); });
     this.waves.length = 0;
     this.telegraphs.length = 0;
     this.ringPool.forEach((r) => (r.visible = false));
+    this.hideChargeLane();
   }
 
   /** Where a coconut must land to count as a gem hit. */
@@ -543,6 +568,13 @@ export class Hector {
     this.hitFlash = Math.max(0, this.hitFlash - dt);
     this.winded = Math.max(0, this.winded - dt);
     this.timer += dt;
+    // Only the three moving states rewrite vel, so anything else inherited the
+    // last value and animate() kept swinging his legs while he stood still —
+    // worst of all a charge interrupted by a phase shift, sprinting on the spot.
+    if (this.state !== 'idle' && this.state !== 'charge' && this.state !== 'recover') this.vel.set(0, 0, 0);
+    // A hit that trips a phase shift yanks him out of windup mid-load, so the lane
+    // is cleared from here rather than from the state that drew it.
+    if (this.state !== 'windup') this.hideChargeLane();
 
     const toPlayer = new THREE.Vector3().subVectors(player.pos, this.pos);
     const dist = toPlayer.length();
@@ -551,7 +583,7 @@ export class Hector {
     if (this.active && !this.dead) this.runAI(dt, player, dist, dirYaw);
 
     this.updateProjectiles(dt, player);
-    this.animate(dt, t, dist);
+    this.animate(dt, t);
   }
 
   runAI(dt, player, dist, dirYaw) {
@@ -624,15 +656,23 @@ export class Hector {
       }
 
       case 'windup': {
-        // telegraph the charge
+        // The shout and the growl used to fire on the frame he started moving, which
+        // is a warning that arrives after the charge is already unavoidable. They
+        // belong at the top of the windup: the 'charge' sweep runs 0.9s, so it now
+        // finishes climbing exactly as he commits.
+        if (!this._fired) {
+          this._fired = true;
+          this.say('EXECUTIVE ORDER!', 1200);
+          this.hooks.sfx?.('charge');
+        }
+        this.windup = Math.min(1, this.timer / 0.85);
+        this.showChargeLane(this.windup);
         if (this.timer > 0.85) {
           this.state = 'charge';
           this.timer = 0;
-          this.chargeDir = new THREE.Vector3(
-            Math.sin(this.facing), 0, Math.cos(this.facing)
-          );
-          this.say('EXECUTIVE ORDER!', 1200);
-          this.hooks.sfx?.('charge');
+          this._fired = false;
+          this.windup = 0;
+          this.chargeDir.set(Math.sin(this.facing), 0, Math.cos(this.facing));
         }
         break;
       }
@@ -647,7 +687,10 @@ export class Hector {
         const d = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
         if (d < 2.6) this.hooks.onDamagePlayer?.(1, 'charge');
 
-        if (this.timer > 1.5 || this.atArenaEdge()) {
+        // A sliver of commitment: in a corner the wall he is aimed at can already
+        // be within reach on the first frame, and a charge that ends before it moves
+        // is a free 2.6s punish window handed over for nothing.
+        if (this.timer > 1.5 || (this.timer > 0.12 && this.atArenaEdge())) {
           this.state = 'recover';
           this.timer = 0;
           this.winded = 2.6;
@@ -710,12 +753,41 @@ export class Hector {
     this.pos.y = this.groundAt(this.pos.x, this.pos.z);
   }
 
-  /** True once he's run far enough into a wall to end a charge. */
+  /** True once he's run far enough INTO the wall he is charging at. */
   atArenaEdge() {
     const b = this.arena.box;
     const M = 5.0;
-    return this.pos.x < b.minX + M || this.pos.x > b.maxX - M
-        || this.pos.z < b.minZ + M || this.pos.z > b.maxZ - M;
+    // stepMove parks him 3.4m off a wall while this reported true from 5.0m, so
+    // any charge started in that 1.6m band ended on its first frame no matter
+    // which way he was pointed — and a player who pinned him there never got
+    // body-checked again. Only a wall he is actually running at counts.
+    const d = this.chargeDir;
+    return (d.x < -0.05 && this.pos.x < b.minX + M)
+        || (d.x >  0.05 && this.pos.x > b.maxX - M)
+        || (d.z < -0.05 && this.pos.z < b.minZ + M)
+        || (d.z >  0.05 && this.pos.z > b.maxZ - M);
+  }
+
+  /** The lane he would run down if he committed this frame. It is drawn from
+      facing, not chargeDir — chargeDir isn't written until he commits — so it
+      sweeps with him while he tracks you, and the marks fill front to back as
+      a clock on how long you have left to be standing somewhere else. */
+  showChargeLane(k) {
+    const sx = Math.sin(this.facing), sz = Math.cos(this.facing);
+    for (let i = 0; i < this.lanePool.length; i++) {
+      const m = this.lanePool[i];
+      const d = 3.0 + i * 1.7;
+      const x = this.pos.x + sx * d, z = this.pos.z + sz * d;
+      m.visible = true;
+      // ride the real floor, like the fry rings, or the stone swallows the far end
+      m.position.set(x, this.groundAt(x, z) + 0.18, z);
+      m.rotation.y = this.facing;
+      m.material.opacity = 0.14 + 0.5 * THREE.MathUtils.clamp(k * this.lanePool.length - i, 0, 1);
+    }
+  }
+
+  hideChargeLane() {
+    for (let i = 0; i < this.lanePool.length; i++) this.lanePool[i].visible = false;
   }
 
   /** Follow the real cave floor, not a flat plane, so he never sinks. */
@@ -778,7 +850,10 @@ export class Hector {
       if (i >= this.ringPool.length) return;
       const m = this.ringPool[i];
       m.visible = true;
-      m.position.set(g.x, floor + 0.08, g.z);
+      // floorY is the bottom of the dish, so past ~6m from centre the stone rose
+      // over these rings and the fry rain landed with no warning at all. Ride the
+      // real floor, with enough lift to clear the flagstone jitter in its vertices.
+      m.position.set(g.x, this.groundAt(g.x, g.z) + 0.18, g.z);
       const k = g.t / g.warn;
       m.scale.setScalar(g.radius * (1.35 - k * 0.35));
       m.material.opacity = 0.35 + Math.abs(Math.sin(g.t * 18)) * 0.5;
@@ -831,7 +906,10 @@ export class Hector {
       const sp = 5.4;
       n.pos.x += (dx / d) * sp * dt;
       n.pos.z += (dz / d) * sp * dt;
-      n.pos.y = floor + 0.42 + Math.abs(Math.sin(n.hop)) * 0.55;
+      // Same flat-plane mistake as the rings: pinned to floorY they sank into the
+      // stone near the walls and vanished entirely under the dais and the entrance
+      // stair, while still biting on a purely horizontal distance test.
+      n.pos.y = this.groundAt(n.pos.x, n.pos.z) + 0.42 + Math.abs(Math.sin(n.hop)) * 0.55;
       n.rot.y = Math.atan2(dx, dz);
       n.rot.z = Math.sin(n.hop) * 0.25;
 
@@ -881,7 +959,7 @@ export class Hector {
   }
 
   /* ---------- animation ---------- */
-  animate(dt, t, dist) {
+  animate(dt, t) {
     const P = this.parts;
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.walkPhase += dt * (2.6 + speed * 0.55);
@@ -915,13 +993,23 @@ export class Hector {
     // during a charge he leans in
     if (this.state === 'charge') {
       P.body.rotation.x = 0.28;
+      P.head.rotation.x *= 0.85;   // he arrives out of windup with his head cocked back
       P.arms.l.rotation.x = -1.9;
       P.arms.r.rotation.x = -1.7;
     } else if (this.state === 'recover' || this.winded > 0) {
       P.body.rotation.x = 0.42 + Math.sin(t * 9) * 0.05;
       P.head.rotation.x = 0.3;
     } else if (this.state === 'windup') {
-      P.body.rotation.x = -0.16;
+      // He loads the charge instead of standing there: rocks back, plants a foot,
+      // cocks both arms. Deliberately NOT the staff-up cast pose — arm up has to
+      // keep meaning "something is about to be thrown at you".
+      const k = this.windup;
+      P.body.rotation.x = -0.16 - 0.30 * k;
+      P.head.rotation.x = 0.18 * k;        // counter the backward lean, eyes stay on you
+      P.arms.l.rotation.x = -0.5 * k;
+      P.arms.r.rotation.x = -0.2 - 0.5 * k;
+      P.legs.l.rotation.x = 0.35 * k;
+      P.legs.r.rotation.x = -0.35 * k;
     } else {
       P.body.rotation.x *= 0.85;
       P.head.rotation.x *= 0.85;
@@ -970,11 +1058,26 @@ export class Hector {
   }
 
   dispose() {
+    // Quitting to title and walking back into the temple builds a second Hector on
+    // the same scene, so everything he owns has to go with him. clearProjectiles()
+    // runs first because it disposes the per-wave material clones.
     this.clearProjectiles();
     this.burgerPool.dispose();
     this.fryPool.dispose();
     this.nuggetPool.dispose();
-    this.ringPool.forEach((r) => this.scene.remove(r));
+    this.ringPool.forEach((r) => { this.scene.remove(r); r.material.dispose(); });
+    this.ringGeo.dispose();
+    this.lanePool.forEach((m) => { this.scene.remove(m); m.material.dispose(); });
+    this.laneGeo.dispose();
+    this.laneMat.dispose();
+    this.waveGeo.dispose();
+    this.waveMat.dispose();
     this.scene.remove(this.mesh);
+    this.mesh.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+    // His own clones, per the note in buildHector — the shared atlas they sample
+    // survives, since Material.dispose() leaves map alone.
+    this.parts.mats.opaque.dispose();
+    this.parts.mats.cutoutStill.dispose();
+    this.parts.orb.material.dispose();
   }
 }

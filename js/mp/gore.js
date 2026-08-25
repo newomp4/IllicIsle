@@ -153,12 +153,21 @@ export class Gore {
       // rewrite the plane in place: sized, and draped over the ground
       const half = size / 2;
       const segs = Math.round(Math.sqrt(p.count)) - 1;
+      /* The spin has to be picked before the drape is sampled, not after.
+         A Y rotation moves x and z and leaves y alone, so sampling the
+         ground at the unrotated offset and then spinning the mesh left
+         every vertex carrying the height of a different patch of island:
+         on a slope half the pool sank under the sand and half floated
+         above it. Sample where the vertex will actually end up. */
+      const rot = Math.random() * Math.PI * 2;
+      const cs = Math.cos(rot), sn = Math.sin(rot);
       let i = 0;
       for (let r = 0; r <= segs; r++) {
         for (let c = 0; c <= segs; c++, i++) {
           const lx = -half + (c / segs) * size;
           const lz = -half + (r / segs) * size;
-          p.setXYZ(i, lx, this.groundAt(px + lx, pz + lz) - y + 0.07, lz);
+          const wx = px + lx * cs + lz * sn, wz = pz - lx * sn + lz * cs;
+          p.setXYZ(i, lx, this.groundAt(wx, wz) - y + 0.07, lz);
         }
       }
       p.needsUpdate = true;
@@ -166,7 +175,7 @@ export class Gore {
       s.mat.color.copy(blood);
       s.mat.opacity = 0.92;
       s.mesh.position.set(px, y, pz);
-      s.mesh.rotation.y = Math.random() * Math.PI * 2;
+      s.mesh.rotation.y = rot;
       s.mesh.visible = true;
       this.live.push({ ...s, t: 0, drop });
     };

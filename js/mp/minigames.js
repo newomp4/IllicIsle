@@ -129,13 +129,16 @@ function fxDraw(x, s, dt) {
  * out by hand; `squash` flattens it into an ellipse for anything lying
  * on a surface.
  */
-function fxRing(x, cx, cy, k, col, opts = {}) {
+function fxRing(x, cx, cy, k, rgb, opts = {}) {
   if (k < 0 || k > 1) return;
   const r = (opts.from ?? 6) + k * (opts.to ?? 30);
   const a = (1 - k) * (opts.alpha ?? 0.55);
   const n = opts.n ?? 20;
   const sq = opts.squash ?? 1;
-  x.fillStyle = col.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
+  /* The colour comes in as a bare `r,g,b` so the fade cannot be lost: this
+     used to patch the alpha of whatever string it was handed, which quietly
+     did nothing at all to a hex colour. */
+  x.fillStyle = `rgba(${rgb},${a.toFixed(2)})`;
   for (let i = 0; i < n; i++) {
     const th = (i / n) * Math.PI * 2;
     x.fillRect(Math.round(cx + Math.cos(th) * r), Math.round(cy + Math.sin(th) * r * sq), 2, 2);
@@ -229,6 +232,10 @@ const wind = {
        its bracing was a row of dots that ran clean across the top of the
        panel. That was most of what looked broken about this. */
     const px = W / 2 + shk, py = 50;
+    /* key() throws the shock ring and the filings at the bob and the
+       bearing, and rebuilt both from a literal 160 — half of one
+       framebuffer. The pivot is left here so it cannot disagree. */
+    s._px = px;
     const L = 84;                       // rod length
     const bx = px + Math.sin(ang) * L;
     const by = py + Math.cos(ang) * L;
@@ -268,7 +275,7 @@ const wind = {
       const a2 = (-1 + (i / 44) * 2) * MAXA;
       const tx = Math.round(px + Math.sin(a2) * L);
       const ty = Math.round(py + Math.cos(a2) * L);
-      const near = Math.abs(Math.sin(a2) / Math.sin(MAXA)) > s.window;
+      const near = Math.abs(a2) > s.window * MAXA;
       x.fillStyle = near
         ? (inWindow ? '#7ec850' : '#c39a2c')
         : 'rgba(120,96,44,.30)';
@@ -276,8 +283,12 @@ const wind = {
     }
 
     /* ---- the catch zones: a thicker band ON the arc at each end ---- */
+    /* The bob's angle is a straight scaling of the swing, and key() catches
+       on |swing| > s.window — so the band has to start at s.window * MAXA.
+       Going through asin() started it a third of the way in from there, and
+       a press with the bob plainly inside the green was still a miss. */
+    const a0 = Math.min(1, Math.max(0, s.window)) * MAXA;
     for (const side of [-1, 1]) {
-      const a0 = Math.asin(Math.max(-1, Math.min(1, s.window))) * (MAXA / (Math.PI / 2));
       for (let i = 0; i <= 14; i++) {
         const a2 = side * (a0 + (i / 14) * (MAXA - a0));
         const tx = Math.round(px + Math.sin(a2) * L);
@@ -357,16 +368,7 @@ const wind = {
     }
 
     /* ---- a shock ring where a good catch landed ---- */
-    if (s.ring >= 0) {
-      const rr = Math.round(6 + s.ring * 26);
-      const a2 = (1 - s.ring) * 0.55;
-      x.fillStyle = `rgba(190,255,210,${a2.toFixed(2)})`;
-      for (let i = 0; i < 20; i++) {
-        const th = (i / 20) * Math.PI * 2;
-        x.fillRect(Math.round(s.ringX + Math.cos(th) * rr),
-          Math.round(s.ringY + Math.sin(th) * rr * 0.7), 2, 2);
-      }
-    }
+    fxRing(x, s.ringX, s.ringY, s.ring, '190,255,210', { from: 6, to: 26, squash: 0.7 });
 
     // sparks thrown off a good catch
     for (let i = s.spark.length - 1; i >= 0; i--) {
@@ -402,7 +404,8 @@ const wind = {
     if (code !== 'Space' && code !== 'Enter' && code !== 'KeyE') return false;
     const swing = Math.sin(s.phase);
     const MAXA = 1.02, L = 84, PY = 50;
-    const bx = 160 + Math.sin(swing * MAXA) * L;
+    const PX = s._px ?? 160;            // draw() has always run before a key can arrive
+    const bx = PX + Math.sin(swing * MAXA) * L;
     if (Math.abs(swing) > s.window) {
       s.got++;
       // it bites, and the last tooth of the ratchet rings differently
@@ -416,8 +419,8 @@ const wind = {
       /* Brass filings off the escape wheel and a small kick through the
          frame — a catch you can feel as well as see. */
       fxShake(s, 0.45);
-      fxBurst(s, 'spark', 160, 50, 7, { col: '#ffe9a8', speed: 70, life: 0.4 });
-      fxBurst(s, 'chunk', 160, 50, 3, { col: '#8a7a52', speed: 55, life: 0.6, r: 2 });
+      fxBurst(s, 'spark', PX, 50, 7, { col: '#ffe9a8', speed: 70, life: 0.4 });
+      fxBurst(s, 'chunk', PX, 50, 3, { col: '#8a7a52', speed: 55, life: 0.6, r: 2 });
       // each catch winds it tighter: faster, and a narrower window
       s.speed += 0.34;
       s.window = Math.min(0.965, s.window + 0.016);
@@ -432,8 +435,8 @@ const wind = {
       s.miss = 1;
       fxShake(s, 1);
       /* The pawl skips: dust out of the bearing and grit off the gantry. */
-      fxBurst(s, 'puff', 160, 50, 5, { col: 'rgba(150,130,90,.55)', speed: 30, life: 0.9, r: 3 });
-      fxBurst(s, 'chunk', 160, 50, 5, { col: '#5c3f1c', speed: 95, life: 0.7, r: 2 });
+      fxBurst(s, 'puff', PX, 50, 5, { col: 'rgba(150,130,90,.55)', speed: 30, life: 0.9, r: 3 });
+      fxBurst(s, 'chunk', PX, 50, 5, { col: '#5c3f1c', speed: 95, life: 0.7, r: 2 });
       s.speed = Math.max(1.2, s.speed - 0.2);
       s.window = Math.max(0.86, s.window - 0.01);
       s.got = Math.max(0, s.got - 1);
@@ -453,7 +456,7 @@ const splice = {
   GLOW: ['#ff9a88', '#9fe89a', '#8fb4ff', '#ffefa0'],
   init(s, rng) {
     s.seq = new Array(s.hard ? 5 : 3).fill(0).map(() => (rng() * 4) | 0);
-    s.at = 0; s.showing = 0; s.showT = 0; s.playing = true; s.wrong = 0;
+    s.at = 0; s.showing = -1; s.showT = 0; s.playing = true; s.wrong = 0;
     /* Per strand: how lit it is, and where a pulse of light has got to on
        its way down. A strand that has been spliced stays warm. */
     s.lit = [0, 0, 0, 0];
@@ -468,6 +471,9 @@ const splice = {
     if (s.playing) {
       s.showT += dt;
       if (s.showT > 0.55) {
+        /* It counts from -1, so the first tick calls seq[0]. It used to start
+           at 0 and step past the opening colour before reading it — that
+           strand never pulsed, and the player had to guess it blind. */
         s.showT = 0; s.showing++;
         // a pulse leaves the cable every time it calls one
         if (s.showing < s.seq.length) {
@@ -475,7 +481,7 @@ const splice = {
           s.sfx?.('cast');
         }
       }
-      if (s.showing >= s.seq.length + 1) { s.playing = false; s.showing = -1; s.at = 0; }
+      if (s.showing >= s.seq.length) { s.playing = false; s.showing = -1; s.at = 0; }
     }
     if (s.wrong > 0) s.wrong -= dt * 2;
     if (s.arc > 0) s.arc -= dt * 5;
@@ -487,9 +493,15 @@ const splice = {
        from 22, and the frame prints the job's name at 28 — the words came
        out through the middle of the ducting. */
     const CAB_Y = 58;
-    const oy = 98;
+    /* The pads have to finish above the progress pips, which sit at H-47.
+       At 180 tall a fixed 98 put the keycaps straight through them, and
+       there is no room below to push the pips into. */
+    const oy = Math.min(98, H - 98);
     const ox = Math.round((W - total) / 2);
     const cabX = W / 2;
+    /* _hit fires its sparks at the pad you pressed and its arc at the
+       block, and rebuilt that layout from a literal 320-wide frame. */
+    s._ox = ox; s._oy = oy; s._bh = bh; s._cabX = cabX;
 
     /* ---- the housing: a dark box with the cable coming into it ---- */
     ditherRect3(x, 20, CAB_Y - 12, W - 40, 20, '#171c1e', '#20272a');
@@ -624,11 +636,11 @@ const splice = {
   },
   _hit(i, s) {
     if (s.playing) return false;
-    /* Kept in step with draw() by hand, because _hit has no layout of its
-       own and the sparks have to come off the ferrule you just pressed. */
-    const bw = 42, gap = 6, ox = Math.round((320 - (4 * bw + 3 * gap)) / 2);
+    /* The layout draw() left behind, because the sparks have to come off
+       the ferrule you just pressed and it is draw() that knows where it is. */
+    const bw = 42, gap = 6, ox = s._ox ?? Math.round((320 - (4 * bw + 3 * gap)) / 2);
     const tipX = ox + i * (bw + gap) + bw / 2;
-    const tipY = 98 + 17;
+    const tipY = (s._oy ?? 98) + (s._bh ?? 34) / 2;
     if (s.seq[s.at] === i) {
       s.at++;
       s.lit[i] = 1;
@@ -644,10 +656,11 @@ const splice = {
        that was lit goes out, and it starts calling again. */
     s.arc = 1;
     fxShake(s, 1);
-    fxBurst(s, 'spark', 160, 58, 14, { col: '#ffe9a8', speed: 150, life: 0.5 });
-    fxBurst(s, 'puff', 160, 54, 5, { col: 'rgba(90,90,90,.6)', speed: 34, life: 1.0, r: 3 });
+    const cx = s._cabX ?? 160;
+    fxBurst(s, 'spark', cx, 58, 14, { col: '#ffe9a8', speed: 150, life: 0.5 });
+    fxBurst(s, 'puff', cx, 54, 5, { col: 'rgba(90,90,90,.6)', speed: 34, life: 1.0, r: 3 });
     for (let k2 = 0; k2 < 4; k2++) { s.lit[k2] = 0; s.fused[k2] = 0; s.pulse[k2] = -1; }
-    s.wrong = 1; s.at = 0; s.playing = true; s.showing = 0; s.showT = 0;
+    s.wrong = 1; s.at = 0; s.playing = true; s.showing = -1; s.showT = 0;
     return false;
   },
   key(code, s) {
@@ -665,16 +678,20 @@ const stitch = {
   name: 'PATCH THE SAIL',
   hint: 'ARROWS AIM   SPACE STITCH',
   init(s, rng) {
-    /* Two tears, ten holes, and they alternate sides — so it is a route to
-       walk rather than six dots in a row you can sweep through. */
+    /* Two tears (three in a storm), five holes each, alternating sides — so
+       it is a route to walk rather than dots in a row you can sweep. */
     s.tears = [];
     const TEARS = s.hard ? 3 : 2;
     for (let tear = 0; tear < TEARS; tear++) {
       const pts = [];
       const y0 = 0.20 + tear * (TEARS > 2 ? 0.28 : 0.40);
+      /* A mirrored tear has to be shifted back by the span it walks, 0.76.
+         The offset was 0.88, which started it at x = 1.0 — its first hole,
+         and the needle that jumps to it, drawn out past the bolt rope. */
+      const dir = tear % 2 ? -1 : 1;
       for (let i = 0; i < 5; i++) {
         pts.push({
-          x: 0.12 + (i / 4) * 0.76 * (tear ? -1 : 1) + (tear ? 0.88 : 0) + (rng() - 0.5) * 0.05,
+          x: 0.12 + (i / 4) * 0.76 * dir + (dir < 0 ? 0.76 : 0) + (rng() - 0.5) * 0.05,
           y: y0 + Math.sin(i * 1.4 + tear * 2.1 + rng() * 0.5) * 0.13,
         });
       }
@@ -713,6 +730,9 @@ const stitch = {
     const gust = Math.max(0, Math.sin(s.gust * 0.62)) ** 3;
 
     const sx = 26, sy = 40, sw = W - 52, sh = H - 92;
+    /* _sew puts its lint where the needle went in, and worked that out
+       from a fixed 320x224 sail; off any other frame it missed the hole. */
+    s._sx = sx; s._sy = sy; s._sw = sw; s._sh = sh;
     // canvas, with a weave and a wind-billow in it
     x.fillStyle = '#cabfa0'; x.fillRect(sx, sy, sw, sh);
     for (let j = 0; j < sh; j += 3) {
@@ -868,7 +888,8 @@ const stitch = {
          through the frame as the thread is drawn tight. */
       {
         const q = s.tears[s.order[s.at - 1][0]][s.order[s.at - 1][1]];
-        const px2 = 26 + q.x * (320 - 52), py2 = 40 + q.y * (224 - 92);
+        const px2 = (s._sx ?? 26) + q.x * (s._sw ?? 268);
+        const py2 = (s._sy ?? 40) + q.y * (s._sh ?? 132);
         fxBurst(s, 'puff', px2, py2, 4, { col: 'rgba(232,224,196,.65)', speed: 24, life: 0.55, r: 2 });
         fxBurst(s, 'spark', px2, py2, 3, { col: '#dfffc4', speed: 48, life: 0.3 });
         fxShake(s, 0.22);
@@ -882,9 +903,11 @@ const stitch = {
     s.wrong = 1;
     s.miss = 1;
     fxShake(s, 0.7);
-    // drop back to the start of the tear you botched, not the whole sail
-    const tear = s.order[s.at]?.[0] ?? 0;
-    while (s.at > 0 && s.order[s.at - 1][0] === tear) s.at--;
+    /* One round back: the last stitch in each tear comes out. The order
+       interleaves the tears, so the old loop — which walked back while the
+       previous entry shared a tear — never found one and a wrong stitch
+       cost nothing; a flat cursor cannot rewind one tear on its own. */
+    s.at = Math.max(0, s.at - s.tears.length);
     return false;
   },
   click(row, i, s) {
@@ -973,11 +996,18 @@ const dials = {
     const PLATE_Y = 42;          // the stamped code, clear of the title
     const PLATE_H = 26;
     const DRUM_Y = PLATE_Y + PLATE_H + 12;
-    const DRUM_H = 54;
+    /* The bolt strip and its readout have to finish above the key hints,
+       which footer() prints at H-17; a fixed 54 stamped the readout over
+       them at 180 tall. The 12 under the drums belongs to the turn arrows
+       and cannot give, so the drums are what shrinks. */
+    const DRUM_H = Math.max(34, Math.min(54, (H - 19) - 23 - 12 - DRUM_Y) & ~1);
     const BOLT_Y = DRUM_Y + DRUM_H + 12;
 
     /* ---- the brass case ---- */
-    const CX0 = OX - 14, CY0 = PLATE_Y - 12;
+    /* frame() prints STORM DAMAGE at y = 32 when the job is the hard one,
+       and the case's top padding buried it. Trim the padding rather than
+       drop the case, whose bottom is already as low as it can go. */
+    const CX0 = OX - 14, CY0 = PLATE_Y - (s.hard ? 2 : 12);
     const CW = TOTAL + 28, CH = (BOLT_Y + 20) - CY0;
     x.fillStyle = '#2b2010'; x.fillRect(CX0, CY0, CW, CH);
     ditherRect2(x, CX0, CY0, CW, CH);
@@ -1215,6 +1245,10 @@ const bail = {
     s.lastLevel = s.level;
 
     const hx = 34, hy = 40, hw = W - 68, hh = H - 96;
+    /* key() throws the water, and built the hull and the bucket out of a
+       320-wide boat: at 240 the biggest splash in the game landed off the
+       side of the screen. */
+    s._hx = hx; s._hy = hy; s._hw = hw; s._hh = hh;
 
     /* ---- the hull, rolling ---- */
     x.save();
@@ -1270,6 +1304,7 @@ const bail = {
     // it dips into the water when you scoop, and tips out over the side
     const dip = Math.sin(Math.max(0, s.pump) * Math.PI) * 16;
     const buy = Math.round(Math.min(surface - 16 + dip, hy + hh - 20));
+    s._bx = bux + 9; s._by = buy + 6;
     x.save();
     x.translate(bux + 9, buy + 6);
     x.rotate(-s.tip * 1.5);
@@ -1330,6 +1365,9 @@ const bail = {
     /* What you lift is what is under you. At the shallow end that is
        nothing, and the whole game is knowing that. */
     const d = bail.depthAt(s, s.bucket);
+    const hx = s._hx ?? 34, hy = s._hy ?? 40, hw = s._hw ?? 252, hh = s._hh ?? 84;
+    const bx = s._bx ?? (hx + s.bucket * hw);
+    const by = s._by ?? (hy + hh - 20);
     const got = Math.min(s.level, d * 0.20);
     s.pump = 1;
     s.tip = 1;
@@ -1337,7 +1375,7 @@ const bail = {
       // the bucket scrapes the boards: a knock and a dry rattle, no water
       s.sfx?.('deny');
       fxShake(s, 0.35);
-      fxBurst(s, 'chunk', 34 + s.bucket * (320 - 68), 96, 3,
+      fxBurst(s, 'chunk', bx, hy + hh - 6, 3,
         { col: '#5a4a2c', speed: 60, life: 0.45, r: 2 });
       s.miss = 1; s.carry = 0; return false;
     }
@@ -1346,11 +1384,11 @@ const bail = {
        and a shower coming off it. The old version put seven flat pixels
        on the screen and called it a splash. */
     {
-      const bxp = 34 + s.bucket * (320 - 68);
-      fxBurst(s, 'drop', bxp, 62, 14, {
+      const byp = Math.min(by - 6, hy + 22);   // over the rim, or the bucket if it is higher
+      fxBurst(s, 'drop', bx, byp, 14, {
         col: '#9fd8e8', speed: 130, life: 0.6, squash: 0.5, driftY: -60,
       });
-      fxBurst(s, 'puff', bxp, 66, 3, { col: 'rgba(200,230,240,.5)', speed: 26, life: 0.5, r: 2 });
+      fxBurst(s, 'puff', bx, byp + 4, 3, { col: 'rgba(200,230,240,.5)', speed: 26, life: 0.5, r: 2 });
       fxShake(s, 0.28 * Math.min(1, got / 0.14));
     }
     s.carry = Math.min(1, got / 0.2);
@@ -1359,7 +1397,7 @@ const bail = {
     // a handful of drops thrown over the side
     for (let i = 0; i < 7; i++) {
       s.splash.push({
-        x: 34 + s.bucket * 100, y: 60,
+        x: bx, y: by - 6,
         vx: -60 - Math.random() * 90, vy: -90 - Math.random() * 70, t: 0,
       });
     }

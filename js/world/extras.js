@@ -86,38 +86,25 @@ function senseParts() {
   return { mat: _SENSE_MAT, geo: _SENSE_GEO, tip: _SENSE_TIP };
 }
 
-export function buildSyncoin(mats, big = false) {
+/* ===========================================================
+   THE COIN'S DECORATION, MADE ONCE PER SIZE
+
+   The pool, the gleam and the four pips are byte-identical across every coin
+   on the island — same geometry, same baked colour attribute, same material
+   — and there are only ever two sizes of coin, the ordinary one and the big
+   one. Building a fresh set per coin meant a hundred-odd redundant buffers
+   for two distinct appearances. Sharing is safe because nothing is ever
+   written per coin: the tick's opacity writes are driven off the shared
+   clock, so every coin writes the same value in the same frame, and the four
+   pip materials stay separate only because each pip's phase comes from its
+   INDEX, which is the same everywhere.
+   =========================================================== */
+const _COIN_DECOR = {};
+function coinDecor(big) {
+  const key = big ? 'big' : 'small';
+  if (_COIN_DECOR[key]) return _COIN_DECOR[key];
   const s = big ? 1.5 : 1;
-  const P = [];
-  const disc = cyl(0.24 * s, 0.24 * s, 0.045 * s, 12, 'gold', { rot: [Math.PI / 2, 0, 0] });
-  tint(disc, G(0xd8c070)); P.push(disc);
-  const rim = new THREE.TorusGeometry(0.235 * s, 0.028 * s, 4, 12);
-  applyCell(rim, 'gold');
-  tint(rim, G(0xf0dc9a)); P.push(rim);
-  // the SYN sigil: two interlocking bars
-  const b1 = box(0.055 * s, 0.24 * s, 0.06 * s, 'goldDark', { pos: [-0.05 * s, 0, 0] });
-  tint(b1, G(0x8a6c2a)); P.push(b1);
-  const b2 = box(0.055 * s, 0.24 * s, 0.06 * s, 'goldDark', { pos: [0.05 * s, 0, 0], rot: [0, 0, 0.5] });
-  tint(b2, G(0x8a6c2a)); P.push(b2);
 
-  const g = new THREE.Group();
-  g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
-
-  /* A glow, not a light.
-
-     Every one of the thirty-eight coins on the island used to carry its own
-     PointLight. Thirty-eight extra iterations of the lighting loop for
-     every lit fragment, and — far worse — the number of lights in a scene
-     is baked into the cache key of every shader, so hiding a coin when you
-     picked it up made three recompile EVERY material in the scene. That was
-     the freeze that arrived every ten or twenty seconds.
-
-     The first replacement was an additive sphere, which read as exactly
-     what it was: a ball around the coin. What a coin lying in the grass
-     actually does is put a small pool of light on the ground under itself
-     and catch the sun on its rim. So: a flat pool below, a soft upright
-     gleam that always faces the camera, and four sparkle pips that blink in
-     turn. No sphere, and no light. */
   // the pool on the ground
   const poolGeo = new THREE.CircleGeometry(1.15 * s, 22);
   poolGeo.rotateX(-Math.PI / 2);
@@ -132,17 +119,11 @@ export function buildSyncoin(mats, big = false) {
     }
     poolGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
   }
-  const pool = new THREE.Mesh(poolGeo, new THREE.MeshBasicMaterial({
+  const poolMat = new THREE.MeshBasicMaterial({
     vertexColors: true, transparent: true, opacity: 0.5,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
-  }));
-  pool.renderOrder = 1;
-  g.add(pool);
+  });
 
-  /* A soft upright gleam, billboarded so it is never seen edge-on — and a
-     DISC with a radial fade, not a square. A flat quad with a uniform
-     additive colour is a square of light, which is exactly what it looked
-     like. */
   /* Wide and very soft. A tight disc with a fast falloff still has a rim,
      and a rim on a symmetrical shape reads as an orb — which is what it kept
      looking like. This one reaches nearly three times the coin's radius and
@@ -161,25 +142,96 @@ export function buildSyncoin(mats, big = false) {
     }
     gleamGeo.setAttribute('color', new THREE.BufferAttribute(cols, 4));
   }
-  const gleam = new THREE.Mesh(gleamGeo, new THREE.MeshBasicMaterial({
+  const gleamMat = new THREE.MeshBasicMaterial({
     vertexColors: true, transparent: true, opacity: 0.42,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
     side: THREE.DoubleSide,
-  }));
-  gleam.renderOrder = 2;
-  g.add(gleam);
+  });
 
-  // four sparkle pips on the rim
   /* Glints, not squares: a four-point star is two crossed slivers, and at
      this size that is all the eye needs. */
   const pipGeo = new THREE.PlaneGeometry(0.075 * s, 0.075 * s);
   pipGeo.rotateZ(Math.PI / 4);
-  const pips = [];
+  const pipMats = [];
   for (let i = 0; i < 4; i++) {
-    const m = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({
+    pipMats.push(new THREE.MeshBasicMaterial({
       color: 0xfff6d0, transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
     }));
+  }
+
+  _COIN_DECOR[key] = { poolGeo, poolMat, gleamGeo, gleamMat, pipGeo, pipMats };
+  return _COIN_DECOR[key];
+}
+
+/* The body was the one part still built per coin.
+
+   Its only input is the size, exactly like the decoration above, so
+   thirty-eight island coins were merging thirty-eight byte-identical discs
+   — and paying for the cylinder, torus and two boxes that went into each of
+   them. Two buffers cover every coin in the game. The material stays a
+   caller's argument and is never baked in here, so nothing may dispose of
+   these: they are shared with the big coin and with every purse dropped in
+   a multiplayer round. */
+const _COIN_BODY = {};
+function coinBody(big) {
+  const key = big ? 'big' : 'small';
+  if (_COIN_BODY[key]) return _COIN_BODY[key];
+  const s = big ? 1.5 : 1;
+  const P = [];
+  const disc = cyl(0.24 * s, 0.24 * s, 0.045 * s, 12, 'gold', { rot: [Math.PI / 2, 0, 0] });
+  tint(disc, G(0xd8c070)); P.push(disc);
+  const rim = new THREE.TorusGeometry(0.235 * s, 0.028 * s, 4, 12);
+  applyCell(rim, 'gold');
+  tint(rim, G(0xf0dc9a)); P.push(rim);
+  // the SYN sigil: two interlocking bars
+  const b1 = box(0.055 * s, 0.24 * s, 0.06 * s, 'goldDark', { pos: [-0.05 * s, 0, 0] });
+  tint(b1, G(0x8a6c2a)); P.push(b1);
+  const b2 = box(0.055 * s, 0.24 * s, 0.06 * s, 'goldDark', { pos: [0.05 * s, 0, 0], rot: [0, 0, 0.5] });
+  tint(b2, G(0x8a6c2a)); P.push(b2);
+  _COIN_BODY[key] = mergeGeos(P);
+  return _COIN_BODY[key];
+}
+
+export function buildSyncoin(mats, big = false) {
+  const s = big ? 1.5 : 1;
+
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(coinBody(big), mats.opaque));
+
+  /* A glow, not a light.
+
+     Every one of the thirty-eight coins on the island used to carry its own
+     PointLight. Thirty-eight extra iterations of the lighting loop for
+     every lit fragment, and — far worse — the number of lights in a scene
+     is baked into the cache key of every shader, so hiding a coin when you
+     picked it up made three recompile EVERY material in the scene. That was
+     the freeze that arrived every ten or twenty seconds.
+
+     The first replacement was an additive sphere, which read as exactly
+     what it was: a ball around the coin. What a coin lying in the grass
+     actually does is put a small pool of light on the ground under itself
+     and catch the sun on its rim. So: a flat pool below, a soft upright
+     gleam that always faces the camera, and four sparkle pips that blink in
+     turn. No sphere, and no light. */
+  const decor = coinDecor(big);
+  // the pool on the ground
+  const pool = new THREE.Mesh(decor.poolGeo, decor.poolMat);
+  pool.renderOrder = 1;
+  g.add(pool);
+
+  /* A soft upright gleam, billboarded so it is never seen edge-on — and a
+     DISC with a radial fade, not a square. A flat quad with a uniform
+     additive colour is a square of light, which is exactly what it looked
+     like. */
+  const gleam = new THREE.Mesh(decor.gleamGeo, decor.gleamMat);
+  gleam.renderOrder = 2;
+  g.add(gleam);
+
+  // four sparkle pips on the rim
+  const pips = [];
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(decor.pipGeo, decor.pipMats[i]);
     g.add(m);
     pips.push({ m, a: (i / 4) * Math.PI * 2 });
   }
@@ -255,7 +307,7 @@ export function buildSyncoin(mats, big = false) {
     if (camPos) {
       _up.set(camPos.x - g.position.x, 0, camPos.z - g.position.z);
       gleam.rotation.y = Math.atan2(_up.x, _up.z) - g.rotation.y;
-      for (const p of pips) gleam.rotation.x = 0;
+      gleam.rotation.x = 0;
     }
     gleam.material.opacity = 0.30 + Math.sin(t * 4) * 0.10;
 
@@ -444,7 +496,7 @@ export function buildRelic(kind, rng, mats) {
     }
     g.add(new THREE.Mesh(mergeGeos(S), mats.opaque));
 
-  } else if (kind === 'aerlingus') {  } else if (kind === 'aerlingus') {
+  } else if (kind === 'aerlingus') {
     /* a torn section of green fuselage, half in the sand */
     const skin = cyl(1.5, 1.7, 3.4, 10, 'metal', {
       pos: [0, 0.5, 0], rot: [1.42, 0.4, 0.15],
@@ -1173,8 +1225,17 @@ export function buildIntroStage(rng, mats, flameFactory) {
 /* ===========================================================
    TIKI TORCH — the island's night lighting
    =========================================================== */
-export function buildTikiTorch(rng, mats, flameFactory) {
-  const g = new THREE.Group();
+/* Every torch is the same torch.
+
+   Nothing in the carving reads the rng — every dimension and tint below is a
+   literal — so the twenty-two torches around the clearing and along the
+   trail were merging twenty-two identical buffers and uploading each one.
+   Built once and shared; the rng stays a parameter because it is the shape
+   every prop builder takes, and if the torches ever want variety it belongs
+   at the call site as a rotation, not as a second copy of the pole. */
+let _TIKI_GEO = null;
+function tikiGeo() {
+  if (_TIKI_GEO) return _TIKI_GEO;
   const P = [];
 
   const pole = cyl(0.10, 0.14, 2.6, 6, 'driftwood', { pos: [0, 1.3, 0] });
@@ -1197,7 +1258,14 @@ export function buildTikiTorch(rng, mats, flameFactory) {
   const bowl = cyl(0.26, 0.15, 0.22, 8, 'metal', { pos: [0, 2.68, 0] });
   tint(bowl, G(0x6a5a48)); P.push(bowl);
 
-  g.add(new THREE.Mesh(mergeGeos(P), mats.opaque));
+  _TIKI_GEO = mergeGeos(P);
+  return _TIKI_GEO;
+}
+
+export function buildTikiTorch(rng, mats, flameFactory) {
+  const g = new THREE.Group();
+
+  g.add(new THREE.Mesh(tikiGeo(), mats.opaque));
 
   const flame = flameFactory(mats, 3, 0.30);
   flame.position.y = 2.74;
@@ -1258,12 +1326,30 @@ export function buildStorm(scene) {
   }
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
 
+  /* three attenuates a point against the CANVAS height — its points shader
+     gets `scale = 0.5 * the height handed to renderer.setSize` — but the
+     scene is drawn into a 224-line target and upscaled afterwards, so every
+     drop came out canvasHeight/224 too big: five times over on a large
+     window, a different size again at every RESOLUTION setting, and bigger
+     still each time the window grew. The size below is the old 0.16 carried
+     through the reference the storm was eyeballed at (224 lines inside a
+     1080-line window); onBeforeRender then scales it against whichever
+     target is actually bound, which keeps the mast's camera feeds honest
+     too — they render the same scene into a target of their own. */
+  const RAIN_SIZE = 0.77;
   const mat = new THREE.PointsMaterial({
-    color: 0xbcd4e0, size: 0.16, sizeAttenuation: true,
+    color: 0xbcd4e0, size: RAIN_SIZE, sizeAttenuation: true,
     transparent: true, opacity: 0.0, depthWrite: false, fog: true,
   });
   const rain = new THREE.Points(geo, mat);
   rain.frustumCulled = false;
+  const drawBuf = new THREE.Vector2();
+  rain.onBeforeRender = (renderer) => {
+    const rt = renderer.getRenderTarget();
+    renderer.getDrawingBufferSize(drawBuf);
+    const ih = rt ? rt.height : drawBuf.y;
+    mat.size = RAIN_SIZE * ih / Math.max(1, drawBuf.y);
+  };
   scene.add(rain);
 
   const flash = new THREE.DirectionalLight(0xdfeaff, 0);

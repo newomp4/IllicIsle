@@ -10,7 +10,7 @@
    =========================================================== */
 
 import { drawText, textWidth, wrapText, panel, ditherRect } from './bitfont.js';
-import { drawRelicIcon, drawShopIcon } from './hud.js';
+import { drawRelicIcon, drawShopIcon, drawPoiIcon, POI_ICONS, POI_ICON_W } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
@@ -382,7 +382,71 @@ function pressButton(x, bx, by, bw, label, opts = {}) {
 }
 
 function footer(x, W, H, text) {
-  drawText(x, text, { x: W / 2, y: H - 17, scale: 1, align: 'center', color: DIM });
+  /* Key hints are centred with nothing trimming them, and the long ones are
+     wider than the frame — the chart's runs to 353 pixels on a 320 buffer, so
+     it hung off both ends and lost its first and last words. What gives is
+     the padding first: the runs of spaces between the hints close from three
+     to two to one, and only if that is still not enough does the letter
+     spacing go. Nothing is ever cut. */
+  let t = String(text || '');
+  let tracking = 1;
+  const max = W - 8;
+  for (let n = 3; n >= 1 && textWidth(t, 1, tracking) > max; n--) {
+    t = String(text).replace(/ {2,}/g, (run) => ' '.repeat(Math.min(n, run.length)));
+  }
+  if (textWidth(t, 1, tracking) > max) tracking = 0;
+  /* Closing the spaces and dropping the tracking is not always enough: the
+     settings hint is 260 pixels with no tracking at all against a 232 pixel
+     budget on a 240 wide buffer, so it hung off both ends anyway. When it is
+     still over, the hints break onto a second row at the group boundaries
+     they already have, which is the one place a break reads as intended.
+     Only the very longest hints get there — the settings screen's and the
+     machine rack's lever line, at 240 wide — and no minigame's does, so the
+     upper row cannot land on the bolt readout or the splice pips that sized
+     themselves against the single row. The council's ballot hint used to
+     reach it too, and its second row landed on the chat field; that hint is
+     shorter now, because the field cannot move. */
+  if (textWidth(t, 1, tracking) > max) {
+    const groups = String(text).trim().split(/ {2,}/).filter(Boolean);
+    let lines;
+    if (groups.length > 1) {
+      // break where the two rows come out closest to even
+      let cut = 1, widest = Infinity;
+      for (let k = 1; k < groups.length; k++) {
+        const a = groups.slice(0, k).join('  ');
+        const c = groups.slice(k).join('  ');
+        const wd = Math.max(textWidth(a, 1, 1), textWidth(c, 1, 1));
+        if (wd < widest) { widest = wd; cut = k; }
+      }
+      lines = [groups.slice(0, cut).join('  '), groups.slice(cut).join('  ')];
+    } else {
+      lines = wrapText(t, max, 1, 1).slice(0, 2);
+    }
+    // two rows usually buy the tracking back
+    const tr = lines.every((ln) => textWidth(ln, 1, 1) <= max) ? 1 : 0;
+    lines.forEach((ln, i) => drawText(x, ln, {
+      x: W / 2, y: H - 17 - (lines.length - 1 - i) * 9,
+      scale: 1, align: 'center', color: DIM, tracking: tr,
+    }));
+    return;
+  }
+  drawText(x, t, { x: W / 2, y: H - 17, scale: 1, align: 'center', color: DIM, tracking });
+}
+
+/**
+ * One centred line, squeezed to fit rather than hanging off both ends.
+ *
+ * The same ladder footer() walks — close the runs of spaces, then give up
+ * the letter spacing — for the prose that is not a key hint.
+ */
+function fitLine(x, text, cx, y, max, opts = {}) {
+  let t = String(text || '');
+  let tracking = 1;
+  for (let n = 3; n >= 1 && textWidth(t, 1, tracking) > max; n--) {
+    t = String(text).replace(/ {2,}/g, (run) => ' '.repeat(Math.min(n, run.length)));
+  }
+  if (textWidth(t, 1, tracking) > max) tracking = 0;
+  drawText(x, t, { x: cx, y, scale: 1, align: 'center', tracking, ...opts });
 }
 
 /**
@@ -747,7 +811,16 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
 /** clamp, without dragging three into this file for one line. */
 const THREE_CLAMP = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
 
-const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false });
+const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false, repeat: false });
+
+/* The keys that mean "do it", as opposed to "look at the next one".
+
+   The world guards its own E against the browser's auto-repeat and the
+   screens never did, so holding E at Ferdi's counter bought the same item
+   once per repeat — fifteen to thirty times a second — and a purse of thirty
+   coins became ten whistles. A held commit key is one commit. Navigation is
+   deliberately not in here: holding an arrow to run down a list is wanted. */
+const COMMIT_KEYS = new Set(['Enter', 'NumpadEnter', 'KeyE', 'Space']);
 
 export class ScreenStack {
   constructor(game) {
@@ -787,20 +860,55 @@ export class ScreenStack {
       delete data.name;
     }
     const s = { name, sel: 0, scroll: 0, t: 0, ...data, name };
-    if (SCREENS[name]?.init) SCREENS[name].init(s, this.game);
+    /* init runs before the screen is on the stack, so anything it threw
+       escaped through the keydown handler — and replace() had already
+       emptied the stack, leaving the player looking at the world with no
+       interface at all and no key that did anything. A half-built screen
+       still draws and still takes Escape, which is the whole point. */
+    if (SCREENS[name]?.init) {
+      try { SCREENS[name].init(s, this.game); }
+      catch (e) { console.error(`[screens] ${name}.init failed`, e); }
+    }
     this.clearHeld();          // whatever opened this is not still held
+    /* The hit-test rows are last frame's, and last frame was another
+       screen's. A council or a snap vote can replace the stack between a
+       draw and a mousedown, and the click was then tested against rows
+       that no longer exist and handed to the new screen's handler. */
+    this._rows.length = 0;
     this.stack.push(s);
     this.game.audio?.sfx('page');
     return s;
   }
+
+  /* A screen torn off the stack may still be holding money — a stake taken
+     up front, a pull already rolled, an item paid for and not yet handed
+     over. Only the screen's own tick ever settled those, and a council, a
+     body card or a snap vote clears the stack outright, so the coins simply
+     vanished. `discard` is the screen's last word. It is wrapped because a
+     throwing one must never stop a council from opening. */
+  _discard(s) {
+    if (!s) return;
+    try { SCREENS[s.name]?.discard?.(s, this.game); }
+    catch (e) { console.warn('[screens] discard failed', s.name, e); }
+  }
   pop() {
     const s = this.stack.pop();
+    this._discard(s);
     this.clearHeld();
+    this._rows.length = 0;
     this.game.audio?.sfx('select');
     return s;
   }
-  clear() { this.stack.length = 0; this.clearHeld(); }
-  replace(name, data) { this.stack.length = 0; return this.push(name, data); }
+  clear() {
+    /* Emptied first: a discard that looks at `screens.name` or opens
+       something of its own must not see a half-torn stack. */
+    const old = this.stack;
+    this.stack = [];
+    for (let i = old.length - 1; i >= 0; i--) this._discard(old[i]);
+    this.clearHeld();
+    this._rows.length = 0;
+  }
+  replace(name, data) { this.clear(); return this.push(name, data); }
   has(name) { return this.stack.some((s) => s.name === name); }
 
   /**
@@ -814,7 +922,26 @@ export class ScreenStack {
     if (!s) return false;
     const def = SCREENS[s.name];
     if (!def) return false;
+    /* A screen that takes typed text says so — there E and space are letters,
+       not a confirmation, and a held key has to keep arriving. `typing` may be
+       a predicate, because the council only takes text while the chat box is
+       open. Swallowed rather than passed on: the event is still consumed. */
+    const typing = typeof def.typing === 'function' ? def.typing(s) : !!def.typing;
+    if (mods.repeat && !typing && COMMIT_KEYS.has(code)) return true;
     return def.key ? def.key(code, s, this.game, this, mods) !== false : false;
+  }
+
+  /**
+   * The wheel, offered only to screens that asked for it. A screen with no
+   * wheel() never sees the event, which is why a trackpad flick can no
+   * longer type into the council's chat box.
+   */
+  wheel(dir) {
+    const s = this.top;
+    if (!s) return false;
+    const def = SCREENS[s.name];
+    if (!def?.wheel) return false;
+    return def.wheel(dir, s, this.game, this) !== false;
   }
 
   /** Screen-space click, already converted to canvas pixels. */
@@ -940,9 +1067,6 @@ function drawCoinPipLocal(x, ox, oy, ink, face) {
   x.fillStyle = ink; x.fillRect(ox + 3, oy + 2, 2, 4);
 }
 
-/** Pop a screen that has found itself with nothing to show. */
-function st_popSafe(s, g) { g?.screens?.pop?.(); }
-
 /** Settle a finished leg. The stake was taken when it started. */
 function DARTS_PAY(s, g) {
   if (s.paid) return;
@@ -993,6 +1117,18 @@ const BEEF_WINS = [
  * The host's dials. Each knows how to read itself, how to print itself and
  * how to step, so the screen that draws them holds no rules at all.
  */
+/* How the lobby scales when the host has not pinned a number. */
+function autoAgents(n) { return n >= 9 ? 3 : n >= 6 ? 2 : 1; }
+
+/* What the round will ACTUALLY deal — the same want-then-clamp HostSession.start
+   does. The beach reproduced only the automatic half, so a host who pinned two
+   had it announcing three to everybody and then dealing two, and this line is
+   the only place the number is stated before a role card lands. */
+function agentCountFor(n, settings) {
+  const want = settings?.agents > 0 ? settings.agents : autoAgents(n);
+  return Math.max(1, Math.min(want, Math.floor((n - 1) / 2)));
+}
+
 const SETTING_ROWS = [
   {
     name: 'ROGUE AGENTS',
@@ -1052,7 +1188,7 @@ const SETTING_ROWS = [
     step: (S) => { S.revealOnExile = !S.revealOnExile; },
   },
   {
-    name: 'AGENTS STRIKE ONLY AT NIGHT',
+    name: 'STRIKE ONLY AT NIGHT',
     blurb: 'Agents cannot kill in daylight at all. It makes the day safe and the '
       + 'night unbearable.',
     get: (S) => (S.nightOnly ? 'YES' : 'ANY TIME'),
@@ -1067,17 +1203,22 @@ const BOOT_LEN = 1.9;
    tell the selector something happened: choosing a row makes it flash and
    squash. Wrapping past either end nudges it the short way rather than
    sliding the whole list, which looked like the menu falling over. */
-const nav = (code, s, len, onOk, onBack) => {
+/* `g` is only here for the key click. Every hand-rolled list in this file
+   pairs menuSnap() with a 'select', and the shared helper did not — so the
+   title, the pause menu and the results card were the silent ones. */
+const nav = (code, s, len, onOk, onBack, g) => {
   if (code === 'ArrowUp' || code === 'KeyW') {
     const was = s.sel;
     s.sel = (s.sel + len - 1) % len;
     if (was === 0) menuSnap();
+    g?.audio?.sfx('select');
     return true;
   }
   if (code === 'ArrowDown' || code === 'KeyS') {
     const was = s.sel;
     s.sel = (s.sel + 1) % len;
     if (was === len - 1) menuSnap();
+    g?.audio?.sfx('select');
     return true;
   }
   if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
@@ -1089,39 +1230,69 @@ const nav = (code, s, len, onOk, onBack) => {
   return false;
 };
 
-export const SCREENS = {
+/* The pause menu is not the same list in both modes, and it used to pretend
+   it was. JOURNAL pushed the Idol quest journal in the middle of a Castaways
+   round — a list of pendulums and relics from a game nobody in the room is
+   playing — and MAP called openChart, which refuses when you have no chart,
+   and in Castaways until the round starts, so the row beeped and did
+   nothing. There is no journal in a round, and a refused MAP says why. */
+function pauseItems(g) {
+  const inRound = !!g.mp?.active;
+  const refusal = inRound
+    ? (g.mp.started ? null : 'THE ROUND HAS NOT STARTED')
+    : (g.hasChart ? null : 'YOU HAVE NO CHART');
+  const items = [{ id: 'resume', label: 'RESUME' }];
+  if (!inRound) items.push({ id: 'journal', label: 'JOURNAL' });
+  items.push({ id: 'map', label: 'MAP', disabled: !!refusal, refusal });
+  items.push({ id: 'controls', label: 'CONTROLS' });
+  items.push({ id: 'options', label: 'OPTIONS' });
+  items.push({ id: 'quit', label: 'QUIT TO TITLE' });
+  return items;
+}
 
-  /* ---------------- MODE SELECT ---------------- */
-  mode: {
-    draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, 'ILLIC ISLE');
-      drawText(x, 'CHOOSE A WAY TO PLAY', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
-      const rows = menuList(x, ['CASTAWAYS  (3-10 PLAYERS)', 'THE OLD STORY  (ALONE)'],
-        s.sel, W / 2, b.top + 18, t, { width: 180, gap: 16 });
-      const blurb = s.sel === 1
-        ? 'Wash ashore alone. Wake four Pendulums,\nopen the temple, take the Idol.\nThe game this was before it was this one.'
-        : 'Wash ashore together. Some of you are\nRogue Agents, and nobody knows who.\nDo the work. Watch the paths people take.';
-      x.fillStyle = GOLD_DK;
-      x.fillRect(W / 2 - 60, b.top + 48, 120, 1);
-      let y = b.top + 56;
-      for (const ln of blurb.split('\n')) {
-        drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: GOLD_LT }); y += 10;
-      }
-      footer(x, W, H, 'ESC BACK');
-      return rows;
-    },
-    key(code, s, g, st) {
-      return nav(code, s, 2, (i) => {
-        if (i === 1) { st.clear(); g.beginGame(); }
-        else st.replace('mpMenu');
-      }, () => st.replace('title'));
-    },
-  },
+/* The title's left-hand scrim depends on nothing but the size of the frame,
+   and it was a hundred and sixty-six colour parses and full-height fills
+   every frame for as long as the title is up — nine hundred and ninety-eight
+   of them at native. Baked once and blitted. */
+let _titleScrim = null;
+function titleScrim(W, H) {
+  if (_titleScrim && _titleScrim.w === W && _titleScrim.h === H) return _titleScrim.c;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  const grad = Math.round(W * 0.52);
+  for (let i = 0; i < grad; i++) {
+    const a = 0.86 * (1 - i / grad);
+    cx.fillStyle = `rgba(6,4,2,${a.toFixed(3)})`;
+    cx.fillRect(i, 0, 1, H);
+  }
+  _titleScrim = { w: W, h: H, c };
+  return c;
+}
+
+/* The camera terminal's dead-channel snow. The shade is `something % 5` and
+   `something % 4`, so there were only ever five and four colours — but a
+   fresh rgb() string was built and parsed for every one of the ~1,500 points,
+   sixty times a second. Held here and picked by index instead. */
+const SNOW5 = ['rgb(0,6,2)', 'rgb(14,20,16)', 'rgb(28,34,30)', 'rgb(42,48,44)', 'rgb(56,62,58)'];
+const SNOW4 = ['rgb(0,4,0)', 'rgb(16,20,16)', 'rgb(32,36,32)', 'rgb(48,52,48)'];
+
+export const SCREENS = {
 
   /* ---------------- HOST OR JOIN ---------------- */
   mpMenu: {
+    /* The name and the room code are typed in here, so E and space are
+       letters rather than a confirmation and a held key has to keep
+       arriving — the stack's repeat guard must not swallow them. */
+    typing: true,
     init(s, g) {
-      s.who = (localStorage.getItem('illicisle.name') || '').toUpperCase();
+      /* Same hazard as the write below: in a private window, with site data
+         blocked, or inside a cross-origin frame, touching localStorage at all
+         throws — and this threw out through push() before the screen reached
+         the stack, leaving an empty stack and a game with no interface. */
+      let saved = '';
+      try { saved = localStorage.getItem('illicisle.name') || ''; } catch { /* not fatal */ }
+      s.who = saved.toUpperCase();
       /* A room code in the address bar fills the box in and puts the caret
          on your name, which is the only thing left to type. That is what
          the LINK button in the lobby copies. */
@@ -1158,26 +1329,29 @@ export const SCREENS = {
         x: W / 2, y: y + 16, scale: 2, align: 'center', color: GOLD_LT,
       });
       rows.push({ x: rx - 4, y: y + 7, w: rw + 8, h: 26, focus: 1 });
-      drawText(x, 'CLICK A BOX TO TYPE IN IT   CTRL V PASTES', {
-        x: W / 2, y: y + 36, scale: 1, align: 'center', color: DIM,
-      });
-      drawText(x, 'LEAVE THE CODE BLANK TO OPEN A ROOM OF YOUR OWN', {
-        x: W / 2, y: y + 45, scale: 1, align: 'center', color: '#6a5c40',
-      });
+      /* These were centred with nothing measuring them, so on a 240 wide
+         buffer they ran off both ends of the first screen anybody sees. */
+      fitLine(x, 'CLICK A BOX TO TYPE IN IT   CTRL V PASTES', W / 2, y + 36, W - 24, { color: DIM });
+      fitLine(x, 'BLANK CODE OPENS A NEW ROOM', W / 2, y + 45, W - 24, { color: '#6a5c40' });
 
       y += 60;
       for (const r of menuList(x, [s.code ? 'JOIN THAT ROOM' : 'OPEN A NEW ROOM'],
         0, W / 2, y, t, { width: 150 })) rows.push({ ...r, go: true });
-      if (!s.busy && !s.err) {
+      const rules = [
+        'THREE TO TEN CASTAWAYS. SOME ARE ROGUE AGENTS.',
+        'CASTAWAYS FINISH THE WORK. AGENTS CUT THEM DOWN.',
+        'FIND A BODY, CALL A COUNCIL, THROW SOMEBODY TO THE SEA.',
+      ];
+      const ruleBot = y + 28 + (rules.length - 1) * 10 + 7;   // the last line is 7 rows tall
+      /* footer() draws at H - 17, and on a 180 tall buffer these started at
+         162: the first rule printed through the key hints and the third fell
+         off the bottom entirely. There is no room for them at that height, so
+         the screen ends at the button instead. */
+      if (!s.busy && !s.err && ruleBot <= H - 20) {
         x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, y + 22, 140, 1);
-        const rules = [
-          'THREE TO TEN CASTAWAYS. SOME ARE ROGUE AGENTS.',
-          'CASTAWAYS FINISH THE WORK. AGENTS CUT THEM DOWN.',
-          'FIND A BODY, CALL A COUNCIL, THROW SOMEBODY TO THE SEA.',
-        ];
         let ry = y + 28;
         for (const r of rules) {
-          drawText(x, r, { x: W / 2, y: ry, scale: 1, align: 'center', color: DIM });
+          fitLine(x, r, W / 2, ry, W - 24, { color: DIM });
           ry += 10;
         }
       }
@@ -1201,17 +1375,38 @@ export const SCREENS = {
 
     /** Ctrl/Cmd+V. Room codes get read out loud and pasted, not retyped. */
     paste(text, s) {
-      const clean = String(text || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '');
+      /* The lobby's L LINK copies a whole URL, and pasting that in here used
+         to leave HTTPSO: the strip below eats the punctuation and six
+         characters is all the box takes. The room is the fragment. */
+      let raw = String(text || '');
+      const hash = raw.lastIndexOf('#');
+      if (hash >= 0 && /https?:\/\//i.test(raw)) raw = raw.slice(hash + 1);
+      const clean = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, '');
       if (!clean) return true;
       if (s.field === 1) s.code = (s.code + clean).replace(/\s/g, '').slice(0, 6);
       else s.who = (s.who + clean).replace(/^\s+/, '').slice(0, 12);
       return true;
     },
 
-    key(code, s, g, st) {
+    key(code, s, g, st, mods) {
+      /* A signalling server that has stopped answering leaves CONNECTING on
+         the screen for as long as it likes, and every key after it was
+         swallowed by the line below — there was no way out of the menu but
+         a reload. Escape gives up on the attempt instead. */
+      if (s.busy && code === 'Escape') {
+        s.busy = false;
+        s.gen = (s.gen || 0) + 1;
+        g.cancelConnect?.();
+        st.replace('title');
+        return true;
+      }
       if (s.busy) return true;
       if (code === 'Tab') { s.field = 1 - s.field; return true; }
-      if (code === 'Escape') { st.replace('mode'); return true; }
+      /* Back to where you actually came from. PLAY on the title comes
+         straight here (the mode chooser is not on the way in any more), so
+         sending Escape back to the old mode chooser dropped you on a screen
+         you had never seen and made getting out take two presses. */
+      if (code === 'Escape') { st.replace('title'); return true; }
       if (code === 'Backspace') {
         if (s.field === 0) s.who = s.who.slice(0, -1); else s.code = s.code.slice(0, -1);
         return true;
@@ -1219,18 +1414,39 @@ export const SCREENS = {
       if (code === 'Enter' || code === 'NumpadEnter') {
         s.busy = true; s.err = '';
         const name = s.who.trim() || 'CASTAWAY';
-        localStorage.setItem('illicisle.name', name);
+        /* Storage is a convenience, not a precondition. In a private window,
+           with site data blocked, or on a full quota this throws — and it
+           threw between `s.busy = true` and the connect, so busy stayed true
+           for ever and the first line of key() swallowed every key after it,
+           Escape included. Remembering the name is not worth a dead menu. */
+        try { localStorage.setItem('illicisle.name', name); } catch { /* not fatal */ }
         const go = s.code
           ? g.joinGame(name, s.code.trim().toUpperCase())
           : g.hostGame(name, null);
-        go.then(() => st.replace('mpLobby'))
-          .catch((e) => { s.busy = false; s.err = e.message || String(e); });
+        /* An attempt that lands after you have walked away is not yours any
+           more: without this it yanked you off the title screen into a lobby
+           you had already given up on. Each press takes a ticket, and only
+           the current one is allowed to finish. */
+        const gen = (s.gen = (s.gen || 0) + 1);
+        go.then(() => {
+          if (s.gen === gen) st.replace('mpLobby');
+          else g.cancelConnect?.();
+        }).catch((e) => {
+          if (s.gen !== gen) return;
+          s.busy = false; s.err = e.message || String(e);
+        });
         return true;
       }
-      // typed characters
+      /* Typed characters. `code` is the PHYSICAL key on a US board, so on
+         AZERTY the key marked A reports KeyQ and a room code read out over
+         voice went into the box as a different code entirely. The layout's
+         own character is preferred where there is one; the physical code
+         stays as the fallback, because AZERTY's unshifted top row gives
+         "é" for the key that is still Digit2. */
+      const raw = mods && mods.ch;
       const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
-      if (m) {
-        const ch = m[1];
+      const ch = (raw && /^[a-zA-Z0-9]$/.test(raw)) ? raw.toUpperCase() : (m ? m[1] : null);
+      if (ch) {
         if (s.field === 0) { if (s.who.length < 12) s.who += ch; }
         else if (s.code.length < 6) s.code += ch;
         return true;
@@ -1277,7 +1493,7 @@ export const SCREENS = {
           copyLink: true,
         });
         const failed = fresh && s.copiedWhat === 'failed';
-        drawText(x, failed ? 'THE CLIPBOARD SAID NO - READ IT OUT'
+        drawText(x, failed ? 'CLIPBOARD SAID NO - READ THE CODE'
           : (fresh
             ? (s.copiedWhat === 'link' ? 'A LINK IS ON YOUR CLIPBOARD' : 'THE CODE IS ON YOUR CLIPBOARD')
             : 'SEND THIS TO YOUR FRIENDS'),
@@ -1285,23 +1501,86 @@ export const SCREENS = {
           color: failed ? RED : (fresh ? JADE : DIM) });
       }
 
-      let y = b.top + 62;
-      drawText(x, `${players.length} ASHORE`, { x: 30, y, scale: 1, color: DIM });
-      y += 12;
-      for (const p of players) {
-        const hex = colourOf(p.colour);
-        x.fillStyle = hex; x.fillRect(30, y, 7, 7);
-        x.fillStyle = '#000'; x.fillRect(30, y + 7, 7, 1);
-        drawText(x, p.name || '?', { x: 42, y, scale: 1, color: p.id === g.mp.view.selfId ? GOLD : GOLD_LT });
-        if (p.id === 'host') drawText(x, 'HOST', { x: W - 30, y, scale: 1, align: 'right', color: JADE });
-        y += 11;
+      drawText(x, `${players.length} ASHORE`, { x: 30, y: b.top + 62, scale: 1, color: DIM });
+      /* Ten castaways at eleven pixels a row ran the roster through the
+         host's menu and off the bottom of the panel. It is laid out against
+         the space that actually exists instead: the floor is whatever the
+         menu or the WAITING line owns, and the names spill into a second
+         column rather than overrunning it. */
+      const floorY = g.isHost ? b.bottom - 44 : b.bottom - 24;
+      const y0 = b.top + 74;
+      const room = floorY - y0;
+      const pitch = room < 60 ? 9 : 11;
+      const perCol = Math.max(1, Math.floor(room / pitch));
+      const cols = Math.min(2, Math.ceil(Math.max(1, players.length) / perCol));
+      if (perCol < 2 && players.length > perCol * cols) {
+        /* Not even two short columns fit — at the 180 setting there is room
+           for one row. A strip of colours still says who is in the room. */
+        players.forEach((p, i) => {
+          x.fillStyle = colourOf(p.colour); x.fillRect(30 + i * 9, y0, 7, 7);
+          x.fillStyle = '#000'; x.fillRect(30 + i * 9, y0 + 7, 7, 1);
+        });
+        /* The name used to sit a row under the strip, which at the 180
+           setting is the row the PUT TO SEA bar fills — you saw two letters
+           of your own name sticking out of the left of the button. It goes
+           on the swatch row instead, in whatever the strip leaves. */
+        const me = players.find((p) => p.id === g.mp.view.selfId);
+        if (me) {
+          const roomFor = (W - 30) - (30 + players.length * 9) - 6;
+          let nm = me.name || '?';
+          while (nm.length > 1 && textWidth(nm, 1) > roomFor) nm = nm.slice(0, -1);
+          drawText(x, nm, { x: W - 30, y: y0, scale: 1, align: 'right', color: GOLD });
+        }
+      } else {
+        const colW = Math.floor((W - 60) / cols);
+        const cap = perCol * cols;
+        const show = players.length > cap ? cap - 1 : players.length;
+        players.slice(0, show).forEach((p, i) => {
+          const px2 = 30 + Math.floor(i / perCol) * colW;
+          const py2 = y0 + (i % perCol) * pitch;
+          x.fillStyle = colourOf(p.colour); x.fillRect(px2, py2, 7, 7);
+          x.fillStyle = '#000'; x.fillRect(px2, py2 + 7, 7, 1);
+          const host = p.id === 'host';
+          let nm = p.name || '?';
+          const roomFor = colW - 20 - (host ? 26 : 0);
+          while (nm.length > 1 && textWidth(nm, 1) > roomFor) nm = nm.slice(0, -1);
+          drawText(x, nm, {
+            x: px2 + 12, y: py2, scale: 1,
+            color: p.id === g.mp.view.selfId ? GOLD : GOLD_LT,
+          });
+          if (host) {
+            drawText(x, 'HOST', {
+              x: px2 + colW - 6, y: py2, scale: 1, align: 'right', color: JADE,
+            });
+          }
+        });
+        if (show < players.length) {
+          drawText(x, `+${players.length - show} MORE`, {
+            x: 30 + Math.floor(show / perCol) * colW,
+            y: y0 + (show % perCol) * pitch, scale: 1, color: DIM,
+          });
+        }
       }
       // people want to know what they are walking into
       const n = players.length;
-      const agents = n >= 9 ? 3 : n >= 6 ? 2 : 1;
+      const agents = agentCountFor(n, g.mp.host?.settings || g.mp.view?.settings);
       if (n >= 3) {
-        drawText(x, `${agents} ROGUE AGENT${agents === 1 ? '' : 'S'} AMONG YOU`,
-          { x: W - 30, y: b.top + 62, scale: 1, align: 'right', color: RED });
+        /* Both halves of this row were pinned to opposite constants with
+           nothing measured between them, so on a 240 wide buffer the red
+           sentence started inside '10 ASHORE'. There is no spare row to move
+           it to — the label above and the roster below both own theirs — so
+           it says as much as the gap actually holds. */
+        const S = agents === 1 ? '' : 'S';
+        const free = (W - 30) - (30 + textWidth(`${n} ASHORE`, 1)) - 6;
+        const label = [
+          `${agents} ROGUE AGENT${S} AMONG YOU`,
+          `${agents} ROGUE AGENT${S}`,
+          `${agents} ROGUE`,
+        ].find((c) => textWidth(c, 1) <= free);
+        if (label) {
+          drawText(x, label,
+            { x: W - 30, y: b.top + 62, scale: 1, align: 'right', color: RED });
+        }
       }
 
       if (g.mp.dev) {
@@ -1361,7 +1640,6 @@ export const SCREENS = {
           if (!oldWay()) {
             s.copied = s.t;
             s.copiedWhat = 'failed';
-            s.failedText = text;
             g.audio?.sfx('deny');
           }
         });
@@ -1372,7 +1650,6 @@ export const SCREENS = {
       if (!oldWay()) {
         s.copied = s.t;
         s.copiedWhat = 'failed';
-        s.failedText = text;
         g.audio?.sfx('deny');
       }
     },
@@ -1415,27 +1692,44 @@ export const SCREENS = {
       const S2 = g.mp.host?.settings;
       if (!S2) return [];
       const n = [...g.mp.view.players.values()].length;
-      const auto = n >= 9 ? 3 : n >= 6 ? 2 : 1;
+      // the dial shows the unclamped automatic figure, not the effective one
+      const auto = autoAgents(n);
 
       const b = frame(x, W, H, 'ROUND SETTINGS');
       const ROWS = SETTING_ROWS;
       const rows = [];
+      /* Twelve pixels a row is nine rows plus a divider, which on a 180 tall
+         buffer left the explanation below with nothing at all — the loop
+         broke on its very first line. Reserve the divider and three lines of
+         prose first and give the rows what is left, never tighter than a
+         seven pixel glyph with a pixel either side. */
+      const PROSE = 8 + 18 + 8;
+      const ROW = Math.max(9, Math.min(12,
+        Math.floor((b.bottom - 8 - (b.top + 4) - PROSE) / ROWS.length)));
       let y = b.top + 4;
       ROWS.forEach((r, i) => {
         const on = i === s.sel;
         const val = r.get(S2, auto);
         if (on) {
           x.fillStyle = '#3a2a10';
-          x.fillRect(22, y - 2, W - 44, 13);
-          x.fillStyle = GOLD; x.fillRect(22, y - 2, 2, 13);
+          x.fillRect(22, y - 2, W - 44, ROW + 1);
+          x.fillStyle = GOLD; x.fillRect(22, y - 2, 2, ROW + 1);
         }
-        drawText(x, r.name, { x: 30, y, scale: 1, color: on ? GOLD_LT : '#c9b98a' });
+        /* The name was pinned to 30 and the value to W - 30 with nothing
+           measured between them, so the long ones printed through each
+           other on a narrow frame. The value is the load-bearing half, so
+           the name is what gives. */
+        let nm = r.name;
+        const roomFor = W - 60 - textWidth(val, 1) - 6;
+        while (nm.length > 3 && textWidth(nm, 1) > roomFor) nm = nm.slice(0, -1);
+        if (nm !== r.name) nm = nm.slice(0, -1) + '.';
+        drawText(x, nm, { x: 30, y, scale: 1, color: on ? GOLD_LT : '#c9b98a' });
         drawText(x, val, {
           x: W - 30, y, scale: 1, align: 'right',
           color: on ? GOLD : '#8a7a52',
         });
-        rows.push({ x: 22, y: y - 2, w: W - 44, h: 12, pick: i });
-        y += 12;
+        rows.push({ x: 22, y: y - 2, w: W - 44, h: ROW, pick: i });
+        y += ROW;
       });
 
       /* What the highlighted one does. The row pitch is tight on purpose so
@@ -1457,13 +1751,17 @@ export const SCREENS = {
       const S2 = g.mp.host?.settings;
       if (!S2) return true;
       const ROWS = SETTING_ROWS;
+      /* The dials are mutated in place on the host's own object, and guests
+         were handed settings exactly once, inside WELCOME. Anyone already on
+         the beach when the host tuned the round went on playing by the
+         defaults — their own client refusing kills the host would have
+         allowed, or sending ones he silently drops. */
+      const turn = (d) => { ROWS[s.sel].step(S2, d); g.mp.host?.pushSettings?.(); g.audio?.sfx('confirm'); return true; };
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + ROWS.length - 1) % ROWS.length; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % ROWS.length; g.audio?.sfx('select'); return true; }
-      if (code === 'ArrowLeft' || code === 'KeyA') { ROWS[s.sel].step(S2, -1); g.audio?.sfx('confirm'); return true; }
+      if (code === 'ArrowLeft' || code === 'KeyA') return turn(-1);
       if (code === 'ArrowRight' || code === 'KeyD'
-        || code === 'Enter' || code === 'KeyE' || code === 'Space') {
-        ROWS[s.sel].step(S2, 1); g.audio?.sfx('confirm'); return true;
-      }
+        || code === 'Enter' || code === 'KeyE' || code === 'Space') return turn(1);
       if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
       return true;
     },
@@ -1472,6 +1770,7 @@ export const SCREENS = {
       if (!S2 || row?.pick === undefined) return true;
       if (row.pick !== s.sel) { s.sel = row.pick; g.audio?.sfx('select'); return true; }
       SETTING_ROWS[s.sel].step(S2, 1);
+      g.mp.host?.pushSettings?.();
       g.audio?.sfx('confirm');
       return true;
     },
@@ -1585,11 +1884,22 @@ export const SCREENS = {
       const k4 = line(4);
       if (k4 > 0) {
         const mates = g.mp.view.mates;
-        const txt = agent
-          ? (mates && mates.length > 1 ? 'WITH YOU: ' + mates.join('  ') : 'YOU WORK ALONE')
-          : `${[...g.mp.view.players.values()].length} ASHORE. TRUST NOBODY.`;
-        drawText(x, txt, { x: W / 2, y: cy + 84, scale: 1, align: 'center',
-          color: fade(k4, agent ? '#ff9a8a' : '#9fd8c4', DK) });
+        const col = fade(k4, agent ? '#ff9a8a' : '#9fd8c4', DK);
+        if (agent && mates && mates.length > 0) {
+          /* Three twelve-character partners on one line is 299 pixels, which
+             hung off both edges of a 240 wide frame and off both sides of
+             the card at any width. Comma-separated so a name with a space in
+             it cannot be mistaken for two, and wrapped to the card. */
+          const maxW = Math.min(CW, W) - 16;
+          for (const [i, ln] of wrapText('WITH YOU: ' + mates.join(', '), maxW, 1, 1)
+            .slice(0, 3).entries()) {
+            drawText(x, ln, { x: W / 2, y: cy + 78 + i * 9, scale: 1, align: 'center', color: col });
+          }
+        } else {
+          const txt = agent ? 'YOU WORK ALONE'
+            : `${[...g.mp.view.players.values()].length} ASHORE. TRUST NOBODY.`;
+          drawText(x, txt, { x: W / 2, y: cy + 84, scale: 1, align: 'center', color: col });
+        }
       }
 
       // a slow pulse on the border once it is all up
@@ -1606,7 +1916,15 @@ export const SCREENS = {
 
   /* ---------------- COUNCIL + VOTE ---------------- */
   mpCouncil: {
-    init(s) { s.sel = 0; s.typing = ''; s.talking = false; s.cast = null; s.stampT = 0; },
+    /* Only while the chat box is open: there space is a letter, and
+       everywhere else on this screen it is a vote. */
+    typing: (s) => s.talking,
+    init(s) { s.sel = 0; s.selId = null; s.typing = ''; s.talking = false; s.cast = null; s.stampT = 0; },
+    /* The stamp's overshoot used to count itself up inside draw, a fixed
+       step a frame, which made it land faster the faster the monitor. */
+    tick(s, g, dt) {
+      if (s.cast) s.stampT += dt;
+    },
     draw(x, W, H, s, g, t) {
       const players = [...g.mp.view.players.values()];
       const alive = players.filter((p) => p.alive !== false);
@@ -1625,27 +1943,58 @@ export const SCREENS = {
 
       /* header */
       drawText(x, 'THE COUNCIL', { x: W / 2, y: 6, scale: 2, align: 'center', color: GOLD });
-      drawText(x, g.mp.councilHeader || '', { x: W / 2, y: 22, scale: 1, align: 'center', color: GOLD_LT });
+      /* The header was centred on the whole frame while the tally and the
+         timer are pinned to its ends a pixel row away, so on anything under
+         368 wide a two-name header printed straight through both. It is
+         centred in the room they leave instead. */
+      const voted = new Set(g.mp.view.votes?.voted || []);
+      const tallyStr = `${voted.size}/${alive.length} VOTED`;
+      const timeStr = `${Math.ceil(left)}`;
+      const loX = 26 + textWidth(tallyStr, 1) + 4;
+      const hiX = W - 26 - textWidth(timeStr, 1) - 4;
+      let head = g.mp.councilHeader || '';
+      while (head.length > 1 && textWidth(head, 1) > hiX - loX) head = head.slice(0, -1);
+      drawText(x, head, { x: (loX + hiX) / 2, y: 22, scale: 1, align: 'center', color: GOLD_LT });
 
       const bw = W - 52, bx = 26, by = 32;
       x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 5);
       x.fillStyle = '#1c1208'; x.fillRect(bx, by, bw, 3);
-      const n = Math.round((left / total) * bw);
+      /* phaseTotal is whatever the host last announced and falls back to 60,
+         so a phase that outlives it made left/total > 1 and the fill ran on
+         past the bar — hundreds of clipped rects a frame. The fill can never
+         be longer than the bar it fills. */
+      const n = Math.min(bw, Math.round((left / total) * bw));
       const urgent = left < 10;
       for (let i = 0; i < n; i += 3) {
         x.fillStyle = urgent ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : (i % 6 ? '#c39a2c' : GOLD);
         x.fillRect(bx + i, by, 2, 3);
       }
-      drawText(x, `${Math.ceil(left)}`, { x: W - 26, y: by - 9, scale: 1, align: 'right', color: urgent ? RED : DIM });
-      const voted = new Set(g.mp.view.votes?.voted || []);
-      drawText(x, `${voted.size}/${alive.length} VOTED`, { x: 26, y: by - 9, scale: 1, color: DIM });
+      drawText(x, timeStr, { x: W - 26, y: by - 9, scale: 1, align: 'right', color: urgent ? RED : DIM });
+      drawText(x, tallyStr, { x: 26, y: by - 9, scale: 1, color: DIM });
 
       /* the ballot — every living name, votable from the moment you arrive */
       s.targets = alive.map((p) => p.id);
       s.targets.push('skip');
-      if (s.sel >= s.targets.length) s.sel = 0;
+      /* The ballot is rebuilt from the live roster every frame while the
+         selection was only an index, so somebody leaving mid-vote slid the
+         highlight silently onto whoever moved up into their place. Follow
+         the name; if it has gone, the vote falls to NOBODY — always the last
+         entry — rather than onto the top of the list. */
+      if (s.selId != null) {
+        const at = s.targets.indexOf(s.selId);
+        s.sel = at >= 0 ? at : s.targets.length - 1;
+      }
+      if (s.sel >= s.targets.length || s.sel < 0) s.sel = s.targets.length - 1;
+      s.selId = s.targets[s.sel];
 
-      const LX = 10, LW = 118, ROW = 10;
+      const LX = 10, LW = 118;
+      /* Every name is drawn, plus NOBODY, so the pitch comes from the whole
+         roster rather than the living: a full ballot at ten pixels a row put
+         the vote button — and the seventeen-pixel stamp after it — straight
+         through the key hints. */
+      const ROWS = players.length + 1;
+      const BTN_TOP = H - 38;                 // the stamp and its overshoot clear the footer
+      const ROW = Math.min(10, Math.max(8, Math.floor((BTN_TOP - 3 - 42) / ROWS)));
       let y = 42;
       const rows = [];
       const canPick = g.amAlive && !s.cast;
@@ -1685,13 +2034,12 @@ export const SCREENS = {
       line('skip', 'NOBODY', null, false, skips ? '*'.repeat(Math.min(skips, 5)) : '', GOLD);
 
       /* one button, and it says who it is for */
-      y += 3;
+      y = Math.min(y + 3, BTN_TOP);
       if (!g.amAlive) {
         drawText(x, 'THE DEAD DO NOT VOTE', { x: LX, y, scale: 1, color: '#6a6a6a' });
       } else if (s.cast) {
         const who = s.cast === 'skip' ? 'NOBODY'
           : (players.find((p) => p.id === s.cast)?.name || '?');
-        s.stampT += 0.016;
         const k = Math.min(1, s.stampT / 0.2);
         const over = 1 + (1 - k) * 0.3;
         x.save();
@@ -1746,16 +2094,29 @@ export const SCREENS = {
 
       field(x, cx, H - 31, cw, 11, s.talking);
       if (s.talking) {
-        drawText(x, s.typing + (Math.floor(t * 3) % 2 ? '_' : ''), {
+        /* Sixty characters is 359 pixels against a box 96 wide on a 240 wide
+           frame, so everything past the fifteenth was painted across the key
+           hints and off the edge. Show the tail — trimmed from the FRONT,
+           since the end is the part being typed — and measure against the
+           caret on every frame so the blink cannot jog the window a glyph. */
+        const caret = Math.floor(t * 3) % 2 ? '_' : '';
+        let shown = s.typing;
+        while (shown.length && textWidth(`${shown}_`, 1) > cw - 6) shown = shown.slice(1);
+        drawText(x, shown + caret, {
           x: cx + 3, y: H - 28, scale: 1, color: g.amAlive ? JADE : '#8fb0c8' });
       } else {
         drawText(x, 'T  TO TALK', { x: cx + 3, y: H - 28, scale: 1, color: '#5a4a30' });
         rows.push({ x: cx, y: H - 31, w: cw, h: 11, talk: true });
       }
 
+      /* Short enough to stay on ONE row at 240 wide. The long form was 47
+         characters once its spacing had closed, which tipped footer() into
+         its two-row fallback — and the second row lands at H - 26, straight
+         across the chat field at H - 31. This is the only screen with
+         anything that low, so the hint gives way rather than the field. */
       footer(x, W, H, s.talking ? 'ENTER SENDS   ESC STOPS TYPING'
         : (s.cast ? 'YOUR VOTE IS IN   T TALKS'
-          : 'CLICK A NAME OR ARROW TO IT   ENTER VOTES   T TALKS'));
+          : 'CLICK A NAME   ENTER VOTES   T TALKS'));
       return rows;
     },
 
@@ -1765,7 +2126,7 @@ export const SCREENS = {
       return true;
     },
 
-    key(code, s, g, st) {
+    key(code, s, g, st, mods) {
       if (s.talking) {
         if (code === 'Escape') { s.talking = false; s.typing = ''; return true; }
         if (code === 'Enter' || code === 'NumpadEnter') {
@@ -1774,16 +2135,23 @@ export const SCREENS = {
           return true;
         }
         if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
+        /* The layout's own character where there is one, the physical key
+           otherwise — on AZERTY the comma sits on the QWERTY M key, so
+           typing a comma into the council put an M in the message. */
+        const raw = mods && mods.ch;
         const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
-        if (m && s.typing.length < 60) { s.typing += m[1]; return true; }
+        const ch = (raw && /^[a-zA-Z0-9]$/.test(raw)) ? raw.toUpperCase() : (m ? m[1] : null);
+        if (ch && s.typing.length < 60) { s.typing += ch; return true; }
         const punct = { Space: ' ', Period: '.', Comma: ',', Slash: '?', Minus: '-', Quote: "'" };
-        if (punct[code] && s.typing.length < 60) { s.typing += punct[code]; return true; }
+        const p = (raw && /^[ .,'?-]$/.test(raw)) ? raw : punct[code];
+        if (p && s.typing.length < 60) { s.typing += p; return true; }
         return true;
       }
       if (code === 'KeyT') { s.talking = true; return true; }
       if (code === 'ArrowUp' || code === 'ArrowDown' || code === 'KeyW' || code === 'KeyS') {
         const n2 = s.targets?.length || 1;
         s.sel = (s.sel + ((code === 'ArrowUp' || code === 'KeyW') ? n2 - 1 : 1)) % n2;
+        s.selId = s.targets?.[s.sel] ?? null;
         g.audio?.sfx('select');
         return true;
       }
@@ -1812,7 +2180,7 @@ export const SCREENS = {
           s.cast = s.targets[s.sel];
           s.stampT = 0;
           g.sendVote(s.cast);
-        } else { s.sel = row.pick; g.audio?.sfx('select'); }
+        } else { s.sel = row.pick; s.selId = s.targets?.[s.sel] ?? null; g.audio?.sfx('select'); }
       }
       return true;
     },
@@ -1985,8 +2353,17 @@ export const SCREENS = {
         x.fillStyle = `rgba(150,255,215,${(0.16 * (1 - settle)).toFixed(3)})`;
         x.fillRect(0, Math.round((1 - settle) * H), W, 3);
       }
-      drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: 2, color: GRN });
-      drawText(x, 'SCHWAB TECHNOLOGY', { x: 14, y: 25, scale: 1, color: GRN_D });
+      /* The readings down the right are right-aligned at W-14 and the title is
+         a fixed 166 pixels from x=14, so below 299 wide the bunker's name
+         printed straight through LISTENING POST. The title takes the smaller
+         size when the right-hand column needs the room; SCHWAB comes up with
+         it so the header still reads as one block. */
+      const HDR_R = Math.max(textWidth(d.bunker || '', 1), textWidth('SIGNAL NOMINAL', 1));
+      const HDR_S = 14 + textWidth('LISTENING POST', 2) + 4 + HDR_R <= W - 14 ? 2 : 1;
+      drawText(x, 'LISTENING POST', { x: 14, y: 11, scale: HDR_S, color: GRN });
+      drawText(x, 'SCHWAB TECHNOLOGY', {
+        x: 14, y: HDR_S === 2 ? 25 : 20, scale: 1, color: GRN_D,
+      });
       drawText(x, d.bunker || '', { x: W - 14, y: 10, scale: 1, align: 'right', color: GRN_D });
       drawText(x, 'SIGNAL NOMINAL', {
         x: W - 14, y: 19, scale: 1, align: 'right', color: GRN_D,
@@ -2031,9 +2408,17 @@ export const SCREENS = {
           drawText(x, `${d.alive}/${d.total} ALIVE`, {
             x: vx + 4, y: py0 + 3, scale: 1, color: d.alive <= 2 ? RED : GRN,
           });
+          /* A fixed 10px pitch and a break fitted six of a full lobby of ten
+             into an 80px panel and said nothing about the other four, under a
+             header still reading 9/10 ALIVE. The pitch tightens to the glyph
+             height on a short buffer and whatever still does not fit is
+             counted rather than dropped. */
+          const room = PH - 16;
+          const PITCH = room < 70 ? 8 : 10;
+          const fit = Math.max(1, Math.floor(room / PITCH));
+          const show = d.roster.length > fit ? fit - 1 : d.roster.length;
           let vy = py0 + 14;
-          for (const p of d.roster) {
-            if (vy > py0 + PH - 10) break;
+          for (const p of d.roster.slice(0, show)) {
             const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
             x.fillStyle = p.alive ? hex : '#2a3a34';
             x.fillRect(vx + 4, vy, 5, 6);
@@ -2055,7 +2440,12 @@ export const SCREENS = {
                 else x.fillRect(bx + k, vy + 3, 1, 1);
               }
             } else x.fillRect(bx, vy + 3, 22, 1);
-            vy += 10;
+            vy += PITCH;
+          }
+          if (d.roster.length > show) {
+            drawText(x, `+${d.roster.length - show} MORE`, {
+              x: vx + 4, y: vy, scale: 1, color: GRN_D,
+            });
           }
         }
         x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(px0, py0, PW, PH);
@@ -2252,8 +2642,14 @@ export const SCREENS = {
         } else {
           const sorted = [...d.roster].sort((a2, b2) => (b2.coins || 0) - (a2.coins || 0));
           const top = Math.max(1, sorted[0]?.coins || 1);
-          for (const p of sorted) {
-            if (ly > BODY_B - 9) break;
+          /* Same cap as the vitals column, and the same silence about it: four
+             of ten purses simply were not on the page. Sorted by coins, so the
+             ones that go are the poorest — but the count has to be said. */
+          const lroom = BODY_B - 2 - ly;
+          const LPITCH = lroom < 70 ? 8 : 10;
+          const lfit = Math.max(1, Math.floor(lroom / LPITCH));
+          const lshow = sorted.length > lfit ? lfit - 1 : sorted.length;
+          for (const p of sorted.slice(0, lshow)) {
             const hex = '#' + (p.colour >>> 0).toString(16).padStart(6, '0');
             x.fillStyle = p.alive ? hex : '#2a3a34';
             x.fillRect(LX2, ly, 5, 7);
@@ -2269,7 +2665,12 @@ export const SCREENS = {
               x: LX2 + COL - 2, y: ly, scale: 1, align: 'right',
               color: p.alive ? AMB : '#5a6a62',
             });
-            ly += 10;
+            ly += LPITCH;
+          }
+          if (sorted.length > lshow) {
+            drawText(x, `+${sorted.length - lshow} MORE`, {
+              x: LX2 + 8, y: ly, scale: 1, color: GRN_D,
+            });
           }
         }
 
@@ -2309,16 +2710,40 @@ export const SCREENS = {
         drawText(x, label, { x: ox, y: H - 38, scale: 1, color: GRN_D });
         drawText(x, val, { x: ox, y: H - 28, scale: 1, color: colour || GRN_L });
       };
-      cell('WORK', d.work, 14);
-      cell('WEATHER', d.weather, 76, d.weather === 'CLEAR' ? GRN_L : AMB);
-      cell("FERDI'S", d.shop, 148, d.shop === 'TRADING' ? GRN_L : RED);
-      cell('ISLAND', d.sabotage || 'NOMINAL', 214, d.sabotage ? RED : GRN_L);
+      /* The four cells sat at fixed pixel positions worked out against a
+         320-wide screen, so on a narrower one the ISLAND cell — the one
+         thing this strip exists to tell you — was off the right of the
+         picture. They are distributed across whatever width there is, and
+         whatever cannot fit is trimmed rather than printed over the cell
+         next door. */
+      const CELLS = [
+        ['WORK', d.work, GRN_L],
+        ['WEATHER', d.weather, d.weather === 'CLEAR' ? GRN_L : AMB],
+        ["FERDI'S", d.shop, d.shop === 'TRADING' ? GRN_L : RED],
+        ['ISLAND', d.sabotage || 'NOMINAL', d.sabotage ? RED : GRN_L],
+      ];
+      const step = (W - 28) / CELLS.length;
+      const avail = Math.floor(step) - 6;
+      CELLS.forEach(([label, val, colour], i) => {
+        const ox = Math.round(14 + i * step);
+        /* A bare trim reads as a fault rather than an abbreviation: at 240
+           wide SHUT SHOP came out SHUT SHO, which looks like the terminal is
+           broken rather than the shop. A full stop says it was shortened. */
+        const clip = (str) => {
+          let out = str;
+          while (out.length > 1 && textWidth(out, 1) > avail) out = out.slice(0, -1);
+          return out === str ? out : out.slice(0, -1) + '.';
+        };
+        cell(clip(label), clip(String(val ?? '')), ox, colour);
+      });
 
       footer(x, W, H, s.tab === 0
         ? '+ -  ZOOM   WASD  PAN   C  CENTRE   TAB  PAGE   ESC  BACK'
         : 'TAB  THE ISLAND      ESC  STEP BACK');
       return [];
     },
+    /** The wheel is the zoom this screen already has on + and -. */
+    wheel(dir, s, g, st) { return this.key(dir < 0 ? 'Equal' : 'Minus', s, g, st); },
     key(code, s, g, st) {
       /* On the plot page the arrows and WASD pan, so paging moves to Tab and
          the bracket keys. Everywhere else they still change page. */
@@ -2374,9 +2799,15 @@ export const SCREENS = {
       // a slow blue drift, like light through leaves
       for (let i = 0; i < 5; i++) {
         const a2 = (0.014 + i * 0.002).toFixed(3);
-        const yy = ((t * 12 + i * 47) % (H + 40)) - 20;
+        /* The drift cycled over H+40 starting at -20, so for a stretch of
+           every cycle a band sat wholly outside the frame and was drawn
+           where nobody could see it. A band is twelve tall: the cycle is
+           that, so the one leaving the bottom is the one arriving at the
+           top, and it is trimmed to the rows that exist. */
+        const yy = ((t * 12 + i * 47) % (H + 12)) - 12;
+        const y0 = Math.max(0, yy), y1 = Math.min(H, yy + 12);
         x.fillStyle = `rgba(120,200,230,${a2})`;
-        x.fillRect(0, yy, W, 12);
+        if (y1 > y0) x.fillRect(0, y0, W, y1 - y0);
       }
 
       /* his eyes, at the top, watching while he talks */
@@ -2396,6 +2827,7 @@ export const SCREENS = {
       const SPEED = 34;                       // characters a second
       let budget = Math.floor((s.t || 0) * SPEED);
       let y = 52;
+      let lastY = 41;                         // baseline of the last row drawn
       lines.forEach((ln, i) => {
         const wrapped = wrapText(String(ln), W - 48, 1, 1);
         for (const w of wrapped) {
@@ -2411,6 +2843,7 @@ export const SCREENS = {
             x.fillStyle = '#bdf0ff';
             x.fillRect(24 + textWidth(w.slice(0, take), 1) + 1, y, 4, 7);
           }
+          lastY = y;
           y += 11;
         }
         y += 6;
@@ -2418,8 +2851,13 @@ export const SCREENS = {
       s.done = budget >= 0;
 
       if (s.done) {
+        /* The longest riddle wraps to eight rows on a 240 wide buffer and
+           the last of them lands on 141 — this line was pinned at H - 46 and
+           printed straight through it. It goes under whatever was actually
+           laid out, and never far enough down to reach the key hints. */
+        const py = Math.min(Math.max(H - 46, lastY + 11), H - 27);
         drawText(x, 'HE IS ALREADY GONE.', {
-          x: W / 2, y: H - 46, scale: 1, align: 'center',
+          x: W / 2, y: py, scale: 1, align: 'center',
           color: Math.floor(t * 2) % 2 ? '#4a6a7a' : '#31485a',
         });
       }
@@ -2467,7 +2905,11 @@ export const SCREENS = {
       /* The cabinet has to stop far enough up the screen that the message
          underneath it clears the key hints — at 168 tall the message was
          printed straight through the footer. */
-      const CW = 150, CH = 156;
+      /* The message is fourteen pixels of type with a two-pixel shadow and
+         the footer's own glyphs start at H-17, so the cabinet has to stop by
+         H-64. At a fixed 156 on a 180-tall screen the only thing this machine
+         ever says was drawn off the bottom of the picture. */
+      const CW = 150, CH = Math.min(156, H - 64);
       const cx0 = Math.round((W - CW) / 2), cy0 = 24;
       x.fillStyle = '#1c4034'; x.fillRect(cx0 - 3, cy0 - 3, CW + 6, CH + 6);
       x.fillStyle = '#2a5a4a'; x.fillRect(cx0, cy0, CW, CH);
@@ -2481,7 +2923,8 @@ export const SCREENS = {
       });
 
       /* the window, and the drum turning behind it */
-      const GX = cx0 + 12, GY = cy0 + 26, GW = CW - 24, GH = 84;
+      // the window shrinks with the cabinet, keeping the same proportion
+      const GX = cx0 + 12, GY = cy0 + 26, GW = CW - 24, GH = CH - 72;
       x.fillStyle = '#071410'; x.fillRect(GX - 2, GY - 2, GW + 4, GH + 4);
       x.fillStyle = '#12302a'; x.fillRect(GX, GY, GW, GH);
       // the lit interior
@@ -2581,24 +3024,46 @@ export const SCREENS = {
       if (s.phase === 'turning') {
         // keep the drum index moving so the icons cycle
         s.reel = (s.reel + (dt > 0 ? 1 : 0)) % 64;
-        if (s.t - s.t0 > 1.5) {
-          s.phase = 'out';
-          g.audio?.sfx('coin');
-          g.vendDeliver?.(s.got);
+        /* Two people can pull the same handle in the same second, so what
+           falls out is the host's to say: the drum turns until the reply
+           names an item. A pull that is never answered — the machine was
+           already emptied, or the packet was lost — has to end somewhere,
+           and an empty tray is the honest answer. */
+        if (s.got) {
+          if (s.t - s.t0 > 1.5) {
+            s.phase = 'out';
+            g.audio?.sfx('coin');
+            /* Still the local hand-over while the host route is only half
+               built; once the reply carries the item this is a no-op. */
+            g.vendDeliver?.(s.got);
+          }
+        } else if (s.t - s.t0 > 4) {
+          s.phase = 'empty';
+          g.audio?.sfx('deny');
         }
       }
     },
+    /* Yanked off the stack by a council, a body card or a snap vote with the
+       drum still turning: the six coins went the moment E was pressed and
+       only tick ever handed the item over, so walking away cost six and
+       gave nothing. */
+    discard(s, g) {
+      if (s.phase === 'turning') { s.phase = 'out'; g.vendDeliver?.(s.got); }
+    },
     key(code, s, g, st) {
+      /* The drum is turning and it has already been paid for — the same
+         reason Beef's table and the board refuse a mid-hand Escape. */
+      if (s.phase === 'turning') { g.audio?.sfx('deny'); return true; }
       if (code === 'Escape' || code === 'Backspace') {
         st.pop(); g.afterOverlayClose(); return true;
       }
       if (code !== 'KeyE' && code !== 'Enter' && code !== 'Space') return true;
-      if (s.phase === 'turning') return true;
       if (s.phase === 'out') { st.pop(); g.afterOverlayClose(); return true; }
       if (s.phase === 'empty') { g.audio?.sfx('deny'); return true; }
       const out = g.vendPay?.(s.vendor);
       if (!out) { g.audio?.sfx('deny'); return true; }
-      s.got = out;
+      // `true` means the request is away and the item is coming back with the reply
+      s.got = out === true ? null : out;
       s.phase = 'turning';
       s.t0 = s.t;
       g.audio?.sfx('lever');
@@ -2630,12 +3095,22 @@ export const SCREENS = {
       const SYM = ['COCONUT', 'ANCHOR', 'SKULL', 'IDOL', 'FISH', 'SEVEN'];
       const COL = ['#a8843c', '#9aa6b0', '#e8e2d2', '#ffd24a', '#5aa0c0', '#e0453a'];
       const coins = g.coins || 0;
+      /* A ticket covers the stake, and the face said NEED 3 SYNCOIN in red
+         at a player holding a book of them — the arm would have worked. */
+      const freeP = g.freePulls || 0;
+      const canPull = coins >= 3 || freeP > 0;
 
       /* the cabinet */
       x.fillStyle = '#1a0a08'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#1a0a08', '#2a0f0c', 0.5, 2);
-      const CW = 188, CH = 158;
-      const cx0 = Math.round((W - CW) / 2), cy0 = 26;
+      /* At 158 tall from y=26 the cabinet already overran a 180-tall screen
+         and the payout line under it was drawn ten pixels past the bottom of
+         the picture — you staked three and never learned what you had won.
+         The interior comes down with the shell, or the paytable simply spills
+         out through the bottom of the cabinet. */
+      const small = H < 200;
+      const CW = 188, CH = small ? 124 : 158;
+      const cx0 = Math.round((W - CW) / 2), cy0 = small ? 14 : 26;
       // body
       x.fillStyle = '#8a2018'; x.fillRect(cx0, cy0, CW, CH);
       x.fillStyle = '#6a1410'; x.fillRect(cx0 + 3, cy0 + 3, CW - 6, CH - 6);
@@ -2654,7 +3129,7 @@ export const SCREENS = {
       }
 
       /* --- the three windows --- */
-      const RW = 46, RH = 52, RY = cy0 + 26;
+      const RW = 46, RH = small ? 44 : 52, RY = cy0 + 26;
       const gap = 6;
       const totalW = RW * 3 + gap * 2;
       const rx0 = Math.round(cx0 + (CW - totalW) / 2);
@@ -2723,7 +3198,8 @@ export const SCREENS = {
 
       /* --- the paytable --- */
       const py0 = RY + RH + 8;
-      const PAY_H = 46;
+      const PAY_H = small ? 38 : 46;
+      const PAY_ROW = small ? 8 : 10;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(cx0 + 8, py0, CW - 16, PAY_H);
       x.fillStyle = 'rgba(195,154,44,.5)'; x.fillRect(cx0 + 8, py0, CW - 16, 1);
       const pay = [
@@ -2732,7 +3208,7 @@ export const SCREENS = {
       /* One column with the figures hard right. Two columns did not fit:
          "ANY 3 ALIKE" ran under its own payout. */
       pay.forEach((row, i) => {
-        const ry = py0 + 4 + i * 10;
+        const ry = py0 + 4 + i * PAY_ROW;
         drawText(x, row[0], { x: cx0 + 14, y: ry, scale: 1, color: '#c9b98a' });
         // a dotted leader, so the eye gets from the name to the number
         const lx0 = cx0 + 16 + textWidth(row[0], 1);
@@ -2745,12 +3221,17 @@ export const SCREENS = {
       });
 
       /* --- purse and stake --- */
-      drawText(x, `PURSE ${coins}`, { x: 14, y: 12, scale: 1, color: coins >= 3 ? '#ffd24a' : '#e0453a' });
-      drawText(x, 'STAKE 3', { x: W - 14, y: 12, scale: 1, align: 'right', color: '#c9b98a' });
+      drawText(x, `PURSE ${coins}`, { x: 14, y: 12, scale: 1, color: canPull ? '#ffd24a' : '#e0453a' });
+      drawText(x, freeP > 0 ? `FREE PULL x${freeP}` : 'STAKE 3',
+        { x: W - 14, y: 12, scale: 1, align: 'right', color: freeP > 0 ? '#ffd24a' : '#c9b98a' });
 
       /* --- the result line --- */
-      let msg = coins >= 3 ? 'PULL THE ARM' : 'TIM DOES NOT EXTEND CREDIT';
-      let mcol = coins >= 3 ? '#c9b98a' : '#e0453a';
+      /* 'TIM DOES NOT EXTEND CREDIT' is 310 pixels of scale-2 type, which lost
+         a word off each end of a 240 wide buffer — in the one state the line
+         exists to explain. The flavour belongs in his dialogue; the status
+         line keeps the number you are short of. */
+      let msg = canPull ? 'PULL THE ARM' : 'NEED 3 SYNCOIN';
+      let mcol = canPull ? '#c9b98a' : '#e0453a';
       if (s.phase === 'spin') { msg = 'ROUND SHE GOES'; mcol = '#c9b98a'; }
       if (s.phase === 'paid') {
         if (s.win > 0) {
@@ -2758,7 +3239,8 @@ export const SCREENS = {
           mcol = Math.floor(t * 8) % 2 ? '#fff3c4' : '#ffd24a';
         } else { msg = 'NOTHING'; mcol = '#8a7a52'; }
       }
-      drawText(x, msg, { x: W / 2, y: cy0 + CH + 6, scale: 2, align: 'center', color: mcol });
+      const ms = textWidth(msg, 2) > W - 12 ? 1 : 2;
+      drawText(x, msg, { x: W / 2, y: cy0 + CH + 6, scale: ms, align: 'center', color: mcol });
 
       footer(x, W, H, s.phase === 'spin' ? '' : 'DRAG THE ARM  OR  E      ESC  WALK AWAY');
       return [];
@@ -2808,17 +3290,39 @@ export const SCREENS = {
 
     tick(s, g, dt, t) {
       if (s.arm > 0) s.arm = Math.max(0, s.arm - dt * 3);
-      if (s.phase === 'spin' && s.t - s.t0 > 1.9) {
+      if (s.phase !== 'spin') return;
+      /* Each drum shows its own symbol as its clack arrives — the same
+         0.55 / 1.00 / 1.45 the draw uses to stop it scrolling. It used to
+         stop dead on the PREVIOUS pull's face and hold it, audibly
+         confirmed by the clack, until the real result appeared silently at
+         1.9 s. Mutating in place is safe: s.reels is a copy and _pull
+         assigns a fresh array to s.result every time. */
+      if (s.result) {
+        for (let i = 0; i < 3; i++) {
+          if (s.t - s.t0 >= 0.55 + i * 0.45) s.reels[i] = s.result[i];
+        }
+      }
+      if (s.t - s.t0 > 1.9) {
         s.phase = 'paid';
-        s.reels = s.result.slice();
-        // the coins land exactly when the last drum does
+        s.reels = s.result.slice();   // covers a frame long enough to skip the land times
+        // the coins land just after the last drum, on the beat after it
         g.settleSlot?.(s.slot, s.win);
         if (s.win > 0) g.audio?.sfx(s.win >= 60 ? 'jackpot' : 'coin');
         else g.audio?.sfx('deny');
       }
     },
+    /* The stake left the purse at the pull and the win only ever arrived
+       from tick, so a council opening mid-spin threw away a rolled jackpot.
+       The reels were already decided by then: settle the outcome rather
+       than refund, because a ticket pull costs nothing and a flat refund
+       would mint coins. */
+    discard(s, g) {
+      if (s.phase === 'spin') { s.phase = 'paid'; g.settleSlot?.(s.slot, s.win); }
+    },
     key(code, s, g, st) {
       if (code === 'Escape' || code === 'Backspace') {
+        // the drums are still turning and they are already paid for
+        if (s.phase === 'spin') { g.audio?.sfx('deny'); return true; }
         st.pop(); g.afterOverlayClose(); return true;
       }
       if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
@@ -2885,8 +3389,14 @@ export const SCREENS = {
          The printed rules used to sit at the top and bottom of the felt,
          which is exactly where the dealer's total and your chips go. */
       const TY = 34, TH = H - TY - 48;
+      /* The felt wants forty-three above (his label and a card) and sixty-two
+         below, and at the 180 setting it has ninety-eight — so your first two
+         cards were dealt straight through the bottom of his. The band cannot
+         grow: the forty-eight under it is his speech box and the key hints.
+         The CARD gives the seven pixels back instead. */
+      const CW = 20, CH = TH >= 108 ? 28 : 22;
       const DEAL_LBL = TY + 4, DEAL_CARDS = TY + 15;
-      const YOU_CARDS = TY + TH - 62, YOU_LBL = TY + TH - 30, YOU_CHIPS = TY + TH - 19;
+      const YOU_CARDS = TY + TH - (CH + 34), YOU_LBL = TY + TH - 30, YOU_CHIPS = TY + TH - 19;
       x.fillStyle = '#0d3a2a'; x.fillRect(10, TY, W - 20, TH);
       ditherRect(x, 10, TY, W - 20, TH, '#0d3a2a', '#12503a', 0.5, 2);
       // the arc of the table edge, and the gilt rail on it
@@ -2897,8 +3407,9 @@ export const SCREENS = {
          Cards are dealt, not placed. Each one flies out of the shoe at the
          dealer's left, spinning, arrives face down, and flips over as it
          settles with a little overshoot. `key` is where it lives, so the same
-         card keeps its own clock across frames. */
-      const CW = 20, CH = 28;
+         card keeps its own clock across frames. The card's size is settled
+         above with the bands, because your row is measured up from the felt
+         by it. */
       const SHOE_X = 20, SHOE_Y = TY + 6;
 
       /* the shoe itself, which is where they all come from */
@@ -3032,7 +3543,7 @@ export const SCREENS = {
           });
           const sc = BJ.score(h.cards);
           const res = st.results && st.results[hi];
-          let txt = BJ.handText(h.cards);
+          let txt = BJ.handText(h.cards, h.split);
           let col = sc.bust ? '#ff8a7a' : (live ? GOLD_LT : '#c9b98a');
           if (res) {
             txt = { blackjack: 'BLACKJACK', win: 'WIN', push: 'PUSH', lose: 'LOSE', bust: 'BUST' }[res.outcome];
@@ -3093,11 +3604,28 @@ export const SCREENS = {
         x.fillRect(bx - 3, by + 5, 2, blink ? 1 : 2);
         x.fillRect(bx + 1, by + 5, 2, blink ? 1 : 2);
       }
+      /* Three lines from a fixed x=32, written against a 320 buffer: the rules
+         ran 31 pixels off a 240 wide frame and the ASSOCIATE line printed
+         through the stake, which is right-aligned on the same row. Each takes
+         the longest form that clears its own neighbour — the stake for the
+         middle row, the frame edge for the rules, which is why the two are
+         budgeted apart rather than together. */
+      const bjPick = (opts, budget) => opts.find((v) => textWidth(v, 1) <= budget)
+        || opts[opts.length - 1];
+      const nameBudget = W - 14 - textWidth(`STAKE ${s.stake}`, 1) - 4 - 32;
       drawText(x, 'MICHAEL BEEF', { x: 32, y: 4, scale: 1, color: '#c08078' });
-      drawText(x, 'ASSOCIATE OF T. G. FLOPPER', { x: 32, y: 13, scale: 1, color: '#6a4a44' });
-      drawText(x, '6 DECKS . PAYS 3 TO 2 . STANDS ON ALL 17', {
-        x: 32, y: 22, scale: 1, color: '#4a7a6a',
-      });
+      drawText(x, bjPick([
+        'ASSOCIATE OF T. G. FLOPPER',
+        'ASSOC OF T. G. FLOPPER',
+        'FOR T. G. FLOPPER',
+        'T. G. FLOPPER',
+      ], nameBudget), { x: 32, y: 13, scale: 1, color: '#6a4a44' });
+      drawText(x, bjPick([
+        '6 DECKS . PAYS 3 TO 2 . STANDS ON ALL 17',
+        '6 DECKS . PAYS 3 TO 2 . S17',
+        '6 DECKS . 3:2 . S17',
+        '3:2 . S17',
+      ], W - 6 - 32), { x: 32, y: 22, scale: 1, color: '#4a7a6a' });
       drawText(x, `PURSE ${coins}`, {
         x: W - 14, y: 4, scale: 1, align: 'right', color: coins > 0 ? GOLD : RED,
       });
@@ -3107,12 +3635,21 @@ export const SCREENS = {
 
       /* ---- what he is saying ---- */
       {
-        const lw = textWidth(s.line, 1);
+        /* The clamp placed the box and never trimmed the line: his opening
+           'SIT DOWN. SIX DECKS...' is 281 pixels and ran off a 240 wide frame
+           on the very first drawn frame of the table. It wraps instead, and it
+           grows UPWARD — the felt above it is empty from YOU_CHIPS down, while
+           below it the footer sits at H-17 and would be printed through. */
+        const lines = wrapText(s.line, W - 16, 1);   // scale 1; wrapText defaults to 2
+        const lw = lines.reduce((m, ln) => Math.max(m, textWidth(ln, 1)), 0);
+        const top = H - 42 - 12 * (lines.length - 1);
         const lx = Math.round(Math.max(6, Math.min(W - lw - 6, W / 2 - lw / 2)));
         x.fillStyle = 'rgba(6,3,4,.86)';
-        x.fillRect(lx - 4, H - 42, lw + 8, 12);
-        x.fillStyle = '#8a2018'; x.fillRect(lx - 4, H - 42, 2, 12);
-        drawText(x, s.line, { x: lx, y: H - 39, scale: 1, color: '#e0c8b8' });
+        x.fillRect(lx - 4, top, lw + 8, 12 * lines.length);
+        x.fillStyle = '#8a2018'; x.fillRect(lx - 4, top, 2, 12 * lines.length);
+        lines.forEach((ln, i) => drawText(x, ln, {
+          x: lx, y: top + 3 + i * 12, scale: 1, color: '#e0c8b8',
+        }));
       }
 
       /* ---- the keys, and what they do right now ---- */
@@ -3135,20 +3672,29 @@ export const SCREENS = {
 
       // the win flourish
       if (s.flash > 0 && s.won > 0) {
-        /* In the gap between his cards and yours, which is the one band on
-           the felt that never has anything in it. */
+        /* The band between his cards and yours is only empty at 224 and up: at
+           the 180 setting it is five pixels, and a fixed 27-tall plate covered
+           your own hand at the one moment you want to see it. It sizes itself
+           to the gap it actually has, and when there is none it drops onto his
+           settled hand instead — his total is already printed above it. */
         const a2 = Math.min(0.26, s.flash * 0.26);
         x.fillStyle = `rgba(255,210,74,${a2.toFixed(3)})`;
         x.fillRect(0, 0, W, H);
-        const bw = textWidth(`+${s.won}`, 3) + 20;
-        const by2 = DEAL_CARDS + CH + 8;
+        const roomy = YOU_CARDS - (DEAL_CARDS + CH) >= 34;
+        const sc = roomy ? 3 : 2;
+        const bh = 7 * sc + 6;
+        const bw = textWidth(`+${s.won}`, sc) + 20;
+        const by2 = roomy
+          ? DEAL_CARDS + CH + 8
+          : Math.round((DEAL_LBL + 7 + YOU_CARDS) / 2 - bh / 2) + 3;
+        const bx2 = Math.round(W / 2 - bw / 2);
         x.fillStyle = 'rgba(8,20,14,.86)';
-        x.fillRect(Math.round(W / 2 - bw / 2), by2 - 3, bw, 27);
+        x.fillRect(bx2, by2 - 3, bw, bh);
         x.fillStyle = GOLD;
-        x.fillRect(Math.round(W / 2 - bw / 2), by2 - 3, bw, 1);
-        x.fillRect(Math.round(W / 2 - bw / 2), by2 + 23, bw, 1);
+        x.fillRect(bx2, by2 - 3, bw, 1);
+        x.fillRect(bx2, by2 + bh - 4, bw, 1);
         drawText(x, `+${s.won}`, {
-          x: W / 2, y: by2, scale: 3, align: 'center',
+          x: W / 2, y: by2, scale: sc, align: 'center',
           color: Math.floor(t * 10) % 2 ? '#fff3c4' : GOLD,
         });
       }
@@ -3188,8 +3734,11 @@ export const SCREENS = {
         // one card a beat, so you can watch him go over
         if (t - s.t0 < 0.5) return;
         s.t0 = t;
+        /* He stands without drawing on seventeen or when every hand has
+           busted, so the flip sound belongs to a card that actually landed. */
+        const held = s.st.dealer.length;
         const done = BJ.dealerStep(s.st);
-        g.audio?.sfx('page');
+        if (s.st.dealer.length > held) g.audio?.sfx('page');
         if (done) {
           s.phase = 'paid';
           const pays = BJ.payout(s.st);
@@ -3214,6 +3763,16 @@ export const SCREENS = {
       if (row?.stakeUp) return this.key('ArrowUp', s, g, st2);
       if (row?.stakeDown) return this.key('ArrowDown', s, g, st2);
       return true;
+    },
+    /* The table refuses a mid-hand Escape, so settle was meant to be the
+       only way the stake left — but a council, a body card or a snap vote
+       clears the stack and the money on the felt went with it. Give it back.
+       BJ.staked() reduces the bet across every hand, so a double or a split
+       is refunded at what it actually cost. 'paid' is already settled by
+       tick and 'bet' has nothing staked yet. */
+    discard(s, g) {
+      const BJ = g.bjRules;
+      if (BJ && s.st && s.phase !== 'bet' && s.phase !== 'paid') g.bjSettle?.(BJ.staked(s.st));
     },
     key(code, s, g, st2) {
       const BJ = g.bjRules;
@@ -3334,52 +3893,6 @@ export const SCREENS = {
       // the gilt frame
       const FW = 108, FH = 108;
       const fx = 18, fy = 30;
-      x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy - 6, FW + 12, FH + 12);
-      x.fillStyle = '#8a6a1c'; x.fillRect(fx - 3, fy - 3, FW + 6, FH + 6);
-
-      /* The man himself, painted here rather than sampled off the model —
-         the same lumps, at a size you can actually look at. */
-      x.fillStyle = '#d8d4cc'; x.fillRect(fx, fy, FW, FH);
-      const cxp = fx + FW / 2, cyp = fy + FH / 2;
-      x.fillStyle = '#b8b2a6';
-      x.beginPath(); x.arc(cxp, cyp + 3, 46, 0, 6.29); x.fill();
-      x.fillStyle = '#4a3320';
-      x.beginPath(); x.arc(cxp, cyp + 3, 41, 0, 6.29); x.fill();
-      const lump = (lx, ly, rx, ry, rot, base) => {
-        x.save(); x.translate(cxp + lx, cyp + ly); x.rotate(rot);
-        x.fillStyle = base;
-        x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, 6.29); x.fill();
-        x.fillStyle = 'rgba(150,116,74,.55)';
-        x.beginPath(); x.ellipse(-rx * 0.22, -ry * 0.3, rx * 0.55, ry * 0.42, 0, 0, 6.29); x.fill();
-        x.fillStyle = 'rgba(30,18,8,.45)';
-        x.beginPath(); x.ellipse(rx * 0.3, ry * 0.35, rx * 0.42, ry * 0.3, 0, 0, 6.29); x.fill();
-        x.restore();
-      };
-      lump(-13, -13, 25, 12, -0.5, '#5b3f24');
-      lump(14, -6, 24, 12, 0.7, '#6a4a2b');
-      lump(-3, 11, 29, 14, 0.15, '#553a21');
-      lump(10, -22, 19, 10, -0.2, '#63452a');
-      lump(-20, 11, 19, 10, 0.9, '#4d351d');
-      lump(2, -2, 20, 10, -1.1, '#6f4d2e');
-      x.fillStyle = 'rgba(220,190,140,.20)';
-      x.beginPath(); x.ellipse(cxp - 20, cyp + 25, 15, 5, -0.3, 0, 6.29); x.fill();
-      // a picture light that never quite settles
-      const glare = 0.06 + Math.abs(Math.sin(t * 1.6)) * 0.05;
-      x.fillStyle = `rgba(255,220,150,${glare.toFixed(3)})`;
-      x.fillRect(fx, fy, FW, 34);
-
-      // the plaque
-      x.fillStyle = '#4a3410'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 16);
-      x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 1);
-      drawText(x, 'T. GRADY FLOPPER', {
-        x: fx + FW / 2, y: fy + FH + 15, scale: 1, align: 'center', color: '#ffd88a',
-      });
-
-      /* the copy, to the right */
-      const TX = fx + FW + 22, TW = W - TX - 16;
-      drawText(x, 'THE PROPRIETOR', { x: TX, y: 22, scale: 2, color: '#ffd24a' });
-      x.fillStyle = '#8a6a1c'; x.fillRect(TX, 38, TW, 1);
-
       const body = [
         'TIM GRADY FLOPPER CAME ASHORE WITH A CRATE OF '
         + 'FRUIT MACHINES AND NO EXPLANATION FOR EITHER.',
@@ -3388,14 +3901,89 @@ export const SCREENS = {
         'HOUSE RULES: THREE SYNCOIN A PULL. THE HOUSE PAYS '
         + 'IN COIN. THE HOUSE DOES NOT PAY IN ADVICE.',
       ];
-      let y = 46;
-      for (const para of body) {
-        for (const line of wrapText(para, TW, 1)) {
-          drawText(x, line, { x: TX, y, scale: 1, color: '#c9b98a' });
-          y += 9;
-        }
-        y += 5;
+      /* The closing pair used to float off the end of the copy, and the copy
+         itself was measured against nothing: on a 240 wide buffer the column
+         beside the portrait is 76 pixels, the three paragraphs wrapped to
+         twenty-five lines, and the last twelve of them — with both closing
+         lines — were drawn below the bottom of the frame. The pair is
+         anchored above the key hints now, and the portrait, which is the
+         decorative half of this screen, is what gives up the room when the
+         copy will not fit beside it. */
+      const closeY = H - 44;
+      const lay = (tx) => {
+        const tw = W - tx - 16;
+        const out = [];
+        body.forEach((para, i) => {
+          if (i) out.push(null);                       // the gap between paragraphs
+          for (const ln of wrapText(para, tw, 1)) out.push(ln);
+        });
+        return { tx, tw, out, h: out.reduce((a, r) => a + (r === null ? 5 : 9), 0) };
+      };
+      let lines = lay(fx + FW + 22);
+      const showFace = lines.h <= closeY - 44;          // the last glyph must clear the rule
+      if (!showFace) lines = lay(fx);
+
+      if (showFace) {
+        x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy - 6, FW + 12, FH + 12);
+        x.fillStyle = '#8a6a1c'; x.fillRect(fx - 3, fy - 3, FW + 6, FH + 6);
+
+        /* The man himself, painted here rather than sampled off the model —
+           the same lumps, at a size you can actually look at. */
+        x.fillStyle = '#d8d4cc'; x.fillRect(fx, fy, FW, FH);
+        const cxp = fx + FW / 2, cyp = fy + FH / 2;
+        x.fillStyle = '#b8b2a6';
+        x.beginPath(); x.arc(cxp, cyp + 3, 46, 0, 6.29); x.fill();
+        x.fillStyle = '#4a3320';
+        x.beginPath(); x.arc(cxp, cyp + 3, 41, 0, 6.29); x.fill();
+        const lump = (lx, ly, rx, ry, rot, base) => {
+          x.save(); x.translate(cxp + lx, cyp + ly); x.rotate(rot);
+          x.fillStyle = base;
+          x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, 6.29); x.fill();
+          x.fillStyle = 'rgba(150,116,74,.55)';
+          x.beginPath(); x.ellipse(-rx * 0.22, -ry * 0.3, rx * 0.55, ry * 0.42, 0, 0, 6.29); x.fill();
+          x.fillStyle = 'rgba(30,18,8,.45)';
+          x.beginPath(); x.ellipse(rx * 0.3, ry * 0.35, rx * 0.42, ry * 0.3, 0, 0, 6.29); x.fill();
+          x.restore();
+        };
+        lump(-13, -13, 25, 12, -0.5, '#5b3f24');
+        lump(14, -6, 24, 12, 0.7, '#6a4a2b');
+        lump(-3, 11, 29, 14, 0.15, '#553a21');
+        lump(10, -22, 19, 10, -0.2, '#63452a');
+        lump(-20, 11, 19, 10, 0.9, '#4d351d');
+        lump(2, -2, 20, 10, -1.1, '#6f4d2e');
+        x.fillStyle = 'rgba(220,190,140,.20)';
+        x.beginPath(); x.ellipse(cxp - 20, cyp + 25, 15, 5, -0.3, 0, 6.29); x.fill();
+        // a picture light that never quite settles
+        const glare = 0.06 + Math.abs(Math.sin(t * 1.6)) * 0.05;
+        x.fillStyle = `rgba(255,220,150,${glare.toFixed(3)})`;
+        x.fillRect(fx, fy, FW, 34);
+
+        // the plaque
+        x.fillStyle = '#4a3410'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 16);
+        x.fillStyle = '#c39a2c'; x.fillRect(fx - 6, fy + FH + 10, FW + 12, 1);
+        drawText(x, 'T. GRADY FLOPPER', {
+          x: fx + FW / 2, y: fy + FH + 15, scale: 1, align: 'center', color: '#ffd88a',
+        });
       }
+
+      /* the copy, beside the portrait where there is one */
+      const TX = lines.tx, TW = lines.tw;
+      /* The heading is 166 pixels at scale 2 and the column is not always that
+         wide: at 299x224 the copy still fits beside the portrait, so TX stays
+         at 148 and the last two letters were off the right of the frame. It
+         takes whichever size the column it was measured for will hold. */
+      const TS = textWidth('THE PROPRIETOR', 2) <= TW ? 2 : 1;
+      drawText(x, 'THE PROPRIETOR', { x: TX, y: 22, scale: TS, color: '#ffd24a' });
+      x.fillStyle = '#8a6a1c'; x.fillRect(TX, 38, TW, 1);
+
+      let y = 46;
+      for (const ln of lines.out) {
+        if (ln === null) { y += 5; continue; }
+        if (y + 6 > closeY - 1) break;
+        drawText(x, ln, { x: TX, y, scale: 1, color: '#c9b98a' });
+        y += 9;
+      }
+      y = closeY;
       x.fillStyle = '#8a6a1c'; x.fillRect(TX, y, TW, 1); y += 6;
       drawText(x, 'NO CREDIT.  NO REFUNDS.', { x: TX, y, scale: 1, color: '#e0453a' });
       y += 11;
@@ -3435,9 +4023,18 @@ export const SCREENS = {
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.34)'; x.fillRect(0, y, W, 1); }
 
       drawText(x, 'A FLARE WENT UP', { x: W / 2, y: 14, scale: 2, align: 'center', color: '#ffb060' });
-      drawText(x, `${(by?.name || '?').toUpperCase()} PUT ${(who?.name || '?').toUpperCase()} ON THE SAND`, {
-        x: W / 2, y: 32, scale: 1, align: 'center', color: GOLD_LT,
-      });
+      /* Two twelve-character names is 245 pixels against a 240 wide frame, so
+         both ends of it were cut. There is no row free either side of it —
+         the gauge is at 55 — so the names give, the longer one first. */
+      let acc = (by?.name || '?').toUpperCase();
+      let vic = (who?.name || '?').toUpperCase();
+      const cap = () => `${acc} PUT ${vic} ON THE SAND`;
+      while (textWidth(cap(), 1) > W - 8 && (acc.length > 3 || vic.length > 3)) {
+        if (acc.length >= vic.length && acc.length > 3) acc = acc.slice(0, -1);
+        else if (vic.length > 3) vic = vic.slice(0, -1);
+        else break;
+      }
+      drawText(x, cap(), { x: W / 2, y: 32, scale: 1, align: 'center', color: GOLD_LT });
       drawText(x, `${snap.voters.length} OF YOU SAW IT. ${snap.need} DECIDE.`, {
         x: W / 2, y: 44, scale: 1, align: 'center', color: DIM,
       });
@@ -3446,7 +4043,9 @@ export const SCREENS = {
       const bw = W - 80, bx = 40;
       x.fillStyle = INK; x.fillRect(bx - 1, 55, bw + 2, 5);
       x.fillStyle = '#20100c'; x.fillRect(bx, 56, bw, 3);
-      const n = Math.round((left / 12) * bw);
+      /* Same as the council's: endsAt more than twelve seconds out made the
+         fill longer than the bar, so it ran off the frame. */
+      const n = Math.min(bw, Math.round((left / 12) * bw));
       for (let i = 0; i < n; i += 3) {
         x.fillStyle = left < 4 ? (Math.floor(t * 6) % 2 ? '#ff6a5a' : '#8a2018') : '#ffb060';
         x.fillRect(bx + i, 56, 2, 3);
@@ -3468,7 +4067,9 @@ export const SCREENS = {
 
       const rows = [];
       const btn = (label, colour, ox, mine) => {
-        const w = 76, bxx = ox - w / 2, byy = H - 48;
+        /* Both labels are fourteen glyphs — 83 pixels — in a 76 pixel frame,
+           so the first and last letter of each sat on its own border. */
+        const w = 88, bxx = ox - w / 2, byy = H - 48;
         x.fillStyle = mine ? colour : '#1a1208';
         x.fillRect(bxx, byy, w, 18);
         x.fillStyle = colour;
@@ -3479,11 +4080,11 @@ export const SCREENS = {
         rows.push({ x: bxx, y: byy, w, h: 18 });
       };
       if (snap.mine === null) {
-        btn('Y  THROW OUT', RED, W / 2 - 41, false);
-        btn('N  LET THEM UP', JADE, W / 2 + 41, false);
+        btn('Y  THROW OUT', RED, W / 2 - 46, false);
+        btn('N  LET THEM UP', JADE, W / 2 + 46, false);
       } else {
-        btn('THREW THEM OUT', RED, W / 2 - 41, snap.mine === true);
-        btn('LET THEM UP', JADE, W / 2 + 41, snap.mine === false);
+        btn('THREW THEM OUT', RED, W / 2 - 46, snap.mine === true);
+        btn('LET THEM UP', JADE, W / 2 + 46, snap.mine === false);
       }
 
       drawText(x, `${snap.yes} OUT   -   ${snap.no} STAY`, {
@@ -3516,12 +4117,17 @@ export const SCREENS = {
          landed you on the front counter every time. */
       s.sel = s.sel || 0;
       s.side = s.side || 0;
+      s.selAt = 0;            // when this item was picked, for paging its blurb
       s.flash = 0;
       s.wipe = 0;             // the shutter, 1 down to 0 up
       s.wipeTo = null;
     },
     /** The shutter comes down, the side changes behind it, and it goes up. */
     tick(s, g, dt) {
+      /* The button flash used to fade by a fixed step inside draw, so it
+         went faster the faster the monitor. It is decayed here — above the
+         shutter check, or it would only ever run while the shutter moved. */
+      if (s.flash > 0) s.flash = Math.max(0, s.flash - dt);
       if (!s.wipe) return;
       s.wipe = Math.max(0, s.wipe - dt * 1.5);
       if (s.wipeTo !== null && s.wipe <= 0.5) {
@@ -3543,7 +4149,6 @@ export const SCREENS = {
         : shelf(black ? 'black' : 'open', isNight);
       if (s.sel >= list.length) s.sel = 0;
       const d = list[s.sel];
-      if (s.flash > 0) s.flash -= 0.016;
 
       /* Two rooms, and they do not look alike. The front is lamplight on
          old timber; the back is a shuttered lock-up lit by one bulb. */
@@ -3621,14 +4226,29 @@ export const SCREENS = {
       /* The man himself, leaning on the end of his own counter. A shop with
          nobody in it is a menu; a shop with a shopkeeper watching you pick
          things up is a shop. */
-      if (!s.vendor) drawFerdi(x, W - 34, H - 74, black, t);
+      /* His hand reaches 37px from his own origin at full sway, so hanging
+         him at W - 34 put it three pixels past the edge. The stock panel
+         stops at W - 46, so there is room to stand him clear of both. */
+      if (!s.vendor) drawFerdi(x, W - 38, H - 74, black, t);
 
       const accent = black ? RED : GOLD;
       x.fillStyle = accent;
       x.fillRect(6, 6, W - 12, 1); x.fillRect(6, H - 7, W - 12, 1);
       x.fillRect(6, 6, 1, H - 13); x.fillRect(W - 7, 6, 1, H - 13);
 
-      drawText(x, s.vendor ? "FERDI'S MACHINE" : (black ? 'THE BACK ROOM' : "FERDI STEINMAN'S"), {
+      /* The name is scale 2 from x=14 and the coin count and the TAB hint are
+         pinned to the other end of the same two rows, so a sixteen-glyph name
+         ran straight underneath both of them on anything under about 320 wide.
+         The right hand block is measured first — whichever rows it has — and
+         the name takes the longest form that clears it. */
+      const coinStr = `${g.coins || 0} SYNCOIN`;
+      const tabStr = agent && !s.vendor
+        ? (black ? 'TAB  BACK TO THE SHOP' : 'TAB  THE OTHER LIST') : '';
+      const headRoom = W - 32 - Math.max(textWidth(coinStr, 1), textWidth(tabStr, 1));
+      const names = s.vendor ? ["FERDI'S MACHINE", 'THE MACHINE', 'MACHINE']
+        : (black ? ['THE BACK ROOM', 'BACK ROOM', 'BACK']
+          : ["FERDI STEINMAN'S", "FERDI'S", 'FERDI']);
+      drawText(x, names.find((nm) => textWidth(nm, 2) <= headRoom) || names[names.length - 1], {
         x: 14, y: 11, scale: 2, color: accent,
       });
       if (black) {
@@ -3646,11 +4266,11 @@ export const SCREENS = {
       if (s.vendor) {
         drawText(x, 'WHATEVER DID NOT SELL', { x: 14, y: 26, scale: 1, color: '#8a7a52' });
       }
-      drawText(x, `${g.coins || 0} SYNCOIN`, {
+      drawText(x, coinStr, {
         x: W - 14, y: 10, scale: 1, align: 'right', color: GOLD_LT,
       });
-      if (agent && !s.vendor) {
-        drawText(x, black ? 'TAB  BACK TO THE SHOP' : 'TAB  THE OTHER LIST', {
+      if (tabStr) {
+        drawText(x, tabStr, {
           x: W - 14, y: 21, scale: 1, align: 'right', color: black ? '#c08078' : '#8a5a52',
         });
       }
@@ -3658,7 +4278,27 @@ export const SCREENS = {
       x.fillRect(14, 28, W - 28, 1);
 
       /* the stock list */
-      const LX = 10, LW = 138, ROW = 15;
+      const LX = 10, ROW = 15;
+      // a strip on the right for the shopkeeper, so he is not half off the edge
+      const MAN = s.vendor ? 0 : 34;
+      /* The list was a fixed hundred and thirty-eight wide, so on a narrow
+         buffer the panel beside it collapsed to thirty-eight pixels: the price
+         tag hung outside the frame and the blurb wrapped to four characters a
+         line. The panel is given what it needs first and the list takes the
+         rest, which leaves the 320 layout exactly as it was. */
+      const RW_MIN = 96;                        // 10 for LX, 8 gutter, 12 margin
+      const LW = Math.max(96, Math.min(138, W - 30 - MAN - RW_MIN));
+      const RB = H - 30;
+      /* Sixteen items after dark at fifteen pixels a row ran off the bottom of
+         the picture with no scroll and no cap: the last rows were drawn below
+         the framebuffer, the highlight walked off with them, and their click
+         rects were outside the canvas. Only what fits is drawn, and the window
+         follows the selection — including the wrap from the last row back to
+         the first. */
+      const fit = Math.max(1, Math.floor((RB - 36) / ROW));
+      const maxScroll = Math.max(0, list.length - fit);
+      s.scroll = Math.max(s.sel - fit + 1, Math.min(s.scroll || 0, s.sel));
+      s.scroll = Math.max(0, Math.min(s.scroll, maxScroll));
       let y = 36;
       const rows = [];
       /* The highlight slides between rows on a spring and the icon on the
@@ -3666,7 +4306,9 @@ export const SCREENS = {
          to it. Drawn before the rows, so the type is never under it. */
       const cur = listCursor(`shop:${black ? 'b' : 'o'}`, s.sel, list.length);
       {
-        const hy = Math.round(36 + cur.at * ROW) - 1;
+        // in window rows, not list rows, or the spring slides off the bottom
+        const at = Math.max(0, Math.min(fit - 1, cur.at - s.scroll));
+        const hy = Math.round(36 + at * ROW) - 1;
         x.fillStyle = cur.hit > 0.5 ? (black ? '#7a2016' : '#7a5420') : (black ? '#3a0e0b' : '#3a2a10');
         x.fillRect(LX, hy, LW, ROW - 1);
         x.fillStyle = cur.hit > 0.5 ? '#fff3c4' : accent;
@@ -3680,7 +4322,9 @@ export const SCREENS = {
           }
         }
       }
-      list.forEach((it, i) => {
+      list.slice(s.scroll, s.scroll + fit).forEach((it, j) => {
+        // the pick index stays absolute, so a click still names the right item
+        const i = s.scroll + j;
         const on = i === s.sel;
         /* Only permanent things read as HELD. A consumable you are carrying
            can be bought again, and showing HELD next to a button that says
@@ -3738,13 +4382,21 @@ export const SCREENS = {
         rows.push({ x: LX, y: y - 1, w: LW, h: ROW - 1, pick: i });
         y += ROW;
       });
+      /* Two marks in the gutter, so a shelf that carries on off the window
+         says so rather than simply stopping. */
+      const chev = (cy2, up) => {
+        x.fillStyle = accent;
+        for (let r = 0; r < 3; r++) {
+          const k = up ? r : 2 - r;
+          x.fillRect(LX + LW + 4 - k, cy2 + r, k * 2 + 1, 1);
+        }
+      };
+      if (s.scroll > 0) chev(37, true);
+      if (s.scroll < maxScroll) chev(36 + fit * ROW - 5, false);
 
       /* what it is, and what it does */
       const RX = LX + LW + 8;
-      // a strip on the right for the shopkeeper, so he is not half off the edge
-      const MAN = s.vendor ? 0 : 34;
       const RW = W - RX - 12 - MAN;
-      const RB = H - 30;
       x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(RX, 36, RW, RB - 36);
       x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
       x.fillRect(RX, 36, RW, 1); x.fillRect(RX, RB - 1, RW, 1);
@@ -3753,29 +4405,39 @@ export const SCREENS = {
       /* Is today's afterpay line the one you are looking at? Ferdi's reader
          only handles one item a day and one plan at a time. */
       const sch = !!(d && g.schlarnaOn?.(d.id));
+      /* The panel is a hundred and fourteen pixels tall at the 180 setting and
+         the display on the counter took forty of them off the top, which is
+         why an item with a Schlarna offer on it printed no description at all
+         — the first line was below the bottom before it was drawn. On a short
+         buffer the thing on the counter is a strip and the words get the
+         room. */
+      const tight = H < 200;
 
       if (d) {
         /* The thing itself, stood on the counter with a light on it and a
            price tag tied round it — not an icon floating in a box. */
         const ICX = RX + RW / 2;
+        const ICS = tight ? 16 : 32;              // how big it stands there
+        const ICB = tight ? 56 : 73;              // the counter it stands on
         // the pool of lamplight it stands in
         for (let i = 6; i >= 0; i--) {
           x.fillStyle = black ? `rgba(180,60,44,.03)` : `rgba(255,200,110,.035)`;
-          x.beginPath(); x.arc(ICX, 58, 12 + i * 6, 0, 6.283); x.fill();
+          x.beginPath(); x.arc(ICX, ICB - 15, 12 + i * 6, 0, 6.283); x.fill();
         }
-        drawShopIcon(x, d.icon, ICX - 16, 40, 32, true, t);
+        drawShopIcon(x, d.icon, ICX - ICS / 2, ICB - ICS - 1, ICS, true, t);
         // the counter it stands on
         x.fillStyle = black ? '#2a1a16' : '#4a3418';
-        x.fillRect(RX + 8, 73, RW - 16, 3);
+        x.fillRect(RX + 8, ICB, RW - 16, 3);
         x.fillStyle = 'rgba(0,0,0,.45)';
-        x.fillRect(ICX - 15, 71, 30, 2);
+        x.fillRect(ICX - 15, ICB - 2, 30, 2);
 
         // a tag, hand-lettered, tilted
         {
           const dPrice = g.priceOf ? g.priceOf(d.id) : d.cost;
           const dSale = dPrice < d.cost;
           const tagW = textWidth(String(dPrice), 1) + 16;
-          const tx0 = ICX + 18, ty0 = 52;
+          // kept inside the panel: on a narrow one it hung out over Ferdi
+          const tx0 = Math.min(ICX + 18, RX + RW - tagW - 3), ty0 = tight ? 40 : 52;
           x.fillStyle = '#3a2a12'; x.fillRect(tx0 - 1, ty0 - 1, tagW + 2, 13);
           x.fillStyle = dSale ? '#f0e0a8' : '#d8c69a'; x.fillRect(tx0, ty0, tagW, 11);
           x.fillStyle = '#3a2a12'; x.fillRect(tx0 + 2, ty0 + 4, 3, 3);
@@ -3805,7 +4467,7 @@ export const SCREENS = {
           }
         }
 
-        let by = 80;
+        let by = ICB + 7;
         for (const ln of wrapText(d.name, RW - 10, 1, 1)) {
           drawText(x, ln, { x: ICX, y: by, scale: 1, align: 'center', color: GOLD_LT });
           by += 9;
@@ -3816,31 +4478,60 @@ export const SCREENS = {
           color: black ? '#c08078' : '#8a7a52',
         });
         by += 11;
-        if (d.night) {
-          const nw = textWidth('AFTER DARK ONLY', 1) + 12;
+        if (d.night && tight) {
+          /* No row to spare on a short buffer, so the moon goes beside the
+             tag: a badge here is a line of the description. */
+          const mx = Math.round(ICX - textWidth(d.tag, 1) / 2 - 9);
+          x.fillStyle = '#cfe4ff'; x.fillRect(mx, by - 11, 5, 5);
+          x.fillStyle = black ? '#2a1416' : '#22180c'; x.fillRect(mx + 2, by - 11, 3, 4);
+        } else if (d.night) {
+          /* A hundred and one pixels of badge centred in a panel that is
+             eighty wide on a narrow buffer: the plate hung over the shelf on
+             one side and over Ferdi on the other. It takes the longest
+             wording the panel will hold, and the plate is kept inside the
+             border whatever that comes out as. */
+          let nlab = 'AFTER DARK ONLY';
+          if (textWidth(nlab, 1) + 12 > RW - 8) nlab = 'AFTER DARK';
+          if (textWidth(nlab, 1) + 12 > RW - 8) nlab = 'NIGHT';
+          const nw = textWidth(nlab, 1) + 12;
+          const nx = Math.max(RX + 2, Math.min(ICX - nw / 2, RX + RW - 2 - nw));
           x.fillStyle = 'rgba(30,44,78,.85)';
-          x.fillRect(ICX - nw / 2, by - 2, nw, 11);
-          x.fillStyle = '#6fa8e0'; x.fillRect(ICX - nw / 2, by - 2, nw, 1);
+          x.fillRect(nx, by - 2, nw, 11);
+          x.fillStyle = '#6fa8e0'; x.fillRect(nx, by - 2, nw, 1);
           // a little moon
           x.fillStyle = '#cfe4ff';
-          x.fillRect(ICX - nw / 2 + 3, by + 1, 4, 4);
+          x.fillRect(nx + 3, by + 1, 4, 4);
           x.fillStyle = 'rgba(30,44,78,.95)';
-          x.fillRect(ICX - nw / 2 + 5, by, 4, 4);
-          drawText(x, 'AFTER DARK ONLY', {
-            x: ICX + 5, y: by, scale: 1, align: 'center', color: '#9fc8ff',
+          x.fillRect(nx + 5, by, 4, 4);
+          drawText(x, nlab, {
+            x: nx + 5 + (nw - 5) / 2, y: by, scale: 1, align: 'center', color: '#9fc8ff',
           });
           by += 13;
         }
         x.fillStyle = black ? '#5a1a14' : '#5c3f1c';
         x.fillRect(RX + 8, by - 3, RW - 16, 1);
         by += 3;
-        for (const ln of wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1)) {
-          /* With a Schlarna offer there are two buttons and a line of
-             explanation under this panel, not one button. At 42 the last
-             line of the blurb printed straight through "PAY 3 NOW". */
-          if (by > RB - (sch ? 54 : 26)) break;
-          drawText(x, ln, { x: RX + 6, y: by, scale: 1, color: '#c9b98a' });
-          by += 9;
+        /* With a Schlarna offer there are two buttons and a line of
+           explanation under this panel, not one button, so the floor moves —
+           and on a short buffer that line is dropped, which is why it moves
+           less there. What is above it used to walk down from a running `by`
+           and simply stop mid-sentence: three lines of a forty-line blurb on
+           a narrow buffer, with nothing to say it had been cut. The room is
+           measured first and the rest of the words come round on the clock,
+           so all of it is readable at every size. */
+        const bound = RB - (sch ? (tight ? 40 : 54) : 26);
+        const bl = wrapText(d.blurb.toUpperCase(), RW - 12, 1, 1);
+        const bfit = Math.floor((bound - by) / 9) + 1;
+        if (bfit > 0) {
+          const pages = Math.max(1, Math.ceil(bl.length / bfit));
+          const page = pages > 1 ? Math.floor((s.t - (s.selAt || 0)) / 5) % pages : 0;
+          bl.slice(page * bfit, page * bfit + bfit).forEach((ln, i) => {
+            drawText(x, ln, { x: RX + 6, y: by + i * 9, scale: 1, color: '#c9b98a' });
+          });
+          // which part of it you are looking at, in the one corner nothing else uses
+          if (pages > 1) {
+            drawText(x, `${page + 1}/${pages}`, { x: RX + 4, y: 38, scale: 1, color: '#8a7a52' });
+          }
         }
       }
 
@@ -3848,11 +4539,21 @@ export const SCREENS = {
       const owned = d && g.hasItem?.(d.id);
       const dPrice2 = d ? (g.priceOf ? g.priceOf(d.id) : d.cost) : 0;
       const afford = d && (g.coins || 0) >= dPrice2;
-      const label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
-        : (afford ? `E   BUY FOR ${dPrice2}` : 'NOT ENOUGH SYNCOIN');
+      /* Every channel on the relay is already spoken for. The buy guard has
+         always refused this, but it refused it with a toast the shop's own
+         opaque panel painted over, so the button looked live and the coin
+         looked stolen. It says so itself now. */
+      const full = d?.id === 'camera' && (g.camsSpare?.() ?? 1) <= 0;
+      let label = owned && d.tag === 'PASSIVE' ? 'ALREADY YOURS'
+        : (full ? 'RELAY FULL' : (afford ? `E   BUY FOR ${dPrice2}` : 'NOT ENOUGH SYNCOIN'));
       const bw = RW - 12, bx = RX + 6, byy = RB - (sch ? 32 : 16);
+      // a narrow button says the same thing shorter rather than sprawling
+      if (textWidth(label, 1) > bw - 4) {
+        label = owned && d.tag === 'PASSIVE' ? 'YOURS'
+          : (full ? 'FULL' : (afford ? `E BUY ${dPrice2}` : 'NO COIN'));
+      }
       pressButton(x, bx, byy, bw, label, {
-        hit: s.flash / 0.3, enabled: afford && !owned, accent,
+        hit: s.flash / 0.3, enabled: afford && !owned && !full, accent,
         fill: black ? '#3a0e0b' : '#3a2a10',
       });
       rows.push({ x: bx, y: byy, w: bw, h: 12, buy: true });
@@ -3881,21 +4582,35 @@ export const SCREENS = {
         x.fillRect(bx + 1, sy + 11, bw - 2, 1);
 
         // the wordmark, and the offer beside it
+        /* Sixty-eight pixels of plate on a 240 wide frame cannot hold both:
+           the wordmark is 47, the offer 35, and they printed through each
+           other. The tag on the counter above already gives the price, so
+           what goes is the split — the plate is there to be recognised. */
+        const off = `${SCHLARNA_N}x${each}`;
         drawText(x, 'SCHLARNA', {
           x: bx + 4, y: sy + 3, scale: 1, color: '#2a0a16', shadow: false,
         });
-        const off = `${SCHLARNA_N}x${each}`;
-        drawText(x, off, {
-          x: bx + bw - 4, y: sy + 3, scale: 1, align: 'right',
-          color: lit ? '#4a1226' : '#3a2a30', shadow: false,
-        });
+        if (textWidth('SCHLARNA', 1) + textWidth(off, 1) + 8 <= bw) {
+          drawText(x, off, {
+            x: bx + bw - 4, y: sy + 3, scale: 1, align: 'right',
+            color: lit ? '#4a1226' : '#3a2a30', shadow: false,
+          });
+        }
         rows.push({ x: bx, y: sy, w: bw, h: 12, plan: true });
 
-        // and what it actually means, in words, above the buy button
-        drawText(x, 'K  WHAT IS SCHLARNA?', {
-          x: RX + RW / 2, y: byy - 11, scale: 1, align: 'center',
-          color: Math.floor(t * 2) % 2 ? PINK : '#c46f8c',
-        });
+        /* And what it actually means, in words, above the buy button — a
+           hundred and nineteen pixels of them in an eighty pixel panel, so it
+           hung over the shelf on one side and over Ferdi on the other. On a
+           short buffer it goes altogether: it is the row the description
+           needs, and the key hints name the key anyway. */
+        if (!tight) {
+          let sl = 'K  WHAT IS SCHLARNA?';
+          if (textWidth(sl, 1) > RW - 8) sl = 'K  SCHLARNA?';
+          drawText(x, sl, {
+            x: RX + RW / 2, y: byy - 11, scale: 1, align: 'center',
+            color: Math.floor(t * 2) % 2 ? PINK : '#c46f8c',
+          });
+        }
       }
 
       /* If you are already on a plan, you are told, wherever you are in the
@@ -3903,7 +4618,17 @@ export const SCREENS = {
          an installment, it is a bug. */
       if (g.plan) {
         const pl = g.plan;
-        const txt = `SCHLARNA: ${pl.owed} STILL OWED ON ${pl.name}`;
+        /* The plate was clamped to the frame and the line was not, so the
+           longest of them walked out of its own box and fifty pixels off the
+           picture. The name gives, the way it does in the list. */
+        const head = `SCHLARNA: ${pl.owed} STILL OWED ON `;
+        const room = W - LX * 2 - 8 - textWidth(head, 1);
+        let txt;
+        if (room >= 12) {
+          let nm = pl.name;
+          while (nm.length > 1 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
+          txt = head + (nm === pl.name ? nm : nm.slice(0, -1) + '.');
+        } else txt = `SCHLARNA: ${pl.owed} OWED`;
         const tw = textWidth(txt, 1);
         x.fillStyle = 'rgba(60,14,32,.9)';
         x.fillRect(LX, H - 28, Math.min(W - LX * 2, tw + 8), 11);
@@ -3962,11 +4687,13 @@ export const SCREENS = {
         : shelf(black ? 'black' : 'open', isNight);
       if (code === 'ArrowUp' || code === 'KeyW') {
         if (s.sel === 0) menuSnap();
-        s.sel = (s.sel + list.length - 1) % list.length; g.audio?.sfx('select'); return true;
+        s.sel = (s.sel + list.length - 1) % list.length; s.selAt = s.t;
+        g.audio?.sfx('select'); return true;
       }
       if (code === 'ArrowDown' || code === 'KeyS') {
         if (s.sel === list.length - 1) menuSnap();
-        s.sel = (s.sel + 1) % list.length; g.audio?.sfx('select'); return true;
+        s.sel = (s.sel + 1) % list.length; s.selAt = s.t;
+        g.audio?.sfx('select'); return true;
       }
       if (code === 'Tab' && agent && !s.vendor) {
         if (!s.wipe) {
@@ -3995,15 +4722,6 @@ export const SCREENS = {
         menuFlash();
         if (list[s.sel] && g.buyItem(list[s.sel].id)) {
           s.flash = 0.3;
-          /* A machine in the trees holds one thing. Once it has taken your
-             coin it is a box, and whoever comes next gets nothing — which
-             is what makes finding one first worth something. */
-          if (s.vendor && typeof s.vendor === 'object') {
-            s.vendor.spent = true;
-            st.pop();
-            g.afterOverlayClose();
-            g.ui?.toast('THE MACHINE IS EMPTY NOW', 'gold', 2400);
-          }
         }
         return true;
       }
@@ -4014,7 +4732,7 @@ export const SCREENS = {
       if (row?.buy) { this.key('Enter', s, g, st); return true; }
       if (row?.pick !== undefined) {
         if (row.pick === s.sel) this.key('Enter', s, g, st);
-        else { s.sel = row.pick; g.audio?.sfx('select'); }
+        else { s.sel = row.pick; s.selAt = s.t; g.audio?.sfx('select'); }
       }
       return true;
     },
@@ -4058,15 +4776,18 @@ export const SCREENS = {
       x.fillStyle = '#3a2c14'; x.fillRect(0, 46, W, H - 46);
       ditherRect(x, 0, 46, W, H - 46, '#3a2c14', '#4a3a1c', 0.5, 2);
       // the striped sailcloth over the top of everything
+      /* The last stripe of each run was drawn a whole stripe wide whatever
+         was left of the frame, so on a width that is not a multiple of it the
+         cloth hung off the right edge. It ends where the frame does. */
       for (let i = 0; i * 14 < W; i++) {
         x.fillStyle = i % 2 ? '#a83c34' : '#e0d4b0';
-        x.fillRect(i * 14, 0, 14, 9);
+        x.fillRect(i * 14, 0, Math.min(14, W - i * 14), 9);
       }
       x.fillStyle = '#6a2c24'; x.fillRect(0, 9, W, 2);
       // its scalloped edge
       for (let i = 0; i * 8 < W; i++) {
         x.fillStyle = (i % 2) ? '#a83c34' : '#c8bc98';
-        x.fillRect(i * 8, 11, 8, 2);
+        x.fillRect(i * 8, 11, Math.min(8, W - i * 8), 2);
       }
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.30)'; x.fillRect(0, y, W, 1); }
 
@@ -4095,7 +4816,16 @@ export const SCREENS = {
       /* Wide enough for the longest thing she sells. At 118 the names came
          out as "BAG OF PICKL." and "CATHY'S OWN .", which tells you nothing
          about either. */
-      const LX = 8, LW = 172, ROW = 15;
+      const LX = 8, LW = 172;
+      /* Five rows at a fixed fifteen left the panel under them seventeen
+         pixels on a 180 tall buffer: the tag was drawn, the first line of the
+         blurb was already past the bottom, and what she sells said nothing
+         about itself at all. The panel is measured first — the tag and two
+         lines, four where there is the height for them — and the pitch comes
+         down to pay for it, with the icon coming down with it. */
+      const PLINES = H >= 224 ? 4 : 2;
+      const ROW = Math.max(11, Math.min(15,
+        Math.floor(((H - 32) - (17 + PLINES * 9) - 4 - 52) / list.length)));
       let y = 52;
       const rows = [];
       const cur = listCursor('cathy', s.sel, list.length);
@@ -4111,7 +4841,7 @@ export const SCREENS = {
         const held = it.once && g.hasItem?.(it.id);
         const price = g.priceOf ? g.priceOf(it.id) : it.cost;
         const afford = (g.coins || 0) >= price;
-        drawShopIcon(x, it.icon, LX + 5, y - (on ? 1 : 0), 12, on, t);
+        drawShopIcon(x, it.icon, LX + 5, y - (on ? 1 : 0), Math.min(12, ROW - 1), on, t);
         const right = held ? 'EATEN' : String(price);
         const room = LW - 26 - textWidth(right, 1) - 6;
         let nm = it.name;
@@ -4140,7 +4870,8 @@ export const SCREENS = {
         drawText(x, d.tag, { x: LX + 5, y: by, scale: 1, color: '#8a7a52' });
         by += 10;
         for (const ln of wrapText(d.blurb.toUpperCase(), W - LX * 2 - 12, 1, 1)) {
-          if (by > PB - 12) break;
+          // a line at `by` is seven tall and the inner border is at PB-1
+          if (by + 7 > PB - 2) break;
           drawText(x, ln, { x: LX + 5, y: by, scale: 1, color: '#c9b98a' });
           by += 9;
         }
@@ -4148,11 +4879,20 @@ export const SCREENS = {
 
       /* ---- what she is saying ---- */
       {
-        const lw = Math.min(W - 16, textWidth(s.line, 1));
+        /* The box was clamped to the frame and the line was not: her longest
+           is three hundred and forty-one pixels and ran a hundred and
+           fourteen of them off the side of a 240 wide picture, out of its own
+           box on the way. There is no row underneath for a second line, so
+           she says less rather than saying it off the edge. */
+        const room = W - 24;                    // 13 in, and the same right edge as the button
+        let ln = s.line;
+        while (ln.length > 3 && textWidth(ln, 1) > room) ln = ln.slice(0, -1);
+        if (ln !== s.line) ln = ln.slice(0, -1) + '.';
+        const lw = textWidth(ln, 1);
         x.fillStyle = 'rgba(10,6,4,.86)';
         x.fillRect(8, PB + 2, lw + 8, 12);
         x.fillStyle = '#a83c34'; x.fillRect(8, PB + 2, 2, 12);
-        drawText(x, s.line, { x: 13, y: PB + 5, scale: 1, color: '#e8d8b8' });
+        drawText(x, ln, { x: 13, y: PB + 5, scale: 1, color: '#e8d8b8' });
       }
 
       /* ---- the counter ---- */
@@ -4288,12 +5028,15 @@ export const SCREENS = {
       /* The big picture is a whole extra pass over the island plus a read
          back off the GPU, and doing that sixty times a second to watch a
          path nobody is on is a waste of a frame. Twenty is what a relay of
-         this kind managed anyway, and it looks more like CCTV for it. */
-      /* Twenty a second normally; while the mount is moving it runs flat
-         out, because a panning shot that updates five times a second is
-         unusable for aiming. */
+         this kind managed anyway, and it looks more like CCTV for it.
+
+         Twenty a second turning as well as at rest. Running flat out while
+         the mount moved paid that whole cost on every frame and halved the
+         frame rate at exactly the moment you were trying to aim, which is
+         worse than a slower picture. The gate also has to stay above the
+         frame time the feed itself induces or it skips nothing at all. */
       s.feedT += dt;
-      if (s.feedT >= (s.servo > 0 ? 0.001 : 0.05)) { s.feedT = 0; s.wantFeed = true; }
+      if (s.feedT >= 0.05) { s.feedT = 0; s.wantFeed = true; }
 
       /* The stills. One channel every third of a second, skipping the one
          that is already live in the big window — a multiplexer only ever
@@ -4366,7 +5109,19 @@ export const SCREENS = {
       });
 
       /* ---- the big feed ---- */
-      const FX = 6, FY = 20, FW = FEED_W, FH = FEED_H;
+      /* The picture was a fixed 242x150 and the channel strip took whatever
+         was left over, so on a 240-wide buffer the strip came out twenty-two
+         pixels wide the WRONG WAY — canvas normalised it and painted all ten
+         rows back over the right of the feed, with the names off the edge of
+         the frame — and the feed itself already ran past the picture. The
+         strip is reserved first and the feed is scaled by one factor on both
+         axes, so it stays square to the camera rather than being squashed. */
+      const STRIP = 58;
+      const FX = 6, FY = 20;
+      const FK = Math.min(1, (W - FX - 8 - STRIP - 6) / FEED_W,
+        (H - FY - 5 - 20 - 12) / FEED_H);
+      const FW = Math.max(48, Math.round(FEED_W * FK));
+      const FH = Math.max(30, Math.round(FEED_H * FK));
       x.fillStyle = '#000'; x.fillRect(FX - 2, FY - 2, FW + 4, FH + 4);
       x.fillStyle = therm ? '#a0632a' : '#1e7a4a';
       x.fillRect(FX - 2, FY - 2, FW + 4, 1);
@@ -4374,20 +5129,35 @@ export const SCREENS = {
 
       const sel = cams[s.sel];
       if (!sel || !sel.placed) {
-        // a dead channel: noise, and it says why
-        for (let i = 0; i < 1400; i++) {
-          const px = FX + ((i * 37 + Math.floor(t * 190)) % FW);
-          const py = FY + ((i * 53 + Math.floor(t * 97)) % FH);
-          const v = ((i * 29 + Math.floor(t * 60)) % 5) * 14;
-          x.fillStyle = `rgb(${v},${v + 6},${v + 2})`;
-          x.fillRect(px, py, 2, 1);
+        /* A dead channel: noise, and it says why. Batched by shade — within
+           a residue class of i the colour is constant, so the same 1,400
+           points land in the same places with five fillStyle writes. */
+        const nA = Math.floor(t * 190), nB = Math.floor(t * 97), nC = Math.floor(t * 60);
+        for (let gI = 0; gI < 5; gI++) {
+          x.fillStyle = SNOW5[(29 * gI + nC) % 5];
+          for (let i = gI; i < 1400; i += 5) {
+            x.fillRect(FX + ((i * 37 + nA) % FW), FY + ((i * 53 + nB) % FH), 2, 1);
+          }
         }
         drawText(x, 'NO CAMERA ON THIS CHANNEL', {
           x: FX + FW / 2, y: FY + FH / 2 - 8, scale: 1, align: 'center', color: '#5ae08a',
         });
-        drawText(x, 'BUY A BOX FROM FERDI AND PRESS V TO HANG ONE', {
-          x: FX + FW / 2, y: FY + FH / 2 + 4, scale: 1, align: 'center', color: '#2e6a48',
-        });
+        /* Two hundred and sixty-three pixels of type centred on a picture
+           that is a hundred and sixty-two wide: the first letter was off the
+           left of the frame and the last word was printed over the channel
+           strip, at every size the game can produce. It wraps to the picture
+           it is written on. */
+        /* Lifted off the plate with the rest of this set's lettering: the
+           old dark green measured 2.5:1 against the noise it is written on,
+           which is a shade better than the 1.7:1 the belt instruments had
+           and still short of readable at five by seven. */
+        let cly = FY + FH / 2 + 4;
+        for (const ln of wrapText('BUY A BOX FROM FERDI AND PRESS V TO HANG ONE',
+          Math.max(60, FW - 8), 1, 1)) {
+          if (cly + 7 > FY + FH - 2) break;
+          drawText(x, ln, { x: FX + FW / 2, y: cly, scale: 1, align: 'center', color: '#5f9a78' });
+          cly += 8;
+        }
       } else {
         /* The live pass. It comes back as a flipped RGBA buffer and goes
            through an ImageData and a single drawImage — it used to be one
@@ -4640,7 +5410,15 @@ export const SCREENS = {
          for the picture. All ten fit between the header and the count of
          what is still in your hands. */
       const CX = FX + FW + 8, CW2 = W - CX - 6;
-      const ROW = 16, TOP = 19;
+      const TOP = 19;
+      /* The pitch comes down with the screen so the last channel, the count
+         of what is in your hands and the key hints all still have their own
+         rows on a 180-tall buffer. */
+      const ROW = Math.max(10, Math.min(16, ((H - TOP - 40) / cams.length) | 0));
+      /* The stamps are exposed the same way the big picture is, so they have
+         to be graded the same way too — straight bytes beside a curve is the
+         one thing that makes the strip read as a different set of cameras. */
+      const lutC = colourLut();
       for (let i = 0; i < cams.length; i++) {
         const c = cams[i];
         const cy = TOP + i * ROW;
@@ -4652,7 +5430,12 @@ export const SCREENS = {
         x.fillRect(CX, cy, 1, ROW - 1); x.fillRect(CX + CW2 - 1, cy, 1, ROW - 1);
 
         // the still, kept from the last time the rotation reached it
-        const tw = THUMB_W, th = THUMB_H;
+        /* The still is thirteen tall and the pitch comes down to twelve on a
+           180 tall buffer, so every thumbnail covered its own bottom rule and
+           had its last two lines sliced off by the row underneath. The
+           picture is squashed onto the row rather than cropped to it — the
+           feed and the read-back buffer are the size they are. */
+        const tw = THUMB_W, th = Math.min(THUMB_H, ROW - 3);
         x.fillStyle = '#000'; x.fillRect(CX + 2, cy + 1, tw, th);
         const still = s.thumbs[i];
         if (c.placed && (on || still)) {
@@ -4665,25 +5448,28 @@ export const SCREENS = {
             x.fillStyle = therm ? '#ffb04a' : '#7affa8';
             x.fillRect(CX + 2, cy + 1 + Math.floor(((t * 0.6) % 1) * (th - 1)), tw, 1);
           } else {
-            const surf = thumbSurface(tw, th);
+            const surf = thumbSurface(THUMB_W, THUMB_H);
             const px = surf.img.data;
             const lut = therm ? ironLut() : null;
-            for (let k = 0; k < tw * th; k++) {
+            for (let k = 0; k < THUMB_W * THUMB_H; k++) {
               if (lut) {
-                // one temperature per pixel, same ramp as the big picture
-                const l = still[k * 3] * 0.3 + still[k * 3 + 1] * 0.6 + still[k * 3 + 2] * 0.1;
+                /* One temperature per pixel, same ramp as the big picture —
+                   which sits its thermal a fifth darker so the heat painted
+                   over the top has room, and the stamp's gain has no such
+                   allowance baked into it. */
+                const l = (still[k * 3] * 0.3 + still[k * 3 + 1] * 0.6 + still[k * 3 + 2] * 0.1) * 0.8;
                 const q = (l > 255 ? 255 : l | 0) * 3;
                 px[k * 4] = lut[q]; px[k * 4 + 1] = lut[q + 1]; px[k * 4 + 2] = lut[q + 2];
               } else {
-                px[k * 4] = still[k * 3];
-                px[k * 4 + 1] = still[k * 3 + 1];
-                px[k * 4 + 2] = still[k * 3 + 2];
+                px[k * 4] = lutC[still[k * 3] * 3];
+                px[k * 4 + 1] = lutC[still[k * 3 + 1] * 3 + 1];
+                px[k * 4 + 2] = lutC[still[k * 3 + 2] * 3 + 2];
               }
               px[k * 4 + 3] = 255;
             }
             surf.cx.putImageData(surf.img, 0, 0);
             x.imageSmoothingEnabled = false;
-            x.drawImage(surf.c, CX + 2, cy + 1, tw, th);
+            x.drawImage(surf.c, 0, 0, THUMB_W, THUMB_H, CX + 2, cy + 1, tw, th);
           }
           // the one being refreshed right now gets a corner mark
           if (s.thumbNext === i) { x.fillStyle = '#a8ffc8'; x.fillRect(CX + 2, cy + 1, 2, 2); }
@@ -4693,10 +5479,13 @@ export const SCREENS = {
           x.fillStyle = '#1e4a32';
           for (let k = 0; k < 3; k++) x.fillRect(CX + 6 + k * 5, cy + 1 + (th >> 1), 2, 2);
         } else {
-          for (let k = 0; k < tw * th; k += 3) {
-            const v = ((k * 31 + Math.floor(t * 40) + i * 7) % 4) * 16;
-            x.fillStyle = `rgb(${v},${v + 4},${v})`;
-            x.fillRect(CX + 2 + (k % tw), cy + 1 + ((k / tw) | 0), 2, 1);
+          // same batching as the big window: four shades, four fillStyle writes
+          const nD = Math.floor(t * 40);
+          for (let gK = 0; gK < 4; gK++) {
+            x.fillStyle = SNOW4[(gK + nD + i * 7) % 4];
+            for (let k = 3 * gK; k < tw * th; k += 12) {
+              x.fillRect(CX + 2 + (k % tw), cy + 1 + ((k / tw) | 0), 2, 1);
+            }
           }
         }
         /* One line of text and a lamp, not two lines. Ten rows of two
@@ -4719,16 +5508,20 @@ export const SCREENS = {
         const hy = TOP + cams.length * ROW + 4;
         const held = g.camsHeld || 0;
         x.fillStyle = '#1e4a32'; x.fillRect(CX, hy - 3, CW2, 1);
-        drawText(x, held ? `${held} IN HAND` : 'NONE HELD', {
-          x: CX, y: hy, scale: 1, color: held ? hot : '#2e6a48',
+        /* The channel strip is only 58 wide on a 240 frame and IN HAND
+           spelled out overran its right edge by seven; the count alone is
+           the same fact and fits, so the phrase gives way when it must. */
+        const heldStr = held ? `${held} IN HAND` : 'NONE HELD';
+        drawText(x, textWidth(heldStr, 1) <= CW2 ? heldStr : `${held} HELD`, {
+          x: CX, y: hy, scale: 1, color: held ? hot : '#5f9a78',
         });
         // no point telling you the key when you have nothing to press it on
-        if (held) drawText(x, 'V TO SET', { x: CX, y: hy + 9, scale: 1, color: '#2e6a48' });
+        if (held) drawText(x, 'V TO SET', { x: CX, y: hy + 9, scale: 1, color: '#5f9a78' });
       }
 
       /* ---- what the selected camera can see, and the log ---- */
       const LY = FY + FH + 5;
-      const LH = H - LY - 20;
+      const LH = Math.max(0, H - LY - 20);
       x.fillStyle = '#0c1610'; x.fillRect(FX - 2, LY, FW + 4, LH);
       x.fillStyle = '#1e4a32'; x.fillRect(FX - 2, LY, FW + 4, 1);
       if (s.contacts.length) {
@@ -4743,11 +5536,13 @@ export const SCREENS = {
           if (cx2 > FX + FW - 34) break;
         }
       } else {
-        drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#2e6a48' });
+        drawText(x, 'NOTHING IN SHOT', { x: FX + 2, y: LY + 3, scale: 1, color: '#5f9a78' });
       }
       // the log, newest first
       let ly = LY + 13;
       for (const e of s.log.slice(0, 2)) {
+        // a shallow box holds the contacts line and nothing else
+        if (ly + 7 > LY + LH) break;
         drawText(x, `${e.cam}  ${e.who} AT ${e.d}M`, {
           x: FX + 2, y: ly, scale: 1, color: '#3e8a5c',
         });
@@ -4762,9 +5557,14 @@ export const SCREENS = {
         if (k < 0.75) {
           const ly2 = Math.round(H / 2);
           const hgt = Math.round((1 - Math.min(1, k / 0.55)) * H);
+          /* The bottom shutter was given the whole frame as its HEIGHT
+             rather than the room left below its own top edge, so at the
+             start of the wipe it began at H/2 and hung a full frame under
+             the bottom. It closes onto the last row instead. */
+          const lo = ly2 + (H - hgt) / 2;
           x.fillStyle = '#040806';
           x.fillRect(0, 0, W, Math.max(0, ly2 - (H - hgt) / 2));
-          x.fillRect(0, ly2 + (H - hgt) / 2, W, H);
+          x.fillRect(0, lo, W, Math.max(0, H - lo));
           x.fillStyle = `rgba(168,255,200,${(0.5 * (1 - k)).toFixed(2)})`;
           x.fillRect(0, ly2 - 1, W, 2);
         }
@@ -4999,12 +5799,22 @@ export const SCREENS = {
       /* ---- and where the payments come from, in one line ---- */
       const SY = PY + 38;
       x.fillStyle = INK; x.fillRect(cx0 + 8, SY, CW - 16, 1);
-      drawText(x, 'HALF OF EVERY SYNCOIN YOU EARN GOES TO IT', {
-        x: cxm, y: SY + 5, scale: 1, align: 'center', color: INK, shadow: false,
-      });
-      drawText(x, 'UNTIL IT IS SETTLED. YOU KEEP THE OTHER HALF.', {
-        x: cxm, y: SY + 15, scale: 1, align: 'center', color: '#7a3050', shadow: false,
-      });
+      /* Both lines were written to a 320 wide card. At 240 the second is two
+         hundred and sixty-nine pixels against a card of two hundred and
+         twelve, so it hung off the card at both ends and lost a character off
+         each end of the frame as well. There is no row free under them — the
+         split bar and the buttons are already against the bottom of the card
+         — so the wording gives instead. */
+      const fitsCard = (opts) => opts.find((v) => textWidth(v, 1) <= CW - 16)
+        || opts[opts.length - 1];
+      drawText(x, fitsCard([
+        'HALF OF EVERY SYNCOIN YOU EARN GOES TO IT',
+        'HALF OF WHAT YOU EARN GOES TO IT',
+      ]), { x: cxm, y: SY + 5, scale: 1, align: 'center', color: INK, shadow: false });
+      drawText(x, fitsCard([
+        'UNTIL IT IS SETTLED. YOU KEEP THE OTHER HALF.',
+        'UNTIL SETTLED. YOU KEEP THE REST',
+      ]), { x: cxm, y: SY + 15, scale: 1, align: 'center', color: '#7a3050', shadow: false });
       // a bar showing the split, which is the whole deal in one picture
       {
         const bw2 = CW - 40, bx3 = cx0 + 20, by3 = SY + 26;
@@ -5027,21 +5837,33 @@ export const SCREENS = {
       const canStart = coins >= each && g.schlarnaOn?.(id);
       const bw4 = Math.floor((CW - 22) / 2);
       const byy = cy0 + CH - 22;
+      // and the labels answer to the button they are in, not to a 320 wide card
+      const fitsBtn = (opts) => opts.find((v) => textWidth(v, 1) <= bw4 - 6)
+        || opts[opts.length - 1];
       rows.push({ ...pressButton(x, cx0 + 8, byy, bw4,
-        canStart ? `E   PAY ${each} NOW` : (g.plan ? 'ONE PLAN AT A TIME' : `YOU NEED ${each}`), {
+        canStart ? `E   PAY ${each} NOW`
+          : (g.plan ? fitsBtn(['ONE PLAN AT A TIME', 'ONE PLAN ONLY']) : `YOU NEED ${each}`), {
           hit: s.done ? 1 : 0, enabled: canStart,
           accent: INK, fill: '#e88cb0', text: INK,
         }), take: true });
-      rows.push({ ...pressButton(x, cx0 + 14 + bw4, byy, bw4, 'ESC   NO THANK YOU', {
-        enabled: true, accent: '#7a3050', fill: 'rgba(42,10,22,.22)', text: INK,
-      }), leave: true });
+      rows.push({ ...pressButton(x, cx0 + 14 + bw4, byy, bw4,
+        fitsBtn(['ESC   NO THANK YOU', 'ESC  NO THANKS', 'ESC  NO']), {
+          enabled: true, accent: '#7a3050', fill: 'rgba(42,10,22,.22)', text: INK,
+        }), leave: true });
 
       return rows;
     },
     key(code, s, g, st) {
       if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
       if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
-        if (g.buySchlarna?.(s.id)) { s.done = true; setTimeout(() => st.pop(), 300); }
+        if (g.buySchlarna?.(s.id)) {
+          s.done = true;
+          /* The card holds a beat so you see the button take the press, but
+             an unconditional pop three hundred milliseconds later closed
+             whatever was on top by then — Escape out first and it took the
+             shop with it. It only ever closes itself now. */
+          setTimeout(() => { if (st.name === 'mpSchlarna') st.pop(); }, 300);
+        }
         return true;
       }
       return true;
@@ -5113,9 +5935,10 @@ export const SCREENS = {
         }
       }
       // panelling, and the beams across the ceiling
+      // the same course rule as the darts corner: nine does not divide 320
       for (let i = 0; i < H; i += 9) {
-        x.fillStyle = 'rgba(120,74,32,.055)'; x.fillRect(0, i, W, 8);
-        x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1);
+        x.fillStyle = 'rgba(120,74,32,.055)'; x.fillRect(0, i, W, Math.min(8, H - i));
+        if (i + 8 < H) { x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1); }
       }
       x.fillStyle = '#2a1a10'; x.fillRect(0, 0, W, 7);
       for (let i = 0; i < W; i += 46) { x.fillStyle = '#3a2414'; x.fillRect(i, 0, 5, 7); }
@@ -5238,7 +6061,18 @@ export const SCREENS = {
       });
 
       /* ---- the list ---- */
-      const LX = 6, LW = 146, ROW = 14;
+      /* A fixed hundred and forty-six wide list against a back fitting that
+         is anchored at W-116: below 268 wide they overlapped, so the prices
+         were printed on the bottle shelves and the top row landed on the
+         sign. The list stops where the fitting starts. */
+      const LX = 6, LW = Math.max(96, Math.min(146, W - 122));
+      /* And six rows at a fixed fourteen left the panel under them seventeen
+         pixels at the 180 setting — two lines of a seven line blurb. The
+         panel is measured first and the pitch pays for it, with twelve the
+         floor because the icon on a row is twelve tall. */
+      const PLINES = H >= 224 ? 6 : 4;
+      const ROW = Math.max(12, Math.min(14,
+        Math.floor(((H - 30) - (17 + PLINES * 9) - 25) / list.length)));
       let y = 22;
       const rows = [];
       const cur = listCursor('bar', s.sel, list.length);
@@ -5285,8 +6119,17 @@ export const SCREENS = {
         let by = PY + 4;
         drawText(x, d.tag, { x: LX + 5, y: by, scale: 1, color: d.drunk ? '#e08a4a' : '#8a7a52' });
         by += 10;
-        for (const ln of wrapText(d.blurb.toUpperCase(), LW - 12, 1, 1)) {
-          if (by > PB - 11) break;
+        /* What did not fit simply stopped, with nothing to say so: the most
+           expensive drink on the board lost the three lines that tell you
+           what it does to you. The last line it can hold says there is more. */
+        const bl = wrapText(d.blurb.toUpperCase(), LW - 12, 1, 1);
+        const bfit = Math.max(0, Math.floor((PB - 11 - by) / 9) + 1);
+        for (let i = 0; i < Math.min(bfit, bl.length); i++) {
+          let ln = bl[i];
+          if (i === bfit - 1 && bl.length > bfit) {
+            while (ln.length && textWidth(ln + '...', 1) > LW - 12) ln = ln.slice(0, -1);
+            ln += '...';
+          }
           drawText(x, ln, { x: LX + 5, y: by, scale: 1, color: '#c9b98a' });
           by += 9;
         }
@@ -5372,8 +6215,12 @@ export const SCREENS = {
 
       /* ---- what he is saying ---- */
       {
-        const txt = s.line;
-        const lw = Math.min(W - 16, textWidth(txt, 1));
+        // the box was clamped to the frame and the line was not, so it walked
+        // out of its own plate on a narrow buffer
+        let txt = s.line;
+        while (txt.length > 3 && textWidth(txt, 1) > W - 22) txt = txt.slice(0, -1);
+        if (txt !== s.line) txt = txt.slice(0, -1) + '.';
+        const lw = textWidth(txt, 1);
         x.fillStyle = 'rgba(10,6,4,.88)';
         x.fillRect(6, PB + 2, lw + 8, 12);
         x.fillStyle = '#ffb84a'; x.fillRect(6, PB + 2, 2, 12);
@@ -5461,10 +6308,15 @@ export const SCREENS = {
       s.stake = Math.max(DARTS_MIN, Math.min(DARTS_MAX, g?.coins || 0));
       if (s.stake < DARTS_MIN) s.stake = DARTS_MIN;
       s.leg = null;
+      /* The rematch runs init over the same state object rather than
+         pushing a fresh screen, so a `paid` left true by the last leg made
+         DARTS_PAY bail out: the second stake was taken and never settled. */
+      s.paid = false;
       s.sweep = 0;
       s.aimX = 0;
       s.aimY = 0;
       s.fly = 0;
+      s.landed = false;
       s.last = null;
       s.hisT = 0;
       s.line = `${DARTS.START} UP. STRAIGHT IN, DOUBLE OUT.`;
@@ -5558,9 +6410,12 @@ export const SCREENS = {
       /* ---- the corner of the bar the board is in ---- */
       x.fillStyle = '#120a05'; x.fillRect(0, 0, W, H);
       ditherRect(x, 0, 0, W, H, '#120a05', '#20130a', 0.5, 2);
+      /* Nine does not divide 320, so the last course and its shadow line
+         were drawn below the last row of the frame. The course stops at the
+         bottom and the line under it only exists if there is a row for it. */
       for (let i = 0; i < H; i += 9) {
-        x.fillStyle = 'rgba(120,74,32,.05)'; x.fillRect(0, i, W, 8);
-        x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1);
+        x.fillStyle = 'rgba(120,74,32,.05)'; x.fillRect(0, i, W, Math.min(8, H - i));
+        if (i + 8 < H) { x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(0, i + 8, W, 1); }
       }
       // the lamp over the board
       const CX = Math.round(W * 0.62) + sh, CY = Math.round(H * 0.47);
@@ -5735,7 +6590,12 @@ export const SCREENS = {
       /* ---- and the result ---- */
       if (s.phase === 'over' && leg) {
         const won = leg.over === 'you';
-        const bw = 150, bh = 34;
+        /* Thirty-four tall put the second line of this panel at y=154 on a 180
+           tall buffer and the speech box is drawn over it at 150, so the only
+           thing telling you the leg could be played again was buried. The
+           panel holds the result and nothing else; the prompt goes to the key
+           hints, which are laid out to clear the box at every height. */
+        const bw = 150, bh = 20;
         const bx = Math.round(W / 2 - bw / 2), by = Math.round(H * 0.72);
         x.fillStyle = 'rgba(8,5,3,.92)'; x.fillRect(bx, by, bw, bh);
         x.fillStyle = won ? '#8fe8a0' : '#c04a3a';
@@ -5744,18 +6604,20 @@ export const SCREENS = {
           x: W / 2, y: by + 5, scale: 2, align: 'center',
           color: won ? (Math.floor(t * 8) % 2 ? '#fff3c4' : GOLD) : '#ff8a7a',
         });
-        drawText(x, 'E  AGAIN     ESC  LEAVE IT', {
-          x: W / 2, y: by + 24, scale: 1, align: 'center', color: '#8a7a52',
-        });
       }
 
       /* ---- what he is saying ---- */
       {
-        const lw = Math.min(W - 16, textWidth(s.line, 1));
+        // the box was clamped to the frame and the line was not, so the long
+        // ones walked out of their own plate
+        let txt = s.line;
+        while (txt.length > 3 && textWidth(txt, 1) > W - 22) txt = txt.slice(0, -1);
+        if (txt !== s.line) txt = txt.slice(0, -1) + '.';
+        const lw = textWidth(txt, 1);
         x.fillStyle = 'rgba(10,6,4,.88)';
         x.fillRect(6, H - 30, lw + 8, 12);
         x.fillStyle = '#ffb84a'; x.fillRect(6, H - 30, 2, 12);
-        drawText(x, s.line, { x: 11, y: H - 27, scale: 1, color: '#e8d0a8' });
+        drawText(x, txt, { x: 11, y: H - 27, scale: 1, color: '#e8d0a8' });
       }
 
       /* ---- and the keys ---- */
@@ -5764,7 +6626,7 @@ export const SCREENS = {
       else if (s.phase === 'aimX') hint = 'E  STOP THE LINE  (ACROSS)';
       else if (s.phase === 'aimY') hint = 'E  STOP THE LINE  (UP AND DOWN)';
       else if (s.phase === 'his') hint = '';
-      else if (s.phase === 'over') hint = '';
+      else if (s.phase === 'over') hint = 'E  AGAIN     ESC  LEAVE IT';
       else hint = '';
       footer(x, W, H, hint);
       return stakeRows;
@@ -5773,6 +6635,12 @@ export const SCREENS = {
       if (row?.stakeUp) return this.key('ArrowUp', s, g, st);
       if (row?.stakeDown) return this.key('ArrowDown', s, g, st);
       return true;
+    },
+    /* The board refuses a mid-leg Escape, but a council clears the stack
+       regardless and the stake went with the leg. An abandoned leg is a
+       push, not a loss. Latching s.paid keeps DARTS_PAY idempotent. */
+    discard(s, g) {
+      if (s.leg && !s.paid && !s.leg.over) { s.paid = true; g.dartsSettle?.(s.stake); }
     },
     key(code, s, g, st) {
       if (code === 'Escape' || code === 'Backspace') {
@@ -5920,10 +6788,15 @@ export const SCREENS = {
           color: k < 0.34 ? '#ffffff' : JADE,
         });
         if (k > 0.42) {
+          /* The fade rides on globalAlpha, not on the colour: the glyph
+             atlas is cached per colour string and never evicted, so a
+             per-frame rgba() bakes a new canvas for every step of it. */
+          x.save();
+          x.globalAlpha = Math.min(1, (k - 0.42) * 3);
           drawText(x, 'THAT IS ONE OFF THE LIST', {
-            x: cx, y: cy + 16, scale: 1, align: 'center',
-            color: `rgba(190,255,180,${Math.min(1, (k - 0.42) * 3).toFixed(2)})`,
+            x: cx, y: cy + 16, scale: 1, align: 'center', color: '#beffb4',
           });
+          x.restore();
         }
         footer(x, W, H, '');
       }
@@ -5958,13 +6831,21 @@ export const SCREENS = {
       s.done = true;
       s.doneT = 0;
       s._spark = null;
-      // three sounds, not one: the catch, the ring and the stamp
+      /* Three sounds, not one: the catch, the ring and the stamp. The ring
+         used to be 'idolRise', which is a cutscene cue and opens by ducking
+         the music to a seventh for six seconds — fine for the Idol coming
+         out of the sand, ruinous for something that happens all round, which
+         left the soundtrack near-silent from the first chore onwards. */
       g.audio?.sfx('confirm');
-      g.audio?.sfx('idolRise');
+      g.audio?.sfx('gemHit');
       setTimeout(() => g.audio?.sfx('victory'), 90);
+      /* The work is banked here, not when the card comes down. A body
+         reported inside those 620ms had the host in COUNCIL by the time
+         DO_TASK arrived and it was dropped, so the chore was played and
+         lost with nothing said about it. The timer only owns the card. */
+      g.finishMinigame?.(s.taskId);
       setTimeout(() => {
         if (st.name === 'mpMinigame') { st.pop(); g.afterOverlayClose(); }
-        g.finishMinigame?.(s.taskId);
       }, 620);
     },
   },
@@ -5972,6 +6853,11 @@ export const SCREENS = {
   /* ---------------- SABOTAGE CONSOLE ---------------- */
   mpSabotage: {
     init(s) { s.sel = s.sel || 0; s.pull = 0; s.arm = 0; },
+    /* The lever springs back on the clock rather than a fixed step a draw,
+       which returned it faster the faster the monitor. */
+    tick(s, g, dt) {
+      if (s.pull > 0) s.pull = Math.max(0, s.pull - dt * 2.1);
+    },
     draw(x, W, H, s, g, t) {
       const defs = Object.values(SABOTAGE_DEFS);
       const d = defs[s.sel] || defs[0];
@@ -5979,7 +6865,6 @@ export const SCREENS = {
       const now = performance.now() / 1000;
       const left = (id) => Math.max(0, (cool[id] || 0) - now);
       const sab = g.mp.view.sabotage;
-      if (s.pull > 0) s.pull = Math.max(0, s.pull - 0.035);
       const locked = (def) => left(def.id) > 0 || !!sab;
 
       /* ---- the terminal itself ---- */
@@ -6006,10 +6891,18 @@ export const SCREENS = {
 
       drawText(x, 'SABOTAGE', { x: 14, y: 11, scale: 2, color: RED });
       const alive = [...g.mp.view.players.values()].filter((p) => p.alive !== false).length;
-      drawText(x, sab ? 'ONE IS ALREADY RUNNING' : 'ISLAND NOMINAL', {
+      /* The red title owns the left of the header and both of these are
+         pinned to the right of the same rows, with nothing measured between
+         them: on a 240 wide frame the running notice started inside the word
+         SABOTAGE. They say as much as the row actually holds. */
+      const headRoom = (W - 14) - (14 + textWidth('SABOTAGE', 2) + 2) - 6;
+      const pick = (...opts) => opts.find((o) => textWidth(o, 1) <= headRoom) || opts[opts.length - 1];
+      drawText(x, sab ? pick('ONE IS ALREADY RUNNING', 'ONE IS RUNNING', 'BUSY')
+        : pick('ISLAND NOMINAL', 'NOMINAL', 'OK'), {
         x: W - 14, y: 10, scale: 1, align: 'right', color: sab ? '#ff6a5a' : '#6a8a5a',
       });
-      drawText(x, `${alive} STILL BREATHING`, { x: W - 14, y: 20, scale: 1, align: 'right', color: '#8a5a52' });
+      drawText(x, pick(`${alive} STILL BREATHING`, `${alive} ALIVE`),
+        { x: W - 14, y: 20, scale: 1, align: 'right', color: '#8a5a52' });
       x.fillStyle = '#5a1a14'; x.fillRect(14, 31, W - 28, 1);
 
       /* ---- left: the rack of switches ---- */
@@ -6059,12 +6952,20 @@ export const SCREENS = {
          used to be allowed to run down until it hit an arbitrary number,
          which on the longer descriptions put it straight through the timings
          and the plot underneath. */
-      const PLOT_H = 54;
-      const FIG_TOP = RB - PLOT_H - 6;          // where the figures begin
-      const PROSE_END = FIG_TOP - 5;            // and the hard floor for prose
+      /* At the 180 setting the band left the prose nothing at all — the very
+         first line was already under the floor, so the tell, the one thing an
+         Agent needs before pulling a switch, never appeared. The plot is the
+         decorative half of the band, so it is what gives, and the icon closes
+         up with it. The figures still get their three rows. */
+      const TIGHT = H < 200;
+      const PLOT_H = TIGHT ? 0 : 54;
+      const FIG_H = TIGHT ? 29 : 54;            // a 4px pad and three 9px rows
+      const FIG_TOP = RB - Math.max(PLOT_H, FIG_H) - 6;
+      const PROSE_END = FIG_TOP - 5;            // the hard floor for prose
 
-      drawSabotageIcon(x, d.id, RX + RW / 2 - 14, 42, 28, !locked(d), t);
-      let by = 72;
+      const ICON = TIGHT ? 16 : 28;
+      drawSabotageIcon(x, d.id, RX + RW / 2 - ICON / 2, 42, ICON, !locked(d), t);
+      let by = 42 + ICON + 2;
       for (const ln of wrapText(d.name, RW - 12, 1, 1)) {
         drawText(x, ln, { x: RX + RW / 2, y: by, scale: 1, align: 'center', color: '#ffd8ce' });
         by += 10;
@@ -6107,11 +7008,18 @@ export const SCREENS = {
       const spots = (d.fixAt || []).map((k) => WHERE[k] || k.toUpperCase());
       const PLOT = PLOT_H;
       const plx = RX + RW - PLOT - 5, ply = FIG_TOP;
-      x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(plx, ply, PLOT, PLOT);
-      x.fillStyle = '#4a1a16';
-      x.fillRect(plx, ply, PLOT, 1); x.fillRect(plx, ply + PLOT - 1, PLOT, 1);
-      x.fillRect(plx, ply, 1, PLOT); x.fillRect(plx + PLOT - 1, ply, 1, PLOT);
-      {
+      /* The plot took its 54 pixels whatever was left, which on a 240 wide
+         frame handed the figures beside it twenty-seven — 'COOLS 200S' was
+         written across the island and the repair list was chopped into
+         four-character stubs. It only appears where both fit; 60 pixels is
+         what the widest timing needs. */
+      const showPlot = PLOT_H > 0 && plx - RX - 12 >= 60;
+      const NW = showPlot ? plx - RX - 12 : RW - 12;
+      if (showPlot) {
+        x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(plx, ply, PLOT, PLOT);
+        x.fillStyle = '#4a1a16';
+        x.fillRect(plx, ply, PLOT, 1); x.fillRect(plx, ply + PLOT - 1, PLOT, 1);
+        x.fillRect(plx, ply, 1, PLOT); x.fillRect(plx + PLOT - 1, ply, 1, PLOT);
         // the island as a lumpy ring
         const pcx = plx + PLOT / 2, pcy = ply + PLOT / 2, pr = PLOT / 2 - 4;
         x.strokeStyle = 'rgba(170,80,70,.55)'; x.lineWidth = 1;
@@ -6141,18 +7049,24 @@ export const SCREENS = {
         }
       }
 
-      /* the numbers, to the left of the plot */
+      /* the numbers, beside the plot where there is one */
       let fy = FIG_TOP + 4;
-      const NW = plx - RX - 12;
-      drawText(x, `RUNS ${d.secs}S`, { x: RX + 6, y: fy, scale: 1, color: '#c08078' });
+      // nothing measured these against the plot either, so they are trimmed
+      const fig = (str, col) => {
+        let ln = str;
+        while (ln.length > 1 && textWidth(ln, 1) > NW) ln = ln.slice(0, -1);
+        drawText(x, ln, { x: RX + 6, y: fy, scale: 1, color: col });
+      };
+      fig(`RUNS ${d.secs}S`, '#c08078');
       fy += 9;
-      drawText(x, `COOLS ${d.cooldown}S`, { x: RX + 6, y: fy, scale: 1, color: '#7a4a44' });
+      fig(`COOLS ${d.cooldown}S`, '#7a4a44');
       fy += 9;
-      drawText(x, d.sites > 1 ? `${d.sites} POINTS` : 'ONE POINT', {
-        x: RX + 6, y: fy, scale: 1, color: '#7a4a44',
-      });
+      fig(d.sites > 1 ? `${d.sites} POINTS` : 'ONE POINT', '#7a4a44');
       fy += 11;
-      for (const ln of wrapText(spots.join(', '), NW, 1, 1).slice(0, 3)) {
+      /* Three was a guess: it dropped the fourth pendulum where there was
+         room for it and ran past the panel where there was not. */
+      const budget = Math.max(0, Math.floor((RB - 8 - fy) / 9) + 1);
+      for (const ln of wrapText(spots.join(', '), NW, 1, 1).slice(0, budget)) {
         drawText(x, ln, { x: RX + 6, y: fy, scale: 1, color: '#8a5a52' });
         fy += 9;
       }
@@ -6165,13 +7079,24 @@ export const SCREENS = {
          placed thing on it.
 
          It is a caged handle you drag, or hold E on. */
-      {
+      /* A usable lever wants sixteen pixels of chrome and a throat left over
+         for the drag to divide by — throwLen is LVH - 25. Six switches at
+         seventeen pixels a row leave nothing at all under the rack on a
+         180-tall screen, and the height was allowed to go negative: the cage
+         was drawn inverted above its own slot, the hazard stripes never
+         appeared, the knob travelled upward as you pulled and the hit test
+         could not be satisfied, so the drag the hints promised was dead. When
+         it will not fit it is not drawn, the box is nulled rather than left
+         stale, and the hints stop offering a control that is not there. */
+      const MINLV = 34;
+      const LVY = 38 + defs.length * ROW + 10;   // straight under the rack
+      const LVH = Math.min(46, (H - 34) - LVY);
+      if (LVH < MINLV) s.leverBox = null;
+      else {
         /* Right of centre in the well, so the label beside it has clear
            room — centred, the knob at the top of its travel printed over
            the word telling you what it is. */
         const LVX = LX + Math.round(LW * 0.70);
-        const LVY = 38 + defs.length * ROW + 10; // straight under the rack
-        const LVH = Math.min(46, (H - 34) - LVY);
         // the cage
         x.fillStyle = '#1a0605'; x.fillRect(LX, LVY, LW, LVH);
         x.fillStyle = '#5a1a14';
@@ -6245,14 +7170,17 @@ export const SCREENS = {
 
       footer(x, W, H, locked(d)
         ? 'UP DOWN CHOOSE      Q OR ESC AWAY'
-        : 'UP DOWN CHOOSE   DRAG THE LEVER OR HOLD E   Q OR ESC AWAY');
+        : (s.leverBox
+          ? 'UP DOWN CHOOSE   DRAG THE LEVER OR HOLD E   Q OR ESC AWAY'
+          : 'UP DOWN CHOOSE   HOLD E TO THROW   Q OR ESC AWAY'));
       return rows;
     },
 
     /** The lever is a handle. Drag it down and it throws. */
     pointer(kind, cx, cy, s, g, st) {
       const box = s.leverBox;
-      if (!box) return false;
+      // no throat means the move handler would divide by nothing
+      if (!box || !(box.throwLen > 0)) return false;
       if (kind === 'down') {
         if (cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) return false;
         s.dragging = true; s.dragFrom = cy; s.drag = 0;
@@ -6297,6 +7225,7 @@ export const SCREENS = {
         if (cd > 0 || g.mp.view.sabotage) { g.audio?.sfx('deny'); return true; }
         s.pull = 1;
         g.sendSabotage(def.id);
+        g.audio?.sfx('slam');
         setTimeout(() => { if (st.name === 'mpSabotage') { st.pop(); g.afterOverlayClose(); } }, 300);
         return true;
       }
@@ -6381,8 +7310,12 @@ export const SCREENS = {
     draw(x, W, H, s, g, t) {
       /* Five beats. The verdict, the walk, the water closing, a held
          silence, and only then what they actually were. The silence is the
-         part that does the work — an instant reveal has no stakes in it. */
-      const T = { verdict: 0.0, walk: 1.1, splash: 2.7, hold: 3.3, reveal: 5.0 };
+         part that does the work — an instant reveal has no stakes in it. A
+         snap vote runs the same five at a sprint: its card is torn down
+         after 2.5s, and the slow table never reached its reveal. */
+      const T = s.snap
+        ? { verdict: 0, walk: 0.2, splash: 0.3, hold: 0.6, reveal: 1.2 }
+        : { verdict: 0.0, walk: 1.1, splash: 2.7, hold: 3.3, reveal: 5.0 };
       const at = (k) => s.t >= T[k];
       const since = (k) => s.t - T[k];
 
@@ -6410,7 +7343,13 @@ export const SCREENS = {
         const off = Math.round(Math.sin(t * 1.1 + i * 1.7) * (10 + i * 3));
         const w = 26 - i * 2;
         x.fillStyle = `rgba(150,190,215,${(0.32 - i * 0.03).toFixed(2)})`;
-        x.fillRect((((i * 71 + off) % W) + W) % W, yy, w, 1);
+        /* The head of the swell was wrapped into the frame but its length was
+           not, so the one crossing the right edge hung off it. What goes past
+           the edge comes back on at the other one, which is what wrapping a
+           moving line means. */
+        const sx = (((i * 71 + off) % W) + W) % W;
+        x.fillRect(sx, yy, Math.min(w, W - sx), 1);
+        if (sx + w > W) x.fillRect(0, yy, sx + w - W, 1);
       }
 
       // the figure, walked to the edge and dropped
@@ -6448,9 +7387,18 @@ export const SCREENS = {
         x: W / 2, y: 22, scale: 1, align: 'center', color: DIM,
       });
       if (!s.targetId) {
-        drawText(x, 'NOBODY GOES IN THE WATER', {
-          x: W / 2, y: 40, scale: 2, align: 'center', color: GOLD_LT,
-        });
+        /* Twenty-four glyphs at scale two is 286 pixels and lost two of them
+           off each end of a 240 wide frame — the headline of the card and the
+           only thing on it. It breaks in two rather than shrinking: the other
+           branch's verdict is scale two and this has to read as its equal. */
+        if (textWidth('NOBODY GOES IN THE WATER', 2) <= W - 8) {
+          drawText(x, 'NOBODY GOES IN THE WATER', {
+            x: W / 2, y: 40, scale: 2, align: 'center', color: GOLD_LT,
+          });
+        } else {
+          drawText(x, 'NOBODY GOES', { x: W / 2, y: 36, scale: 2, align: 'center', color: GOLD_LT });
+          drawText(x, 'IN THE WATER', { x: W / 2, y: 52, scale: 2, align: 'center', color: GOLD_LT });
+        }
       } else {
         drawText(x, (s.who || '?').toUpperCase(), {
           x: W / 2, y: 36, scale: 2, align: 'center', color: GOLD_LT,
@@ -6468,7 +7416,9 @@ export const SCREENS = {
             x: W / 2, y: 76, scale: 2, align: 'center', color: '#5a4a34',
           });
         }
-        if (at('reveal')) {
+        /* NEVER means never: with the answer withheld the card ends on
+           THROWN TO THE SEA, and neither plate nor its sfx gives it away. */
+        if (at('reveal') && s.wasAgent != null) {
           const k = Math.min(1, since('reveal') / 0.3);
           const good = s.wasAgent;
           const col = good ? JADE : RED;
@@ -6486,6 +7436,10 @@ export const SCREENS = {
               color: k < 0.7 ? '#ffffff' : col });
           }
           if (s.beat !== 1) { s.beat = 1; g.audio?.sfx(good ? 'victory' : 'deny'); }
+        } else if (at('reveal')) {
+          drawText(x, 'THE ISLAND KEEPS ITS SECRET', {
+            x: W / 2, y: 76, scale: 1, align: 'center', color: DIM,
+          });
         } else if (at('splash') && s.beat !== 0) {
           s.beat = 0; g.audio?.sfx('splat');
         }
@@ -6519,18 +7473,54 @@ export const SCREENS = {
          how close you were. */
       const agents = new Set(s.agents || []);
       const players = [...g.mp.view.players.values()];
-      let y = 86;
-      for (const p of players) {
-        const wasAgent = agents.has(p.name);
-        x.fillStyle = colourOf(p.colour); x.fillRect(W / 2 - 92, y, 7, 7);
-        drawText(x, p.name || '?', { x: W / 2 - 80, y, scale: 1, color: GOLD_LT });
-        drawText(x, wasAgent ? 'ROGUE AGENT' : 'CASTAWAY', {
-          x: W / 2 - 4, y, scale: 1, color: wasAgent ? '#ff6a5a' : '#8fb0c8',
+      /* Ten reveals at ten pixels a row from y=86 had nothing stopping them:
+         they ran through the ANOTHER ROUND menu and, at the 180 setting, off
+         the bottom of the frame. The list is laid out against the space the
+         menu leaves instead — it starts higher and tightens its step before
+         it spills into a second column, and a roster that still will not fit
+         says how many it is not showing. */
+      const bottom = H - 52;                     // the first pixel the menu owns
+      const top = (bottom - 86) >= players.length * 10 ? 86 : 78;
+      const step = (bottom - top) >= players.length * 10 ? 10 : 9;
+      const perCol = Math.max(1, Math.floor((bottom - top) / step));
+      const cols = Math.min(2, Math.max(1, Math.ceil(players.length / perCol)));
+      const colW = Math.min(184, Math.floor((W - 12) / cols));
+      const wide = cols === 1;
+      const x0 = Math.round(W / 2 - (cols * colW) / 2);
+      players.slice(0, perCol * cols).forEach((p, i) => {
+        /* Keyed by id: nothing stops two players seating themselves under
+           the same name, and on the one screen whose job is saying who was
+           lying, matching by name convicts the innocent one of the pair.
+           S.OVER carries ids now, so the name is never consulted. */
+        const wasAgent = agents.has(p.id);
+        const dead = p.alive === false;
+        const lx = x0 + Math.floor(i / perCol) * colW;
+        const y = top + (i % perCol) * step;
+        x.fillStyle = colourOf(p.colour); x.fillRect(lx, y, 7, 7);
+        let nm = p.name || '?';
+        const room = (wide ? 88 : colW - 36) - 14;
+        while (nm.length > 1 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
+        drawText(x, nm, {
+          x: lx + 12, y, scale: 1, color: (dead && !wide) ? '#6a5c40' : GOLD_LT,
         });
-        drawText(x, p.alive === false ? 'LOST' : 'ALIVE', {
-          x: W / 2 + 92, y, scale: 1, align: 'right', color: p.alive === false ? '#6a5c40' : JADE,
+        drawText(x, wide ? (wasAgent ? 'ROGUE AGENT' : 'CASTAWAY')
+          : (wasAgent ? 'ROGUE' : 'CREW'), {
+          x: wide ? lx + 88 : lx + colW - 2, y, scale: 1,
+          align: wide ? 'left' : 'right',
+          color: wasAgent ? '#ff6a5a' : '#8fb0c8',
         });
-        y += 10;
+        // a narrow column has no room for the word; the dimmed name says LOST
+        if (wide) {
+          drawText(x, dead ? 'LOST' : 'ALIVE', {
+            x: lx + colW, y, scale: 1, align: 'right',
+            color: dead ? '#6a5c40' : JADE,
+          });
+        }
+      });
+      if (players.length > perCol * cols) {
+        drawText(x, `+${players.length - perCol * cols} MORE`, {
+          x: W / 2, y: bottom - 9, scale: 1, align: 'center', color: DIM,
+        });
       }
 
       /* Another round without losing the lobby.
@@ -6539,15 +7529,27 @@ export const SCREENS = {
          a game they were already in. The host can put the lobby back
          together instead; leaving for good is still one keypress. */
       const canHost = !!g.mp?.host;
+      /* Not 'BACK TO THE BEACH': the beach is the lobby, which is where the
+         row above goes. This one leaves the room for good. */
       const rows = menuList(x, [canHost ? 'ANOTHER ROUND' : 'WAIT FOR ANOTHER ROUND',
-        'BACK TO THE BEACH'], s.sel, W / 2, H - 42, t, { width: 160 });
+        'LEAVE THE ISLAND'], s.sel, W / 2, H - 42, t, { width: 160 });
+      /* A guest pressing the only button on this card got a toast, and the
+         card opens with an opaque full-frame fill drawn after the HUD, so the
+         answer was painted out: one click and nothing changed. The card says
+         it itself, under the menu, and lets go again like the toast would. */
+      if (s.waited && performance.now() / 1000 - s.waited < 3.2) {
+        drawText(x, 'WAITING FOR THE HOST',
+          { x: W / 2, y: H - 12, scale: 1, align: 'center', color: JADE });
+      }
       return rows;
     },
     key(code, s, g, st) {
       return nav(code, s, 2, (i) => {
-        if (i === 0) g.playAgain();
-        else location.reload();
-      });
+        if (i === 0) { g.playAgain(); if (!g.mp?.host) s.waited = performance.now() / 1000; }
+        // a reload is the thing the card above exists to avoid: the island
+        // regenerates and everybody types the room code in again
+        else g.quitToTitle();
+      }, null, g);
     },
   },
 
@@ -6555,26 +7557,30 @@ export const SCREENS = {
   title: {
     draw(x, W, H, s, g, t) {
       // the idol renders behind; scrim only the left third
-      const grad = Math.round(W * 0.52);
-      for (let i = 0; i < grad; i++) {
-        const a = 0.86 * (1 - i / grad);
-        x.fillStyle = `rgba(6,4,2,${a.toFixed(3)})`;
-        x.fillRect(i, 0, 1, H);
-      }
+      x.drawImage(titleScrim(W, H), 0, 0);
       x.fillStyle = 'rgba(0,0,0,.30)';
       for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
 
       const L = 14;
-      drawText(x, 'THE LEGEND OF', { x: L, y: 30, scale: 1, color: DIM });
-      drawText(x, 'ILLIC', { x: L, y: 42, scale: 4, color: GOLD_LT });
-      drawText(x, 'ISLE', { x: L, y: 74, scale: 4, color: GOLD });
+      /* The whole left column was written against a 224 tall buffer while the
+         captions below are pinned to H, so at the 180 setting the fourth menu
+         row fell off the bottom and the SHIFT+ENTER hint printed straight
+         through CONTROLS. The captions cannot move — they belong to the foot
+         of the screen — so the head of it gives instead. */
+      const tight = H < 200;
+      const ts = tight ? 3 : 4;
+      const yRule = tight ? 72 : 106;
+      const rw = 27 * ts;
+      drawText(x, 'THE LEGEND OF', { x: L, y: tight ? 14 : 30, scale: 1, color: DIM });
+      drawText(x, 'ILLIC', { x: L, y: tight ? 24 : 42, scale: ts, color: GOLD_LT });
+      drawText(x, 'ISLE', { x: L, y: tight ? 46 : 74, scale: ts, color: GOLD });
       // rule
-      x.fillStyle = GOLD_DK; x.fillRect(L, 106, 108, 2);
-      x.fillStyle = GOLD; x.fillRect(L + 108, 105, 4, 4);
-      drawText(x, 'THE IDOL OF ILLIC ISLE', { x: L, y: 114, scale: 1, color: GOLD });
+      x.fillStyle = GOLD_DK; x.fillRect(L, yRule, rw, 2);
+      x.fillStyle = GOLD; x.fillRect(L + rw, yRule - 1, 4, 4);
+      drawText(x, 'THE IDOL OF ILLIC ISLE', { x: L, y: tight ? 78 : 114, scale: 1, color: GOLD });
 
       const rows = menuList(x, ['PLAY', 'CONTROLS', 'OPTIONS', 'THE LEGEND'],
-        s.sel, L + 66, 136, t, { width: 132 });
+        s.sel, L + 66, tight ? 96 : 136, t, { width: 132 });
       drawText(x, '(C) 1998 SCHWAB TECHNOLOGY', { x: L, y: H - 22, scale: 1, color: '#6a5c40' });
       if (Math.floor(t * 1.5) % 2 === 0) {
         drawText(x, 'PRESS ENTER', { x: L, y: H - 13, scale: 1, color: GOLD });
@@ -6606,7 +7612,7 @@ export const SCREENS = {
         else if (i === 1) g.screens.push('controls');
         else if (i === 2) g.screens.push('options');
         else g.screens.push('lore');
-      });
+      }, null, g);
     },
   },
 
@@ -6617,12 +7623,23 @@ export const SCREENS = {
       const L = LORE_PAGES[s.page];
       const b = frame(x, W, H, 'THE LEGEND', `${s.page + 1} / ${LORE_PAGES.length}`);
       drawText(x, L.title, { x: W / 2, y: b.top + 2, scale: 1, align: 'center', color: GOLD });
+      /* Every page is written with paragraph breaks in it, and handing the
+         whole string to wrapText — which splits on any whitespace — ran them
+         into one block. The journal and the reader both split first. */
       let y = b.top + 16;
-      for (const ln of wrapText(L.text, W - 44, 1, 1)) {
-        drawText(x, ln, { x: 22, y, scale: 1, color: GOLD_LT });
-        y += 9;
+      for (const para of String(L.text).split('\n')) {
+        if (!para.trim()) { y += 5; continue; }
+        for (const ln of wrapText(para, W - 44, 1, 1)) {
+          drawText(x, ln, { x: 22, y, scale: 1, color: GOLD_LT });
+          y += 9;
+        }
       }
-      if (L.icon) drawRelicIcon(x, L.icon, W - 52, b.bottom - 44, 32, Math.sin(t * 2) * 0.4);
+      /* The icon is drawn over the top of the copy, so on a narrow frame it
+         sat on the tail of it. It is decoration: it appears where the words
+         have left it room. */
+      if (L.icon && y < b.bottom - 43) {
+        drawRelicIcon(x, L.icon, W - 52, b.bottom - 44, 32, Math.sin(t * 2) * 0.4);
+      }
       footer(x, W, H, '< > TURN PAGE   ESC BACK');
       return [];
     },
@@ -6640,20 +7657,37 @@ export const SCREENS = {
   controls: {
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'CONTROLS');
-      const rows = [
+      /* The pause menu offers this page in both modes, and it only ever
+         described the single-player one — it promised a coconut throw
+         Castaways refuses and a journal that opens the chart instead, and
+         named none of the keys the mode adds. Values stay short because
+         they start at W/2 + 8 and the narrowest frame is 240 wide. */
+      const mp = !!g.mp?.active;
+      const rows = mp ? [
+        ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
+        ['SPACE', 'JUMP'], ['E', 'WORK / USE'], ['CLICK', 'REACH OR FIRE'],
+        ['F', 'KNIFE / FLARE'], ['Q', 'SABOTAGE'], ['G', 'DRAW PISTOL'],
+        ['1-9', 'THE BELT'], ['V', 'SET A CAMERA'], ['M / TAB', 'THE CHART'],
+        ['C', 'VIEW'], ['ESC', 'PAUSE'],
+      ] : [
         ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
         ['SPACE', 'JUMP'], ['E', 'INTERACT'], ['CLICK', 'THROW COCONUT'],
-        ['M', 'MAP'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
+        ['M / F', 'MAP'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
       ];
+      // fourteen rows at a fixed eleven walk out of a 180-tall frame
+      const ROW = Math.max(8, Math.min(11,
+        Math.floor((b.bottom - 4 - (b.top + 2)) / rows.length)));
       let y = b.top + 2;
       for (const [k, v] of rows) {
         drawText(x, k, { x: W / 2 - 8, y, scale: 1, align: 'right', color: GOLD });
         drawText(x, v, { x: W / 2 + 8, y, scale: 1, color: GOLD_LT });
-        y += 11;
+        y += ROW;
       }
-      drawText(x, 'COCONUTS GROW UNDER THE PALMS.', {
-        x: W / 2, y: y + 4, scale: 1, align: 'center', color: DIM,
-      });
+      if (!mp) {
+        drawText(x, 'COCONUTS GROW UNDER THE PALMS.', {
+          x: W / 2, y: y + 4, scale: 1, align: 'center', color: DIM,
+        });
+      }
       footer(x, W, H, 'ESC BACK');
       return [];
     },
@@ -6683,8 +7717,12 @@ export const SCREENS = {
     },
     key(code, s, g, st) {
       const O = OPTION_DEFS;
-      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + O.length - 1) % O.length; return true; }
-      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % O.length; return true; }
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        s.sel = (s.sel + O.length - 1) % O.length; g.audio?.sfx('select'); return true;
+      }
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        s.sel = (s.sel + 1) % O.length; g.audio?.sfx('select'); return true;
+      }
       if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Enter' || code === 'KeyE') {
         const o = O[s.sel];
         const cur = String(o.get(g));
@@ -6703,10 +7741,21 @@ export const SCREENS = {
 
   /* ---------------- PAUSE ---------------- */
   pause: {
+    /* On the clock, not a step a draw: the refusal is the only explanation
+       MAP gives, and a fixed 0.016 held it for half as long on a 120Hz
+       panel as on a 60. */
+    tick(s, g, dt) { if (s.msgT > 0) s.msgT = Math.max(0, s.msgT - dt); },
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'PAUSED');
-      const rows = menuList(x, ['RESUME', 'JOURNAL', 'MAP', 'CONTROLS', 'OPTIONS', 'QUIT TO TITLE'],
-        s.sel, W / 2, b.top + 10, t, { width: 140 });
+      const items = pauseItems(g);
+      s.sel = Math.max(0, Math.min(s.sel || 0, items.length - 1));
+      const rows = menuList(x, items, s.sel, W / 2, b.top + 10, t, { width: 140 });
+      /* Why MAP is refused. It cannot be a toast: frame() has already filled
+         the whole buffer over everything the HUD drew, so a toast raised
+         from here is painted out before anybody sees it. */
+      if (s.msgT > 0) {
+        drawText(x, s.msg, { x: W / 2, y: H - 40, scale: 1, align: 'center', color: RED });
+      }
       const mm = String(Math.floor(g.runTime / 60)).padStart(2, '0');
       const ss = String(Math.floor(g.runTime % 60)).padStart(2, '0');
       drawText(x, `TIME ${mm}:${ss}`, { x: W / 2, y: H - 28, scale: 1, align: 'center', color: DIM });
@@ -6714,23 +7763,29 @@ export const SCREENS = {
       return rows;
     },
     key(code, s, g, st) {
-      return nav(code, s, 6, (i) => {
-        if (i === 0) g.pause(false);
-        else if (i === 1) st.push('journal');
-        else if (i === 2) g.openChart();
-        else if (i === 3) st.push('controls');
-        else if (i === 4) st.push('options');
+      const items = pauseItems(g);
+      s.sel = Math.max(0, Math.min(s.sel || 0, items.length - 1));
+      return nav(code, s, items.length, (i) => {
+        const it = items[i];
+        if (it.id === 'resume') g.pause(false);
+        else if (it.id === 'journal') st.push('journal');
+        else if (it.id === 'map') {
+          if (it.refusal) { g.audio?.sfx('deny'); s.msg = it.refusal; s.msgT = 1.5; return; }
+          g.openChart();
+        } else if (it.id === 'controls') st.push('controls');
+        else if (it.id === 'options') st.push('options');
         else g.quitToTitle();
-      }, () => g.pause(false));
+      }, () => g.pause(false), g);
     },
   },
 
   /* ---------------- JOURNAL ---------------- */
   journal: {
-    init(s, g) { s.entries = g.journalEntries(); s.sel = 0; s.scroll = 0; },
+    init(s, g) { s.entries = g.journalEntries?.() || []; s.sel = 0; s.scroll = 0; },
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, "CASTAWAY'S JOURNAL", `${s.sel + 1} / ${s.entries.length}`);
-      const e = s.entries[s.sel];
+      const b = frame(x, W, H, "CASTAWAY'S JOURNAL",
+        s.entries.length ? `${s.sel + 1} / ${s.entries.length}` : '');
+      const e = s.entries[s.sel] || { found: false, hint: 'NOTHING IN IT YET.' };
       drawText(x, e.found ? e.title : 'NOT YET FOUND', {
         x: W / 2, y: b.top, scale: 1, align: 'center', color: e.found ? GOLD : '#6a5c40',
       });
@@ -6761,8 +7816,8 @@ export const SCREENS = {
     },
     key(code, s, g, st) {
       const n = s.entries.length;
-      if (code === 'ArrowLeft' || code === 'KeyA') { s.sel = (s.sel + n - 1) % n; s.scroll = 0; return true; }
-      if (code === 'ArrowRight' || code === 'KeyD') { s.sel = (s.sel + 1) % n; s.scroll = 0; return true; }
+      if (n && (code === 'ArrowLeft' || code === 'KeyA')) { s.sel = (s.sel + n - 1) % n; s.scroll = 0; return true; }
+      if (n && (code === 'ArrowRight' || code === 'KeyD')) { s.sel = (s.sel + 1) % n; s.scroll = 0; return true; }
       if (code === 'ArrowUp' || code === 'KeyW') { s.scroll = Math.max(0, s.scroll - 1); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.scroll += 1; return true; }
       if (code === 'Tab' || code === 'Escape') { st.pop(); g.afterOverlayClose(); return true; }
@@ -6816,7 +7871,7 @@ export const SCREENS = {
       const alpha = Math.min(1, (k - 0.82) / 0.18);
       x.save();
       x.globalAlpha = alpha;
-      const title = s.data?.agentSide ? "MAP  -  ROGUE AGENTS' COPY" : 'MAP OF ILLIC ISLE';
+      const title = s.agentSide ? "MAP  -  ROGUE AGENTS' COPY" : 'MAP OF ILLIC ISLE';
       drawText(x, title, { x: W / 2, y: top + 5, scale: 1, align: 'center', color: '#3f2f14' });
       x.fillStyle = '#8a6a34';
       x.fillRect(m + 10, top + 15, PW - 20, 1);
@@ -6845,7 +7900,8 @@ export const SCREENS = {
         drawText(x, 'NO CHART', {
           x: W / 2, y: oy + size / 2, scale: 2, align: 'center', color: DIM,
         });
-        footer(x, W, H, 'ESC  CLOSE');
+        fitLine(x, 'ESC  CLOSE', W / 2, top + openH - 12, W - 8,
+          { color: '#5a3a18', shadowColor: PAPER });
         return [];
       }
       s.data.zoom = s.zoom;
@@ -6866,12 +7922,18 @@ export const SCREENS = {
       } else if (s.subtitle) {
         drawText(x, s.subtitle, { x: W / 2, y: subY, scale: 1, align: 'center', color: '#2f6a4a' });
       }
-      x.restore();
-      footer(x, W, H, s.zoom > 1
+      /* The hints belong on the paper. footer() prints at H - 17, which is
+         exactly where the closing rod lies, so the bottom two rows of every
+         glyph were struck through by a dark bar. Above the rod, in ink. */
+      const hint = s.zoom > 1
         ? '+ -  ZOOM     ARROWS  PAN     C  CENTRE ON YOU     M  CLOSE'
-        : '+  ZOOM IN     M OR TAB  CLOSE');
+        : '+  ZOOM IN     M OR TAB  CLOSE';
+      fitLine(x, hint, W / 2, top + openH - 12, W - 8, { color: '#5a3a18', shadowColor: PAPER });
+      x.restore();
       return [];
     },
+    /** The wheel is the zoom this screen already has on + and -. */
+    wheel(dir, s, g, st) { return this.key(dir < 0 ? 'Equal' : 'Minus', s, g, st); },
     key(code, s, g, st) {
       const R = s.data?.radius || 200;
       const step = () => (R / (s.zoom || 1)) * 0.22;
@@ -6903,7 +7965,7 @@ export const SCREENS = {
       }
       return true;
     },
-    /** Drag to pan, and the wheel is handled by the game's own listener. */
+    /** Drag to pan. The wheel arrives through this screen's own wheel(). */
     pointer(kind, cx, cy, s) {
       if (kind === 'down') { s._drag = [cx, cy]; return true; }
       if (kind === 'move' && s._drag) {
@@ -6973,17 +8035,24 @@ export const SCREENS = {
       const stock = g.shopStock();
       return nav(code, s, stock.length,
         () => { if (!g.buy(stock[s.sel].id)) s.shake = 0.28; },
-        () => { st.pop(); g.afterOverlayClose(); });
+        () => { st.pop(); g.afterOverlayClose(); }, g);
     },
   },
 
   /* ---------------- READER ---------------- */
   reader: {
     init(s) { s.shown = 0; s.done = false; s.scroll = 0; },
+    /* Two characters a draw is two characters a refresh, so the same page
+       typed itself out two and a half times faster on a 144Hz panel than on
+       a 60Hz one and every story beat lost its pacing. On the clock now, at
+       the speed it used to have at sixty. */
+    tick(s, g, dt) {
+      const len = String(s.body).length;
+      s.shown = Math.min(len, s.shown + dt * 120);
+      s.done = s.shown >= len;
+    },
     draw(x, W, H, s, g, t) {
       const full = String(s.body);
-      s.shown = Math.min(full.length, s.shown + 2);
-      s.done = s.shown >= full.length;
 
       const boxH = Math.min(H - 24, 116);
       const top = H - boxH - 8;
@@ -6992,7 +8061,7 @@ export const SCREENS = {
       drawText(x, s.head, { x: 15, y: top + 6, scale: 1, color: '#6b4a18', shadowColor: '#e6d6ac' });
       x.fillStyle = '#a8946a'; x.fillRect(14, top + 16, W - 28, 1);
 
-      const shownText = full.slice(0, s.shown);
+      const shownText = full.slice(0, Math.floor(s.shown));
       const lines = [];
       for (const para of shownText.split('\n')) {
         if (!para.trim()) { lines.push(''); continue; }
@@ -7030,12 +8099,22 @@ export const SCREENS = {
       const jit = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 3) : 0;
 
       drawText(x, 'RECORDED FROM THE PENDULUMS', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
-      drawText(x, g.knownGlyphHint(), { x: W / 2, y: b.top + 11, scale: 1, align: 'center', color: JADE });
+      /* Four numerals against four glyph names is 269 pixels at its worst —
+         every pendulum found and every one of them SPIRAL — inside a panel
+         that is 204 wide on a 240 frame, so it ran off both edges. It breaks
+         at the gaps it already has and the sockets drop by the rows it took,
+         which keeps every numeral beside its own glyph. */
+      const known = g.knownGlyphHint();
+      const room = W - 36;                       // the panel, inside its rules
+      const hint = textWidth(known, 1) <= room ? [known] : wrapText(known, room, 1, 1);
+      hint.forEach((ln, i) => drawText(x, ln, {
+        x: W / 2, y: b.top + 11 + i * 9, scale: 1, align: 'center', color: JADE,
+      }));
 
       const GW = 36, GAP = 8;
       const total = 4 * GW + 3 * GAP;
       const left = Math.round((W - total) / 2) + jit;
-      const y = b.top + 30;
+      const y = b.top + 30 + (hint.length - 1) * 9;
       const rows = [];
       for (let i = 0; i < 4; i++) {
         const bx = left + i * (GW + GAP);
@@ -7046,8 +8125,8 @@ export const SCREENS = {
           x: bx + GW / 2, y: y + GW + 1, scale: 1, align: 'center', color: on ? GOLD : DIM,
         });
         if (on) {
-          drawText(x, '^', { x: bx + GW / 2, y: y - 8, scale: 1, align: 'center', color: GOLD });
-          drawText(x, 'v', { x: bx + GW / 2, y: y + GW + 11, scale: 1, align: 'center', color: GOLD });
+          drawText(x, '↑', { x: bx + GW / 2, y: y - 8, scale: 1, align: 'center', color: GOLD });
+          drawText(x, '↓', { x: bx + GW / 2, y: y + GW + 11, scale: 1, align: 'center', color: GOLD });
         }
         rows.push({ x: bx, y, w: GW, h: GW + 10 });
       }
@@ -7078,7 +8157,7 @@ export const SCREENS = {
       return rows;
     },
     key(code, s, g, st) {
-      return nav(code, s, 2, (i) => { if (i === 0) g.respawn(); else g.quitToTitle(); });
+      return nav(code, s, 2, (i) => { if (i === 0) g.respawn(); else g.quitToTitle(); }, null, g);
     },
   },
 
@@ -7086,25 +8165,40 @@ export const SCREENS = {
   ending: {
     draw(x, W, H, s, g, t) {
       x.fillStyle = '#100a04'; x.fillRect(0, 0, W, H);
+      /* The outermost ring was a flat 124 from the middle, which is wider
+         than half of a 240 buffer — the last few sparks fell off the right
+         edge. The rings reach as far as the frame allows instead, squashed
+         by the same 0.6 the ellipse already uses. */
+      const reach = Math.min(W / 2 - 4, (H / 2 - 4) / 0.6);
       for (let i = 0; i < 60; i++) {
         const a = (i * 2.399 + t * 0.2);
-        const r = (i % 20) * 6 + 10;
+        const r = 10 + (i % 20) * ((reach - 10) / 19);
         x.fillStyle = i % 3 ? 'rgba(255,210,74,.12)' : 'rgba(255,240,180,.2)';
         x.fillRect(W / 2 + Math.cos(a) * r, H / 2 + Math.sin(a) * r * 0.6, 1, 1);
       }
-      drawText(x, 'YOU FOUND IT', { x: W / 2, y: 22, scale: 1, align: 'center', color: GOLD });
-      drawText(x, 'THE IDOL OF', { x: W / 2, y: 36, scale: 2, align: 'center', color: GOLD_LT });
-      drawText(x, 'KING ILLIC', { x: W / 2, y: 54, scale: 2, align: 'center', color: GOLD });
+      /* The whole column was written against a 224 tall buffer. Five stat
+         rows from y=100 put the menu top at 158, so TITLE was drawn at 186
+         on a 180 tall frame and its highlight below that — a row you could
+         still arrow onto and never see. The head of the card closes up, and
+         the menu is clamped so the last highlight always lands. */
+      const tight = H < 200;
+      drawText(x, 'YOU FOUND IT', { x: W / 2, y: tight ? 10 : 22, scale: 1, align: 'center', color: GOLD });
+      drawText(x, 'THE IDOL OF', { x: W / 2, y: tight ? 20 : 36, scale: 2, align: 'center', color: GOLD_LT });
+      drawText(x, 'KING ILLIC', { x: W / 2, y: tight ? 36 : 54, scale: 2, align: 'center', color: GOLD });
 
       const st2 = s.stats || {};
-      drawText(x, st2.time || '00:00.00', { x: W / 2, y: 78, scale: 2, align: 'center', color: GOLD_LT });
-      let y = 100;
+      drawText(x, st2.time || '00:00.00', { x: W / 2, y: tight ? 56 : 78, scale: 2, align: 'center', color: GOLD_LT });
+      let y = tight ? 78 : 100;
       for (const [k, v] of (st2.rows || [])) {
         drawText(x, k, { x: W / 2 - 6, y, scale: 1, align: 'right', color: DIM });
         drawText(x, v, { x: W / 2 + 6, y, scale: 1, color: GOLD_LT });
-        y += 10;
+        y += tight ? 9 : 10;
       }
-      const rows = menuList(x, ['PLAY AGAIN', 'COPY BRAG', 'TITLE'], s.sel, W / 2, y + 8, t, { width: 120 });
+      const items = ['PLAY AGAIN', 'COPY BRAG', 'TITLE'];
+      const GAP = 14;
+      // the last highlight runs to top + (n-1)*gap + 8, and has to be on screen
+      const top = Math.min(y + 8, H - (items.length - 1) * GAP - 12);
+      const rows = menuList(x, items, s.sel, W / 2, top, t, { width: 120 });
       return rows;
     },
     key(code, s, g, st) {
@@ -7113,7 +8207,7 @@ export const SCREENS = {
         if (i === 0) g.playAgain();
         else if (i === 1) g.copyBrag();
         else g.quitToTitle();
-      });
+      }, null, g);
     },
   },
 };
@@ -7196,7 +8290,7 @@ const OPTION_DEFS = [
    PIXEL GLYPHS (shared by dials and the chart)
    =========================================================== */
 
-/** Hand-drawn 24px marks for the three sabotages. */
+/** Hand-drawn marks for the six sabotages, on a 12x12 grid at any size. */
 function drawSabotageIcon(x, kind, ox, oy, size, lit, t) {
   const u = size / 12;
   const p = (gx, gy, w, h, col) => {
@@ -7256,6 +8350,19 @@ function drawSabotageIcon(x, kind, ox, oy, size, lit, t) {
     p(1, 10 + j, 4, 1, C('#b0a488', '#4a463a'));
     p(8, 9, 3, 3, C('#6a6a72', '#2e2e34'));
     p(9, 10, 1, 1, C('#c8c8d0', '#4a4a52'));
+  } else if (kind === 'shut') {
+    /* Ferdi's counter with the roller coming down over it. SHUT SHOP and JAM
+       sit next to each other in the rack and used to carry the same mark,
+       because only four kinds were ever drawn and both fell into the else.
+       Nothing here is finer than one grid unit — the rack draws at 13, which
+       is about a pixel a unit. */
+    p(1, 9, 10, 1, C('#8a7a52', '#453d29'));          // the counter
+    p(2, 10, 1, 2, C('#6a5c3c', '#332c1e'));
+    p(9, 10, 1, 2, C('#6a5c3c', '#332c1e'));
+    p(1, 0, 10, 1, C('#6a6a72', '#2e2e34'));          // the housing it rolls out of
+    const drop = lit ? 2 + (Math.floor(t * 3) % 6) : 7;
+    for (let i = 0; i < drop; i++) p(2, 1 + i, 8, 1, C('#a89a7a', '#4a443a'));
+    p(2, 1 + drop, 8, 1, C('#5a4a3a', '#2a241c'));    // the bottom rail, darker
   } else {
     // a pendulum arrested mid-swing, with a bar jammed through it
     p(5, 0, 2, 1, C('#8a7a52', '#453d29'));
@@ -7412,21 +8519,38 @@ function mapIcon(x, kind, cx, cy, t) {
   }
 }
 
-export function drawChart(x, ox, oy, S, data, t) {
-  if (!data) return;
+/* ===========================================================
+   THE PAPER UNDER THE CHART
+
+   The parchment, the land, the contours, the coast and the grid depend on
+   nothing but where the chart is looking — and drawChart runs on every
+   rendered frame. The contour pass alone samples the terrain function once
+   per pixel, which is fifty thousand noise evaluations a frame at the
+   default resolution and two million at native, all of it recomputing a
+   picture that had not changed since the last frame. The map stuttered and
+   panning it lagged.
+
+   So the static layers are rasterised once into an offscreen canvas and
+   blitted until the pan, the zoom or the size changes. The cache hangs off
+   the chart data object rather than sitting in a module-level map keyed on
+   the numbers: a rebuilt island makes a new data object, and a bitmap of
+   the old island's coastline would be a lie.
+
+   Everything that moves — the icons, the blinking marks, the pip that is
+   you — is still drawn live on top, in drawChart.
+   =========================================================== */
+const _chartBase = new WeakMap();
+
+function drawChartBase(x, S, data, cx, cz, zoom, span, half) {
   const R = data.radius;
-  const zoom = Math.max(1, Math.min(5, data.zoom || 1));
-  const cx = data.cx || 0, cz = data.cz || 0;
-  const span = R / zoom;                       // world half-extent on screen
-  const half = S / 2 - 6;
   const toPx = (wx, wz) => [
-    ox + S / 2 + ((wx - cx) / span) * half,
-    oy + S / 2 + ((wz - cz) / span) * half,
+    S / 2 + ((wx - cx) / span) * half,
+    S / 2 + ((wz - cz) / span) * half,
   ];
-  const onMap = (sx, sy) => sx > ox + 2 && sx < ox + S - 2 && sy > oy + 2 && sy < oy + S - 2;
+  const onMap = (sx, sy) => sx > 2 && sx < S - 2 && sy > 2 && sy < S - 2;
 
   // parchment with a dithered grain
-  ditherRect(x, ox, oy, S, S, '#d8c69a', PAPER, 0.5, 1);
+  ditherRect(x, 0, 0, S, S, '#d8c69a', PAPER, 0.5, 1);
 
   /* Land. Sampled coarsely so it reads as something drawn, with a finer
      step as you zoom in — there is no point sampling every two pixels of a
@@ -7448,7 +8572,7 @@ export function drawChart(x, ox, oy, S, data, t) {
         : h < 33 ? '#647a4a'
         : h < 42 ? '#7e7a5e'
         : '#95907a';
-      x.fillRect(ox + pxx, oy + py, STEP, STEP);
+      x.fillRect(pxx, py, STEP, STEP);
     }
   }
 
@@ -7457,16 +8581,18 @@ export function drawChart(x, ox, oy, S, data, t) {
   const BANDS = zoom >= 2 ? [4, 10, 18, 26, 34] : [10, 24];
   x.fillStyle = 'rgba(70,56,26,.20)';
   for (let py = 0; py < S; py += 1) {
+    const wz = cz + ((py - S / 2) / half) * span;
+    /* The sample a pixel to the right is the next pixel's own sample, so it
+       is carried along the row instead of being taken a second time. */
+    let h = data.heightAt(cx + ((0 - S / 2) / half) * span, wz);
     for (let pxx = 0; pxx < S; pxx += 1) {
-      const wx = cx + ((pxx - S / 2) / half) * span;
-      const wz = cz + ((py - S / 2) / half) * span;
-      const h = data.heightAt(wx, wz);
-      if (h < 0) continue;
-      const wx2 = cx + ((pxx + 1 - S / 2) / half) * span;
-      const h2 = data.heightAt(wx2, wz);
-      for (const bnd of BANDS) {
-        if ((h < bnd) !== (h2 < bnd)) { x.fillRect(ox + pxx, oy + py, 1, 1); break; }
+      const h2 = data.heightAt(cx + ((pxx + 1 - S / 2) / half) * span, wz);
+      if (h >= 0) {
+        for (const bnd of BANDS) {
+          if ((h < bnd) !== (h2 < bnd)) { x.fillRect(pxx, py, 1, 1); break; }
+        }
       }
+      h = h2;
     }
   }
 
@@ -7490,15 +8616,63 @@ export function drawChart(x, ox, oy, S, data, t) {
   for (let g0 = -Math.ceil(R / GRID) * GRID; g0 <= R; g0 += GRID) {
     const [gx] = toPx(g0, 0);
     const [, gy] = toPx(0, g0);
-    if (gx > ox + 2 && gx < ox + S - 2) x.fillRect(Math.round(gx), oy + 2, 1, S - 4);
-    if (gy > oy + 2 && gy < oy + S - 2) x.fillRect(ox + 2, Math.round(gy), S - 4, 1);
+    if (gx > 2 && gx < S - 2) x.fillRect(Math.round(gx), 2, 1, S - 4);
+    if (gy > 2 && gy < S - 2) x.fillRect(2, Math.round(gy), S - 4, 1);
   }
+}
+
+export function drawChart(x, ox, oy, S, data, t) {
+  if (!data) return;
+  const R = data.radius;
+  const zoom = Math.max(1, Math.min(5, data.zoom || 1));
+  const cx = data.cx || 0, cz = data.cz || 0;
+  const span = R / zoom;                       // world half-extent on screen
+  const half = S / 2 - 6;
+  const toPx = (wx, wz) => [
+    ox + S / 2 + ((wx - cx) / span) * half,
+    oy + S / 2 + ((wz - cz) / span) * half,
+  ];
+  const onMap = (sx, sy) => sx > ox + 2 && sx < ox + S - 2 && sy > oy + 2 && sy < oy + S - 2;
+
+  /* The paper, the land, the contours, the coast and the grid, off the
+     shelf if the view has not moved. See drawChartBase.
+
+     The cache used to be keyed on the pan centre, which meant every frame
+     of a drag threw the whole bitmap away and re-sampled the terrain a
+     million times — the chart ran at a few frames a second at native
+     resolution and the drag it was meant to serve was the one thing it
+     could not do. So it is rasterised a quarter wider than the window on
+     every side and a moving sub-rectangle is blitted out of it; the
+     terrain is only touched again when the pan walks off that margin. */
+  const M = Math.round(S / 4);
+  const SB = S + M * 2;
+  let base = _chartBase.get(data);
+  if (!base || base.canvas.width !== SB) {
+    const c = document.createElement('canvas');
+    c.width = SB; c.height = SB;
+    base = { cx: NaN, cz: NaN, zoom: -1, canvas: c, ctx: c.getContext('2d') };
+    base.ctx.imageSmoothingEnabled = false;
+    _chartBase.set(data, base);
+  }
+  // where the cached centre sits now, in screen pixels
+  let dx = ((base.cx - cx) / span) * half;
+  let dz = ((base.cz - cz) / span) * half;
+  // NaN on a fresh cache fails both tests, which is the rebuild we want
+  if (base.zoom !== zoom || !(Math.abs(dx) < M - 1) || !(Math.abs(dz) < M - 1)) {
+    base.cx = cx; base.cz = cz; base.zoom = zoom;
+    dx = dz = 0;
+    /* Same span and half on a larger canvas: the scale is unchanged and
+       the extra pixels are simply more chart. */
+    drawChartBase(base.ctx, SB, data, cx, cz, zoom, span, half);
+  }
+  x.imageSmoothingEnabled = false;
+  x.drawImage(base.canvas, Math.round(M - dx), Math.round(M - dz), S, S, ox, oy, S, S);
 
   /* ---- labels are collected and placed at the end ---- */
   const labels = [];
-  const label = (txt, sx, sy, col) => {
+  const label = (txt, sx, sy, col, icon) => {
     if (!txt) return;
-    labels.push({ txt, x: sx, y: sy, col: col || '#3f2f14' });
+    labels.push({ txt, x: sx, y: sy, col: col || '#3f2f14', icon: icon && POI_ICONS[icon] ? icon : null });
   };
 
   /* The landmarks, as little sprites rather than scribbles with their
@@ -7541,7 +8715,7 @@ export function drawChart(x, ox, oy, S, data, t) {
         x.fillRect(sx + i, sy + i, 2, 2);
         x.fillRect(sx + i, sy - i, 2, 2);
       }
-      label(done ? 'DUG' : 'X', sx, sy + 7, done ? '#5a5a4a' : '#8a1a10');
+      label(done ? 'DUG' : 'X', sx, sy + 7, done ? '#5a5a4a' : '#8a1a10', done ? null : 'dig');
     }
   }
 
@@ -7563,7 +8737,9 @@ export function drawChart(x, ox, oy, S, data, t) {
       x.fillRect(sx - 6, sy - 6, 13, 1); x.fillRect(sx - 6, sy + 6, 13, 1);
       x.fillRect(sx - 6, sy - 6, 1, 13); x.fillRect(sx + 6, sy - 6, 1, 13);
     }
-    label(m.label, sx, sy - 13, col);
+    /* The mark carries its own sprite: Castaways only ever puts the
+       listening post here, and the compass already draws that as a post. */
+    label(m.label, sx, sy - 13, col, m.icon || 'pendulum');
     if (m.glyph) drawGlyphPixels(x, m.glyph, sx - 5, sy + 7, 11, '#2f6a4a');
   }
   for (const r of (data.relics || [])) {
@@ -7612,7 +8788,7 @@ export function drawChart(x, ox, oy, S, data, t) {
       x.fillRect(sx - 8, sy - 8, 17, 1); x.fillRect(sx - 8, sy + 7, 17, 1);
       x.fillRect(sx - 8, sy - 8, 1, 16); x.fillRect(sx + 8, sy - 8, 1, 16);
     }
-    label('REPAIR', sx, sy + 8, '#7a2418');
+    label('REPAIR', sx, sy + 8, '#7a2418', 'fix');
   }
   // ghosts get to watch the living move about
   for (const o of (data.others || [])) {
@@ -7626,11 +8802,14 @@ export function drawChart(x, ox, oy, S, data, t) {
     const [sx, sy] = toPx(data.player.x, data.player.z);
     if (onMap(sx, sy)) {
       // a proper "you are here", with a heading pip
-      x.fillStyle = '#c02a1a'; x.fillRect(sx - 3, sy - 3, 7, 7);
+      /* Below decks the pip is not where you are, it is where you went
+         down; a muted red says so without a second legend. */
+      const pip = data.inside ? '#7a2418' : '#c02a1a';
+      x.fillStyle = pip; x.fillRect(sx - 3, sy - 3, 7, 7);
       x.fillStyle = '#fff'; x.fillRect(sx - 1, sy - 1, 3, 3);
       if (data.facing !== undefined) {
         const fx = sx + Math.sin(data.facing) * 7, fy = sy + Math.cos(data.facing) * 7;
-        x.fillStyle = '#c02a1a'; x.fillRect(Math.round(fx) - 1, Math.round(fy) - 1, 3, 3);
+        x.fillStyle = pip; x.fillRect(Math.round(fx) - 1, Math.round(fy) - 1, 3, 3);
       }
     }
   }
@@ -7641,7 +8820,23 @@ export function drawChart(x, ox, oy, S, data, t) {
      over something else. */
   const placed = [];
   for (const L of labels) {
-    const w = textWidth(L.txt, 1);
+    /* A named row on the chart carries the same little picture the compass
+       gives it, so the two read as one language rather than two. */
+    const iw = L.icon ? POI_ICON_W + 2 : 0;
+    /* A twenty-two character chore name is a hundred and thirty-one pixels
+       against a square that is a hundred and fifteen at the 180 setting, so
+       the clamp had nothing to clamp to and the name ran out over the
+       border. It is cut to what the square holds, and cut before it is
+       placed, so the rectangle the next label tests against is the one
+       actually printed. */
+    let txt = L.txt;
+    let w = textWidth(txt, 1) + iw;
+    const maxW = S - 6;
+    if (w > maxW) {
+      const fit = Math.max(1, Math.floor((maxW - iw + 1) / 6));   // 6px a glyph
+      txt = String(txt).slice(0, fit);
+      w = textWidth(txt, 1) + iw;
+    }
     let lx = Math.round(Math.max(ox + 3, Math.min(ox + S - w - 3, L.x - w / 2)));
     let ly = Math.round(L.y);
     let ok = false;
@@ -7653,7 +8848,8 @@ export function drawChart(x, ox, oy, S, data, t) {
     }
     if (!ok || ly < oy + 2 || ly > oy + S - 9) continue;
     placed.push({ x: lx, y: ly, w });
-    drawText(x, L.txt, { x: lx, y: ly, scale: 1, color: L.col, shadowColor: PAPER });
+    if (L.icon) drawPoiIcon(x, L.icon, lx, ly, t);
+    drawText(x, txt, { x: lx + iw, y: ly, scale: 1, color: L.col, shadowColor: PAPER });
   }
 
   /* ---- furniture: compass rose, scale bar, the zoom you are at ---- */

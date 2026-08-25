@@ -50,11 +50,6 @@ export function noteSnapshot(t) {
   net.delay += (clamped - net.delay) * 0.15;
 }
 
-/** For the HUD and for tests. */
-export function netTiming() {
-  return { mean: net.mean, jitter: net.jitter, delay: net.delay };
-}
-
 export function colourHex(id) {
   return (COLOURS.find((c) => c.id === id) || COLOURS[0]).hex;
 }
@@ -87,6 +82,14 @@ export function dyeCastaway(parts, colourId) {
   paint(parts.arms.l.children[0], true);
   paint(parts.arms.r.children[0], true);
 }
+
+/* Every mark draws the same ring, and setShell used to build a fresh
+   RingGeometry each time an Agent's nearest victim changed — hundreds of
+   orphaned geometries over a round, none of them ever disposed. One shared
+   geometry costs nothing to keep: _shellFollow moves and scales the ring
+   mesh, never its geometry. */
+const RING_GEO = new THREE.RingGeometry(0.62, 0.86, 16, 1);
+RING_GEO.rotateX(-Math.PI / 2);
 
 export class Avatar {
   constructor(scene, mats, record) {
@@ -144,7 +147,6 @@ export class Avatar {
          because a body that freezes and teleports is far more obvious than
          one that drifts a few centimetres wrong. */
       if (target > newest.t) {
-        Avatar.coasted = (Avatar.coasted || 0) + 1;
         const prev = b[b.length - 2];
         const span = Math.max(1e-4, newest.t - prev.t);
         const over = Math.min(COAST, target - newest.t);
@@ -155,18 +157,23 @@ export class Avatar {
           newest.y + (newest.y - prev.y) * k2,
           newest.z + (newest.z - prev.z) * k2
         );
-        let d2 = newest.yaw - prev.yaw;
-        while (d2 > Math.PI) d2 -= Math.PI * 2;
-        while (d2 < -Math.PI) d2 += Math.PI * 2;
-        this.yaw = newest.yaw + d2 * Math.min(1, k2);
+        /* Shortest way round, but not by subtracting 2PI until it fits.
+           Nothing between a peer's keyboard and here rejects a yaw of 1e300,
+           and above ~5.6e16 `d -= Math.PI * 2` leaves d unchanged, so the
+           loop that used to be here never ended: one packet froze every tab
+           in the lobby. atan2 of the sine and cosine picks the same angle
+           and cannot spin. */
+        const d2 = Math.atan2(Math.sin(newest.yaw - prev.yaw), Math.cos(newest.yaw - prev.yaw));
+        const y2 = newest.yaw + d2 * Math.min(1, k2);
+        // a NaN written to rotation.y poisons the matrix and the body vanishes
+        if (Number.isFinite(y2)) this.yaw = y2;
         this.speed = Math.hypot(this.pos.x - px2, this.pos.z - pz2) / Math.max(1e-3, dt);
         this.mesh.position.copy(this.pos);
         this.mesh.rotation.y = this.yaw;
-        this._animate(dt);
+        this._animate(dt, newest.anim);
         this._shellFollow();
         return;
       }
-      Avatar.interp = (Avatar.interp || 0) + 1;
       // find the pair straddling `target`
       let i = b.length - 1;
       while (i > 0 && b[i - 1].t > target) i--;
@@ -179,17 +186,16 @@ export class Avatar {
         THREE.MathUtils.lerp(a.y, c.y, k),
         THREE.MathUtils.lerp(a.z, c.z, k)
       );
-      // shortest-way yaw
-      let d = c.yaw - a.yaw;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      this.yaw = a.yaw + d * k;
+      // shortest-way yaw, wrapped the way the coast branch above explains
+      const d = Math.atan2(Math.sin(c.yaw - a.yaw), Math.cos(c.yaw - a.yaw));
+      const y = a.yaw + d * k;
+      if (Number.isFinite(y)) this.yaw = y;
       this.speed = Math.hypot(this.pos.x - px, this.pos.z - pz) / Math.max(1e-3, dt);
     }
 
     this.mesh.position.copy(this.pos);
     this.mesh.rotation.y = this.yaw;
-    this._animate(dt);
+    this._animate(dt, b[b.length - 1].anim);
 
     this._shellFollow();
   }
@@ -226,7 +232,7 @@ export class Avatar {
    * bends their legs. This is the same cycle as Player._walkWeighted,
    * driven off the interpolated speed off the wire instead of your own.
    */
-  _animate(dt) {
+  _animate(dt, anim) {
     const p = this.parts;
     const running = THREE.MathUtils.clamp(this.speed / 7, 0, 1.5);
     const moving = this.speed > 0.4;
@@ -235,6 +241,37 @@ export class Avatar {
 
     if (!moving) {
       const L = (a, b, k = 0.12) => THREE.MathUtils.lerp(a, b, k);
+
+      /* Somebody standing at a task and somebody standing over a body look
+         identical otherwise, and telling those two apart across the island is
+         most of what Castaways is. The snapshot already carries the flag, so
+         spend it: hands up in front, busy with something. Negative rotation.x
+         is IN FRONT of the body — see the note in Player._walkWeighted. */
+      if (anim === 1) {
+        const w = Math.sin(performance.now() * 0.008) * 0.18;
+        p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.05);
+        p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.05);
+        if (p.knees) {
+          p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.14);
+          p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.14);
+        }
+        p.arms.l.rotation.x = L(p.arms.l.rotation.x, -1.02 + w);
+        p.arms.r.rotation.x = L(p.arms.r.rotation.x, -1.02 - w);
+        p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.22);
+        p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.22);
+        if (p.elbows) {
+          p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.75 - w);
+          p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.75 + w);
+        }
+        p.hips.rotation.z = L(p.hips.rotation.z, 0);
+        p.hips.rotation.y = L(p.hips.rotation.y, 0);
+        p.torso.rotation.x = L(p.torso.rotation.x, 0.22);
+        p.torso.rotation.z = L(p.torso.rotation.z, 0);
+        p.torso.rotation.y = L(p.torso.rotation.y, 0);
+        p.hips.position.y = L(p.hips.position.y, 0.88);
+        return;
+      }
+
       const b2 = Math.sin(ph * 0.0 + performance.now() * 0.0017) * 0.02;
       p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.02);
       p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.02);
@@ -293,6 +330,22 @@ export class Avatar {
     p.hips.position.y = 0.90 + Math.cos(ph * 2) * (0.013 + running * 0.020) - 0.010 * running;
   }
 
+  /* Unparenting the old shell left its material — and the ring's — alive on
+     the GPU, and _markTarget re-marks whenever the nearest victim changes, so
+     a round's worth of toggles piled up resources nothing would ever free.
+     What must NOT be freed here is the shell's geometry, which clone() shares
+     with the live body, and the ring's, which is the shared RING_GEO. */
+  _tearDownShell() {
+    if (this.shell) { this.shell.removeFromParent(); this.shell = null; }
+    if (this.shellRing) {
+      this.shellRing.removeFromParent();
+      this.shellRing.material.dispose();
+      this.shellRing = null;
+    }
+    if (this.shellMat) { this.shellMat.dispose(); this.shellMat = null; }
+    this.shellPairs = null;
+  }
+
   /**
    * A silhouette over the body.
    *
@@ -306,8 +359,7 @@ export class Avatar {
   setShell(kind) {
     if (this.shellKind === kind) return;
     this.shellKind = kind;
-    if (this.shell) { this.shell.removeFromParent(); this.shell = null; }
-    if (this.shellRing) { this.shellRing.removeFromParent(); this.shellRing = null; }
+    this._tearDownShell();
     if (!kind) return;
 
     const hot = kind === 'thermal';
@@ -332,9 +384,7 @@ export class Avatar {
 
     if (!hot) {
       // a ring on the ground, which is what actually reads at this distance
-      const rg = new THREE.RingGeometry(0.62, 0.86, 16, 1);
-      rg.rotateX(-Math.PI / 2);
-      const ring = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({
+      const ring = new THREE.Mesh(RING_GEO, new THREE.MeshBasicMaterial({
         color: 0xff6a5a, transparent: true, opacity: 0.85,
         side: THREE.DoubleSide, depthWrite: false, fog: false,
       }));
@@ -360,10 +410,40 @@ export class Avatar {
     if (this.shellRing) this.shellRing.visible = v;
   }
 
+  /**
+   * The dead look dead: the same body, rendered through.
+   *
+   * The material is swapped rather than the opacity set, because every
+   * castaway is built from the one shared `opaque` material the whole island
+   * uses — turning its opacity down would take the palms and the temple with
+   * it. The caller owns the ghost material and hands the same one to every
+   * avatar, so all the dead match and there is one extra program in the
+   * cache rather than one per player.
+   *
+   * @param {boolean} on
+   * @param {THREE.Material} mat  shared ghost material, from the caller
+   */
+  setGhost(on, mat) {
+    if (this.ghost === !!on) return;
+    this.ghost = !!on;
+    this.mesh.traverse((o) => {
+      if (!o.isMesh) return;
+      if (on) {
+        if (!o.userData.solidMat) o.userData.solidMat = o.material;
+        o.material = mat;
+      } else if (o.userData.solidMat) {
+        o.material = o.userData.solidMat;
+      }
+    });
+  }
+
   dispose() {
+    this._tearDownShell();
     this.mesh.removeFromParent();
-    this.shell?.removeFromParent();
-    this.shellRing?.removeFromParent();
+    /* buildCastaway merges a fresh set of geometries for every avatar, so they
+       are ours to free when a player leaves the roster — the materials are the
+       island's shared mats and must be left alone. */
+    this.mesh.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
   }
 }
 
@@ -400,5 +480,9 @@ export class Body {
     p.head.rotation.z = 0.4;
     // the shirt was tinted when the bones were built; nothing else to paint
   }
-  dispose() { this.mesh.removeFromParent(); }
+  dispose() {
+    this.mesh.removeFromParent();
+    // the bones are merged per body, so they go with it; the mats are shared
+    this.mesh.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+  }
 }

@@ -9,6 +9,14 @@ import { heightAt, biomeAt } from '../world/terrain.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
+/* One packed integer instead of an interpolated string. The collider grid is
+   read twice a frame — once for movement, once for the camera — so nine keys
+   a lookup was nine short-lived strings a lookup, on the hottest path there
+   is. Cells run to about +/-16 at a cell size of 8 and a bound of 128, so the
+   +/-4096 window this packs into is enormous headroom and the product stays
+   an exact integer. */
+const _key = (cx, cz) => (cx + 4096) * 8192 + (cz + 4096);
+
 /* ===========================================================
    MODEL
    =========================================================== */
@@ -398,11 +406,10 @@ export class Player {
 
     this.sensitivity = 1.4;
     this.invertY = false;
-    this.propColliders = null;   // for camera collision against trunks
 
     this.colliders = null;   // set by the scene
+    this._near = [];         // scratch buffer for nearbyColliders, see below
     this.bounds = 128;       // how far from the origin you may swim
-    this.footTimer = 0;
     this.onFootstep = null;
     this.frozen = false;
   }
@@ -413,20 +420,26 @@ export class Player {
     this.grid = new Map();
     this.cell = 8;
     for (const c of list) {
-      const k = `${Math.floor(c.x / this.cell)},${Math.floor(c.z / this.cell)}`;
+      const k = _key(Math.floor(c.x / this.cell), Math.floor(c.z / this.cell));
       if (!this.grid.has(k)) this.grid.set(k, []);
       this.grid.get(k).push(c);
     }
   }
 
+  /* The result is a shared buffer, not a fresh array: this runs twice every
+     frame and each call used to hand back a growing copy of every collider in
+     a 24-metre neighbourhood. Safe only because the two callers below walk it
+     and drop it before the other one asks; anything that wants to KEEP the
+     list must slice() it. */
   nearbyColliders(x, z) {
-    if (!this.grid) return [];
-    const out = [];
+    const out = this._near; out.length = 0;
+    if (!this.grid) return out;
     const cx = Math.floor(x / this.cell), cz = Math.floor(z / this.cell);
     for (let i = -1; i <= 1; i++) {
       for (let j = -1; j <= 1; j++) {
-        const a = this.grid.get(`${cx + i},${cz + j}`);
-        if (a) out.push(...a);
+        const a = this.grid.get(_key(cx + i, cz + j));
+        if (!a) continue;
+        for (let k = 0; k < a.length; k++) out.push(a[k]);
       }
     }
     return out;
@@ -536,10 +549,11 @@ export class Player {
       const wx = mz * sinY - mx * cosY;
       const wz = mz * cosY + mx * sinY;
 
-      const target = new THREE.Vector3(wx * speed, 0, wz * speed);
+      // two numbers, not a Vector3: the y of it was never once read
+      const tx = wx * speed, tz = wz * speed;
       const accel = this.grounded ? 15 : 6;
-      this.vel.x += (target.x - this.vel.x) * Math.min(1, accel * dt);
-      this.vel.z += (target.z - this.vel.z) * Math.min(1, accel * dt);
+      this.vel.x += (tx - this.vel.x) * Math.min(1, accel * dt);
+      this.vel.z += (tz - this.vel.z) * Math.min(1, accel * dt);
 
       // face the direction of travel
       const want = Math.atan2(wx, wz);
@@ -627,40 +641,60 @@ export class Player {
       this.inWater = 0;
     }
 
-    /* ---------- footsteps ---------- */
+    /* ---------- stride + footsteps ---------- */
     const hspeed = Math.hypot(this.vel.x, this.vel.z);
-    if (this.grounded && hspeed > 1.2) {
-      this.footTimer -= dt * hspeed;
-      if (this.footTimer <= 0) {
-        this.footTimer = 3.4;
-        if (this.onFootstep) {
-          this.onFootstep(this.inWater > 0.25 ? 'water' : biomeAt(this.pos.x, this.pos.z));
-        }
+    /* The legs and the sound used to run off two unrelated clocks: a step
+       sound every 3.4 metres travelled, against a leg cycle on its own fixed
+       angular rate. At walking pace about a third of the visible footfalls
+       were therefore silent and the rest drifted steadily against the feet,
+       which reads as a soundtrack playing near the castaway rather than his
+       own boots. Both now come off one stride length — the phase advances
+       with ground covered, half a turn to a footfall — so a sound lands on
+       every footfall at any speed. It fires at PI/2 and 3PI/2 rather than on
+       the multiples of PI because those are the phases where a foot is
+       planted; on the multiples the legs are level underneath him. */
+    const STRIDE = 2.2;   // metres of ground per footfall
+    if (hspeed > 0.4) {
+      const wasStep = Math.floor(this.walkPhase / Math.PI - 0.5);
+      this.walkPhase += hspeed * dt * (Math.PI / STRIDE);
+      if (this.grounded && hspeed > 1.2 && this.onFootstep
+          && Math.floor(this.walkPhase / Math.PI - 0.5) > wasStep) {
+        this.onFootstep(this.inWater > 0.25 ? 'water' : biomeAt(this.pos.x, this.pos.z));
       }
-    } else {
-      this.footTimer = 0.6;
     }
 
     /* ---------- animate ---------- */
-    this.animate(dt, hspeed, sprinting);
+    this.animate(dt, hspeed);
 
     /* ---------- camera ---------- */
     this.updateCamera(dt, groundOf);
+    /* The camera has to be a child of whichever scene its own mesh is in: the
+       player moves between the island, the temple, the listening post and the
+       room behind the painting, and three.js only refreshes a camera's world
+       matrix when the scene being rendered is the one it hangs off. This used
+       to live down in the first-person hand code, so after a single press of C
+       the camera stayed a child of the island for good and everywhere else it
+       sat where it sits this frame while pointing where it pointed last —
+       which reads as the castaway sliding off centre whenever you swing the
+       mouse and snapping back when you stop. */
+    const sc = this.mesh.parent;
+    if (sc && this.camera.parent !== sc) sc.add(this.camera);
     if (!this.thirdPerson) { this._buildViewHands(); this.updateViewHands(hspeed); }
     else if (this.viewHands) this.viewHands.visible = false;
 
     return { sprinting, hspeed };
   }
 
-  animate(dt, hspeed, sprinting) {
+  animate(dt, hspeed) {
     const p = this.parts;
     this.bobT += dt;
 
     const running = THREE.MathUtils.clamp(hspeed / this.SPEED, 0, 1.5);
-    this.walkPhase += dt * (4.6 + running * 5.2) * (hspeed > 0.4 ? 1 : 0);
+    // walkPhase itself is advanced in update(), off distance travelled, so the
+    // feet and the footstep sounds cannot come off one another's clock.
 
-    if (Player.walkStyle === 'plain') this._walkPlain(dt, hspeed, running);
-    else this._walkWeighted(dt, hspeed, running);
+    if (Player.walkStyle === 'plain') this._walkPlain(hspeed, running);
+    else this._walkWeighted(hspeed, running);
 
     // throw pose overrides the right arm
     if (this.throwAnim > 0) {
@@ -693,7 +727,7 @@ export class Player {
      no knees, no weight, and the body bobbing on the absolute value of the
      same wave.
      =========================================================== */
-  _walkPlain(dt, hspeed, running) {
+  _walkPlain(hspeed, running) {
     const p = this.parts;
     const ph = this.walkPhase;
     const swing = Math.sin(ph) * (0.45 + running * 0.45);
@@ -760,7 +794,7 @@ export class Player {
         A plain sine spends equal time either way, which is what makes a
         pendulum look like a pendulum.
      =========================================================== */
-  _walkWeighted(dt, hspeed, running) {
+  _walkWeighted(hspeed, running) {
     const p = this.parts;
     const ph = this.walkPhase;
     const moving = hspeed > 0.4;
@@ -1018,9 +1052,47 @@ export class Player {
           const t = (bound - o) / d;
           return t > 0 ? t : Infinity;
         };
-        limit = Math.min(limit, slab(ox, dirX, box.minX + M, box.maxX - M));
-        limit = Math.min(limit, slab(oz, dirZ, box.minZ + M, box.maxZ - M));
-        limit = Math.min(limit, slab(oy, dirY, 0.55, (box.maxY ?? 4.0) - 0.35));
+        /* Horizontally the origin can already be past the inset bound: the body
+           clamps at RADIUS (0.42) but this insets by M (0.5), and the shoulder
+           offset moves the ray origin another half metre sideways. An origin
+           already outside has no free distance at all, and answering Infinity
+           there is exactly what let the camera keep its full 2.9 and sail
+           through the masonry when you backed into a wall and turned round.
+           Used for the floor as well, and for the same reason — see the
+           direction split below; only the ceiling still wants Infinity. */
+        const slabH = (o, d, lo, hi) => {
+          if (Math.abs(d) < 1e-5) return Infinity;
+          const bound = d > 0 ? hi : lo;
+          const t = (bound - o) / d;
+          return t > 0 ? t : 0;
+        };
+        limit = Math.min(limit, slabH(ox, dirX, box.minX + M, box.maxX - M));
+        limit = Math.min(limit, slabH(oz, dirZ, box.minZ + M, box.maxZ - M));
+        /* The lower bound used to be the absolute 0.55 — the height of the
+           hall floor, not of the floor you are standing on. On the temple
+           dais and the entrance flight, which sit two and a half metres up,
+           the camera sank straight through the stone as you looked up at the
+           Idol and you watched the end of the game from inside the masonry.
+           Sample the ground under both ends of the ray and take the higher of
+           the two: the camera clears whichever plateau it is over, and it is
+           still one smoothly varying number a frame rather than the eight-step
+           walk this branch was written to avoid. */
+        const gLo = Math.max(groundOf(ox, oz), groundOf(ox + dirX * dist, oz + dirZ * dist));
+        /* Split by direction. Looking UP, an origin already above the ceiling
+           bound has to answer Infinity — the temple's is the wall height and
+           nobody reaches it, but jamming the boom to its 1.3 minimum for a
+           bound nothing can cross would be worse than not clamping.
+
+           Looking DOWN it has to answer zero, and this is the case the
+           ground sample was added for: at the foot of the dais flight the
+           stone ahead stands higher than the camera does, so the lower bound
+           inverts against the origin, and `slab`'s Infinity would hand the
+           boom its full reach straight down through the staircase — further
+           inside the stone than before any of this was touched. */
+        const floorHi = (box.maxY ?? 4.0) - 0.35;
+        limit = Math.min(limit, dirY > 0
+          ? slab(oy, dirY, gLo + 0.55, floorHi)
+          : slabH(oy, dirY, gLo + 0.55, floorHi));
         // never inside the body: at anything under 1.3 the camera is in the head
         dist = Math.max(1.3, Math.min(dist, limit));
       }
@@ -1040,6 +1112,15 @@ export class Player {
         targetY + dirY * this.camDistCur,
         this.pos.z + dirZ * this.camDistCur + rightZ * SHOULDER
       );
+      /* Jolt the camera but leave the target on the player: offsetting both
+         is a pure translation of the orbit and reads as nothing at three
+         metres. Scale with distance so the far end of the leash swings as
+         much as the near one. */
+      const j3 = this.shake > 0 ? this.shake * 0.09 * (1 + this.camDistCur * 0.5) : 0;
+      if (j3) {
+        cam.position.x += Math.sin(this.shake * 47) * j3;
+        cam.position.y += Math.sin(this.shake * 31) * j3;
+      }
       cam.lookAt(
         this.pos.x + rightX * SHOULDER * 0.45,
         targetY + 0.22,
@@ -1147,13 +1228,6 @@ export class Player {
     if (!g) return;
     g.visible = !this.thirdPerson && !this.dead;
     if (!g.visible) return;
-    /* Anything parented to the camera only renders if the camera is in the
-       scene being traversed — and the player moves between the island, the
-       temple, the listening post and the room behind the painting, so the
-       camera has to follow whichever scene its own mesh is in.
-       Without this the hands existed, were visible, and were never drawn. */
-    const sc = this.mesh.parent;
-    if (sc && this.camera.parent !== sc) sc.add(this.camera);
     /* The stride moves them up and down and rocks them, and never along z.
        Anything that changes their distance from the eye walks them through
        the near plane. */

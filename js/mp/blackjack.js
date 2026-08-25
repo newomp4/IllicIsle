@@ -54,10 +54,14 @@ export function score(hand) {
   };
 }
 
-export function handText(hand) {
+/* The split flag has to come in from the caller because score() only sees the
+   cards: two cards totalling twenty-one on a split hand is not a natural, and
+   settle() already pays it as an ordinary win, so calling it BLACKJACK on
+   screen promised three to two and then paid even money. */
+export function handText(hand, split = false) {
   const s = score(hand);
   if (s.bust) return `${s.total} BUST`;
-  if (s.blackjack) return 'BLACKJACK';
+  if (s.blackjack && !split) return 'BLACKJACK';
   return s.soft && s.total !== 21 ? `${s.total - 10}/${s.total}` : String(s.total);
 }
 
@@ -95,6 +99,15 @@ export function deal({ bet, rand = Math.random, shoe = null }) {
   return state;
 }
 
+/* The shoe can run out mid-round in the extreme case — a triple split with
+   four low hands drawn from the last few cards — and popping an empty shoe
+   pushed undefined into a hand, which every later score() then threw on. Cut
+   a fresh shoe in instead. */
+function take(st) {
+  if (!st.shoe.length) { st.shoe = newShoe(st.rand); st.reshuffled = true; }
+  return st.shoe.pop();
+}
+
 export function canDouble(st) {
   const h = st.hands[st.active];
   return !!h && !h.done && h.cards.length === 2 && !h.doubled;
@@ -109,7 +122,7 @@ export function canSplit(st) {
 export function hit(st) {
   const h = st.hands[st.active];
   if (!h || h.done) return st;
-  h.cards.push(st.shoe.pop());
+  h.cards.push(take(st));
   const sc = score(h.cards);
   if (sc.bust || sc.total === 21) h.done = true;
   advance(st);
@@ -129,7 +142,7 @@ export function double(st) {
   const h = st.hands[st.active];
   h.bet *= 2;
   h.doubled = true;
-  h.cards.push(st.shoe.pop());
+  h.cards.push(take(st));
   h.done = true;
   advance(st);
   return st;
@@ -139,8 +152,8 @@ export function split(st) {
   if (!canSplit(st)) return st;
   const h = st.hands[st.active];
   const moved = h.cards.pop();
-  const nh = { cards: [moved, st.shoe.pop()], bet: h.bet, done: false, doubled: false, split: true };
-  h.cards.push(st.shoe.pop());
+  const nh = { cards: [moved, take(st)], bet: h.bet, done: false, doubled: false, split: true };
+  h.cards.push(take(st));
   h.split = true;
   st.hands.splice(st.active + 1, 0, nh);
   /* Split aces get one card each and stand, which is the standard rule and
@@ -163,7 +176,7 @@ export function dealerStep(st) {
      already busted he does not draw at all — there is nothing to beat. */
   const allBust = st.hands.every((h) => score(h.cards).bust);
   if (allBust || sc.total >= 17) { settle(st); return true; }
-  st.dealer.push(st.shoe.pop());
+  st.dealer.push(take(st));
   if (score(st.dealer).total >= 17) { settle(st); return true; }
   return false;
 }

@@ -12,7 +12,7 @@
 
 import * as THREE from 'three';
 import {
-  mergeGeos, weldGeos, box, cyl, plane, tint, blankUV,
+  mergeGeos, weldGeos, box, cyl, plane, tint,
 } from '../lib/geo.js';
 import { buildSignTexture } from '../lib/textures.js';
 import { drawText, textWidth } from '../lib/bitfont.js';
@@ -232,6 +232,45 @@ function buildMarquee(mats, word, w, h, hue) {
   return g;
 }
 
+/* All twelve drums on the boat are the same drum: the same strip canvas,
+   the same tube, the same end cap. They are cut once and shared rather
+   than re-rasterised four machines over — and cut on the first call, not
+   at import, so loading the module still touches nothing. */
+let REEL_PARTS = null;
+function reelParts() {
+  if (REEL_PARTS) return REEL_PARTS;
+  const drum = new THREE.CylinderGeometry(0.21, 0.21, 0.21, 14, 1, true);
+  drum.rotateZ(Math.PI / 2);
+  /* The strip is painted down the canvas, but a cylinder's V runs along
+     its axis and its U round the circumference. Mapped as it came, all six
+     symbols lay side by side across the 21cm width of the drum and not one
+     of them ever faced you — spinning it only sheared the picture. Swap the
+     two so the strip wraps the drum instead, and flip the axial one,
+     because rotateZ sends the cylinder's +Y end to -X and the symbols
+     would otherwise read back to front. */
+  const uv = drum.attributes.uv;
+  for (let k = 0; k < uv.count; k++) {
+    const u = uv.getX(k), v = uv.getY(k);
+    uv.setXY(k, 1 - v, u);
+  }
+  uv.needsUpdate = true;
+  const cap = new THREE.CylinderGeometry(0.21, 0.21, 0.22, 12);
+  cap.rotateZ(Math.PI / 2);
+  const tex = reelTexture();
+  REEL_PARTS = {
+    tex, drum, cap,
+    capMat: new THREE.MeshLambertMaterial({ color: 0xb8ac90 }),
+    /* Shared like the drum and the cap beside it: nothing ever writes to a
+       reel's material, so twelve identical copies only split the opaque
+       sort into twelve buckets. The bulb below stays per-machine — that one
+       really does change colour on its own. */
+    drumMat: new THREE.MeshLambertMaterial({
+      map: tex, color: 0xffffff, side: THREE.DoubleSide,
+    }),
+  };
+  return REEL_PARTS;
+}
+
 /* ---------- a slot machine ---------- */
 function buildSlot(rng, mats, index) {
   const g = new THREE.Group();
@@ -263,20 +302,13 @@ function buildSlot(rng, mats, index) {
   /* Three reels that actually turn, each carrying its symbols as painted
      bands so you can see them blur past rather than watching a blank drum. */
   const reels = [];
-  const bandTex = reelTexture();
-  const REEL = new THREE.CylinderGeometry(0.21, 0.21, 0.22, 12);
-  REEL.rotateZ(Math.PI / 2);
-  blankUV(REEL, 'goldDark');
+  const R = reelParts();
   for (let i = 0; i < 3; i++) {
-    const geo = new THREE.CylinderGeometry(0.21, 0.21, 0.21, 14, 1, true);
-    geo.rotateZ(Math.PI / 2);
-    const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      map: bandTex, color: 0xffffff, side: THREE.DoubleSide,
-    }));
+    const m = new THREE.Mesh(R.drum, R.drumMat);
     m.position.set(-0.24 + i * 0.24, 1.0, 0.34);
     g.add(m);
     // the drum ends, so it does not read as an open tube
-    const cap = new THREE.Mesh(REEL.clone(), new THREE.MeshLambertMaterial({ color: 0xb8ac90 }));
+    const cap = new THREE.Mesh(R.cap, R.capMat);
     cap.position.copy(m.position);
     cap.scale.set(0.98, 0.96, 0.96);
     g.add(cap);
@@ -328,8 +360,11 @@ function buildSlot(rng, mats, index) {
         // each drum runs down at its own rate, so they settle left to right
         r.rotation.x += (26 - i * 6) * Math.min(1, spin * 2.2) * dt;
       } else {
-        // ease onto the face that was decided
-        const want = -(stopAt[i] / SYMBOLS.length) * Math.PI * 2;
+        /* Ease onto the face that was decided. The half-symbol is not
+           slop: a whole number of symbols lands the seam between two of
+           them dead centre in the window, so aim at the middle of the
+           cell instead. */
+        const want = -((stopAt[i] + 0.5) / SYMBOLS.length) * Math.PI * 2;
         const cur = r.rotation.x % (Math.PI * 2);
         let d = want - cur;
         while (d > Math.PI) d -= Math.PI * 2;
@@ -449,8 +484,12 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     // caulked seams between the bays, which is what reads as planking
     P.push(tint(box(WID - 0.5, 0.05, 0.06, 'planks', { pos: [0, 1.46, bz + BAY / 2] }), G(0x3f3018)));
   }
-  // the fore and aft decks, so the planking runs the whole way
-  for (const [dz, dd] of [[-(LEN - 0.8) / 2 - 0.9, 1.0], [(LEN - 0.8) / 2 + 0.9, 1.0]]) {
+  /* the fore and aft decks, so the planking runs the whole way. They only
+     have to close the 0.4m the bays leave against the transom and the bow
+     face at |z| 12.975 — a metre of them hung a further 1.25m past the last
+     rib over open water, and you walked out onto planks with nothing under
+     them and fell through the sea. */
+  for (const [dz, dd] of [[-(LEN - 0.8) / 2 - 0.2, 0.2], [(LEN - 0.8) / 2 + 0.2, 0.2]]) {
     P.push(tint(box(WID - 2.2, 0.3, dd * 2, 'planks', { pos: [0, 1.3, dz] }), DECK));
   }
 
@@ -660,6 +699,12 @@ export function buildCasinoBoat(rng, mats, flameFactory) {
     // she rolls at anchor
     g.rotation.z = Math.sin(t * 0.55) * 0.022;
     g.rotation.x = Math.sin(t * 0.41 + 1) * 0.014;
+    /* Published for the deck platform, which is a flat slab and so left your
+       feet sinking into the planks at one end of the roll and hovering above
+       them at the other. The game reads these back rather than re-deriving
+       the same two sines a frame later and drifting out of step with them. */
+    g.userData.roll = g.rotation.z;
+    g.userData.pitch = g.rotation.x;
   };
   return g;
 }
@@ -868,7 +913,7 @@ export function buildVendingMachine(rng, mats) {
 }
 
 /* ---------- the plank bridge from the sand ---------- */
-export function buildBoatBridge(rng, mats, fromX, fromZ, toX, toZ, groundAt) {
+export function buildBoatBridge(rng, mats, fromX, fromZ, toX, toZ, groundAt, deckY = Infinity) {
   const g = new THREE.Group();
   const P = [];
   const dx = toX - fromX, dz = toZ - fromZ;
@@ -881,7 +926,7 @@ export function buildBoatBridge(rng, mats, fromX, fromZ, toX, toZ, groundAt) {
     const x = fromX + dx * t, z = fromZ + dz * t;
     // the deck rises from the sand to the gunwale
     const gy = groundAt(x, z);
-    const y = Math.max(gy + 0.2, 0.25) + t * t * 1.25;
+    const y = Math.min(Math.max(gy + 0.2, 0.25) + t * t * 1.25, deckY - 0.08);
     P.push(tint(box(1.9, 0.16, 1.5, 'planks', {
       pos: [x - fromX, y, z - fromZ], rot: [0, Math.atan2(ux, uz), 0],
     }), G(0x7a6242).multiplyScalar(0.8 + rng() * 0.4)));

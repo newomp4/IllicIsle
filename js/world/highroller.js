@@ -358,18 +358,6 @@ export function buildHighRoller(mats, flameFactory) {
   }
   scene.add(beef);
 
-  /* the cards on the baize: two pools of them, built once and moved */
-  const cardGeo = new THREE.BoxGeometry(0.34, 0.014, 0.48);
-  const cardMat = new THREE.MeshLambertMaterial({ color: 0xf2ecd8 });
-  const backMat = new THREE.MeshLambertMaterial({ color: 0x8a2018 });
-  const cards = [];
-  for (let i = 0; i < 24; i++) {
-    const m = new THREE.Mesh(cardGeo, i % 2 ? cardMat : cardMat.clone());
-    m.visible = false;
-    scene.add(m);
-    cards.push(m);
-  }
-
   /* lighting: the fire does most of it, and there is one shaded lamp low
      over the baize so the table is the brightest thing in the room */
   const tableLamp = new THREE.PointLight(0xffe0b8, 4.0, 16, 1.5);
@@ -385,7 +373,6 @@ export function buildHighRoller(mats, flameFactory) {
     scene.add(new THREE.Mesh(mergeGeos(L), mats.opaque));
   }
 
-  scene.userData.cards = cards;
   scene.userData.beef = beef;
   scene.userData.table = { x: 0, z: TZ };
   scene.userData.tick = (t, dt = 0.016) => {
@@ -442,5 +429,19 @@ export const HR_COLLIDERS = (() => {
   }
   // the dealer keeps his side of the table
   out.push({ x: 0, z: TZ - 4.3, r: 0.9 });
+  /* The columns either side of the way in were built but never made solid,
+     so you could walk through 4.4 metres of opaque wood on the way to the
+     table; 0.55 hugs the gilt plinth at their foot rather than the shaft. */
+  for (const sx of [-4.0, 4.0]) out.push({ x: sx, z: 7.8, r: 0.55 });
+  /* The stool centres sit at r = 4.0, which is outside every circle in the
+     table ring, so the "all solid" above was not true of them either. They
+     are kept thin on purpose: the seat is 0.34 in radius and the player is
+     pushed out to r + 0.42, so anything wider parks him beyond the 4.6 m the
+     table's SIT DOWN prompt reaches, and walking straight down the runner at
+     a stool would leave him stuck against it with no way to sit. */
+  for (let i = 0; i < 5; i++) {
+    const a = Math.PI * (0.18 + (i / 4) * 0.64);
+    out.push({ x: Math.cos(a) * 4.0, z: TZ + Math.sin(a) * 4.0, r: 0.16 });
+  }
   return out;
 })();

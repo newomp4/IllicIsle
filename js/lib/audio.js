@@ -465,9 +465,9 @@ export class GameAudio {
     this.section = 0;
     this.nextTime = 0;
     this.timer = null;
+    this._suspendT = null;
     this.musicVol = 0.32;
     this.sfxVol = 0.5;
-    this.duck = 1;
   }
 
   init() {
@@ -475,6 +475,12 @@ export class GameAudio {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     this.ctx = new AC();
+
+    /* Safari leaves 'interrupted' on its own schedule rather than on a gesture,
+       so this is the only moment the context can be picked back up. */
+    this.ctx.addEventListener('statechange', () => {
+      if (this.ctx.state === 'interrupted') this.resume();
+    });
 
     this.master = this.ctx.createGain();
     this.master.gain.value = this.enabled ? 1 : 0;
@@ -494,6 +500,14 @@ export class GameAudio {
     this.verbGain.gain.value = 0.26;
     this.verb.connect(this.verbGain);
     this.verbGain.connect(this.master);
+
+    /* The reverb return goes straight to master, so ducking musicBus only ever
+       ducked the dry music and left its wet ringing at full level under the
+       sound the duck was making room for. The music's sends pass through this
+       fader instead, which duckMusic() rides with the bus. */
+    this.musicVerbSend = this.ctx.createGain();
+    this.musicVerbSend.gain.value = 1;
+    this.musicVerbSend.connect(this.verb);
 
     this.noiseBuf = this._noise(2);
     this._buildVoices();
@@ -530,10 +544,12 @@ export class GameAudio {
          note never has to connect() or disconnect() anything. */
       const toMusic = ctx.createGain(); toMusic.gain.value = 0;
       const toSfx = ctx.createGain(); toSfx.gain.value = 0;
-      const toVerb = ctx.createGain(); toVerb.gain.value = 0;
+      const toVerbM = ctx.createGain(); toVerbM.gain.value = 0;
+      const toVerbS = ctx.createGain(); toVerbS.gain.value = 0;
       g.connect(toMusic); toMusic.connect(this.musicBus);
       g.connect(toSfx); toSfx.connect(this.sfxBus);
-      g.connect(toVerb); toVerb.connect(this.verb);
+      g.connect(toVerbM); toVerbM.connect(this.musicVerbSend);
+      g.connect(toVerbS); toVerbS.connect(this.verb);
 
       let src;
       if (kind === 'noise') {
@@ -547,7 +563,10 @@ export class GameAudio {
       }
       src.connect(f);
       src.start();
-      return { src, f, g, toMusic, toSfx, toVerb, until: 0, type: kind === 'noise' ? 'noise' : 'square' };
+      return {
+        src, f, g, toMusic, toSfx, toVerbM, toVerbS,
+        until: 0, music: false, type: kind === 'noise' ? 'noise' : 'square',
+      };
     };
 
     /* Twenty-four tonal voices covers bass, a three-note pad, a lead, a
@@ -574,11 +593,36 @@ export class GameAudio {
     return best;
   }
 
-  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+  /* WebKit has a state Chrome does not — 'interrupted', entered when another
+     app takes the audio session or the device sleeps — and it is not
+     'suspended', so testing only for that left Safari silent for the rest of
+     the page's life. Anything that is not already running is worth resuming,
+     except a context this class suspended itself with the sound turned off.
+     Old webkitAudioContext.resume() returns undefined, not a promise. */
+  resume() {
+    if (!this.ctx || !this.enabled || this.ctx.state === 'running') return;
+    try { Promise.resolve(this.ctx.resume()).catch(() => {}); } catch (e) { /* no sound is not a reason to have no game */ }
+  }
 
+  /* Riding master gain alone left the whole chip running into a gain of zero:
+     32 sources, their filters and a 2.4 s stereo convolver, rendered for the
+     rest of the session for nobody. Suspending costs nothing to undo, and the
+     delay lets the fade finish so OFF is not an abrupt cut. */
   setEnabled(on) {
     this.enabled = on;
-    if (this.master) this.master.gain.setTargetAtTime(on ? 1 : 0, this.ctx.currentTime, 0.05);
+    if (!this.ctx || !this.master) return;
+    if (this._suspendT) { clearTimeout(this._suspendT); this._suspendT = null; }
+    if (on) {
+      if (this.ctx.state !== 'running') this.resume();
+      this.nextTime = this.ctx.currentTime + 0.12;
+      this.master.gain.setTargetAtTime(1, this.ctx.currentTime, 0.05);
+    } else {
+      this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+      this._suspendT = setTimeout(() => {
+        this._suspendT = null;
+        if (!this.enabled && this.ctx.state === 'running') this.ctx.suspend();
+      }, 400);
+    }
   }
 
   /** Duck the music under a cutscene line or a big hit. */
@@ -589,6 +633,11 @@ export class GameAudio {
     g.cancelScheduledValues(now);
     g.setTargetAtTime(this.musicVol * amount, now, 0.05);
     g.setTargetAtTime(this.musicVol, now + seconds, 0.35);
+    // a unity-gain send, so it ducks to `amount` itself rather than to a level
+    const s = this.musicVerbSend.gain;
+    s.cancelScheduledValues(now);
+    s.setTargetAtTime(amount, now, 0.05);
+    s.setTargetAtTime(1, now + seconds, 0.35);
   }
 
   _impulse(dur, decay) {
@@ -649,9 +698,11 @@ export class GameAudio {
     g.setValueAtTime(0, end);
 
     const music = (bus || this.sfxBus) === this.musicBus;
+    v.music = music;
     v.toMusic.gain.setValueAtTime(music ? 1 : 0, time);
     v.toSfx.gain.setValueAtTime(music ? 0 : 1, time);
-    v.toVerb.gain.setValueAtTime(send, time);
+    v.toVerbM.gain.setValueAtTime(music ? send : 0, time);
+    v.toVerbS.gain.setValueAtTime(music ? 0 : send, time);
 
     v.until = end;
     return osc;
@@ -693,9 +744,11 @@ export class GameAudio {
     g.setValueAtTime(0, end);
 
     const music = (bus || this.sfxBus) === this.musicBus;
+    v.music = music;
     v.toMusic.gain.setValueAtTime(music ? 1 : 0, time);
     v.toSfx.gain.setValueAtTime(music ? 0 : 1, time);
-    v.toVerb.gain.setValueAtTime(send, time);
+    v.toVerbM.gain.setValueAtTime(music ? send : 0, time);
+    v.toVerbS.gain.setValueAtTime(music ? 0 : send, time);
 
     v.until = end;
   }
@@ -703,23 +756,52 @@ export class GameAudio {
   /* ===========================================================
      MUSIC
      =========================================================== */
+  /* Stopping the scheduler only stops new notes: the pad is dur = spb * 17 with
+     a 2.6 s release, which on TEMPLE is a nine-second tail that would go on
+     sounding under the death screen or under the next track. So the voices
+     already sounding get faded out by hand. The music flag is set when the note
+     is scheduled rather than read back off toMusic.gain, because a voice inside
+     the scheduler's 0.12 s lookahead has not reached its gain change yet and
+     would be skipped here only to start singing after the fade. */
+  _silenceMusic(fade = 0.14) {
+    if (!this.ready) return;
+    const now = this.ctx.currentTime;
+    const kill = (v) => {
+      if (!v.music || v.until <= now) return;
+      const g = v.g.gain;
+      const cur = g.value;                 // read it before cancelling
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(cur, now);
+      g.linearRampToValueAtTime(0, now + fade);
+      g.setValueAtTime(0, now + fade);
+      v.until = now + fade;
+      v.music = false;
+    };
+    for (const v of this.voices) kill(v);
+    for (const v of this.noises) kill(v);
+  }
+
   playMusic(name) {
     if (!this.ready) return;
     if (this.track === name) return;
+    this._silenceMusic();
     this.track = name;
     this.step = 0;
     this.section = 0;
-    this.nextTime = this.ctx.currentTime + 0.08;
+    // after the fade above has finished, so the two tracks never overlap
+    this.nextTime = this.ctx.currentTime + 0.17;
     if (!this.timer) this.timer = setInterval(() => this._schedule(), 25);
   }
 
   stopMusic() {
+    this._silenceMusic();
     this.track = null;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
   _schedule() {
     if (!this.track || !this.ready) return;
+    if (!this.enabled) { this.nextTime = this.ctx.currentTime + 0.12; return; }
     const T = TRACKS[this.track];
     if (!T) return;
     const spb = 60 / T.bpm / 2;
@@ -898,6 +980,11 @@ export class GameAudio {
 
       case 'cast':   this._tone(180, t, 0.5, { type: 'sawtooth', gain: 0.12, sweep: 3.2, filter: 2400, send: 0.4 }); break;
       case 'charge': this._tone(70, t, 0.9, { type: 'sawtooth', gain: 0.19, sweep: 2.4, filter: 700, send: 0.3 }); break;
+      case 'crateDrop':
+        this._noiseHit(t, 0.5, { gain: 0.20, filter: 700, q: 2, sweep: 0.35, send: 0.4 });
+        this._tone(58, t, 0.45, { type: 'triangle', gain: 0.20, sweep: 0.5, release: 0.25 });
+        break;
+
       case 'slam':
         this._tone(64, t, 0.7, { type: 'sine', gain: 0.34, sweep: 0.3, release: 0.4 });
         this._noiseHit(t, 0.6, { gain: 0.24, filter: 800, sweep: 0.16, send: 0.5 });

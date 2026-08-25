@@ -17,6 +17,7 @@
 
 import * as THREE from 'three';
 import { mergeGeos, box, cyl, ico, tint } from '../lib/geo.js';
+import { ps1Clone } from '../lib/ps1.js';
 
 const G = (n) => new THREE.Color(n);
 
@@ -78,7 +79,7 @@ export function buildStranger(mats) {
   const fadeMats = [];
   g.traverse((o) => {
     if (!o.isMesh) return;
-    o.material = o.material.clone();
+    o.material = ps1Clone(o.material);
     o.material.transparent = true;
     fadeMats.push(o.material);
   });
@@ -134,11 +135,19 @@ const HALF_RIDDLES = [
   'THE {H} HALF OF THIS PLACE HOLDS ONE OF THEM AS I SPEAK.',
 ];
 
+/* One row per key the landmark table can carry. A key with no row here is
+   not a worse clue, it is no clue at all — the nearest-landmark search skips
+   it and he names something further away, or falls through to the half of
+   the island. The sand, the grove, Tasha, the fuselage and the cairn were
+   all missing, which is most of the west and the whole north-east. */
 const PLACES = {
   camp: 'THE FIRE', wreck: 'THE WRECK', hut: "FERDI'S COUNTER",
   temple: 'THE TEMPLE DOOR', lagoon: 'THE LAGOON', crates: "FERDI'S CRATES",
   pend1: 'THE WEST PENDULUM', pend2: 'THE RIDGE PENDULUM',
   pend3: 'THE EAST PENDULUM', pend4: 'THE NORTH PENDULUM',
+  rogueSand: 'THE WRITING IN THE SAND', grove: 'THE COCONUT GROVE',
+  tasha: 'THE REMAINS OF TASHA', aerlingus: 'THE FUSELAGE',
+  syncoin: 'THE FIRST SYNCOIN',
   casino: 'THE LUCKY FLOPPER', post: 'THE LISTENING POST',
 };
 

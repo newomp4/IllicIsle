@@ -21,8 +21,8 @@
    So: the lights the world builds are kept exactly as they are, and
    go on being animated exactly as they were, but they stop being
    lights. They become emitters — position, colour, intensity, reach —
-   and a fixed rig of ten real lights is dealt out to whichever ten
-   matter most from where you are standing. A point light with a
+   and a fixed rig of twelve real lights is dealt out to whichever
+   twelve matter most from where you are standing. A point light with a
    distance has no reach beyond it, so the ones left out were
    contributing nothing anyway.
 
@@ -33,9 +33,12 @@
 
 import * as THREE from 'three';
 
-/** Real lights per scene. Ten covers the fire pit, the Flopper's neon
-    and your own lantern all at once with room to spare. */
-export const POOL = 10;
+/** Real lights per scene. Twelve rather than ten because the High
+    Roller room has eleven — four braziers, six sconces and the table
+    lamp — and its walls are close enough that every one of them is in
+    reach of everywhere on the floor, so ten left a sconce permanently
+    losing the last slot to whichever one happened to be flaring. */
+export const POOL = 12;
 
 /* Every scene presents these counts, so a shader compiled for one is
    valid in all of them. Directional is three because the title screen
@@ -57,18 +60,25 @@ const RESCAN_S = 0.25;
 /* An emitter already on the rig has to be beaten by this much before it
    is dropped, so two similar lights cannot flicker back and forth. */
 const HYSTERESIS = 1.3;
-/* Seconds for a light coming onto the rig to reach full strength. */
+/* Seconds for a light coming onto the rig to reach full strength, and
+   for one that has lost its slot to go dark again. */
 const FADE_S = 0.18;
+/* How quickly the brightness a light is ranked by follows the brightness
+   it renders at. Slowly: a flickering emitter must not be able to swing
+   further than HYSTERESIS over a second or two, or it beats and loses to
+   its neighbour over and over. */
+const RANK_LAG = 0.02;
 
 const _v = new THREE.Vector3();
 
-export class LightRig {
+class LightRig {
   constructor(scene) {
     this.scene = scene;
     this.emitters = [];
     this.slots = [];
     this.on = [];             // emitter currently in each slot
-    this.k = [];              // fade-in for each slot
+    this.k = [];              // fade level for each slot
+    this.off = [];            // slot is fading its emitter out
     this._sortT = 0;
     this._scanT = 0;
     this._at = new THREE.Vector3(1e9, 0, 1e9);
@@ -95,6 +105,7 @@ export class LightRig {
       this.slots.push(l);
       this.on.push(null);
       this.k.push(0);
+      this.off.push(false);
     }
 
     this.scan();
@@ -130,14 +141,6 @@ export class LightRig {
     return found.length;
   }
 
-  /** Drop everything and start again — used when a scene is rebuilt. */
-  dispose() {
-    for (const l of this.slots) l.parent?.remove(l);
-    this.slots.length = 0;
-    this.emitters.length = 0;
-    if (this.scene.userData.rig === this) this.scene.userData.rig = null;
-  }
-
   /**
    * @param {number} dt seconds
    * @param {THREE.Camera} camera the eye the rig is being dealt for
@@ -157,8 +160,13 @@ export class LightRig {
       this._pick(cam);
       /* A forced deal is somebody rendering one frame from somewhere else
          entirely — a security camera. There is no next frame for it to
-         fade up in, so it arrives at full. */
-      if (force) for (let i = 0; i < this.k.length; i++) this.k[i] = 1;
+         fade up in, so it arrives at full — and anything already on its
+         way out is let go here rather than drawn at full strength for
+         the one frame and then disappearing. */
+      if (force) for (let i = 0; i < this.k.length; i++) {
+        if (this.off[i]) { this.on[i] = null; this.off[i] = false; this.k[i] = 0; }
+        else this.k[i] = this.on[i] ? 1 : 0;
+      }
     }
 
     /* Follow whatever each slot is carrying. Emitters move — the
@@ -167,7 +175,13 @@ export class LightRig {
     for (let i = 0; i < this.slots.length; i++) {
       const l = this.slots[i], e = this.on[i];
       if (!e) { l.intensity = 0; continue; }
-      this.k[i] = Math.min(1, this.k[i] + dt / FADE_S);
+      /* A slot that has lost its emitter walks it back down rather than
+         cutting it, and only lets go once it is dark. Dropping it in one
+         frame put a wall in shadow while its bulb mesh stayed lit. */
+      if (this.off[i]) {
+        this.k[i] -= dt / FADE_S;
+        if (this.k[i] <= 0) { this.on[i] = null; this.off[i] = false; this.k[i] = 0; l.intensity = 0; continue; }
+      } else this.k[i] = Math.min(1, this.k[i] + dt / FADE_S);
       e.getWorldPosition(_v);
       l.position.copy(_v);
       l.color.copy(e.color);
@@ -196,7 +210,24 @@ export class LightRig {
       const reach = (e.distance || NO_LIMIT) + 14;
       const d = _v.distanceTo(cam);
       if (d >= reach) continue;
-      let score = e.intensity * (1 - d / reach);
+      /* Ranked on a brightness that lags what it renders at. A brazier
+         or a guttering sconce swings wider than HYSTERESIS, so scoring on
+         the live value let two evenly-placed sconces take the last slot
+         off each other several times a second while you stood still.
+
+         Lag the fall only. Lagging the rise as well is what flicker-thrash
+         does not need and what everything that comes UP from nothing
+         cannot afford: the chest glow, the bunker lamp, the mast's warning
+         light and the Flopper's neon are all driven from zero, and the
+         guard above skips them entirely while they are dark — so rigI is
+         first seeded partway up the ramp and then crawls at RANK_LAG per
+         pick, a pick being at most every RESORT_S. That is seconds of a
+         light being visibly bright and ranked as though it were not. */
+      let b = e.userData.rigI;
+      if (b === undefined || e.intensity > b) b = e.intensity;
+      else b += (e.intensity - b) * RANK_LAG;
+      e.userData.rigI = b;
+      let score = b * (1 - d / reach);
       if (this.on.indexOf(e) >= 0) score *= HYSTERESIS;
       best.push(e, score);
     }
@@ -221,15 +252,34 @@ export class LightRig {
     chosen.clear();
     for (let s = 0; s < take; s++) chosen.add(best[s * 2]);
     for (let i = 0; i < this.on.length; i++) {
-      if (this.on[i] && !chosen.has(this.on[i])) { this.on[i] = null; this.k[i] = 0; }
+      /* Set both ways round: an emitter picked up again while it was on
+         its way out has to be told to stop leaving, or it keeps fading
+         and hands back a slot it never actually lost. */
+      if (this.on[i]) this.off[i] = !chosen.has(this.on[i]);
     }
     for (let s = 0; s < take; s++) {
       const e = best[s * 2];
       if (this.on.indexOf(e) >= 0) continue;
-      const free = this.on.indexOf(null);
+      let free = this.on.indexOf(null);
+      /* Nothing empty, so take the slot furthest through its fade-out and
+         come up from wherever it had got to. Waiting for it to go dark
+         first would run the scene a light short for a fifth of a second
+         and turn one snap into two. */
+      if (free < 0) for (let i = 0; i < this.on.length; i++) {
+        if (this.off[i] && (free < 0 || this.k[i] < this.k[free])) free = i;
+      }
       if (free < 0) break;
       this.on[free] = e;
+      /* From nothing, not from wherever the last one had got to. On a full
+         rig the slots this very pick has just marked for fade-out are still
+         sitting at k = 1, and they are exactly the ones the search above
+         hands back — so inheriting k lit the incoming emitter at full on
+         its first frame and cut the outgoing one at full on the same one.
+         Taking the slot now rather than waiting for it to go dark is what
+         keeps the scene from running a light short; starting the new one
+         at zero is what makes it fade in. */
       this.k[free] = 0;
+      this.off[free] = false;
     }
   }
 }

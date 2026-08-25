@@ -19,15 +19,15 @@ export const TASK_KIND = {
  * one being the same green ring.
  */
 export const TASK_FX = {
-  wind:    { colour: 0x9ff0dc, sfx: 'rumble',  shake: 0.55, ring: 5.4 },
-  fire:    { colour: 0xff9a3a, sfx: 'charge',  shake: 0.35, ring: 3.6 },
-  water:   { colour: 0x5fb0e0, sfx: 'splat',   shake: 0.30, ring: 4.2 },
-  cloth:   { colour: 0xe8dcc0, sfx: 'page',    shake: 0.18, ring: 3.0 },
-  crate:   { colour: 0xc09a58, sfx: 'door',    shake: 0.40, ring: 3.4 },
-  spark:   { colour: 0xbfe8ff, sfx: 'gemHit',  shake: 0.45, ring: 4.0 },
-  metal:   { colour: 0xa8b0b8, sfx: 'slam',    shake: 0.50, ring: 4.4 },
-  paper:   { colour: 0xd8c69a, sfx: 'page',    shake: 0.12, ring: 2.6 },
-  food:    { colour: 0x7ec850, sfx: 'pickup',  shake: 0.22, ring: 3.2 },
+  wind:    { colour: 0x9ff0dc, sfx: 'rumble',    shake: 0.55, ring: 5.4 },
+  fire:    { colour: 0xff9a3a, sfx: 'charge',    shake: 0.35, ring: 3.6 },
+  water:   { colour: 0x5fb0e0, sfx: 'splat',     shake: 0.30, ring: 4.2 },
+  cloth:   { colour: 0xe8dcc0, sfx: 'page',      shake: 0.18, ring: 3.0 },
+  crate:   { colour: 0xc09a58, sfx: 'crateDrop', shake: 0.40, ring: 3.4 },
+  spark:   { colour: 0xbfe8ff, sfx: 'gemHit',    shake: 0.45, ring: 4.0 },
+  metal:   { colour: 0xa8b0b8, sfx: 'slam',      shake: 0.50, ring: 4.4 },
+  paper:   { colour: 0xd8c69a, sfx: 'page',      shake: 0.12, ring: 2.6 },
+  food:    { colour: 0x7ec850, sfx: 'pickup',    shake: 0.22, ring: 3.2 },
 };
 
 /**

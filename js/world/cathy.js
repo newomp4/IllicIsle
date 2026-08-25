@@ -23,11 +23,6 @@ export const CATHY_SPOTS = [
   { x: -44, z: -162, name: 'THE NORTH SHINGLE' },
 ];
 
-/** The footprint her stall needs to stand on. */
-export const CATHY_FOOT = [
-  [-1.6, -1.1], [1.6, -1.1], [-1.6, 1.1], [1.6, 1.1], [0, 0],
-];
-
 /* ===========================================================
    CATHY
    =========================================================== */

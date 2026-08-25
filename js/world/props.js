@@ -9,14 +9,12 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { ps1ify } from '../lib/ps1.js';
+import { ps1ify, ps1Clone } from '../lib/ps1.js';
 import {
   mergeGeos, box, cyl, cone, ico, sphere, plane, place, tint, limb, lumpify, bendY, taper,
 } from '../lib/geo.js';
 import { buildSandWritingTexture, applyCell } from '../lib/textures.js';
-import { heightAt, slopeAt, biomeAt, vegetationDensity, ISLAND } from './terrain.js';
-
-export const PLAYER_HEIGHT = 1.75;
+import { heightAt, slopeAt, vegetationDensity, ISLAND } from './terrain.js';
 
 /* ---------- shared materials ---------- */
 export function buildPropMaterials(atlas) {
@@ -40,9 +38,9 @@ export function buildPropMaterials(atlas) {
   }), { flat: true });
 
   // flat-on-the-ground decals (sand writing, scorch marks)
-  const decal = new THREE.MeshLambertMaterial({
+  const decal = ps1ify(new THREE.MeshLambertMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
-  });
+  }), { flat: false });
 
   return { opaque, cutout, cutoutStill, emissive, decal };
 }
@@ -492,6 +490,10 @@ class Batcher {
     this.variants.set(key, { built, mats: [materialKey, cutoutKey], list: [] });
   }
   add(key, m) { this.variants.get(key).list.push(m.clone()); }
+  /* Each builder measures the footprint of the shape it just made and
+     returns it as `r`. Nothing ever read it, so colliders were guessed from
+     the instance scale alone and missed the variant's own random size. */
+  radiusOf(key) { const v = this.variants.get(key); return (v && v.built.r) || 0; }
 
   /**
    * One InstancedMesh per variant, and the instances themselves culled.
@@ -556,23 +558,47 @@ const _lastEye = new THREE.Vector3(1e9, 1e9, 1e9);
 const _dir = new THREE.Vector3();
 const _lastDir = new THREE.Vector3(0, 0, 0);
 let _haveDir = false;
+let _lastFog = -1;
 
-export function cullScatter(meshes, camera, force = false) {
+export function cullScatter(meshes, camera, force = false, fogFar = 0) {
   if (!meshes || !meshes.length) return 0;
   const eye = camera.position;
   camera.getWorldDirection(_dir);
   if (!force) {
     const moved = _lastEye.distanceToSquared(eye) > 9;        // three metres
     const turned = !_haveDir || _lastDir.dot(_dir) < 0.995;   // about six degrees
-    if (!moved && !turned) return 0;
+    /* The fog plane decides the cut below, so it has to be able to invalidate
+       the pack as much as the camera does. A jammed island pulls the fog in
+       to eight and a half metres and the storm to a hundred and ten, and a
+       player standing still through either — reading the chart, at the shop,
+       or simply not moving — would otherwise hold the pack that fog computed
+       long after it lifted, with the middle distance still culled while it is
+       only half fogged. A metre of slack so the day/night drift does not
+       repack every frame. */
+    const fogged = Math.abs(fogFar - _lastFog) > 1;
+    if (!moved && !turned && !fogged) return 0;
   }
   _lastEye.copy(eye);
   _lastDir.copy(_dir);
+  _lastFog = fogFar;
   _haveDir = true;
 
   camera.updateMatrixWorld();
   _pv.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   _frustum.setFromProjectionMatrix(_pv);
+
+  /* Past the fog's far plane a tree is one hundred per cent fog colour, so
+     drawing it costs its whole triangle count to change nothing. The frustum
+     from a beach looking up the island genuinely contains most of the island
+     — eighty-odd per cent of a disc seen from its own rim — so frustum
+     culling alone left a third of the foliage being drawn inside solid fog:
+     1,248,988 triangles a frame where 834,254 would look identical. Measured
+     on a 1548x979 readback, cutting at the fog plane moves 278 pixels out of
+     1,515,492, none by more than 8 across R+G+B, which is under the 15-bit
+     quantise the composite does anyway.
+
+     Read live rather than baked in: the storm pulls the fog in to 46 metres
+     (game.js) and this has to come in with it. Zero means no fog, so no cut. */
 
   let drawn = 0;
   for (const im of meshes) {
@@ -581,11 +607,29 @@ export function cullScatter(meshes, camera, force = false) {
     /* Eight metres of slack on top of the object's own size: the repack
        is not every frame, so anything about to come round the edge of the
        screen has to already be in the buffer when it does. */
-    const r = im.userData.reach + 8;
+    const reach = im.userData.reach;
+    const r = reach + 8;
+    /* The nearest point of the object, not its centre, decides whether any
+       of it is still this side of the fog. Three metres of camera travel is
+       all a repack can lag by, so the worst case is a tree appearing three
+       metres inside the fog, where it is still better than 98% fogged.
+
+       Measured along the camera's forward axis, because that is what the
+       fog itself measures: three fogs on `-mvPosition.z`, not on distance
+       from the eye. The two part company by cos(angle-off-centre) — a
+       third of the way out at the corner of a 66-degree frustum — so a
+       radial test throws away foliage at the edges of the screen that is
+       still most of its own colour. It shows worst in the storm, where
+       the far plane comes in to forty-six metres. */
+    const cut = fogFar > 0 ? fogFar + reach : 0;
     const arr = im.instanceMatrix.array;
     let n = 0;
     for (let i = 0; i < all.length; i++) {
       const e = all[i].elements;
+      if (cut) {
+        const dx = e[12] - eye.x, dy = e[13] - eye.y, dz = e[14] - eye.z;
+        if (dx * _dir.x + dy * _dir.y + dz * _dir.z > cut) continue;
+      }
       _sph.center.set(e[12], e[13], e[14]);
       _sph.radius = r;
       if (!_frustum.intersectsSphere(_sph)) continue;
@@ -604,7 +648,21 @@ export function cullScatter(meshes, camera, force = false) {
        switching the empty ones off is a third of the scenery's draw calls
        for no visible difference at all. */
     im.visible = n > 0;
-    im.instanceMatrix.needsUpdate = true;
+    /* The buffer is as long as every instance of the species, but only the
+       first n slots were just rewritten, and flagging it plainly re-uploads
+       all of them: seven thousand matrices, 455KB, on every repack when a
+       tenth of that is the part that changed. Naming the range that moved
+       keeps the upload proportional to what is drawn. The clear first is
+       load-bearing — three only drops the ranges when it actually uploads,
+       and a mesh sitting at visible = false never renders, so its list
+       would grow by one entry per repack for as long as it stays off
+       screen. Nothing to upload at all when n is zero: the mesh is hidden,
+       and the next repack that finds instances rewrites and re-flags it. */
+    if (n > 0) {
+      im.instanceMatrix.clearUpdateRanges();
+      im.instanceMatrix.addUpdateRange(0, n * 16);
+      im.instanceMatrix.needsUpdate = true;
+    }
     drawn += n;
   }
   return drawn;
@@ -937,13 +995,14 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     let yy = y;
     if (foot > 0) {
       const r = foot * s;
-      let lo = heightAt(x, z);
+      const h0 = heightAt(x, z);
+      let lo = h0;
       for (let i = 0; i < 6; i++) {
         const a2 = (i / 6) * Math.PI * 2 + 0.4;
         const hh = heightAt(x + Math.cos(a2) * r, z + Math.sin(a2) * r);
         if (hh < lo) lo = hh;
       }
-      yy = y - Math.max(0, heightAt(x, z) - lo);
+      yy = y - Math.max(0, h0 - lo);
     }
     v.set(x, yy, z);
     e.set(tilt ? (rng() - .5) * 0.12 : 0, yaw, tilt ? (rng() - .5) * 0.12 : 0);
@@ -962,14 +1021,21 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
     const h = heightAt(x, z);
     if (h < 0.25 || h > 44) continue;
-    const slope = slopeAt(x, z);
-    const biome = biomeAt(x, z);
 
     let blocked = false;
     for (const c of clearZones) {
       if ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r * c.r) { blocked = true; break; }
     }
     if (blocked) continue;
+
+    /* h is already in hand, so this is biomeAt's body rather than a call to
+       it: biomeAt would re-evaluate the height and then the slope, and
+       slopeAt is four more height evaluations on top. Twenty-one thousand
+       candidates get this far, and paying for those twice was the single
+       biggest item in the world build. The clear-zone test moved above it
+       for the same reason — it throws candidates away and costs nothing. */
+    const slope = slopeAt(x, z);
+    const biome = h < 2.5 ? 'sand' : (h > 34 || slope > 0.44) ? 'rock' : 'jungle';
 
     const yaw = rng() * Math.PI * 2;
     /* Patchy, not uniform: thickets you push through and glades you can
@@ -1042,8 +1108,16 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     } else if (biome === 'rock') {
       if (roll < 0.045) {
         const s = 0.7 + rng() * 0.7;
-        put(pick('bigrock', POOL.bigrock), x, h - 0.3, z, yaw, s, true, 1.2);
-        addCollider(x, z, 1.6 * s);
+        const k = pick('bigrock', POOL.bigrock);
+        /* buildRock rolls its own size, 1.4 to 3.4, on top of this instance
+           scale, so a flat 1.6 * s described no boulder in particular: the
+           big variants let you walk a metre and a half inside them and the
+           small ones stopped you against thin air. The variant's measured
+           radius is the one that matches what you can see. Small rocks
+           report zero on purpose — they get no collider from here anyway. */
+        const rv = B.radiusOf(k);
+        put(k, x, h - 0.3, z, yaw, s, true, 1.2);
+        addCollider(x, z, (rv > 0 ? rv : 1.6) * s);
       } else if (roll < 0.115) {
         /* These reach 1.8x and stand chest high. Without a collider you walk
            straight through them, which was the single most obvious way the
@@ -1176,15 +1250,32 @@ export function buildCampfire(rng, mats) {
   return group;
 }
 
+/* Every torch, brazier and campfire in the world asks for the same handful of
+   flame shapes, so build each one once. Keyed on scale too, since the quad's
+   size is baked into its vertices. Nothing may dispose these. */
+const _FLAME_GEOS = new Map();
+
 /** Reusable crossed-billboard flame. `scale` ≈ half the final height. */
 export function buildFlameCluster(mats, count = 3, scale = 1) {
+  const key = count + ':' + scale;
+  let geos = _FLAME_GEOS.get(key);
+  if (!geos) {
+    geos = [];
+    for (let i = 0; i < count; i++) {
+      const q = plane(1.1 * scale, 1.7 * scale, 'flame');
+      q.translate(0, 0.85 * scale, 0);
+      place(q, { rot: [0, (i / count) * Math.PI, 0] });
+      tint(q, G(0xffffff));
+      geos.push(mergeGeos([q]));
+    }
+    _FLAME_GEOS.set(key, geos);
+  }
+
   const g = new THREE.Group();
+  // Each cluster still needs its own meshes: the tick writes scale and
+  // position per mesh.
   for (let i = 0; i < count; i++) {
-    const q = plane(1.1 * scale, 1.7 * scale, 'flame');
-    q.translate(0, 0.85 * scale, 0);
-    place(q, { rot: [0, (i / count) * Math.PI, 0] });
-    tint(q, G(0xffffff));
-    const mesh = new THREE.Mesh(mergeGeos([q]), mats.emissive);
+    const mesh = new THREE.Mesh(geos[i], mats.emissive);
     mesh.userData.phase = i * 1.7;
     g.add(mesh);
   }
@@ -1224,7 +1315,6 @@ export function buildTorch(mats) {
    heavy brass bob swinging inside it — still swinging, which is
    the part nobody can explain.
 */
-export const GLYPHS = ['SUN', 'MOON', 'EYE', 'SPIRAL'];
 
 export function buildRoguePendulum(rng, mats, index, glyph, order) {
   const group = new THREE.Group();
@@ -1371,11 +1461,26 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
     motePos[i * 3 + 1] = Math.random() * 14;
   }
   moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+  /* three attenuates a point against the height handed to setSize, but the
+     scene is drawn into a 224-line target and upscaled after, so every mote
+     came out canvasHeight/224 too big and changed size with the window and
+     the RESOLUTION setting. The size below is the old 0.22 carried through
+     the reference it was eyeballed at (224 lines in a 1080-line window);
+     the hook then scales it against whichever target is really bound, which
+     keeps the mast's camera feeds — a target of their own — honest too. */
+  const MOTE_SIZE = 1.06;
   const moteMat = new THREE.PointsMaterial({
-    color: 0xbdfff0, size: 0.22, transparent: true, opacity: 0,
+    color: 0xbdfff0, size: MOTE_SIZE, transparent: true, opacity: 0,
     depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
   });
   const motes = new THREE.Points(moteGeo, moteMat);
+  const drawBuf = new THREE.Vector2();
+  motes.onBeforeRender = (renderer) => {
+    const rt = renderer.getRenderTarget();
+    renderer.getDrawingBufferSize(drawBuf);
+    const ih = rt ? rt.height : drawBuf.y;
+    moteMat.size = MOTE_SIZE * ih / Math.max(1, drawBuf.y);
+  };
   group.add(motes);
 
   const phase = index * 1.3;
@@ -1386,7 +1491,15 @@ export function buildRoguePendulum(rng, mats, index, glyph, order) {
   group.userData.setNight = (n) => { nightK = n; };
   group.userData.setJammed = (on) => { jam = on ? 1 : 0; };
   group.userData.activate = () => { if (wakeT < 0) wakeT = 0; };
-  group.userData.wakeProgress = () => wake;
+  /* A Castaways round restarts into the same scene, so a tower woken last
+     round was still lit and still held wakeT >= 0 — which made activate()'s
+     own guard refuse every later wind for the rest of the session. */
+  group.userData.reset = () => {
+    wakeT = -1; wake = 0; jam = 0;
+    shockMat.opacity = 0;
+    shock2.material.opacity = 0;
+    shock2.visible = false;
+  };
 
   group.userData.tick = (t, dt = 0.016) => {
     if (wakeT >= 0) { wakeT += dt; wake = Math.min(1, wakeT / 3.2); }
@@ -1529,7 +1642,7 @@ export function buildSandWriting(text, mats, opts = {}) {
   // fine enough to actually follow a beach that is not flat
   const geo = new THREE.PlaneGeometry(w, h, 20, 8);
   geo.rotateX(-Math.PI / 2);
-  const mat = mats.decal.clone();
+  const mat = ps1Clone(mats.decal);
   mat.map = buildSandWritingTexture(text, opts);
   mat.alphaTest = 0.28;
   mat.transparent = true;

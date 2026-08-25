@@ -17,7 +17,6 @@
  */
 export const STAGE_PAY_MIN = 1;
 export const STAGE_PAY_MAX = 6;
-export const STAGE_PAY = 3;          // the average, for anything that needs one
 
 /** Share of a victim's purse an Agent takes off the body. */
 export const LOOT_SHARE = 0.75;
@@ -62,9 +61,9 @@ export const STOCK = [
        had found your Agent without doing anything. Anyone can buy them, so
        walking unnamed proves nothing about you either way. */
     id: 'soles', name: 'QUIET SOLES', cost: 9, side: 'open', icon: 'soles',
-    blurb: 'Your name never appears over your head, at any distance, for anybody - '
-      + 'and neither does your footfall. Plenty of Castaways buy these too, so it '
-      + 'tells nobody anything about you. Lasts the whole round.',
+    blurb: 'Your name never appears over your head, at any distance, for anybody. '
+      + 'Plenty of Castaways buy these too, so it tells nobody anything about you. '
+      + 'Lasts the whole round.',
     tag: 'PASSIVE',
   },
   {
@@ -112,12 +111,16 @@ export const STOCK = [
     tag: 'PASSIVE',
   },
   {
-    id: 'ticket', name: 'BOOK OF TICKETS', cost: 9, side: 'open', icon: 'coin',
+    /* At 9 it covered exactly the 9 of stake it bought, so buying it and
+       keeping the coins landed on the same purse and the book was dead
+       money. And the whole book goes on one keypress - the pulls are
+       counted on the Flopper's readout after that, not on your belt. */
+    id: 'ticket', name: 'BOOK OF TICKETS', cost: 6, side: 'open', icon: 'coin',
     night: true,
-    blurb: 'Three free pulls on the slot machines aboard the Lucky Flopper. A pull '
-      + 'normally costs 3, so this saves you 9. The odds do not change. Only on the '
-      + 'shelf after dark.',
-    tag: 'THREE USES',
+    blurb: 'Three pulls on the slot machines aboard the Lucky Flopper - nine '
+      + 'Syncoin of stake for six. The odds do not change. Only on the shelf '
+      + 'after dark.',
+    tag: 'ONE USE',
   },
 
   /* ---------- the room behind it ---------- */
@@ -213,8 +216,9 @@ export const STOCK = [
   {
     id: 'gun', name: 'FLARE PISTOL', cost: 24, side: 'both', icon: 'gun',
     blurb: 'One shot. It does not kill: it puts them on the ground for 12 seconds and '
-      + 'calls an immediate vote among everyone who saw it. Draw it from your belt, '
-      + 'then click or press F.',
+      + 'calls an immediate vote among everyone within 30 metres who saw it - and at '
+      + 'least one of them has to be somebody other than you, or it will not fire. '
+      + 'Draw it from your belt, then click or press F.',
     tag: 'ONE SHOT',
   },
 ];
@@ -227,10 +231,6 @@ export const STOCK = [
 /* The cane tonic used to be in here. It is Cathy's popcorn now, and Ferdi
    does not stock anything of hers, so his machines got the cork vest
    instead — a thing nobody buys at full price at the counter either. */
-/* Added late, and deliberately not cheap: it is the only thing on the
-   island that will point you at the one who is not on the roster. */
-export const SCANNER_ID = 'scanner';
-
 export const VENDOR_IDS = ['lantern', 'flask', 'whistle', 'ticket', 'vest'];
 
 /* ===========================================================
@@ -320,8 +320,8 @@ export const DRINKS = [
   },
   {
     id: 'quiet', name: 'QUIET WATER', cost: 7, icon: 'clear',
-    blurb: 'Clear, and it is not water. Your footsteps make no sound at all '
-      + 'for three minutes. Nobody is told you drank it.',
+    blurb: 'Clear, and it is not water. Your name never appears over your head, '
+      + 'for anybody, for three minutes. Nobody is told you drank it.',
     tag: '3 MINUTES', mins: 3, colour: 0xa8d0d8,
   },
   {
@@ -346,20 +346,7 @@ export const DRINKS = [
 
 export const drinkById = (id) => DRINKS.find((d) => d.id === id);
 
-/** Everything Cathy has, in the order it sits on her counter. */
-export function cathyStock() { return FOOD; }
-
 export const itemById = (id) => STOCK.find((i) => i.id === id) || FOOD.find((i) => i.id === id);
-
-/**
- * What this player is allowed to be shown right now.
- * @param {boolean} isAgent
- * @param {boolean} isNight  some lines only come out after dark
- */
-export function stockFor(isAgent, isNight = true) {
-  return STOCK.filter((i) => (i.side === 'both' || (isAgent ? true : i.side === 'open'))
-    && (!i.night || isNight));
-}
 
 /** Everything on the shelf on this side of the counter, right now. */
 export function shelf(side, isNight) {

@@ -154,20 +154,22 @@ export function ps1ify(material, opts = {}) {
 
   // Materials with different injected code must not share a program.
   material.customProgramCacheKey = () => `ps1|${jitter ? 1 : 0}|${affine ? 1 : 0}|${wind > 0 ? 1 : 0}`;
+
+  /* Both of the above are own properties, and Material.copy() copies a fixed
+     whitelist that includes neither — so a clone() comes back un-snapped and
+     perspective-correct while the rest of the world wobbles. Stash the recipe
+     somewhere copy() does carry across (userData is deep-cloned as JSON, and
+     these opts are only booleans and numbers) so ps1Clone can re-apply it. */
+  material.userData.ps1 = opts;
   return material;
 }
 
-/* Convenience factories -------------------------------------------------- */
-export function ps1Material(params = {}, opts = {}) {
-  return ps1ify(new THREE.MeshPhongMaterial({
-    shininess: 0,
-    specular: 0x000000,
-    ...params,
-  }), opts);
-}
-
-export function ps1Lambert(params = {}, opts = {}) {
-  return ps1ify(new THREE.MeshLambertMaterial(params), opts);
+/* Clone a material without losing the patch. Re-patching the copy is safe:
+   its onBeforeCompile has fallen back to the empty prototype method, so the
+   GLSL is injected exactly once. Never call ps1ify twice on one material. */
+export function ps1Clone(m) {
+  const c = m.clone();
+  return m.userData.ps1 ? ps1ify(c, m.userData.ps1) : c;
 }
 
 /* ===========================================================
@@ -183,12 +185,16 @@ void main(){
 `;
 
 const COMPOSITE_FRAG = /* glsl */`
-precision mediump float;
 uniform sampler2D tDiffuse;
 uniform sampler2D tHud;    // interface, drawn at the same internal size
 uniform float uHudOn;
 uniform vec2  uRes;        // internal framebuffer resolution
-uniform float uCrt;        // 0..1 CRT / dither strength
+uniform float uCrt;        // 0..1 CRT tube strength
+/* No 'precision mediump float' declaration above this block, deliberately:
+   three prefixes its own highp for a ShaderMaterial, and uTime is a session
+   clock that never wraps. Where mediump is a real fp16 the gap between
+   representable seconds reaches 1.0 after about seventeen minutes, and the
+   drunk sway below would start stepping instead of rolling. */
 uniform float uTime;
 uniform float uFade;       // 1 = normal, 0 = black
 uniform vec3  uTint;       // damage / underwater tint
@@ -278,13 +284,20 @@ void main(){
 
   // 15-bit colour (32 levels per channel) with ordered dithering.
   vec2 px = uv * uRes;
+  /* The dither belongs to the console, not to the tube, so uCrt must not gate
+     it: with CRT off the frame was still crushed to 32 levels with nothing left
+     to break up the steps, and smooth gradients like the sky dome banded. */
   float d = (bayer(px) - 0.5) / 32.0;
-  col = floor((col + d * uCrt) * 32.0 + 0.5) / 32.0;
+  col = floor((col + d) * 32.0 + 0.5) / 32.0;
 
   // Scanlines + faint aperture grille.
-  float scan = 1.0 - 0.16 * uCrt * pow(sin(px.y * 3.14159), 2.0);
+  // pow() is undefined for a negative base in GLSL ES and sin() is negative
+  // half of every period, so square these directly rather than ask pow to.
+  float sy = sin(px.y * 3.14159);
+  float scan = 1.0 - 0.16 * uCrt * sy * sy;
   col *= scan;
-  col *= 1.0 - 0.05 * uCrt * pow(sin(px.x * 3.14159), 2.0);
+  float sx = sin(px.x * 3.14159);
+  col *= 1.0 - 0.05 * uCrt * sx * sx;
 
   // Vignette
   col *= 1.0 - 0.42 * r2 * uCrt;
@@ -400,10 +413,7 @@ export class RetroPipeline {
     /* Reallocating the render target throws away GL textures and makes a
        new pair. During a live window drag that runs on every mouse move,
        which is what makes a resize feel like it lags a second behind. */
-    if (this.internal && this.internal.w === iw && this.internal.h === ih) {
-      this.internal.dirty = false;
-      return;
-    }
+    if (this.internal && this.internal.w === iw && this.internal.h === ih) return;
     this.target.setSize(iw, ih);
     this.quadMat.uniforms.uRes.value.set(iw, ih);
     setJitterResolution(iw, ih);
