@@ -366,8 +366,11 @@ export class Hud {
     const tasks = mp.myTasks || [];
     /* The list is a reminder, not a document — and it is also what the
        compass has to fit beside, so the cap comes down with the framebuffer
-       instead of always being 136 and being painted over for its trouble. */
-    const CAP = Math.max(56, Math.min(136, (this.c.width >> 1) - 78));
+       instead of always being 136 and being painted over for its trouble.
+       It only comes down as far as the compass is actually asking: below 77
+       the strip is bound by the purse on the other side and stops gaining,
+       and a narrower plate would drop the role header off its own backing. */
+    const CAP = Math.max(77, Math.min(136, (this.c.width >> 1) - 70));
     /* Measured without building an array of strings first. This runs every
        frame; anything it allocates has to be collected later, and a
        collection mid-round is a visible stutter. */

@@ -2923,7 +2923,8 @@ export const SCREENS = {
       });
 
       /* the window, and the drum turning behind it */
-      // the window shrinks with the cabinet, keeping the same proportion
+      /* The header and the slot band below keep their sizes, so the glass is
+         what absorbs the cabinet's shrink. */
       const GX = cx0 + 12, GY = cy0 + 26, GW = CW - 24, GH = CH - 72;
       x.fillStyle = '#071410'; x.fillRect(GX - 2, GY - 2, GW + 4, GH + 4);
       x.fillStyle = '#12302a'; x.fillRect(GX, GY, GW, GH);
@@ -2966,12 +2967,18 @@ export const SCREENS = {
           x.fillStyle = `rgba(255,210,74,${(0.03 * puls).toFixed(3)})`;
           x.beginPath(); x.arc(GX + GW / 2, GY + GH / 2, 10 + i * 6, 0, 6.283); x.fill();
         }
-        drawShopIcon(x, s.got.icon, GX + GW / 2 - 18, GY + GH / 2 - 24, 36, true, t);
+        /* The card is sized off the glass rather than off nothing: on a
+           short cabinet a full-size icon and its two rows of type were
+           printed out through the window onto the cabinet body. */
+        const IS = Math.max(18, Math.min(36, GH - 24));
+        const BH = IS + 20;
+        const BY = GY + Math.round((GH - BH) / 2);
+        drawShopIcon(x, s.got.icon, GX + GW / 2 - IS / 2, BY, IS, true, t);
         drawText(x, s.got.name, {
-          x: GX + GW / 2, y: GY + GH / 2 + 16, scale: 1, align: 'center', color: GOLD_LT,
+          x: GX + GW / 2, y: BY + IS + 2, scale: 1, align: 'center', color: GOLD_LT,
         });
         drawText(x, s.got.tag, {
-          x: GX + GW / 2, y: GY + GH / 2 + 26, scale: 1, align: 'center', color: '#8a7a52',
+          x: GX + GW / 2, y: BY + IS + 12, scale: 1, align: 'center', color: '#8a7a52',
         });
       } else {
         drawText(x, 'EMPTY', {
@@ -6959,7 +6966,7 @@ export const SCREENS = {
          up with it. The figures still get their three rows. */
       const TIGHT = H < 200;
       const PLOT_H = TIGHT ? 0 : 54;
-      const FIG_H = TIGHT ? 29 : 54;            // a 4px pad and three 9px rows
+      const FIG_H = TIGHT ? 31 : 54;            // 4px pad, three 9px rows, one list row
       const FIG_TOP = RB - Math.max(PLOT_H, FIG_H) - 6;
       const PROSE_END = FIG_TOP - 5;            // the hard floor for prose
 
@@ -7062,7 +7069,13 @@ export const SCREENS = {
       fig(`COOLS ${d.cooldown}S`, '#7a4a44');
       fy += 9;
       fig(d.sites > 1 ? `${d.sites} POINTS` : 'ONE POINT', '#7a4a44');
-      fy += 11;
+      /* Where the band is only tall enough for one more row, the gap that
+         sets the figures apart from the list is what has to give — with it
+         the list was budgeted nothing at all and no repair point was named.
+         Eight is the floor, not two: a glyph row is seven tall, so anything
+         under eight prints the first repair point through 'ONE POINT'. Eight
+         buys the same single row that two did, without the collision. */
+      fy += TIGHT ? 8 : 11;
       /* Three was a guess: it dropped the fourth pendulum where there was
          room for it and ran past the panel where there was not. */
       const budget = Math.max(0, Math.floor((RB - 8 - fy) / 9) + 1);
@@ -7627,17 +7640,22 @@ export const SCREENS = {
          whole string to wrapText — which splits on any whitespace — ran them
          into one block. The journal and the reader both split first. */
       let y = b.top + 16;
+      // how far right the copy reaches across the rows the icon would sit in
+      let bandMax = 0;
+      const bandTop = b.bottom - 44, bandBot = b.bottom - 12;
       for (const para of String(L.text).split('\n')) {
         if (!para.trim()) { y += 5; continue; }
         for (const ln of wrapText(para, W - 44, 1, 1)) {
           drawText(x, ln, { x: 22, y, scale: 1, color: GOLD_LT });
+          if (y >= bandTop && y <= bandBot) bandMax = Math.max(bandMax, 22 + textWidth(ln, 1, 1));
           y += 9;
         }
       }
       /* The icon is drawn over the top of the copy, so on a narrow frame it
-         sat on the tail of it. It is decoration: it appears where the words
-         have left it room. */
-      if (L.icon && y < b.bottom - 43) {
+         sat on the tail of it. It is decoration: it gives way only where a
+         line really does reach into its column, not merely where the page
+         is long — the copy is left-aligned and usually nowhere near it. */
+      if (L.icon && bandMax < W - 54) {
         drawRelicIcon(x, L.icon, W - 52, b.bottom - 44, 32, Math.sin(t * 2) * 0.4);
       }
       footer(x, W, H, '< > TURN PAGE   ESC BACK');
@@ -8848,7 +8866,7 @@ export function drawChart(x, ox, oy, S, data, t) {
     }
     if (!ok || ly < oy + 2 || ly > oy + S - 9) continue;
     placed.push({ x: lx, y: ly, w });
-    if (L.icon) drawPoiIcon(x, L.icon, lx, ly, t);
+    if (L.icon) drawPoiIcon(x, L.icon, lx, ly, t, 'rgba(232,220,186,.75)');   // the halo mapIcon uses on paper
     drawText(x, txt, { x: lx + iw, y: ly, scale: 1, color: L.col, shadowColor: PAPER });
   }
 

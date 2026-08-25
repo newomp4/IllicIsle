@@ -292,7 +292,12 @@ const TEMPLE_COLLIDERS = (() => {
   /* The pedestal takes a radius under its own 2.4, so the idol is still
      within reach of somebody standing on the platform. */
   out.push({ x: D.x, z: D.z, r: 2.0 });
-  for (let i = 0; i < 4; i++) out.push({ x: -24, z: 16 - i * 3.4, r: 2.2 });
+  /* The mine frames are gateways, not props: two 0.42 posts at -24 +/- 2.0
+     under a beam at head height. Collide the timbers, not the doorway. */
+  for (let i = 0; i < 4; i++) {
+    const z = 16 - i * 3.4;
+    for (const s of [-1, 1]) out.push({ x: -24 + s * 2.0, z, r: 0.35 });
+  }
   // his camp is a group at (19, 14) turned -0.7: the chair, and the grill
   const cx = 19, cz = 14, ca = Math.cos(-0.7), sa = Math.sin(-0.7);
   out.push({ x: cx, z: cz, r: 1.6 });

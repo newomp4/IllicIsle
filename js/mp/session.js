@@ -539,8 +539,15 @@ export class HostSession {
        lit when the panel was prised rather than when the optic was spliced,
        which is the wrong half of the job to celebrate. */
     if (stage?.at) {
-      this.net.broadcast({ t: S.WORLDFX, at: stage.at, last: finished });
-      this.hooks.onWorldFx?.(stage.at, finished);
+      /* `last` means the last stage AT THIS LANDMARK, which is what the
+         receiver gates the relic latch on — not the end of the whole chore.
+         Both relic chores finish somewhere else (tasha, tasha, then the ridge
+         Pendulum; aerlingus, aerlingus, then the fire), so sending `finished`
+         here meant the latch was never true where the relic actually is and
+         the lighthouse eye never lit at all. */
+      const lastHere = taskStage(taskId, at + 1)?.at !== stage.at;
+      this.net.broadcast({ t: S.WORLDFX, at: stage.at, last: lastHere });
+      this.hooks.onWorldFx?.(stage.at, lastHere);
     }
     this._checkWin();
   }
@@ -637,8 +644,12 @@ export class HostSession {
     const d = (this.drops || []).find((x) => x.did === did);
     if (!d || d.taken) return;
     if (!p || !p.alive) return;
-    // the client picks one up inside 2.2 m; the slack is for a stale position
-    if (Math.hypot((p.x || 0) - d.x, (p.z || 0) - d.z) > 4) return;
+    /* Measured against where the body fell, but no client draws it there:
+       freeSpot walks the purse up to 4.8 m clear of the scenery, and the
+       prompt to take it reaches 6 m from the mesh. A tighter gate refused
+       honest reaches in silence. Only `taken` stops the double credit —
+       this is anti-cheat slack, the same 12 m as being near a body. */
+    if (Math.hypot((p.x || 0) - d.x, (p.z || 0) - d.z) > 12) return;
     d.taken = true;
     this.net.broadcast({ t: S.DROPGONE, did, byId: from });
     this.hooks.onDropGone?.(did, from);
@@ -835,7 +846,6 @@ export class HostSession {
     let best = null, bestN = 0, tie = false;
     for (const [k, n] of Object.entries(counts)) {
       if (k === 'skip') continue;
-      if (!this.players.has(k)) continue;      // they left; the ballot has no subject
       if (n > bestN) { best = k; bestN = n; tie = false; }
       else if (n === bestN) tie = true;
     }
