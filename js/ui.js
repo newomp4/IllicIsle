@@ -4,7 +4,6 @@
    =========================================================== */
 
 import { Hud } from './lib/hud.js';
-import { ScreenStack } from './lib/screens.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,19 +31,20 @@ export class UI {
 
   /* ---------- HUD state (all drawn on canvas) ---------- */
   setHearts(hp, max) {
-    hp = num(hp); max = num(max, 5);
+    max = Math.max(1, Math.floor(num(max, 5)));
+    hp = Math.max(0, Math.min(max, Math.floor(num(hp))));
     if (hp < this.hud.data.hp) this.hud.data.hurtT = 0.4;
     this.hud.data.hp = hp;
     this.hud.data.maxHp = max;
   }
   /* Numbers only. A stray undefined used to reach the framebuffer as the
      word "undefined" splashed across the top-right corner. */
-  setStamina(v) { this.hud.data.stamina = num(v, 1); }
-  setAmmo(n) { this.hud.data.ammo = num(n); }
-  setMarks(n) { this.hud.data.pendulums = num(n); }
-  setRelics(n) { this.hud.data.relics = num(n); }
-  setCoins(n) { this.hud.data.coins = num(n); }
-  setTimer(seconds) { this.hud.data.timer = num(seconds); }
+  setStamina(v) { this.hud.data.stamina = Math.max(0, Math.min(1, num(v, 1))); }
+  setAmmo(n) { this.hud.data.ammo = Math.max(0, Math.floor(num(n))); }
+  setMarks(n) { this.hud.data.pendulums = Math.max(0, Math.floor(num(n))); }
+  setRelics(n) { this.hud.data.relics = Math.max(0, Math.floor(num(n))); }
+  setCoins(n) { this.hud.data.coins = Math.max(0, Math.floor(num(n))); }
+  setTimer(seconds) { this.hud.data.timer = Math.max(0, num(seconds)); }
   setObjective(text) { this.hud.data.objective = text || ''; }
   setPrompt(text) { this.hud.data.prompt = text || null; }
   showPopup(title, sub, icon, head) { this.hud.showPopup(title, sub, icon, head); }
@@ -60,7 +60,7 @@ export class UI {
   setBoss(frac, phaseLabel) {
     const b = this.hud.data.boss;
     if (!b) return;
-    b.frac = frac;
+    b.frac = Math.max(0, Math.min(1, num(frac, b.frac)));
     b.chip = Math.max(b.frac, (b.chip ?? frac) - 0.004);
     if (phaseLabel) b.phase = phaseLabel;
   }
@@ -97,7 +97,11 @@ export class UI {
   updateCompass(yaw, px, pz) {
     const out = this._marks;
     if (!out) return;                     // a frame can land before the first setCompassPois
-    let n = this._cardinals.length;
+    // Hud sorts this shared array by importance. Restore every cardinal
+    // before appending places, otherwise a sorted place takes its slot and
+    // overwriting slots 8+ silently erases compass directions next frame.
+    let n = 0;
+    for (const cardinal of this._cardinals) out[n++] = cardinal;
     for (const m of this._poiMarks) {
       if (m.poi.hidden) continue;
       const e = m.out;

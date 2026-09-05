@@ -19,7 +19,7 @@ const MIME = {
   '.md': 'text/markdown', '.txt': 'text/plain',
 };
 
-http.createServer((q, s) => {
+const server = http.createServer((q, s) => {
   /* A stray percent in the URL used to take the whole server down: an
      unpaired escape makes decodeURIComponent throw, nothing caught it, and
      node exits on an uncaught exception in a request handler. One bad link
@@ -57,4 +57,5 @@ http.createServer((q, s) => {
     });
     rs.pipe(s);
   });
-}).listen(PORT, () => console.log(`Illic Isle on http://localhost:${PORT}/`));
+});
+server.listen(PORT, () => console.log(`Illic Isle on http://localhost:${server.address().port}/`));

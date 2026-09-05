@@ -13,12 +13,41 @@
    goes peer to peer and never touches it again.
 
    Topology is a star, not a mesh: everyone connects to the host
-   only. With 4-10 players that's far fewer connections than a mesh
+   only. With 3-10 players that's far fewer connections than a mesh
    and it makes the host the natural authority.
    =========================================================== */
 
 const BROKER_PREFIX = 'illicisle-';       // namespaces our room codes on the shared broker
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no I/O/0/1
+const PING = 'n.ping', PONG = 'n.pong';
+const HEARTBEAT_MS = 2500, SLOW_AFTER_MS = 8000;
+const clock = () => performance.now();
+
+/** Read a code or a shared invite without guessing around invalid characters. */
+export function parseRoomCode(value) {
+  const text = String(value ?? '').trim();
+  if (/^[a-z0-9]{4}$/i.test(text)) return text.toUpperCase();
+  if (/^#[a-z0-9]{4}$/i.test(text)) return text.slice(1).toUpperCase();
+  try {
+    const url = new URL(text);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    const code = url.searchParams.get('room') || url.hash.slice(1);
+    return /^[a-z0-9]{4}$/i.test(code) ? code.toUpperCase() : '';
+  } catch { return ''; }
+}
+
+export function roomInviteURL(room, base = globalThis.location?.href) {
+  const code = parseRoomCode(room);
+  if (!code) return '';
+  try {
+    const url = new URL(base);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    // Carry the room only. Workshop/debug flags belong to the host's browser.
+    url.search = ''; url.hash = '';
+    url.searchParams.set('room', code);
+    return url.href;
+  } catch { return ''; }
+}
 
 export function makeRoomCode(len = 4) {
   let s = '';
@@ -98,15 +127,106 @@ export class Net {
     this.onHostGone = null;
 
     this._sendBudget = 0;
+    this.health = { state: 'connecting', rtt: null, peers: 0, broker: 'connecting' };
+    this.onHealth = null;
+    this._links = new WeakMap();
+    this._heartbeatTimer = null;
   }
 
   _status(t) { this.onStatus?.(t); }
+
+  _watch(conn) {
+    let link = this._links.get(conn);
+    if (!link) {
+      link = { seen: clock(), sent: 0, nonce: 0, pending: null, rtt: null };
+      this._links.set(conn, link);
+    }
+    return link;
+  }
+
+  _startHeartbeat() {
+    if (this._heartbeatTimer) return;
+    this._lastHealthTick = clock();
+    this._heartbeatTimer = setInterval(() => this._pollHealth(), HEARTBEAT_MS);
+    this._heartbeatTimer.unref?.();
+    this._refreshHealth();
+  }
+
+  _refreshHealth(t = clock()) {
+    const links = this.isHost ? [...this.conns.values()] : (this.hostConn ? [this.hostConn] : []);
+    let slow = false, worst = null;
+    for (const conn of links) {
+      const link = this._watch(conn);
+      slow ||= t - link.seen > SLOW_AFTER_MS || link.rtt > 450;
+      if (link.rtt !== null) worst = Math.max(worst || 0, Math.round(link.rtt));
+    }
+    const state = this.closed || !this.open ? (this.closed ? 'closed' : 'connecting')
+      : slow ? 'degraded' : 'connected';
+    const changed = this.health.state !== state || this.health.rtt !== worst || this.health.peers !== links.length;
+    Object.assign(this.health, { state, rtt: worst, peers: links.length });
+    if (changed) this.onHealth?.(this.health);
+  }
+
+  _pollHealth(t = clock()) {
+    if (this.closed) return;
+    const links = this.isHost ? [...this.conns.values()] : (this.hostConn ? [this.hostConn] : []);
+    // Waking the local computer is not evidence that a friend disconnected.
+    const woke = t - this._lastHealthTick > SLOW_AFTER_MS * 2;
+    this._lastHealthTick = t;
+    for (const conn of links) {
+      const link = this._watch(conn);
+      if (woke) { link.seen = t; link.pending = null; }
+      if (link.pending === null || t - link.sent > SLOW_AFTER_MS) {
+        link.nonce = (link.nonce + 1) % 0x7fffffff;
+        link.sent = t;
+        link.pending = link.nonce;
+        if (!this._sendPacket(conn, { t: PING, n: link.nonce })) link.pending = null;
+      }
+    }
+    this._refreshHealth(t);
+  }
+
+  _receive(conn, raw, from) {
+    if (this.closed) return;
+    const msg = decode(raw);
+    if (!msg) return;
+    const link = this._watch(conn);
+    const t = clock();
+    link.seen = t;
+    if (msg.t === PING) {
+      if (Number.isSafeInteger(msg.n) && msg.n >= 0) this._sendPacket(conn, { t: PONG, n: msg.n });
+      return;
+    }
+    if (msg.t === PONG) {
+      if (link.pending !== null && msg.n === link.pending) {
+        const sample = Math.max(0, t - link.sent);
+        link.rtt = link.rtt === null ? sample : link.rtt * 0.65 + sample * 0.35;
+        link.pending = null;
+        this._refreshHealth(t);
+      }
+      return;
+    }
+    this.onMessage?.(msg, from);
+  }
+
+  _sendPacket(conn, msg) {
+    if (this.closed || !conn || conn.open === false) return false;
+    // Old positions are disposable. Queuing them behind a stalled channel
+    // makes everyone replay seconds of movement after the network recovers.
+    const replaceable = msg.t === 'c.move' || msg.t === 's.snap' || msg.t === PING;
+    if (replaceable && ((conn.dataChannel?.bufferedAmount || 0) > 65536 || (conn.bufferSize || 0) > 2)) return false;
+    try { conn.send(encode(msg)); return true; }
+    catch { return false; }
+  }
 
   /* ---------------------------------------------------------
      HOST
      --------------------------------------------------------- */
   async host(room) {
+    room = parseRoomCode(room);
+    if (!room) throw new Error('Enter a four-character room code.');
     const Peer = await loadPeerLib();
+    if (this.closed) throw new Error('Connection cancelled.');
     this.isHost = true;
     this.room = room;
     this.selfId = 'host';
@@ -128,6 +248,12 @@ export class Net {
         this.destroy();
         reject(new Error('The matchmaking broker did not answer.'));
       }, 15000);
+      this._cancelPending = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('Connection cancelled.'));
+      };
       const fail = (e) => {
         if (this.closed || settled) return;
         settled = true;
@@ -154,7 +280,8 @@ export class Net {
       let backoff = 1000;
       this.peer.on('disconnected', () => {
         if (this.closed) return;             // destroy() is tearing us down on purpose
-        if (backoff > 16000) { this._status('ROOM CODE LOST - RESTART TO REOPEN'); return; }
+        this.health.broker = 'reconnecting';
+        if (backoff > 16000) { this.health.broker = 'offline'; this._status('ROOM CODE LOST - RESTART TO REOPEN'); return; }
         this._status('BROKER DROPPED - RECONNECTING');
         const wait = backoff;
         backoff *= 2;
@@ -164,9 +291,13 @@ export class Net {
         }, wait);
       });
       this.peer.on('open', () => {
+        if (this.closed) return;
         clearTimeout(timer);
         settled = true;
+        this._cancelPending = null;
         this.open = true;
+        this.health.broker = 'online';
+        this._startHeartbeat();
         backoff = 1000;                      // a successful reconnect re-fires 'open'
         this._status('ROOM OPEN');
         this.onOpen?.('host');
@@ -182,21 +313,38 @@ export class Net {
        channel is wired and anything sent in the same burst arrives at the
        session tagged as the host, moving and killing with the host's record.
        Refuse before a listener exists so there is no window at all. */
-    if (conn.peer === 'host') {
+    if (this.closed || conn.peer === 'host') {
       try { conn.close(); } catch (e) { /* already gone */ }
       return;
     }
     conn.on('open', () => {
+      if (this.closed) { conn.close(); return; }
+      const previous = this.conns.get(conn.peer);
+      // One live channel per player. Replacing it would close their only
+      // admitted link, then make the round reject the replacement as a late
+      // join, leaving a seated player with no way to send or receive.
+      if (previous) {
+        if (previous !== conn) {
+          try { conn.close(); } catch { /* already gone */ }
+        }
+        return;
+      }
       this.conns.set(conn.peer, conn);
+      this._watch(conn);
+      this._refreshHealth();
       this.onPeerJoin?.(conn.peer);
     });
     conn.on('data', (raw) => {
-      const msg = decode(raw);
-      if (msg) this.onMessage?.(msg, conn.peer);
+      if (this.closed) return;
+      const current = this.conns.get(conn.peer);
+      if (current !== conn) return;
+      this._receive(conn, raw, conn.peer);
     });
     const bye = () => {
       if (this.closed) return;               // we are the ones leaving; nobody left us
+      if (this.conns.get(conn.peer) !== conn) return;
       if (this.conns.delete(conn.peer)) this.onPeerLeave?.(conn.peer);
+      this._refreshHealth();
     };
     conn.on('close', bye);
     conn.on('error', bye);
@@ -206,7 +354,10 @@ export class Net {
      CLIENT
      --------------------------------------------------------- */
   async join(room) {
+    room = parseRoomCode(room);
+    if (!room) throw new Error('Enter a four-character room code.');
     const Peer = await loadPeerLib();
+    if (this.closed) throw new Error('Connection cancelled.');
     this.isHost = false;
     this.room = room;
 
@@ -228,6 +379,12 @@ export class Net {
         reject(new Error(m));
       };
       const timer = setTimeout(() => giveUp('No answer from that room. Check the code.'), 15000);
+      this._cancelPending = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('Connection cancelled.'));
+      };
 
       this.peer.on('error', (e) => {
         if (!settled) {
@@ -239,6 +396,7 @@ export class Net {
       });
 
       this.peer.on('open', (id) => {
+        if (this.closed || settled || this.hostConn) return;
         this.selfId = id;
         this._status('DIALLING HOST');
         const conn = this.peer.connect(BROKER_PREFIX + room, {
@@ -247,22 +405,33 @@ export class Net {
         this.hostConn = conn;
 
         conn.on('open', () => {
+          if (this.closed || settled) return;
           clearTimeout(timer);
           settled = true;
+          this._cancelPending = null;
           this.open = true;
+          this.health.broker = 'online';
+          this._watch(conn);
+          this._startHeartbeat();
           this._status('CONNECTED');
           this.onOpen?.(id);
           resolve(id);
         });
         conn.on('data', (raw) => {
-          const msg = decode(raw);
-          if (msg) this.onMessage?.(msg, 'host');
+          if (this.closed) return;
+          this._receive(conn, raw, 'host');
         });
         // destroy() closes this channel itself, and that close is us quitting,
         // not the host vanishing — announcing it would slam a results card over
         // the title screen the player just asked for.
-        conn.on('close', () => { if (this.closed) return; this.open = false; this.onHostGone?.(); });
-        conn.on('error', () => { if (!settled) giveUp('Could not open a channel to the host.'); });
+        const hostGone = () => {
+          if (this.closed) return;
+          if (!settled) { giveUp('The host closed the connection.'); return; }
+          this.destroy();
+          this.onHostGone?.();
+        };
+        conn.on('close', hostGone);
+        conn.on('error', hostGone);
       });
     });
   }
@@ -273,10 +442,9 @@ export class Net {
   /** Host -> everyone. */
   broadcast(msg, exceptId) {
     if (!this.isHost) return;
-    const raw = encode(msg);
     for (const [id, c] of this.conns) {
       if (id === exceptId) continue;
-      try { c.send(raw); } catch (e) { /* dropped; the close handler will clean up */ }
+      this._sendPacket(c, msg);
     }
   }
 
@@ -284,13 +452,13 @@ export class Net {
   sendTo(peerId, msg) {
     const c = this.conns.get(peerId);
     if (!c) return;
-    try { c.send(encode(msg)); } catch (e) { /* ignore */ }
+    this._sendPacket(c, msg);
   }
 
   /** Client -> host. */
   sendHost(msg) {
     if (this.isHost || !this.hostConn) return;
-    try { this.hostConn.send(encode(msg)); } catch (e) { /* ignore */ }
+    this._sendPacket(this.hostConn, msg);
   }
 
   /** Either direction, whichever applies. */
@@ -310,6 +478,7 @@ export class Net {
     const c = this.conns.get(peerId);
     if (!c) return;
     this.conns.delete(peerId);
+    this._refreshHealth();
     try { c.close({ flush: true }); } catch (e) { try { c.close(); } catch (e2) { /* already gone */ } }
   }
 
@@ -318,6 +487,11 @@ export class Net {
   destroy() {
     this.closed = true;
     this.open = false;
+    clearInterval(this._heartbeatTimer); this._heartbeatTimer = null;
+    Object.assign(this.health, { state: 'closed', rtt: null, peers: 0, broker: 'offline' });
+    const cancel = this._cancelPending;
+    this._cancelPending = null;
+    cancel?.();
     try { this.peer?.destroy(); } catch (e) { /* already gone */ }
     this.conns.clear();
     this.hostConn = null;
@@ -334,9 +508,10 @@ export class Net {
 function encode(msg) { return msg; }
 
 function decode(raw) {
-  if (raw && typeof raw === 'object') return raw;
   if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch (e) { return null; }
+    if (raw.length > 65536) return null;
+    try { raw = JSON.parse(raw); } catch (e) { return null; }
   }
-  return null;
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    && typeof raw.t === 'string' && raw.t.length <= 40 ? raw : null;
 }

@@ -35,8 +35,14 @@ const COAST = 0.26;             // how long we will guess for before giving up
    so the timing is a property of the connection, not of any one player. */
 const net = { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14 };
 
+/** A new room connection must not inherit the previous connection's jitter. */
+export function resetSnapshotTiming() {
+  Object.assign(net, { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14 });
+}
+
 /** Called once per snapshot, from whoever received it. */
 export function noteSnapshot(t) {
+  if (!Number.isFinite(t)) return;
   if (net.last) {
     const gap = Math.min(0.6, Math.max(0.005, t - net.last));
     // exponential means: cheap, and they forget a bad patch soon enough
@@ -111,7 +117,9 @@ export class Avatar {
     this.yaw = 0;
     this.walkPhase = 0;
     this.speed = 0;
-    this.visible = true;
+    // A roster arrives before positions. Do not briefly spawn everyone at 0,0.
+    this.visible = false;
+    this.mesh.visible = false;
   }
 
   _recolour(colourId) {
@@ -126,7 +134,24 @@ export class Avatar {
   }
 
   /** Push a snapshot. `t` is the local receive time. */
-  push(t, x, y, z, yaw, anim) {
+  push(t, x, y, z, yaw, anim, room = this.room || 0) {
+    if (![t, x, y, z, yaw].every(Number.isFinite)) return;
+    const last = this.buf[this.buf.length - 1];
+    if (last && t < last.t) return;
+    // Interior coordinates are unrelated to the island. Interpolating a
+    // ladder or council teleport sends a player flying through the walls.
+    const jumped = last && (room !== this.room || Math.hypot(x - last.x, y - last.y, z - last.z) > 12);
+    if (jumped) this.buf.length = 0;
+    if (!this.buf.length) {
+      this.pos.set(x, y, z);
+      this.yaw = yaw;
+      this.speed = 0;
+      this.mesh.position.copy(this.pos);
+      this.mesh.rotation.y = yaw;
+    } else if (last.t === t) {
+      this.buf.pop();
+    }
+    this.room = room;
     this.buf.push({ t, x, y, z, yaw, anim });
     while (this.buf.length > BUFFER) this.buf.shift();
   }
@@ -137,6 +162,7 @@ export class Avatar {
 
     if (b.length === 0) return;
     if (b.length === 1) {
+      this.speed = 0;
       this.pos.set(b[0].x, b[0].y, b[0].z);
       this.yaw = b[0].yaw;
     } else {
@@ -378,7 +404,8 @@ export class Avatar {
     const shell = this.mesh.clone(true);
     shell.traverse((o) => { if (o.isMesh) { o.material = mat; o.renderOrder = hot ? 9 : 8; } });
     shell.scale.setScalar(hot ? 1.10 : 1.12);
-    this.scene.add(shell);
+    (this.mesh.parent || this.scene).add(shell);
+    shell.visible = this.visible;
     this.shell = shell;
     this.shellMat = mat;
 
@@ -389,7 +416,8 @@ export class Avatar {
         side: THREE.DoubleSide, depthWrite: false, fog: false,
       }));
       ring.renderOrder = 7;
-      this.scene.add(ring);
+      (this.mesh.parent || this.scene).add(ring);
+      ring.visible = this.visible;
       this.shellRing = ring;
     }
 
@@ -408,6 +436,15 @@ export class Avatar {
     this.mesh.visible = v;
     if (this.shell) this.shell.visible = v;
     if (this.shellRing) this.shellRing.visible = v;
+  }
+
+  /** Outlines and target rings occupy the same coordinate space as the body. */
+  setScene(scene) {
+    if (!scene) return;
+    this.scene = scene;
+    for (const node of [this.mesh, this.shell, this.shellRing]) {
+      if (node && node.parent !== scene) scene.add(node);
+    }
   }
 
   /**

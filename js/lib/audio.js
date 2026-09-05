@@ -461,6 +461,7 @@ export class GameAudio {
     this.enabled = true;
     this.ready = false;
     this.track = null;
+    this._requestedTrack = null;
     this.step = 0;
     this.section = 0;
     this.nextTime = 0;
@@ -512,6 +513,7 @@ export class GameAudio {
     this.noiseBuf = this._noise(2);
     this._buildVoices();
     this.ready = true;
+    this.playMusic(this._requestedTrack);
   }
 
   /* ===========================================================
@@ -782,6 +784,7 @@ export class GameAudio {
   }
 
   playMusic(name) {
+    this._requestedTrack = name;
     if (!this.ready) return;
     if (this.track === name) return;
     this._silenceMusic();
@@ -794,6 +797,7 @@ export class GameAudio {
   }
 
   stopMusic() {
+    this._requestedTrack = null;
     this._silenceMusic();
     this.track = null;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }

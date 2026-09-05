@@ -452,6 +452,12 @@ export class Player {
     this.yaw = facing;
     this.grounded = false;
     this.camDistCur = this.camDist;
+    // A doorway or a rescue must not carry swimming and landing offsets
+    // into a dry room, including the first frame behind a menu.
+    this.inWater = 0;
+    this.landSquash = 0;
+    this.mesh.position.copy(this.pos);
+    this.mesh.rotation.y = facing;
   }
 
   /** Raw mouse delta in pixels; sensitivity and invert are applied here. */
@@ -585,7 +591,16 @@ export class Player {
       const dx = px - c.x, dz = pz - c.z;
       const rr = c.r + this.RADIUS;
       const d2 = dx * dx + dz * dz;
-      if (d2 < rr * rr && d2 > 1e-6) {
+      if (d2 < rr * rr) {
+        // A spawn or newly surfaced chest can place both centres exactly
+        // together. There is still an overlap even without a normal.
+        if (d2 <= 1e-6) {
+          const ox = this.pos.x - c.x, oz = this.pos.z - c.z;
+          const oldD = Math.hypot(ox, oz);
+          px = c.x + (oldD > 1e-6 ? ox / oldD : 1) * rr;
+          pz = c.z + (oldD > 1e-6 ? oz / oldD : 0) * rr;
+          continue;
+        }
         const d = Math.sqrt(d2);
         px = c.x + (dx / d) * rr;
         pz = c.z + (dz / d) * rr;

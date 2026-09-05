@@ -40,6 +40,9 @@ import {
 import {
   buildBar,
 } from './world/bar.js';
+import {
+  buildUfo, buildUfoHull, ufoHeight, UFO_ALT, UFO_BOX,
+} from './world/ufo.js';
 import { buildCathy, CATHY_SPOTS } from './world/cathy.js';
 import { buildX, X_SPOTS, DIG_SECONDS, CHEST_COLLIDER_R, goodXSpot } from './world/treasure.js';
 import {
@@ -413,6 +416,7 @@ export class Game {
     attachHud(this.ui.hud);
 
     this.input = { fwd: false, back: false, left: false, right: false, sprint: false, jump: false };
+    this._movementKeys = new Set();
     this.mouse = { locked: false };
     this._lockFresh = false;
 
@@ -440,6 +444,10 @@ export class Game {
        a setting now, and a saved choice has already been loaded by here. */
     this.DAY_LEN ??= 360;
     this.night = 0;
+    /* The saucer's arrival, 0..1. Whoever is hosting owns this number and
+       raises it when a visit begins; single player never touches it, so
+       there is nothing in the sky and nothing to see. */
+    this.ufoVisit = 0;
     this.stats = { deaths: 0, thrown: 0, hits: 0 };
 
     this._initRenderer();
@@ -448,7 +456,23 @@ export class Game {
 
   /* ---------- settings ---------- */
   loadSettings() {
-    try { Object.assign(this.settings, JSON.parse(localStorage.getItem('illicisle.settings') || '{}')); }
+    try {
+      const saved = JSON.parse(localStorage.getItem('illicisle.settings') || '{}');
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+      for (const key of ['jitter', 'crt', 'audio', 'invert']) {
+        if (typeof saved[key] === 'boolean') this.settings[key] = saved[key];
+      }
+      const choices = {
+        res: [0, 180, 224, 320], density: [0.55, 1, 1.45],
+        dayLen: [240, 360, 600, 99999], walk: ['plain', 'weighted'],
+      };
+      for (const [key, values] of Object.entries(choices)) {
+        if (values.includes(saved[key])) this.settings[key] = saved[key];
+      }
+      if (Number.isFinite(saved.sens) && saved.sens >= 0.2 && saved.sens <= 5) {
+        this.settings.sens = saved.sens;
+      }
+    }
     catch (e) { /* first run */ }
   }
   saveSettings() {
@@ -749,6 +773,13 @@ export class Game {
       this.barScene = buildBar(this.propMats, buildFlameCluster);
       // and the hut at the head of the mast's ladder
       this.cabScene = buildCab(this.propMats);
+      /* And the saucer, which is two separate things: a room like all the
+         others, built now so that arriving in it is instant and its
+         shaders are warmed with everything else, and a hull that hangs
+         over the island. The hull goes up here and sits at setVisit(0),
+         which is nothing on screen at all, until a host says otherwise. */
+      this.ufoScene = buildUfo(this.propMats);
+      this._placeUfo();
     });
 
     await step('CASTING THE IDOL', 0.90, () => {
@@ -808,7 +839,7 @@ export class Game {
 
         this.renderer.setRenderTarget(this.pipeline.target);
         for (const sc of [this.islandScene, this.templeScene, this.bunkerScene,
-          this.hrScene, this.barScene, this.cabScene, this.titleScene]) {
+          this.hrScene, this.barScene, this.cabScene, this.ufoScene, this.titleScene]) {
           if (!sc) continue;
           showAll(sc);
           /* Take the scene's own point lights off duty and give it the
@@ -1811,6 +1842,75 @@ export class Game {
     return best || { x: LANDMARKS.temple.x, y: heightAt(LANDMARKS.temple.x, LANDMARKS.temple.z), z: LANDMARKS.temple.z };
   }
 
+  /**
+   * Where the saucer hangs: high over the trees, off the temple's left
+   * shoulder.
+   *
+   * "Left" is the left of somebody walking up to the door, not the left
+   * of the building looking back at them — those are opposite sides of
+   * the hill. The door's yaw points OUT of the ridge, down the slope and
+   * into the face of whoever is approaching, so their left is the -X of
+   * that facing: forward turned a quarter turn the other way.
+   */
+  _placeUfo() {
+    const dg = this.templeDoorPos;
+    if (!dg || !this.islandScene) return;
+    // the same bearing the temple itself was turned by: ridge -> doorway
+    const yaw = Math.atan2(dg.x - ISLAND.ridge.x, dg.z - ISLAND.ridge.z);
+    const spot = this._findUfoSpot(dg, yaw);
+
+    const node = buildUfoHull(this.propMats);
+    /* The column hangs off the hull and reaches exactly UFO_ALT down, so
+       the height it floats at is the height of the ground the column
+       lands on — not the ground under the hull's own middle. On a hillside
+       those are different numbers and the beam stops short in mid-air. */
+    const at = node.userData.beamAt || { x: 0, z: 0 };
+    const bx = spot.x + at.x, bz = spot.z + at.z;
+    const gy = heightAt(bx, bz);
+    this.ufoPos = { x: spot.x, y: gy + UFO_ALT, z: spot.z };
+    this.ufoBeamPos = { x: bx, z: bz, y: gy };
+
+    node.position.set(this.ufoPos.x, this.ufoPos.y, this.ufoPos.z);
+    node.userData.setVisit(0);
+    this.islandScene.add(node);
+    this.ufoNode = node;
+  }
+
+  /**
+   * Beside the temple, not on top of it. The excavation around the
+   * doorway is twenty-five metres across and the terraces climb the hill
+   * behind it, so nothing nearer than that is standing beside anything —
+   * and the beam has to come down somewhere a person can walk to, which
+   * rules out the sea and the cliffs.
+   */
+  _findUfoSpot(dg, yaw) {
+    const lx = -Math.cos(yaw), lz = Math.sin(yaw);   // the door's own -X
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);    // out of the hill
+    let best = null, bestScore = -Infinity;
+    for (let r = 34; r <= 54; r += 2) {
+      // swung up to thirty degrees either side of straight left
+      for (let a = -0.55; a <= 0.55; a += 0.055) {
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const x = dg.x + (lx * ca + fx * sa) * r;
+        const z = dg.z + (lz * ca + fz * sa) * r;
+        const h = heightAt(x, z);
+        if (h < 2.2) continue;                            // not over water
+        const s = slopeAt(x, z);
+        if (s > 0.40) continue;                           // not down a cliff
+        if (Math.hypot(x, z) > ISLAND.playRadius - 30) continue;
+        /* Flat ground matters, but not as much as being where it was
+           asked to be: the swing is there to dodge a cliff, not to drift
+           round behind the hill because the going is easier there. */
+        const score = -s * 24 - Math.abs(r - 40) * 0.35 - Math.abs(a) * 8.0;
+        if (score > bestScore) { bestScore = score; best = { x, z, y: h }; }
+      }
+    }
+    if (best) return best;
+    // straight out to the left and hope, which is better than no saucer
+    const x = dg.x + lx * 40, z = dg.z + lz * 40;
+    return { x, z, y: heightAt(x, z) };
+  }
+
   /* ===========================================================
      THE TIDE
 
@@ -1843,7 +1943,7 @@ export class Game {
       this._tideSaid = true;
       this.ui.toast('THE TIDE IS TAKING YOU IN', 'gold', 2600);
       this.audio?.sfx?.('wave');
-      setTimeout(() => { this._tideSaid = false; }, 9000);
+      this._runLater(() => { this._tideSaid = false; }, 9000);
     }
     /* Straight at the middle of the island, which is the shortest line to
        some beach from anywhere in this sea. */
@@ -1975,7 +2075,7 @@ export class Game {
     this.player.teleport(CAB_ENTRY.x, CAB_ENTRY.y, CAB_ENTRY.z, Math.PI);
     this.player.pitch = -0.05;
     this._cabCooldown = true;
-    setTimeout(() => { this._cabCooldown = false; }, 1600);
+    this._runLater(() => { this._cabCooldown = false; }, 1600);
     this.audio.sfx('ladder');
     this.pipeline.tint.setHex(0x203028);
     this.pipeline.tintAmt = 0.55;
@@ -1997,7 +2097,7 @@ export class Game {
       this.player.teleport(bx, heightAt(bx, bz) + 0.6, bz, a);
     }
     this._cabCooldown = true;
-    setTimeout(() => { this._cabCooldown = false; }, 1600);
+    this._runLater(() => { this._cabCooldown = false; }, 1600);
     this.audio.sfx('ladder');
     this.pipeline.tint.setHex(0xffffff);
     this.pipeline.tintAmt = 0.4;
@@ -2237,9 +2337,12 @@ export class Game {
        slot machine's arm — needs the whole press-drag-release. */
     const toHud = (e) => {
       const r = this.canvas.getBoundingClientRect();
+      const u = (e.clientX - r.left) / r.width;
+      const v = (e.clientY - r.top) / r.height;
+      const [hx, hy] = this.pipeline.screenToHud?.(u, v) || [u, v];
       return [
-        ((e.clientX - r.left) / r.width) * this.ui.hud.c.width,
-        ((e.clientY - r.top) / r.height) * this.ui.hud.c.height,
+        hx * this.ui.hud.c.width,
+        hy * this.ui.hud.c.height,
       ];
     };
     window.addEventListener('mousemove', (e) => {
@@ -2303,7 +2406,12 @@ export class Game {
        once on the way back. visibilitychange as well as blur, because a
        minimise does not always blur. */
     window.addEventListener('focus', () => this._audioAway(false));
-    document.addEventListener('visibilitychange', () => this._audioAway(document.hidden));
+    document.addEventListener('visibilitychange', () => {
+      this._audioAway(document.hidden);
+      if (!document.hidden) return;
+      this._clearHeldInput();
+      if (this.playing && !this.paused && !this.anyOverlayOpen()) this.pause(true);
+    });
   }
 
   _audioAway(away) {
@@ -2333,6 +2441,7 @@ export class Game {
      ever cleared. */
   _clearHeldInput() {
     this.screens.clearHeld();
+    this._movementKeys?.clear();
     this.input.fwd = this.input.back = this.input.left = this.input.right = false;
     this.input.sprint = this.input.jump = false;
     this.holdingE = false;
@@ -2346,7 +2455,8 @@ export class Game {
   get playing() {
     return this.state === 'island' || this.state === 'temple'
       || this.state === 'bunker' || this.state === 'highroller'
-      || this.state === 'bar' || this.state === 'cab';
+      || this.state === 'bar' || this.state === 'cab'
+      || this.state === 'ufo';
   }
   anyOverlayOpen() { return this.screens.open; }
 
@@ -2381,6 +2491,10 @@ export class Game {
     this.audio.resume();
     const k = e.code;
     const I = this.input;
+    // Browser shortcuts must not spend items, move the player or skip a
+    // cutscene. Key-up still runs so releasing a chord cannot stick a key.
+    if (down && (e.metaKey || e.ctrlKey || e.altKey)
+        && !(this.screens.open && k === 'KeyV' && (e.metaKey || e.ctrlKey))) return;
 
     /* A screen that wants a key HELD needs the key-up as well, and the
        guard below throws every key-up away. This is the one line that
@@ -2414,18 +2528,17 @@ export class Game {
       });
       return;
     }
-    switch (k) {
-      /* No screen test here: a key-DOWN never reaches this switch with a
-         screen up, so the old `dialsOpen` guard could only ever fire on the
-         way UP — where it threw away the one event that says you have let
-         go. Solving the dials with W still held walked you into the door. */
-      case 'KeyW': case 'ArrowUp': I.fwd = down; break;
-      case 'KeyS': case 'ArrowDown': I.back = down; break;
-      case 'KeyA': case 'ArrowLeft': I.left = down; break;
-      case 'KeyD': case 'ArrowRight': I.right = down; break;
-      case 'ShiftLeft': case 'ShiftRight': I.sprint = down; break;
-      case 'Space': I.jump = down; if (down) e.preventDefault(); break;
-      default: break;
+    if (/^(Key[WASD]|Arrow(Up|Down|Left|Right)|Shift(Left|Right)|Space)$/.test(k)) {
+      const held = this._movementKeys || (this._movementKeys = new Set());
+      if (down) held.add(k); else held.delete(k);
+      // Releasing one of two equivalent keys must not release the other.
+      I.fwd = held.has('KeyW') || held.has('ArrowUp');
+      I.back = held.has('KeyS') || held.has('ArrowDown');
+      I.left = held.has('KeyA') || held.has('ArrowLeft');
+      I.right = held.has('KeyD') || held.has('ArrowRight');
+      I.sprint = held.has('ShiftLeft') || held.has('ShiftRight');
+      I.jump = held.has('Space');
+      if (down && (k === 'Space' || k.startsWith('Arrow'))) e.preventDefault();
     }
     /* E is HELD for digging as well as tapped for everything else, so it has
        to be tracked on the way up too — above the guard that throws every
@@ -2467,6 +2580,14 @@ export class Game {
     this.audio.playMusic('title');
   }
 
+  /** Delayed story beats belong to the run that scheduled them. */
+  _runLater(fn, ms) {
+    const gen = this._runGen || 0;
+    return setTimeout(() => {
+      if ((this._runGen || 0) === gen) fn();
+    }, ms);
+  }
+
   beginGame() {
     this.screens.clear();
     this.audio.resume();
@@ -2476,6 +2597,7 @@ export class Game {
 
   quitToTitle() {
     this.paused = false;
+    this._clearHeldInput();
     document.exitPointerLock?.();
     this.ui.hide();
     this.ui.showBoss(false);
@@ -2506,8 +2628,16 @@ export class Game {
 
   startGame() {
     this.paused = false;
+    this._clearHeldInput();
     // a fresh run orphans anything still awaiting a fade from the old one
     this._runGen = (this._runGen || 0) + 1;
+    this._fadeToken = (this._fadeToken || 0) + 1;
+    this.transitioning = false;
+    this.pipeline.fade = 1;
+    this.pipeline.tintAmt = 0;
+    this._idolRise = this._pendBoost = null;
+    this._bloom = null;
+    if (this.hector) { this.hector.dispose(); this.hector = null; }
     this.stats = { started: performance.now(), deaths: 0, thrown: 0, hits: 0 };
     this.found.clear();
     this.hasChart = false;
@@ -2527,9 +2657,8 @@ export class Game {
     /* The sense beacons go out with the food that lit them: nothing else
        turns them off, so a run that ended near an unfound coin left its
        marker burning through the island for the whole of the next one. */
-    if (this.syncoins) this.syncoins.forEach((c) => {
-      c.taken = false; c.mesh.visible = true; c.mesh.userData.setSense?.(false);
-    });
+    this.resetPickups();
+    this.resetCameras();
     if (this.relicNodes) this.relicNodes.forEach((r) => (r.mesh.visible = true));
     /* The marks a Castaways round leaves behind — the lit lighthouse eye, the
        stripped fuselage, the towers a wind woke — outlive the scene, so a
@@ -2546,6 +2675,13 @@ export class Game {
        PLAY AGAIN used to hand you a beach you could look at but not walk. */
     this.player.frozen = false;
     this.player.stamina = 1;
+    this.player.staminaLock = false;
+    this.player.invuln = 0;
+    this.player.shake = this.player.throwAnim = 0;
+    this.player.insideBox = null;
+    this.player.drift = 0;
+    this._adrift = this.throwCooldown = this._boundsCd = 0;
+    this._tideSaid = this._cabCooldown = false;
     this.player.mesh.removeFromParent();
     this.islandScene.add(this.player.mesh);
     this.player.setColliders(this.colliders);
@@ -2584,6 +2720,14 @@ export class Game {
     this.templeDoor.userData.setOpen(0);
     this.hectorDefeated = false;
     this.idolTaken = false;
+    if (this.templeSeal) {
+      this.templeSeal.seal.visible = true;
+      this.templeSeal.bars.forEach((b) => { b.visible = true; });
+    }
+    if (this.sanctumIdol) {
+      this.sanctumIdol.position.set(TEMPLE.daisCenter.x, TEMPLE.daisHeight + 2.45, TEMPLE.daisCenter.z);
+      this.sanctumIdol.scale.setScalar(1.3);
+    }
     this.bossTriggered = false;
     this.seenDescent = false;
     this.introClearing = false;
@@ -2656,7 +2800,8 @@ export class Game {
          and flames all stopped — and ticked a temple nobody was standing
          in. Drive whatever is actually on screen instead. */
       const cs = this.cutScene;
-      cs?.userData.tick?.(this.time, dt, cs === this.barScene ? this.camera.position : undefined);
+      const wantsEye = cs === this.barScene || cs === this.ufoScene;
+      cs?.userData.tick?.(this.time, dt, wantsEye ? this.camera.position : undefined);
       if (cs === this.templeScene) {
         this.sanctumIdol?.userData.tick?.(this.time);
         if (this.hector) this.hector.update(dt, this.time, this.player);
@@ -2890,7 +3035,7 @@ export class Game {
     this.ui.show();
     this.ui.setObjective('Look around the camp. Somebody was here before you.');
     this._requestLock();
-    setTimeout(() => this.ui.toast('WASHED ASHORE - ILLIC ISLE', 'gold', 3600), 400);
+    this._runLater(() => this.ui.toast('WASHED ASHORE - ILLIC ISLE', 'gold', 3600), 400);
   }
 
   endIntro() {
@@ -3004,7 +3149,7 @@ export class Game {
         this._refreshCompass();
         if (this.found.size >= 4) {
           this.ui.setObjective('All four glyphs recorded. Set the temple door in order.');
-          setTimeout(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
+          this._runLater(() => this.ui.toast('ALL FOUR PENDULUMS READ', 'jade', 4000), 500);
         } else {
           /* A bare count is what the corner of the HUD already says, and it
              left the objective line stating no objective for the longest
@@ -3082,7 +3227,7 @@ export class Game {
         this.ui.setObjective('Take the Idol.');
         this.audio.playMusic('temple');
         this._requestLock();
-        setTimeout(() => {
+        this._runLater(() => {
           this.showReader('HECTOR — EL BASS PRESIDENTE',
 `"...fine.
 
@@ -3369,7 +3514,7 @@ I have snacks."`);
         this.showReader(LETTER.title, LETTER.text);
         this.ui.setObjective('Find all four Rogue Pendulums. Press M for the chart.');
         this._refreshCompass();
-        setTimeout(() => this.ui.toast('CHART ACQUIRED — PRESS M', 'jade', 3600), 600);
+        this._runLater(() => this.ui.toast('CHART ACQUIRED — PRESS M', 'jade', 3600), 600);
         break;
       }
 
@@ -3611,6 +3756,17 @@ I have snacks."`);
   camsSpare() {
     this._initCameras();
     return this.cams.filter((c) => !c.placed).length - (this.camsHeld || 0);
+  }
+
+  /** A new adventure keeps the fitted relay and removes last run's kit. */
+  resetCameras() {
+    for (const c of (this.cams || [])) {
+      c.pan = 0; c.tilt = 0; c.zoom = 1;
+      const head = c.node.userData.head;
+      if (head) { head.rotation.y = 0; head.rotation.x = 0.16; }
+      if (!c.fitted) { c.placed = false; c.node.visible = false; }
+    }
+    this.camsHeld = 0;
   }
 
   /**
@@ -4440,6 +4596,24 @@ I have snacks."`);
     });
   }
 
+  /** Restore reusable pickups, including animations interrupted by a menu. */
+  resetPickups() {
+    if (this.coinFx) this.coinFx.length = 0;
+    for (const c of (this.syncoins || [])) {
+      c.taken = false;
+      const m = c.mesh;
+      m.visible = true;
+      m.userData.flourish = false;
+      m.scale.setScalar(1);
+      m.position.set(c.x, m.userData.baseY ?? m.position.y, c.z);
+      m.userData.setSense?.(false);
+    }
+    for (const p of [...(this.coconutPiles || []), ...(this.templeCaches || [])]) {
+      p.cooldown = 0;
+      p.mesh.visible = true;
+    }
+  }
+
   updateCoinFx(dt) {
     if (!this.coinFx || !this.coinFx.length) return;
     for (let i = this.coinFx.length - 1; i >= 0; i--) {
@@ -4473,7 +4647,8 @@ I have snacks."`);
     /* The mast hut has its own floor and its own local coordinates, so a
        coconut thrown up there was measured against the island terrain
        twenty-five metres below and splatted on the frame it left your hand. */
-    const groundOf = this.state === 'cab' ? cabHeight : (inTemple ? templeHeight : heightAt);
+    const groundOf = this.state === 'cab' ? cabHeight
+      : this.state === 'ufo' ? ufoHeight : (inTemple ? templeHeight : heightAt);
     for (let i = this.coconuts.length - 1; i >= 0; i--) {
       /* The killing blow on Hector clears every coconut in flight from
          inside this very loop, so by the next iteration the array is
@@ -4534,10 +4709,12 @@ I have snacks."`);
     this.ui.showBoss(false);
     this.clearCoconuts();
     // let his collapse animation get a beat in before the camera takes over
-    setTimeout(() => this.playDefeatCutscene(), 700);
+    this._runLater(() => this.playDefeatCutscene(), 700);
   }
 
   onDeath() {
+    if (this.state === 'dead') return;
+    this._clearHeldInput();
     this.audio.sfx('die');
     this.audio.stopMusic();
     this.stats.deaths++;
@@ -4552,7 +4729,7 @@ I have snacks."`);
       'He did not even use the good staff.',
     ];
     const sub = subs[Math.floor(Math.random() * subs.length)];
-    setTimeout(() => {
+    this._runLater(() => {
       this.ui.hide();
       this.screens.replace('death', { sub });
     }, 900);
@@ -4562,6 +4739,13 @@ I have snacks."`);
     /* Dying with the pause card up throws that card away without ever going
        back through pause(false), so without this you wash ashore frozen. */
     this.paused = false;
+    this._runGen = (this._runGen || 0) + 1;
+    this._fadeToken = (this._fadeToken || 0) + 1;
+    this.transitioning = false;
+    this.pipeline.fade = 1;
+    this.pipeline.tintAmt = 0;
+    this._clearHeldInput();
+    this.clearCoconuts();
     this.screens.clear();
     this.ui.show();
     this.player.hp = this.player.maxHp;
@@ -4570,6 +4754,10 @@ I have snacks."`);
        otherwise wash you ashore unable to move. */
     this.player.frozen = false;
     this.player.stamina = 1;
+    this.player.staminaLock = false;
+    this.player.shake = this.player.throwAnim = 0;
+    this.throwCooldown = this._adrift = 0;
+    this._tideSaid = this._cabCooldown = false;
 
     if (this.hector && this.hector.active && !this.hector.dead) {
       this.hector.hp = this.hector.maxHp;
@@ -4584,14 +4772,23 @@ I have snacks."`);
 
     if (this.deathScene === this.templeScene) {
       this.state = 'temple';
+      this.scene = this.templeScene;
+      this.player.setColliders(TEMPLE_COLLIDERS);
+      this.player.insideBox = TEMPLE_INNER;
       this.player.teleport(TEMPLE.entrance.x, templeHeight(TEMPLE.entrance.x, TEMPLE.entrance.z - 2) + 0.5,
         TEMPLE.entrance.z - 2, Math.PI);
       this.audio.playMusic('temple');
     } else {
       this.state = 'island';
+      this.scene = this.islandScene;
+      this.player.setColliders(this.colliders);
+      this.player.insideBox = null;
       this.player.teleport(this.spawn.x, this.spawn.y + 1, this.spawn.z, Math.atan2(-this.spawn.x, -this.spawn.z));
       this.audio.playMusic('island');
+      this._refreshCompass();
     }
+    this.scene.add(this.player.mesh);
+    this.scene.add(this.camera);
     this.coconutCount = Math.max(this.coconutCount, 3);
     this._requestLock();
   }
@@ -4664,6 +4861,12 @@ I have snacks."`);
     const frozen = this.paused || this.anyOverlayOpen();
     const inTemple = this.state === 'temple';
     const inCab = this.state === 'cab';
+    /* Inside the saucer. Multiplayer owns that state and takes this frame
+       over long before it reaches here — but a room whose floor nothing
+       knows about is a fall through the world, so the interior's floor and
+       its walls are named here as well. */
+    const inUfo = this.state === 'ufo';
+    const inside = inCab || inUfo;
     /* The last place you actually stood outdoors, kept as a copy so it does
        not follow you into a room the way a live Vector3 would. The chart has
        no way to draw an interior, and every interior is its own local space. */
@@ -4681,21 +4884,26 @@ I have snacks."`);
            her bridge are all platforms the terrain knows nothing about.
            Single player used heightAt directly, so Ferdi's steps were a
            picture of steps. */
-        groundOf: inCab ? cabHeight : (inTemple ? templeHeight : (this.groundOf || heightAt)),
-        water: !inTemple && !inCab,
-        bounds: !inTemple && !inCab,
-        insideBox: inCab ? CAB_BOX : (inTemple ? TEMPLE_INNER : null),
+        groundOf: inCab ? cabHeight
+          : inUfo ? ufoHeight : (inTemple ? templeHeight : (this.groundOf || heightAt)),
+        water: !inTemple && !inside,
+        bounds: !inTemple && !inside,
+        insideBox: inCab ? CAB_BOX : inUfo ? UFO_BOX : (inTemple ? TEMPLE_INNER : null),
       });
-      if (!inTemple && !inCab) { this._tide(dt); this._tickDig(dt); }
+      if (!inTemple && !inside) { this._tide(dt); this._tickDig(dt); }
       if (inCab) this.cabScene.userData.tick(this.time);
+      if (inUfo) this.ufoScene?.userData.tick?.(this.time, dt, this.camera.position);
       this.updateCoconuts(dt);
       this.updateCoinFx(dt);
     } else {
-      this.player.updateCamera(dt, inCab ? cabHeight : (inTemple ? templeHeight : heightAt));
+      this.player.updateCamera(dt, inCab ? cabHeight
+        : inUfo ? ufoHeight : (inTemple ? templeHeight : heightAt));
     }
 
     if (inTemple) this.updateTemple(dt, frozen);
-    else { this.tickIslandWorld(dt); this.updateIslandLogic(dt, frozen); }
+    /* The saucer is its own scene with its own sky. Ticking the island
+       under it would be work nobody can see. */
+    else if (!inUfo) { this.tickIslandWorld(dt); this.updateIslandLogic(dt, frozen); }
 
     this.ui.setHearts(this.player.hp, this.player.maxHp);
     this.ui.setStamina(this.player.stamina);
@@ -4723,6 +4931,15 @@ I have snacks."`);
        prop reaching back into the game for it. */
     const eye = this.camera.position;
     for (const g of this.tickers) g.userData?.tick?.(t, dt, eye);
+    /* The saucer, on the frames there is one. setVisit is fed a number
+       somebody else owns — the multiplayer layer raises it when a visit
+       begins and lowers it when the visit ends — and at zero the hull is
+       not drawn and its tick returns on its first line, so single player
+       pays two writes a frame for a thing that is never there. */
+    if (this.ufoNode) {
+      this.ufoNode.userData.setVisit(this.ufoVisit || 0);
+      this.ufoNode.userData.tick(t, dt);
+    }
     if (this.campfire && !this.doused) {
       this.campfire.userData.light.intensity =
         this._fireFlare() + 1.8 + Math.sin(t * 11) * 0.45 + Math.sin(t * 6.3) * 0.25;
@@ -4997,8 +5214,8 @@ I have snacks."`);
         this.ui.setBoss(1, 'TERM ONE');
         this.ui.setObjective('Hit the orb on his staff. That is where the food comes from.');
         this.ui.toast('HECTOR — "EL BASS PRESIDENTE"', 'bad', 4000);
-        setTimeout(() => this.ui.toast('AH. ANOTHER GUEST.', 'bad', 3000), 1200);
-        setTimeout(() => this.ui.toast('THIS ISLAND IS A DEMOCRACY AND I AM ALL OF IT.', 'bad', 3600), 3400);
+        this._runLater(() => this.ui.toast('AH. ANOTHER GUEST.', 'bad', 3000), 1200);
+        this._runLater(() => this.ui.toast('THIS ISLAND IS A DEMOCRACY AND I AM ALL OF IT.', 'bad', 3600), 3400);
       }
     }
 
@@ -5064,7 +5281,7 @@ I have snacks."`);
        The toasts and the popup are one pass of their own and it belongs
        here, after the screens, every frame — render() stands down for the
        frames this one makes, so the stack is composited exactly once. */
-    this.ui.hud.renderOverlay(this.time);
+    this.ui.hud.renderOverlay(this.time, this.screens.name);
     this.ui.hud.renderCinema(this.time);
     this.pipeline.markHudDirty();
 

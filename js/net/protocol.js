@@ -12,7 +12,7 @@
 export const C = {
   HELLO:      'c.hello',      // { name }        the host deals the colour itself
   MOVE:       'c.move',       // { x, y, z, yaw, anim, room }
-  DO_TASK:    'c.task',       // { taskId }
+  DO_TASK:    'c.task',       // { taskId, step } the stage the player actually completed
   KILL:       'c.kill',       // { targetId }
   REPORT:     'c.report',     // { bodyId }  (or null for the camp bell)
   VOTE:       'c.vote',       // { targetId | 'skip' }
@@ -27,6 +27,9 @@ export const C = {
   CHEST:      'c.chest',      // {}             open it, once it is out
   VEND:       'c.vend',       // { index }      pull the handle on one of Ferdi's machines
   TAKEDROP:   'c.takedrop',   // { did }        reach for a purse somebody left behind
+  TAKESCAN:   'c.takescan',   // {}             lift the scanner off its plinth; the host checks
+                              //   that somebody else is holding the plate down for you
+  SCAN:       'c.scan',       // { targetId }   point it at somebody and ask what they are
   BOUGHT:     'c.bought',     // { id, price }  over Ferdi's counter, for the printers
   LEDGER:     'c.ledger',     // {}             ask what everybody is carrying
   ASKSTRANGER: 'c.ask',       // {}             speak to the one on the treeline
@@ -51,12 +54,12 @@ export const S = {
                               //   chore, both of which happen at the same landmark.
   COOLDOWN:   's.cool',       // { secs, grace }          PRIVATE, to one agent
   PURSE:      's.purse',      // { coins, gained }      PRIVATE, your wallet
-  DROP:       's.drop',       // { did, x, y, z, coins, id }  a purse on the ground, did names it
+  DROP:       's.drop',       // { did, x, y, z, room, coins, id } a purse in its own room
   DROPGONE:   's.dropgone',   // { did, byId }  somebody reached it first
-  SHOT:       's.shot',       // { byId, victimId, x, y, z, secs }
+  SHOT:       's.shot',       // { byId, victimId, x, y, z, room, secs }
   SNAPDENY:   's.snapdeny',   // { why }         PRIVATE, the flare pistol refused
   SNAPOPEN:   's.snapopen',   // { victimId, byId, secs, voters }   secs, like s.phase, is a duration
-  SNAPTALLY:  's.snaptally',  // { yes, no, need }
+  SNAPTALLY:  's.snaptally',  // { yes, no, need, voters } eligibility follows departures/deaths
   SNAPDONE:   's.snapdone',   // { victimId, exiled, yes, no, wasAgent, reveal }
   BUNKER:     's.bunker',     // { index }      which hatch is real this round
   SPEAKER:    's.speaker',    // { x, z, secs }  somebody put a boombox down
@@ -81,6 +84,14 @@ export const S = {
   BLACKOUT:   's.blackout',   // { secs }        every fire on the island goes out
   STRANGER:   's.stranger',   // { on, x, z }   where he is, if he is anywhere
   RIDDLE:     's.riddle',     // { text }       PRIVATE, what he told you
+  UFO:        's.ufo',        // { on, secs }   the visit; secs, like s.phase, is a duration and
+                              //   only rides the on:true. The host alone decides when night
+                              //   gets a visitor, so nobody can call one down early.
+  SCANNER:    's.scanner',    // { byId, spent } who is carrying it; null puts it back on the
+                              //   plinth, and spent:true means it has had its one scan and is
+                              //   gone for the rest of the visit — the plinth stays empty
+  SCANRESULT: 's.scanres',    // { targetId, agent }  PRIVATE, to the holder and nobody else —
+                              //   what they do with it afterwards is the game
   FIXPROGRESS: 's.fixprog',   // { kind, done, need }
   FIXED:      's.fixed',      // { kind, cooldown }  cooldown seeds the client's ring
   OVER:       's.over',       // { winner, agents, reason }

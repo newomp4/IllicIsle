@@ -1,174 +1,138 @@
-# Illic Isle
+# Illic Isle — Castaways Online
 
-### ▶ Play it: **https://newomp4.github.io/IllicIsle/**
+[Play Illic Isle](https://newomp4.github.io/IllicIsle/)
 
-A PS1-style castaway game that runs in a browser tab. Two ways to play, one
-island. Nothing to install — send the link and a four-letter room code.
+An online social deduction game for **3–10 friends**, built with a PS1 look.
+Castaways finish island chores while hidden Rogue Agents hunt them and sabotage
+the island. Report a body or ring the camp bell, discuss what happened, and vote.
+Ghosts can keep helping with their assigned work.
 
-**Single player — The Idol of Illic Isle.** You wash ashore alone. Wake the
-four Rogue Pendulums the Agents left behind, read the glyph on each one, set
-the temple door in that order, and take the Golden Idol of Chris Illic off
-Hector — *El Bass Presidente* — who has been guarding his brother's remains
-down there for eleven years.
+The game now opens directly into an online-focused menu: **PLAY ONLINE**,
+**HOW TO PLAY**, **CONTROLS**, and **OPTIONS**. Story Adventure and The Legend
+have been removed from the game menus, including the old story shortcut.
 
-**Castaways — 3 to 10 players.** Same island, same night, but some of you
-are Rogue Agents and nobody knows who. Castaways work: wind the pendulums,
-patch the sail, restock Ferdi's shelves. Agents cut them down one at a time
-and jam the island when it suits them. Find a body, call a council, argue,
-and throw somebody to the sea. Runs peer to peer — no server, no accounts,
-just a four-letter room code.
+## Start a room
 
-**Controls:** `WASD` move · mouse look · `Shift` sprint · `Space` jump ·
-`E` interact (hold it for a chore) · `F` eliminate, or fire the flare
-pistol · `G` draw the pistol · `Q` sabotage console (Agents) · `T` talk in
-a council · `Tab` or `M` chart · `C` swap first/third person · `Esc` pause.
+1. Open the game, choose **PLAY ONLINE**, enter your name, and choose **CREATE ROOM**.
+2. In the lobby, copy the four-character code or an invitation link for friends.
+3. Friends can open the invitation directly, or paste a code/link into **PLAY ONLINE** and choose **JOIN ROOM**.
+4. The host chooses the rules and starts with **START ROUND** once at least three players have joined.
 
----
+**HOW TO PLAY** is also available in the lobby with `H` and from the game menu.
+Guests can inspect the host's settings. After a round, the host can return
+everyone to the same lobby for a rematch without exchanging new codes.
 
-## Playing with other people
+## Controls
 
-1. Everyone opens **https://newomp4.github.io/IllicIsle/**
-2. One of you picks **PLAY → CASTAWAYS**, types a name, leaves the room code
-   blank, and takes the four letters it gives you.
-3. Everyone else types that code in the box (you can paste it) and joins.
-4. Three ashore minimum, ten maximum. The host presses **PUT TO SEA**.
+| Action | Input |
+| --- | --- |
+| Move / look | `WASD` / mouse |
+| Sprint / jump | `Shift` / `Space` |
+| Interact / work | `E` / hold `E` |
+| Map and jobs | `M` or `Tab` |
+| Change camera | `C` |
+| Knife or flare | `F` |
+| Agent sabotage | `Q` |
+| Draw pistol | `G` |
+| Belt item | `1–9` |
+| Game menu | `Esc` |
+| Council chat | `T`, type, then `Enter` |
+| Council vote | Select a name, then use the vote button or `Enter` |
+| Older council messages | Mouse wheel; `End` returns to latest |
 
-The host's tab owns the rules, so it has to stay open — if it closes, the
-round ends for everyone. It can sit in the background; the clock keeps
-running.
+Opening the game menu **does not pause the online round**. The controls pages
+explain additional gear and ghost controls. Keyboard and mouse are required;
+there are no touch controls. Click the island to capture the mouse and press
+`Esc` to release it. Audio, camera, graphics settings, and your name are saved
+locally. Sound can be switched off in **OPTIONS**.
 
-## Deploying your own copy
+## Connection behavior
 
-The whole game is static files with no build step:
+The host's browser runs the shared rules. Guests connect to it through WebRTC,
+using the public PeerJS service to find the room. Keep the host tab open: host
+migration and reconnecting into an active round are not supported. If the host
+leaves, guests get an explicit room-closed screen.
+
+The lobby and HUD show connection health and measured round-trip latency.
+Temporary stalls show a warning; old movement snapshots are dropped when a
+channel backs up so they do not flood the connection on recovery. A host that
+loses its signaling connection attempts to reopen its room code while existing
+data channels continue working. Background browser throttling can still affect
+a host, so keep its tab active for the smoothest match.
+
+Some network configurations block WebRTC connections. A different network or
+phone hotspot can help. This is a friend-hosted game: roles and important
+shared actions are checked by the host, but wallets, inventory, and minigame
+outcomes still include client-owned state. It is not a server-authoritative
+competitive service.
+
+## Local development
+
+The game is static files with vendored Three.js and PeerJS and no build step.
+Serve it over HTTP; ES modules do not work through `file://`.
 
 ```bash
-git clone https://github.com/newomp4/IllicIsle
-cd IllicIsle
-gh repo create IllicIsle --public --source=. --push
-gh api -X POST repos/:owner/IllicIsle/pages -f source[branch]=main -f source[path]=/
+node serve.mjs                 # http://localhost:8000
 ```
 
-To work on it locally (ES modules need a real server, `file://` won't work):
+The development server disables caching so module edits load together. Deploy
+the static directory to GitHub Pages or another static host; multiplayer also
+requires access to the signaling service and WebRTC.
+
+Node 24 or later runs the regression suite without installing dependencies:
 
 ```bash
-node serve.mjs                 # then open http://localhost:8000
+node --test tests/*.test.mjs
 ```
 
-`serve.mjs` sends `no-store`, which matters: modules are cached per URL, so
-a half-updated module graph shows up as a loading bar that never finishes
-rather than an error. If you use `python3 -m http.server` instead and the
-page hangs, reload with Shift held.
+The suite covers online session rules, rematches, room transitions, voting,
+network lifecycle, invites, controller state, compact HUD layouts, notification
+queues, screen navigation, minigames, text bounds, rendering math, and audio.
+Some shared-world regressions retain legacy base-class fixtures because online
+play reuses that engine.
 
----
+Optional real-browser checks start their own local server and save screenshots
+to a temporary directory. All test browsers launch muted.
 
-## How multiplayer works without a server
+```bash
+npm install --no-save playwright
+npx playwright install chromium
+node tests/browser-smoke.mjs
 
-A GitHub Page is static, so there is nowhere to run authoritative game
-logic — except in somebody's browser. One player is the **host**: their tab
-owns the truth about roles, tasks, kills and votes, and everyone else sends
-intents and renders what they are told. That keeps exactly one copy of the
-rules, and makes cheating a matter of editing the host's page rather than
-any player's.
-
-The connections themselves are WebRTC data channels, arranged in a star with
-the host at the centre. The only thing that needs a server is the initial
-handshake, and PeerJS's free public broker does that: the host claims the
-room code as its peer id, everyone else dials it. After the handshake the
-traffic is browser to browser and the broker never sees it again.
-
-Positions arrive about twelve times a second, which would look like a
-slideshow drawn straight. Each avatar keeps a short buffer and renders
-roughly 120 ms in the past, interpolating between the two snapshots that
-straddle that moment — a tenth of a second of latency in exchange for motion
-that never stutters, which for a game about watching where people walk is
-the right side of the trade.
-
-Practical notes:
-
-- Some corporate and university networks block the peer-to-peer handshake.
-  If a room won't connect, try a phone hotspot.
-- If the host closes their tab, the game ends for everyone. That is the
-  price of not running a server.
-- Room codes are namespaced on the shared broker, so a code only ever
-  collides with another Illic Isle game.
-
----
-
-## What's actually in here
-
-Nothing is downloaded at runtime. Every texture is drawn into a `<canvas>`
-on load, every model is built from primitives in code, every letter of every
-menu is a hand-set 5×7 bitmap, and all the music and sound effects are
-synthesised with WebAudio. The dependencies are a vendored copy of Three.js
-r160 and a vendored copy of PeerJS, both committed to `vendor/`. The page
-makes zero external requests once loaded, so it can't break when some CDN
-moves.
-
-```
-index.html            loading screen and the canvas; everything else is drawn
-css/style.css         the loading screen and the lightning flash
-vendor/               three.module.js (r160, MIT), peerjs.min.js (MIT)
-js/
-  main.js             boot and the frame loop
-  game.js             story, interactables, scene transitions, combat glue
-  ui.js               the thin API the game calls to change what's on screen
-  lib/
-    ps1.js            vertex snapping, affine UVs, low-res + CRT composite
-    bitfont.js        the 5×7 glyph table everything is lettered with
-    hud.js            hearts, compass, task list, name tags
-    screens.js        every full-screen interface, drawn as pixels
-    textures.js       the entire texture atlas, painted pixel by pixel
-    geo.js            primitive factories, UV stamping, merging, limbs
-    cutscene.js       shot lists, timed events, captions
-    audio.js          five looping tracks and ~30 one-shots
-  world/
-    terrain.js        island height function, ocean, foam, sky
-    props.js          palms, jungle, undergrowth, the Rogue Pendulums
-    temple.js         the temple, its stairs, and the collision that matches
-    idol.js           the Idol itself
-    extras.js         Syncoin, relics, Ferdi's hut, the storm, torches
-  entities/
-    player.js         third/first-person controller + walk cycle
-    boss.js           Hector, "El Bass Presidente"
-  net/
-    net.js            WebRTC transport, star topology, room codes
-    protocol.js       every message that crosses the wire
-  mp/
-    session.js        the rules of Castaways, run by the host
-    mpgame.js         Castaways on top of the single-player world
-    avatar.js         other players, interpolated
-    tasks.js          the chores and the sabotages
+# Also connect three real browsers through the public PeerJS service:
+LIVE_MULTIPLAYER=1 node tests/browser-smoke.mjs
 ```
 
-### The PS1 look
+The live check exercises invites, lobbies, role briefing, chat, voting, results,
+rematch, departure, and host loss. It moves a player to the bell and advances
+the task counter to exercise those transitions; individual task rules are
+covered by the Node suite. It needs internet access and a working public broker.
+Use `BROWSER_CHANNEL=chrome` for installed Chrome, `PLAYWRIGHT_MODULE` for a
+shared Playwright module, and `SMOKE_OUTPUT` to choose the screenshot directory.
 
-Three things made PlayStation 1 graphics look the way they did, and all
-three are reproduced rather than faked with a filter:
+Local debugging exposes `window.__game` on loopback hosts only. The existing
+workshop additionally requires `?workshop=1` and room `7226`; that room behaves
+normally on the public game.
 
-1. **Vertex snapping.** The console's GTE had no sub-pixel precision, so
-   screen-space vertices quantised to a grid and the world wobbled. Every
-   material is patched to round `gl_Position.xy` to the framebuffer grid.
-2. **Affine texture mapping.** No per-pixel perspective divide, so textures
-   swam on large triangles. Emulated by passing `uv * w` and `w` as varyings
-   and dividing them back in the fragment shader, which cancels the
-   rasteriser's perspective-correct interpolation exactly.
-3. **A 320×224 framebuffer** with 15-bit colour, ordered (Bayer) dithering,
-   scanlines and a slight barrel curve, upscaled with nearest-neighbour.
+## Code map
 
-The interface is drawn into that same framebuffer rather than sitting on top
-of it in DOM, so it pixelates, dithers, bands and curves along with the
-world. That is also why the font is hand-built: canvas and CSS both
-antialias type no matter how you ask them not to, and the only way to get
-hard pixels is to own the glyphs.
+| Location | Purpose |
+| --- | --- |
+| `js/main.js` | Startup, invitations, graphics recovery |
+| `js/mp/mpgame.js` | Online play, world interactions, round presentation |
+| `js/mp/session.js` | Host rules and guest session state |
+| `js/mp/avatar.js` | Remote players and interpolation |
+| `js/mp/tasks.js` | Task definitions and stages |
+| `js/net/` | WebRTC transport and message protocol |
+| `js/lib/screens.js` | Canvas menus, lobby, council, shops and minigames |
+| `js/lib/hud.js` | Online HUD, compact notices, compass and equipment |
+| `js/lib/bitfont.js` | Bitmap text, wrapping and fitting |
+| `js/lib/ps1.js` | Retro rendering pipeline and screen projection |
+| `js/game.js`, `js/world/`, `js/entities/` | Shared world and engine |
+| `tests/` | Regression and browser checks |
 
-All of it is adjustable in **Options** if you'd rather have a clean image —
-resolution, jitter and the CRT pass can each be turned off independently.
-
-### Notes
-
-- Needs a keyboard and mouse; there are no touch controls.
-- Pointer lock is used for mouse look, so the first click captures the
-  cursor and `Esc` releases it.
-- Settings and your Castaways name persist in `localStorage`.
-- Performance scales with the **Foliage density** option; drop it to LOW on
-  an older laptop. Render resolution is the other big lever.
+Geometry and textures are generated in code, and WebAudio synthesizes the music
+and effects. Options adjust the low-resolution framebuffer, vertex jitter,
+dithering, CRT treatment, and foliage density. The HUD stays stable and legible
+as the world effect changes. Resolution applies immediately; foliage changes
+require reloading to rebuild the island.

@@ -9,11 +9,24 @@
 
 import { C, S, PHASE, ROLE, COLOURS, DEFAULT_SETTINGS } from '../net/protocol.js';
 import { DIG_SECONDS } from '../world/treasure.js';
+import { UFO_SECS, UFO_PLATE, UFO_PLINTH } from '../world/ufo.js';
 import { SABOTAGE_DEFS, dealTasks, taskSteps, taskStage } from './tasks.js';
 import { VENDOR_IDS, LOOT_SHARE, itemById } from './market.js';
 import { makeClue } from './stranger.js';
 
 const now = () => performance.now() / 1000;
+
+/* The saucer's interior, in the same room numbering as the bunker (1), the
+   high roller (2), the bar (3) and the cabin (4). Two people are only in the
+   same place if they are in the same room: every interior is its own space
+   centred on its own origin, so an island position lands on top of one. */
+const UFO_ROOM = 5;
+
+/* How long after dark the visit can begin. Not the instant night falls —
+   that would make it a clock everybody could set their watch by — and not so
+   late that dawn is on top of it: the night itself is only a few minutes
+   long, and the saucer stands off for three of them. */
+const UFO_WAIT_MIN = 12, UFO_WAIT_SPREAD = 30;
 
 /* ===========================================================
    HOST
@@ -38,6 +51,7 @@ export class HostSession {
     this.council = null;
     this.rng = mulberry(Date.now() & 0xffffffff);
     this.over = null;
+    this._resetUfo();
 
     net.onPeerJoin = (id) => this._join(id);
     net.onPeerLeave = (id) => this._leave(id);
@@ -58,7 +72,7 @@ export class HostSession {
       alive: true, role: null, tasks: [], doneTasks: new Set(),
       x: 0, y: 0, z: 0, yaw: 0, anim: 0,
       killReady: 0, emergencies: this.settings.emergencyPerPlayer,
-      connected: true,
+      connected: true, room: 0, coins: 0,
     };
     this.players.set(id, p);
     return p;
@@ -83,7 +97,7 @@ export class HostSession {
       this.net.close?.(id);
       return;
     }
-    if (this.players.size >= COLOURS.length) {
+    if (this.players.size >= COLOURS.length && !this.players.has(id)) {
       this.net.sendTo(id, { t: S.KICK, reason: 'That island is full.' });
       this.net.close?.(id);
       return;
@@ -116,6 +130,16 @@ export class HostSession {
       this.hooks.onBodyGone?.(id);
     }
     this.votes.delete(id);             // they are not in the room to vote any more
+    // A vote for somebody who left has no target. Release those ballots
+    // so their voters can make another choice instead of wasting a meeting.
+    for (const [voter, target] of this.votes) {
+      if (target === id) this.votes.delete(voter);
+    }
+    /* And whatever they were carrying out of the saucer goes back on its
+       plinth. Pulling the plug while holding the one scanner would otherwise
+       take the night's single answer off the island with them. */
+    this._freeScanner(id);
+    this._pruneSnap();
     /* Their unfinished share of the work leaves with them. Left in the
        denominator it makes ALL WORK COMPLETE unreachable for everyone else,
        since nobody can do a departed player's chores.
@@ -179,6 +203,7 @@ export class HostSession {
 
   /* ---------- inbound ---------- */
   _recv(msg, from) {
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.t !== 'string') return;
     const p = this.players.get(from);
     switch (msg.t) {
       case C.HELLO: {
@@ -210,10 +235,10 @@ export class HostSession {
         /* Which interior they are standing in, if any. Everyone in the same
            room shares one local coordinate space, so the position above is
            all anybody needs to see them down there. */
-        p.room = msg.room | 0;
+        if (Number.isInteger(msg.room) && msg.room >= 0 && msg.room <= UFO_ROOM) p.room = msg.room;
         break;
       }
-      case C.DO_TASK: { this._tryTask(from, msg.taskId); break; }
+      case C.DO_TASK: { this._tryTask(from, msg.taskId, msg.step); break; }
       case C.KILL: { this._tryKill(from, msg.targetId); break; }
       case C.REPORT: { this._tryReport(from, msg.bodyId); break; }
       case C.VOTE: { this._tryVote(from, msg.targetId); break; }
@@ -225,11 +250,23 @@ export class HostSession {
       /* Only from the living. A ghost keeps earning locally — chores still
          pay — and its next total would otherwise overwrite the purse the
          killer took, on the one table that is meant to be hard fact. */
-      case C.PURSE: { if (p && p.alive) p.coins = Math.max(0, msg.coins | 0); break; }
+      case C.PURSE: {
+        // A meeting closes gambling screens and refunds an unfinished stake.
+        // Those balances must still reach the host while everyone is seated.
+        if (p && p.alive && [PHASE.ROAM, PHASE.COUNCIL, PHASE.VOTE, PHASE.RESULT].includes(this.phase)
+          && Number.isFinite(msg.coins)) {
+          p.coins = Math.max(0, Math.min(1000000, Math.floor(msg.coins)));
+        }
+        break;
+      }
       case C.DIG: { this._dig(from, msg); break; }
       case C.CHEST: { this._openChest(from); break; }
       case C.VEND: { this._vend(from, msg); break; }
       case C.TAKEDROP: { this._takeDrop(from, msg.did); break; }
+      /* The scanner. Both of these are pure asking: the host owns who is
+         holding it, whether it has been used, and what it said. */
+      case C.TAKESCAN: { this._takeScanner(from); break; }
+      case C.SCAN: { this._tryScan(from, msg.targetId); break; }
       case C.BOUGHT: { this._receipt(from, msg); break; }
       /* The command table's ledger. It is answered privately and only for
          somebody who is really standing in the bunker, so knowing what
@@ -239,7 +276,12 @@ export class HostSession {
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
-        if (!p) break;
+        if (!p || !p.alive || this.phase !== PHASE.ROAM) break;
+        // Expiring an effect may arrive while stunned; using a new one may not.
+        if (msg.on !== false && p.stunnedUntil > now()) break;
+        const perks = ['quiet', 'vest', 'whetstone', 'printer', 'nightfall', 'speaker',
+          'chaff', 'whistle', 'alibi', 'shroud', 'blackout'];
+        if (!perks.includes(msg.perk)) break;
         if (msg.perk === 'quiet') p.quiet = !!msg.on;
         if (msg.perk === 'vest') p.vest = !!msg.on;
         /* Ferdi's whetstone. It takes its third off the ring that is turning
@@ -251,7 +293,7 @@ export class HostSession {
           const was = !!p.whetstone;
           p.whetstone = !!msg.on;
           if (p.whetstone && !was) {
-            p.killReady = now() + Math.max(0, p.killReady - now()) * 0.66;
+            p.killReady = Math.max(this.graceEnds || 0, now() + Math.max(0, p.killReady - now()) * 0.66);
             this._sendCooldown(p);
           }
         }
@@ -268,11 +310,13 @@ export class HostSession {
           this.hooks.onNightfall?.();
         }
         if (msg.perk === 'speaker') {
-          this.net.broadcast({ t: S.SPEAKER, x: msg.x, z: msg.z, secs: 60 });
-          this.hooks.onSpeaker?.(msg.x, msg.z, 60);
+          if ((p.room | 0) !== 0) break;
+          this.net.broadcast({ t: S.SPEAKER, x: p.x, z: p.z, secs: 60 });
+          this.hooks.onSpeaker?.(p.x, p.z, 60);
         }
         if (msg.perk === 'chaff') {
           // a remote hack: the table is off for a full minute
+          this.chaffUntil = now() + 60;
           this.net.broadcast({ t: S.CHAFF, secs: 60 });
           this.hooks.onChaff?.(60);
         }
@@ -284,7 +328,9 @@ export class HostSession {
         if (msg.perk === 'alibi') {
           // three minutes, or until they drop it themselves
           if (msg.on === false) p.decoy = null;
-          else p.decoy = { x: +msg.x || 0, z: +msg.z || 0, until: now() + 180 };
+          else if (Number.isFinite(msg.x) && Number.isFinite(msg.z)) {
+            p.decoy = { x: msg.x, z: msg.z, until: now() + 180 };
+          }
         }
         /* A lead shroud: forty-five seconds off the command table entirely.
            Carried on the roster like the others so every client agrees. */
@@ -303,8 +349,7 @@ export class HostSession {
 
   /* ---------- start ---------- */
   canStart() {
-    /* [RELEASE] REMOVE BEFORE RELEASE — `this.dev ? 1 :` is the 7226 workshop
-       dropping the three-player minimum. The line should read `>= 3`. */
+    // Only an explicitly enabled local workshop may start alone.
     return this.players.size >= (this.dev ? 1 : 3) && this.phase === PHASE.LOBBY;
   }
 
@@ -319,10 +364,21 @@ export class HostSession {
    */
   toLobby() {
     this.phase = PHASE.LOBBY;
+    this.phaseEnds = 0;
+    this.graceEnds = 0;
     this.over = null;
     this._endSabotage();
     this._dropSnap();
+    /* A round that ended with a saucer still overhead. Say it has gone before
+       the lobby lands, the same way a snap vote has to be closed out loud:
+       the visit is the only thing that clears it on anybody's island. */
+    this._endUfo();
+    this._resetUfo();
+    this._endStranger();
     this.cool = {};
+    this.chaffUntil = 0;
+    this.council = null;
+    this.votes.clear();
     this.bodies = [];
     this.drops = [];
     this.vendSpent = [false, false];
@@ -347,6 +403,8 @@ export class HostSession {
       p.decoy = null; p.whistleUntil = 0; p.shroudUntil = 0;
       p.stunnedUntil = 0; p.nearBody = false;
       p.coins = 0;
+      p.room = 0; p.killReady = 0; p.digAt = null; p.digCredit = 0;
+      p.chatAt = null; p.ledgerAt = null;
       p.emergencies = this.settings.emergencyPerPlayer;
     }
     this.net.broadcast({ t: S.PHASE, phase: PHASE.LOBBY, endsAt: 0 });
@@ -367,8 +425,7 @@ export class HostSession {
        among nine is a needle in a haystack; three among four is a massacre. */
     const auto = ids.length >= 9 ? 3 : ids.length >= 6 ? 2 : 1;
     const want = this.settings.agents > 0 ? this.settings.agents : auto;
-    /* [RELEASE] REMOVE BEFORE RELEASE — the `this.dev ? 0 :` arm is the 7226
-       workshop dealing no Agents so one player can walk the island alone. */
+    // The local workshop deals no opponents; online rounds keep a crew majority.
     const agentCount = this.dev
       ? 0                                   // alone, you are whatever you choose
       : Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
@@ -376,6 +433,10 @@ export class HostSession {
 
     this.tasksDone = 0;
     this.tasksTotal = 0;
+    this.votes.clear();
+    this.council = null;
+    this.cool = {};
+    this.chaffUntil = 0;
     // one hole, and it is filled in again for a new round
     this.dug = 0;
     this._dugStep = -1;
@@ -393,6 +454,8 @@ export class HostSession {
       p.quiet = false; p.vest = false; p.printer = false; p.whetstone = false;
       p.decoy = null; p.whistleUntil = 0; p.shroudUntil = 0;
       p.stunnedUntil = 0; p.nearBody = false;
+      p.coins = 0; p.room = 0; p.digAt = null; p.digCredit = 0;
+      p.chatAt = null; p.ledgerAt = null;
       p.killReady = now() + Math.max(this.settings.killCooldown, this.settings.graceSeconds || 0);
       // the same list for everyone; an Agent's chores are real chores
       p.tasks = dealTasks(this.rng, this.settings.tasksPerPlayer);
@@ -408,6 +471,9 @@ export class HostSession {
     this.bodies = [];
     this._endSabotage();
     this._dropSnap();
+    /* Every night of the new round gets its own visitor, and its own scanner
+       with one scan in it. Nothing carries over. */
+    this._resetUfo();
     this.over = null;
     /* The one who is not on the roster gets a fresh window every round.
        strangerDone left standing meant he came ashore in the first round and
@@ -480,7 +546,7 @@ export class HostSession {
   }
 
   /* ---------- actions ---------- */
-  _tryTask(id, taskId) {
+  _tryTask(id, taskId, expectedStep) {
     const p = this.players.get(id);
     if (!p || this.phase !== PHASE.ROAM) return;
     if (p.stunnedUntil && now() < p.stunnedUntil) return;
@@ -488,6 +554,7 @@ export class HostSession {
 
     p.step = p.step || {};
     const at = p.step[taskId] || 0;
+    if (expectedStep !== undefined && expectedStep !== at) return;
     /* You have to be where the chore is. Every other action the host owns
        checks this — the knife at 4.8 m, a repair at its own site — and the
        one that decides the round did not, so a client could clear its whole
@@ -499,7 +566,7 @@ export class HostSession {
        where a bunker-local position can land on top of an island one. */
     const stage = taskStage(taskId, at);
     const where = this.hooks.siteOf?.(stage?.at);
-    if (where && ((p.room | 0) !== 0 || Math.hypot(p.x - where.x, p.z - where.z) > 8)) return;
+    if (!stage || (p.room | 0) !== 0 || (where && Math.hypot(p.x - where.x, p.z - where.z) > 8)) return;
     const stages = taskSteps(taskId);
     const finished = at >= stages - 1;
 
@@ -559,7 +626,7 @@ export class HostSession {
     const k = this.players.get(id), v = this.players.get(targetId);
     if (!k || !v || this.phase !== PHASE.ROAM) return;
     if (k.role !== ROLE.AGENT || !k.alive || !v.alive || v.role === ROLE.AGENT) return;
-    if (now() < k.killReady) return;
+    if (now() < Math.max(k.killReady, this.graceEnds || 0)) return;
     if (k.stunnedUntil && now() < k.stunnedUntil) return;
     /* AGENTS STRIKE ONLY AT NIGHT was a lobby row nothing ever read. The
        host's sky is the authority, and a host with no sky wired up is not a
@@ -576,7 +643,7 @@ export class HostSession {
        so a round that ended during SHUT FERDI'S left the sanctuary off for
        the rest of the session while every client's HUD read TRADING. */
     const shop = this.hooks.siteOf?.('hut');
-    if (shop && this.sabotage?.kind !== 'shut') {
+    if (shop && (k.room | 0) === 0 && this.sabotage?.kind !== 'shut') {
       const SANCT = 13;
       if (Math.hypot(v.x - shop.x, v.z - shop.z) < SANCT) return;
       if (Math.hypot(k.x - shop.x, k.z - shop.z) < SANCT) return;
@@ -596,6 +663,9 @@ export class HostSession {
     v.alive = false;
     k.killReady = now() + this._cdOf(k);
     this._sendCooldown(k);
+    /* A scanner does not pass to whoever killed for it: it goes back on its
+       plinth, where it still takes two people to lift. */
+    this._freeScanner(v.id);
 
     /* What they were carrying goes on the ground, and the Agent takes
        three quarters of it off the body. Killing a Castaway who has been
@@ -623,9 +693,10 @@ export class HostSession {
            the same coins were in two purses. */
         const did = 'd' + (this._dropSeq = (this._dropSeq || 0) + 1);
         this.drops = this.drops || [];
-        this.drops.push({ did, x: v.x, z: v.z, coins: left, taken: false });
-        this.net.broadcast({ t: S.DROP, did, x: v.x, y: v.y, z: v.z, coins: left, id: v.id });
-        this.hooks.onDrop?.(v.x, v.y, v.z, left, v.id, did);
+        const room = v.room | 0;
+        this.drops.push({ did, x: v.x, y: v.y, z: v.z, room, coins: left, taken: false });
+        this.net.broadcast({ t: S.DROP, did, x: v.x, y: v.y, z: v.z, room, coins: left, id: v.id });
+        this.hooks.onDrop?.(v.x, v.y, v.z, left, v.id, did, room);
       }
     }
     this.bodies.push({ id: v.id, x: v.x, y: v.y, z: v.z, room: v.room | 0 });
@@ -635,6 +706,7 @@ export class HostSession {
     this.net.broadcast({ t: S.KILLED, victimId: v.id, x: v.x, y: v.y, z: v.z, room: v.room | 0 });
     this.hooks.onKilled?.(v.id, v.x, v.y, v.z);
     this._roster();
+    this._pruneSnap();
     this._checkWin();
   }
 
@@ -646,7 +718,7 @@ export class HostSession {
     const p = this.players.get(from);
     const d = (this.drops || []).find((x) => x.did === did);
     if (!d || d.taken) return;
-    if (!p || !p.alive) return;
+    if (!this._canAct(p) || (p.room | 0) !== (d.room | 0)) return;
     /* Measured against where the body fell, but no client draws it there:
        freeSpot walks the purse up to 4.8 m clear of the scenery, and the
        prompt to take it reaches 6 m from the mesh. A tighter gate refused
@@ -679,7 +751,8 @@ export class HostSession {
       else this.net.sendTo(id, { t: S.SNAPDENY, why });
     };
     if (this.phase !== PHASE.ROAM || !k.alive) { deny('NOT NOW'); return; }
-    if (!v || !v.alive) { deny('NOT A TARGET'); return; }
+    if (k.stunnedUntil > now()) { deny('YOU ARE STUNNED'); return; }
+    if (!v || !v.alive || targetId === id) { deny('NOT A TARGET'); return; }
     if (this.snap) { deny('A VOTE IS ALREADY OPEN'); return; }
     // as with the knife: different spaces
     if ((k.room | 0) !== (v.room | 0)) { deny('NOT IN HERE'); return; }
@@ -698,9 +771,9 @@ export class HostSession {
       .map((p) => p.id);
     if (voters.length < 2) { deny('NOBODY ELSE SAW IT'); return; }
 
-    const SECS = 14;
+    const SECS = 12;
     v.stunnedUntil = now() + SECS;
-    this.net.broadcast({ t: S.SHOT, byId: id, victimId: targetId, x: v.x, y: v.y, z: v.z, secs: SECS });
+    this.net.broadcast({ t: S.SHOT, byId: id, victimId: targetId, x: v.x, y: v.y, z: v.z, room: v.room | 0, secs: SECS });
     this.hooks.onShot?.(id, targetId, v, SECS);
 
     this.snap = { victimId: targetId, byId: id, endsAt: now() + 12, voters, yes: new Set(), no: new Set() };
@@ -710,12 +783,33 @@ export class HostSession {
 
   _trySnap(id, yes) {
     const s2 = this.snap;
-    if (!s2 || !s2.voters.includes(id)) return;
+    if (!s2 || this.phase !== PHASE.ROAM || !this.players.get(id)?.alive || !s2.voters.includes(id)) return;
     if (s2.yes.has(id) || s2.no.has(id)) return;
     (yes ? s2.yes : s2.no).add(id);
+    const need = this._snapTally();
+    if (s2.yes.size >= need || s2.no.size >= need
+      || s2.yes.size + s2.no.size >= s2.voters.length) this._closeSnap();
+  }
+
+  _snapTally() {
+    const s2 = this.snap;
     const need = Math.floor(s2.voters.length / 2) + 1;
-    this.net.broadcast({ t: S.SNAPTALLY, yes: s2.yes.size, no: s2.no.size, need });
-    this.hooks.onSnapTally?.(s2.yes.size, s2.no.size, need);
+    this.net.broadcast({ t: S.SNAPTALLY, yes: s2.yes.size, no: s2.no.size, need, voters: s2.voters });
+    this.hooks.onSnapTally?.(s2.yes.size, s2.no.size, need, s2.voters);
+    return need;
+  }
+
+  // A disconnected or killed witness cannot leave an unanswerable ballot
+  // behind. Losing the subject, or all but one witness, cancels the vote.
+  _pruneSnap() {
+    const s2 = this.snap;
+    if (!s2) return;
+    if (!this.players.get(s2.victimId)?.alive) { this._dropSnap(); return; }
+    s2.voters = s2.voters.filter((id) => this.players.get(id)?.alive);
+    for (const id of s2.yes) if (!s2.voters.includes(id)) s2.yes.delete(id);
+    for (const id of s2.no) if (!s2.voters.includes(id)) s2.no.delete(id);
+    if (s2.voters.length < 2) { this._dropSnap(); return; }
+    const need = this._snapTally();
     if (s2.yes.size >= need || s2.no.size >= need
       || s2.yes.size + s2.no.size >= s2.voters.length) this._closeSnap();
   }
@@ -725,11 +819,13 @@ export class HostSession {
     if (!s2) return;
     this.snap = null;
     const need = Math.floor(s2.voters.length / 2) + 1;
-    const exiled = s2.yes.size >= need && s2.yes.size > s2.no.size;
     const v = this.players.get(s2.victimId);
+    const exiled = !!v?.alive && s2.voters.length >= 2 && s2.yes.size >= need && s2.yes.size > s2.no.size;
+    if (v) v.stunnedUntil = 0;
     if (exiled && v) {
       v.alive = false;
       v.stunnedUntil = 0;
+      this._freeScanner(v.id);
       /* A snap vote answered the question REVEAL ON EXILE had turned off, and
          it answered it on the wire, where holding the card back on screen would
          not have helped. Nobody is told what they were unless the host said so. */
@@ -760,6 +856,8 @@ export class HostSession {
     const s2 = this.snap;
     if (!s2) return;
     this.snap = null;
+    const victim = this.players.get(s2.victimId);
+    if (victim) victim.stunnedUntil = 0;
     this.net.broadcast({ t: S.SNAPDONE, victimId: s2.victimId, exiled: false, yes: s2.yes.size, no: s2.no.size });
     /* The tally travels with it. The hook takes five and the host reads
        yes/no straight into its own toast, so dropping them printed
@@ -770,7 +868,7 @@ export class HostSession {
 
   _tryReport(id, bodyId) {
     const p = this.players.get(id);
-    if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
+    if (!this._canAct(p)) return;
     if (this.sabotage?.fatal) return;          // no meetings during a fatal sabotage
 
     if (bodyId) {
@@ -787,7 +885,7 @@ export class HostSession {
          against the client's own 3.4: host-side positions are a net tick and
          a channel behind. */
       const bell = this.hooks.siteOf?.('bell');
-      if (bell && ((p.room | 0) !== 0 || Math.hypot(p.x - bell.x, p.z - bell.z) > 5)) return;
+      if ((p.room | 0) !== 0 || (bell && Math.hypot(p.x - bell.x, p.z - bell.z) > 5)) return;
       p.emergencies--;
     }
     this._openCouncil(id, bodyId || null);
@@ -836,7 +934,7 @@ export class HostSession {
   }
 
   _broadcastVotes() {
-    const counts = {};
+    const counts = Object.create(null);
     for (const v of this.votes.values()) counts[v] = (counts[v] || 0) + 1;
     const voted = [...this.votes.keys()];
     this.net.broadcast({ t: S.VOTES, counts, voted });
@@ -844,7 +942,8 @@ export class HostSession {
   }
 
   _resolveVote() {
-    const counts = {};
+    if (this.phase !== PHASE.COUNCIL) return;
+    const counts = Object.create(null);
     for (const v of this.votes.values()) counts[v] = (counts[v] || 0) + 1;
     let best = null, bestN = 0, tie = false;
     for (const [k, n] of Object.entries(counts)) {
@@ -859,6 +958,7 @@ export class HostSession {
     const p = (best && (bestN > skips) && !tie) ? this.players.get(best) : null;
     if (p) {
       p.alive = false;
+      this._freeScanner(p.id);
       /* The answer used to go out whatever the setting said, so NEVER hid it
          from the card and from nobody else — anyone with a console open could
          read what the council was not allowed to know. */
@@ -877,19 +977,18 @@ export class HostSession {
     /* The win check waits out the reveal. Resolving it immediately would
        replace the "X WAS A ROGUE AGENT" card with the results screen in
        the same frame, and the exile is the payoff people came for. */
-    setTimeout(() => {
-      if (this.phase !== PHASE.RESULT) return;
-      if (this._checkWin()) return;
-      for (const p of this.players.values()) {
-        if (p.role !== ROLE.AGENT) continue;
-        /* A flat cooldown here threw away the grace period a meeting had
-           interrupted, so a knife could come back well inside the window the
-           host advertised as safe. */
-        p.killReady = Math.max(now() + this._cdOf(p) * 0.6, this.graceEnds || 0);
-        this._sendCooldown(p);
-      }
-      this._setPhase(PHASE.ROAM, 0);
-    }, 8500);
+    // The host's phase clock owns the reveal, just as it owns the council.
+    // A detached timeout could resume a later round's RESULT phase early.
+  }
+
+  _finishResult() {
+    if (this.phase !== PHASE.RESULT || this._checkWin()) return;
+    for (const p of this.players.values()) {
+      if (p.role !== ROLE.AGENT) continue;
+      p.killReady = Math.max(now() + this._cdOf(p) * 0.6, this.graceEnds || 0);
+      this._sendCooldown(p);
+    }
+    this._setPhase(PHASE.ROAM, 0);
   }
 
   _chat(id, text) {
@@ -901,6 +1000,10 @@ export class HostSession {
     // would hand the answer to everybody.
     const kind = p.alive ? 'live' : 'ghost';
     if (this.phase !== PHASE.COUNCIL && this.phase !== PHASE.VOTE && kind === 'live') return;
+    if (this.phase === PHASE.LOBBY || this.phase === PHASE.OVER) return;
+    const t = now();
+    if (p.chatAt != null && t - p.chatAt < 0.6) return;
+    p.chatAt = t;
     const packet = { t: S.CHAT, from: p.name, colour: p.colour, text: clean, kind };
     if (kind === 'ghost') {
       for (const [pid, pp] of this.players) {
@@ -942,7 +1045,9 @@ export class HostSession {
    */
   _receipt(from, msg) {
     const p = this.players.get(from);
-    if (!p || !msg || !msg.id) return;
+    const item = itemById(msg?.id);
+    if (!this._canAct(p) || !item || !['open', 'both'].includes(item.side)) return;
+    if (!this._atIslandSite(p, 'hut', 18) || this.sabotage?.kind === 'shut') return;
     const price = Math.max(0, Math.min(999, msg.price | 0));
     for (const [pid, q] of this.players) {
       if (!q.printer || pid === from) continue;
@@ -967,7 +1072,7 @@ export class HostSession {
      ========================================================= */
   _dig(from, msg) {
     const p = this.players.get(from);
-    if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
+    if (!this._canAct(p) || !this._atIslandSite(p, 'buried', 5)) return;
     if (this.chestTaken) return;
     /* A finished hole used to answer nothing at all, which is exactly what a
        client whose S.DIG went astray is already getting: it keeps sending
@@ -978,9 +1083,17 @@ export class HostSession {
       else this.net.sendTo(from, { t: S.DIG, dug: 1 });
       return;
     }
-    // a quarter of a second at a time at most, so nobody can dig it in one
-    const secs = Math.max(0, Math.min(0.4, +msg.secs || 0));
-    this.dug = Math.min(1, (this.dug || 0) + secs / this.digSeconds);
+    // Accept small increments while allowing normal transport jitter.
+    if (!Number.isFinite(msg?.secs) || msg.secs <= 0) return;
+    const t = now();
+    const elapsed = p.digAt == null ? 0.4 : Math.max(0, t - p.digAt);
+    p.digAt = t;
+    // A small credit tolerates packet bunching while making a burst of
+    // messages worth only elapsed spadework, rather than a complete chest.
+    p.digCredit = Math.min(0.8, (p.digCredit || 0) + elapsed);
+    const secs = Math.min(0.4, msg.secs, p.digCredit);
+    p.digCredit -= secs;
+    this.dug = Math.min(1, (this.dug || 0) + secs / (this.digSeconds || DIG_SECONDS));
     const step = Math.round(this.dug * 20);          // twentieths, to keep the wire quiet
     if (step !== this._dugStep || this.dug >= 1) {
       this._dugStep = step;
@@ -991,7 +1104,7 @@ export class HostSession {
 
   _openChest(from) {
     const p = this.players.get(from);
-    if (!p || !p.alive) return;
+    if (!this._canAct(p) || !this._atIslandSite(p, 'buried', 5)) return;
     if (this.chestTaken || (this.dug || 0) < 1) return;
     this.chestTaken = true;
     /* The host rolls it, so there is one answer and everybody hears the
@@ -1010,14 +1123,14 @@ export class HostSession {
    */
   _vend(from, msg) {
     const p = this.players.get(from);
-    if (!p || !p.alive || this.phase !== PHASE.ROAM) return;
-    const index = Math.max(0, Math.min(1, msg?.index | 0));
+    if (!this._canAct(p)) return;
+    const index = msg?.index;
+    if (!Number.isInteger(index) || index < 0 || index > 1) return;
     this.vendSpent = this.vendSpent || [false, false];
     if (this.vendSpent[index]) return;
     /* As with the chores: a machine the host cannot place is not one it can
        refuse anybody at, and an interior is its own coordinate space. */
-    const where = this.hooks.siteOf?.('vend' + (index + 1));
-    if (where && ((p.room | 0) !== 0 || Math.hypot(p.x - where.x, p.z - where.z) > 8)) return;
+    if (!this._atIslandSite(p, 'vend' + (index + 1), 8)) return;
     this.vendSpent[index] = true;
     /* The counter will not sell a night item in daylight and the drum was
        the one place that would: a BOOK OF TICKETS in the afternoon is three
@@ -1037,9 +1150,9 @@ export class HostSession {
        to go, and nothing here checked. Any peer could ask from the beach and
        be handed every purse on the island, as often as it liked. */
     const p = this.players.get(id);
-    if (!p || (p.room | 0) !== 1) return;      // only from inside the listening post
+    if (!this._canAct(p) || (p.room | 0) !== 1 || this.chaffUntil > now()) return;
     const t = now();
-    if (t - (p.ledgerAt || 0) < 1) return;
+    if (p.ledgerAt != null && t - p.ledgerAt < 1) return;
     p.ledgerAt = t;
     const rows = [];
     for (const [pid, pl] of this.players) {
@@ -1058,6 +1171,26 @@ export class HostSession {
      jungle far faster than anybody can follow, and takes him away again
      after about a minute whether anybody reached him or not.
      ========================================================= */
+
+  _canAct(p) {
+    return !!p?.alive && this.phase === PHASE.ROAM && !(p.stunnedUntil > now());
+  }
+
+  _atIslandSite(p, at, radius) {
+    if ((p.room | 0) !== 0) return false;
+    const where = this.hooks.siteOf?.(at);
+    return !where || Math.hypot(p.x - where.x, p.z - where.z) <= radius;
+  }
+
+  _endStranger() {
+    if (this.stranger) {
+      this.net.broadcast({ t: S.STRANGER, on: false });
+      this.hooks.onStranger?.(false, 0, 0);
+    }
+    this.stranger = null;
+    this.strangerAt = null;
+    this.strangerDone = false;
+  }
 
   /** Called every rules tick. Cheap when he is not out. */
   _tickStranger(dt) {
@@ -1109,7 +1242,7 @@ export class HostSession {
        you dawdle he loses patience and goes. */
     let nearest = Infinity, toward = S2.head;
     for (const q of this.players.values()) {
-      if (!q.alive) continue;
+      if (!q.alive || (q.room | 0) !== 0) continue;
       const d = Math.hypot((q.x || 0) - S2.x, (q.z || 0) - S2.z);
       if (d < nearest) {
         nearest = d;
@@ -1149,7 +1282,7 @@ export class HostSession {
   _askStranger(id) {
     const S2 = this.stranger;
     const p = this.players.get(id);
-    if (!S2 || !p || !p.alive) return;
+    if (!S2 || !this._canAct(p)) return;
     /* He stands on the treeline, and every interior is its own space centred
        on its own origin — so a bunker-local position could land inside seven
        metres of an island one and buy the round's only clue from underground,
@@ -1189,6 +1322,156 @@ export class HostSession {
       this.net.broadcast({ t: S.STRANGER, on: false });
       this.hooks.onStranger?.(false, 0, 0);
     }
+  }
+
+  /* =========================================================
+     THE VISITOR
+
+     One saucer, one night, three minutes, and the host is the only
+     thing that knows it is coming — so nobody can call one down
+     early and nobody can keep one overhead.
+
+     The scanner inside it has exactly one scan in it, for the whole
+     lobby. Lifting it off the plinth needs a second person standing
+     on the plate, which means the night's only answer is bought by
+     two people who have each decided to trust the other with it, and
+     either of them may be an Agent. Once it fires it is spent: the
+     plinth stays empty for the rest of the visit. That is what makes
+     three minutes a race rather than a queue.
+     ========================================================= */
+
+  /** Every field the visit owns, back to nothing, telling nobody. */
+  _resetUfo() {
+    this.ufo = null;            // { until } while one is standing off
+    this.ufoAt = null;          // when tonight's is due, once night has fallen
+    this.ufoSeen = false;       // tonight has had its one
+    this.scannerBy = null;      // who is carrying it
+    this.scannerSpent = false;  // its one scan is gone; there is nothing to put back
+  }
+
+  /** Called every rules tick, off the same update() as the phase clocks. */
+  _tickUfo() {
+    const t = now();
+    if (this.ufo) {
+      /* Its length went out as a duration and every client has been counting
+         it down on its own clock ever since, so this cannot pause for a
+         council the way the Stranger does — the host would come back from a
+         meeting minutes behind everybody else's sky.
+
+         But it does have to end at DAWN. The night check below is only
+         reached when no visit is running, so once one had started nothing
+         ever asked about the sky again and the saucer hung there in broad
+         daylight for the rest of its three minutes — and on a short day,
+         where the night is barely a minute, for most of the morning. It is
+         a night thing; the sun coming up is as good a reason to leave as
+         the clock running out. */
+      if (t >= this.ufo.until || !this.hooks.isNight?.()) this._endUfo();
+      return;
+    }
+    if (this.phase !== PHASE.ROAM) return;
+    /* The host's sky is the authority on the hour, exactly as it is for
+       AGENTS STRIKE ONLY AT NIGHT. A host with no sky wired up never gets a
+       visitor, which is the safe way round: it cannot invent a night. */
+    if (!this.hooks.isNight?.()) {
+      // dawn. Whatever tonight did or did not get, tomorrow starts again
+      this.ufoAt = null;
+      this.ufoSeen = false;
+      return;
+    }
+    if (this.ufoSeen) return;
+    // `== null`, not `!`: a due time of zero is a perfectly good due time
+    if (this.ufoAt == null) this.ufoAt = t + UFO_WAIT_MIN + this.rng() * UFO_WAIT_SPREAD;
+    if (t < this.ufoAt) return;
+    this._startUfo();
+  }
+
+  _startUfo() {
+    this.ufo = { until: now() + UFO_SECS };
+    this.ufoSeen = true;
+    this.scannerBy = null;
+    this.scannerSpent = false;
+    this.net.broadcast({ t: S.UFO, on: true, secs: UFO_SECS });
+    this.hooks.onUfo?.(true, UFO_SECS);
+  }
+
+  /**
+   * It leaves. The scanner goes with it whatever state it was in — a
+   * separate S.SCANNER ahead of this one would put it back on the plinth
+   * for the frame before the room stops existing, so the visit ending is
+   * the single thing that clears it on every client.
+   */
+  _endUfo() {
+    if (!this.ufo) return;
+    this.ufo = null;
+    this.scannerBy = null;
+    this.scannerSpent = false;
+    this.net.broadcast({ t: S.UFO, on: false });
+    this.hooks.onUfo?.(false, 0);
+  }
+
+  /** Back on its plinth, because whoever had it died or left. A spent one is
+      never put back: there is nothing left in it to put. */
+  _freeScanner(id) {
+    if (!id || this.scannerBy !== id) return;
+    this.scannerBy = null;
+    this.net.broadcast({ t: S.SCANNER, byId: null, spent: false });
+    this.hooks.onScanner?.(null, false);
+  }
+
+  /**
+   * Lifting it off the plinth. The plate takes a whole person's weight and
+   * that person cannot be you, so one castaway alone can stand in that room
+   * for the whole three minutes and leave with nothing.
+   */
+  _takeScanner(from) {
+    const p = this.players.get(from);
+    if (!this.ufo || !this._canAct(p)) return;
+    if (this.scannerSpent || this.scannerBy) return;
+    if ((p.room | 0) !== UFO_ROOM) return;
+    if (Math.hypot(p.x - UFO_PLINTH.x, p.z - UFO_PLINTH.z) > 4) return;
+    /* Somebody ELSE, alive, in here, standing on it. A little slack on the
+       radius because host-side positions are a net tick and a channel behind
+       the client that is watching the plate go down. */
+    const held = [...this.players.values()].some((q) => q.id !== from && q.alive
+      && (q.room | 0) === UFO_ROOM
+      && Math.hypot((q.x || 0) - UFO_PLATE.x, (q.z || 0) - UFO_PLATE.z) <= UFO_PLATE.r + 0.6);
+    if (!held) return;
+    this.scannerBy = from;
+    this.net.broadcast({ t: S.SCANNER, byId: from, spent: false });
+    this.hooks.onScanner?.(from, false);
+  }
+
+  /**
+   * The one scan. Nobody gets a second one tonight — not the holder, not
+   * whoever would have picked it up after them — which is why who to point
+   * it at is the largest decision anybody makes all night.
+   *
+   * The answer goes to the holder ALONE. An Agent can be the one carrying
+   * it, and can walk out and say whatever they like about what it read.
+   * That is the game: a machine that told the room would end the round.
+   */
+  _tryScan(from, targetId) {
+    const p = this.players.get(from);
+    if (!this.ufo || this.scannerSpent || this.phase !== PHASE.ROAM) return;
+    if (!this._canAct(p) || this.scannerBy !== from) return;
+    const v = this.players.get(targetId);
+    if (!v || !v.alive || v.id === from) return;
+    // the same two gates as the knife: one space, and close enough to touch
+    if ((p.room | 0) !== (v.room | 0)) return;
+    if (Math.hypot((p.x || 0) - (v.x || 0), (p.z || 0) - (v.z || 0)) > 6) return;
+
+    this.scannerSpent = true;
+    this.scannerBy = null;
+    const agent = v.role === ROLE.AGENT;
+    /* v.id rather than whatever came off the wire, so nothing a client made
+       up can be handed back to it as though the host had agreed to it. */
+    if (from === 'host') this.hooks.onScanResult?.(v.id, agent);
+    else this.net.sendTo(from, { t: S.SCANRESULT, targetId: v.id, agent });
+    /* And the room is told the plinth is empty for good — spent, not merely
+       put down. It is the only warning anybody else gets that tonight's
+       answer is already sitting in somebody's head. */
+    this.net.broadcast({ t: S.SCANNER, byId: null, spent: true });
+    this.hooks.onScanner?.(null, true);
   }
 
   _trySabotage(id, kind) {
@@ -1253,14 +1536,14 @@ export class HostSession {
    */
   _tryFix(id, kind, at) {
     const p = this.players.get(id);
-    if (!p || !p.alive || !this.sabotage || this.sabotage.kind !== kind) return;
+    if (!this._canAct(p) || !this.sabotage || this.sabotage.kind !== kind) return;
     const def = SABOTAGE_DEFS[kind];
-    const site = def.fixAt.includes(at) ? at : def.fixAt[0];
-    const where = this.hooks.siteOf?.(site);
+    const site = at === undefined ? def.fixAt[0] : at;
+    if (!def.fixAt.includes(site) || this.sabotage.sites.has(site)) return;
     /* 8, not 6: the client offers REPAIR at 5.0 m and the hold survives 1.6 m
        of drift, so a finished repair could legitimately arrive from 6.6 m and
        be swallowed in silence — the bar fills, the sound plays, nothing. */
-    if (where && Math.hypot(p.x - where.x, p.z - where.z) > 8) return;
+    if (!this._atIslandSite(p, site, 8)) return;
     this.sabotage.sites.add(site);
     const need = def.sites || 1;
     this.net.broadcast({ t: S.FIXPROGRESS, kind, done: this.sabotage.sites.size, need, at: site });
@@ -1287,9 +1570,15 @@ export class HostSession {
     else if (this.tasksTotal > 0 && this.tasksDone >= this.tasksTotal) {
       winner = 'castaways'; reason = 'ALL WORK COMPLETE';
     }
-    // [RELEASE] REMOVE BEFORE RELEASE — 7226: the round never ends on its own.
+    // Explicit local workshop sessions keep the island available for testing.
     if (this.dev) return false;
     if (!winner) return false;
+
+    return this._finishRound(winner, reason);
+  }
+
+  _finishRound(winner, reason) {
+    if (this.over) return false;
 
     /* The round ending is a fourth way a sabotage ends, and update() returns
        on its first line once the phase is OVER — so the expiry that would
@@ -1298,6 +1587,13 @@ export class HostSession {
        goes out, not after: the client's onFixed starts the island music
        again, and after OVER it would play under the results. */
     this._endSabotage();
+    /* And for the same reason: update() stops ticking at OVER, so a saucer
+       that was overhead when the round ended would still be overhead on the
+       results card, with somebody's avatar standing in a room nobody can
+       leave. */
+    this._endUfo();
+    this._endStranger();
+    this._dropSnap();
 
     this.over = { winner, reason };
     const agentIds = [...this.players.values()]
@@ -1316,12 +1612,16 @@ export class HostSession {
     if (this.phaseEnds && now() >= this.phaseEnds) {
       if (this.phase === PHASE.REVEAL) this._setPhase(PHASE.ROAM, 0);
       else if (this.phase === PHASE.COUNCIL) this._resolveVote();
+      else if (this.phase === PHASE.RESULT) this._finishResult();
     }
+    if (this.phase === PHASE.OVER) return;
 
     // a snap vote nobody finished
     if (this.snap && now() >= this.snap.endsAt) this._closeSnap();
+    if (this.phase === PHASE.OVER) return;
 
     this._tickStranger(dt);
+    this._tickUfo();
 
     /* Timed perks expire quietly. The roster is what carries them, so when
        one runs out the roster has to go again or a whistle blown once
@@ -1353,12 +1653,7 @@ export class HostSession {
       this.net.broadcast({ t: S.FIXED, kind, cooldown: cd, why });
       this.hooks.onFixed?.(kind, cd, why);
       if (wasFatal && !this.over) {
-        this.over = { winner: 'agents', reason: 'THE PENDULUMS STOPPED' };
-        const agentIds = [...this.players.values()]
-          .filter((p) => p.role === ROLE.AGENT).map((p) => p.id);
-        this.net.broadcast({ t: S.OVER, winner: 'agents', agents: agentIds, reason: this.over.reason });
-        this._setPhase(PHASE.OVER, 0);
-        this.hooks.onOver?.('agents', agentIds, this.over.reason);
+        this._finishRound('agents', 'THE PENDULUMS STOPPED');
       }
     }
   }
@@ -1407,12 +1702,35 @@ export class MirrorSession {
     this.bodies = [];
     this.votes = { counts: {}, voted: [] };
     this.sabotage = null;
+    /* The visit, in the same fields and on the same clock the host keeps it
+       in, so anything reading it can say session.ufo / session.scannerBy
+       without first asking which end of the wire it is on. */
+    this.ufo = null;
+    this.scannerBy = null;
+    this.scannerSpent = false;
     this.over = null;
     this.selfId = null;
     this.settings = { ...DEFAULT_SETTINGS };
   }
 
+  /** Apply view state without firing callbacks; the host uses this too. */
+  setPhase(phase, seconds = 0) {
+    this.phase = phase;
+    this.phaseEndsAt = seconds ? performance.now() / 1000 + seconds : 0;
+    this.phaseTotal = seconds || 0;
+    if (phase === PHASE.LOBBY) {
+      this.role = null; this.tasks = []; this.mates = null; this.over = null;
+      this.doneTasks.clear(); this.taskStep.clear();
+      this.tasksDone = this.tasksTotal = 0;
+      this.bodies = []; this.votes = { counts: {}, voted: [] };
+      this.sabotage = null; this.ufo = null; this.scannerBy = null; this.scannerSpent = false;
+      for (const p of this.players.values()) { p.alive = true; p.room = 0; }
+    }
+    if (phase === PHASE.COUNCIL) { this.votes = { counts: {}, voted: [] }; this.bodies = []; }
+  }
+
   handle(msg) {
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     switch (msg.t) {
       case S.WELCOME: this.selfId = msg.youAre; this.settings = msg.settings || this.settings; break;
       case S.SETTINGS: this.settings = msg.settings || this.settings; break;
@@ -1429,28 +1747,28 @@ export class MirrorSession {
         break;
       }
       case S.PHASE:
-        this.phase = msg.phase;
-        this.phaseEndsAt = msg.endsAt ? performance.now() / 1000 + msg.endsAt : 0;
-        if (msg.phase === PHASE.COUNCIL) { this.votes = { counts: {}, voted: [] }; this.bodies = []; }
+        this.setPhase(msg.phase, msg.endsAt);
         this.hooks.onPhase?.(msg.phase, msg.endsAt, msg.meta);
         break;
       case S.ROLE:
         this.role = msg.role; this.tasks = msg.tasks || []; this.mates = msg.mates;
+        this.over = null;
         this.doneTasks = new Set();
         this.taskStep = new Map();
         this.hooks.onRole?.(msg);
         break;
       case S.SNAPSHOT:
-        for (const [id, x, y, z, yaw, anim, alive] of msg.p) {
+        for (const [id, x, y, z, yaw, anim, alive, room = 0] of msg.p) {
           const p = this.players.get(id) || {};
           p.id = id;
           p.tx = x; p.ty = y; p.tz = z; p.tyaw = yaw; p.anim = anim; p.alive = !!alive;
-          if (p.x === undefined) { p.x = x; p.y = y; p.z = z; p.yaw = yaw; }
+          if (p.x === undefined || p.room !== room) { p.x = x; p.y = y; p.z = z; p.yaw = yaw; }
+          p.room = room;
           this.players.set(id, p);
         }
         break;
       case S.COOLDOWN:
-        this.hooks.onCooldown?.(msg.secs || 0);
+        this.hooks.onCooldown?.(msg.secs || 0, msg.grace || 0);
         break;
       case S.TASKS: this.tasksDone = msg.done; this.tasksTotal = msg.total; break;
       case S.TASK_OK:
@@ -1459,8 +1777,11 @@ export class MirrorSession {
         this.hooks.onTaskOk?.(msg.taskId, msg.step, msg.done !== false);
         break;
       case S.KILLED:
-        this.bodies.push({ id: msg.victimId, x: msg.x, y: msg.y, z: msg.z, room: msg.room | 0 });
-        this.hooks.onKilled?.(msg.victimId, msg.x, msg.y, msg.z);
+        if (this.players.has(msg.victimId)) this.players.get(msg.victimId).alive = false;
+        if (!this.bodies.some((b) => b.id === msg.victimId)) {
+          this.bodies.push({ id: msg.victimId, x: msg.x, y: msg.y, z: msg.z, room: msg.room | 0 });
+          this.hooks.onKilled?.(msg.victimId, msg.x, msg.y, msg.z, msg.room | 0);
+        }
         break;
       case S.BODY_GONE:
         this.bodies = this.bodies.filter((b) => b.id !== msg.victimId);
@@ -1469,25 +1790,45 @@ export class MirrorSession {
       case S.COUNCIL: this.bodies = []; this.hooks.onCouncil?.(msg.calledBy, msg.bodyOf); break;
       case S.CHAT: this.hooks.onChat?.(msg); break;
       case S.VOTES: this.votes = { counts: msg.counts, voted: msg.voted }; this.hooks.onVotes?.(msg); break;
-      case S.EXILE: this.hooks.onExile?.(msg); break;
+      case S.EXILE:
+        if (this.players.has(msg.targetId)) this.players.get(msg.targetId).alive = false;
+        this.hooks.onExile?.(msg);
+        break;
       case S.SABOTAGE:
         if (msg.refused) { this.hooks.onRefused?.(msg.kind); break; }
         this.sabotage = { kind: msg.kind, endsAt: performance.now() / 1000 + msg.secs,
           fatal: msg.fatal, done: 0, need: msg.sites || 1 };
-        this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal);
+        this.hooks.onSabotage?.(msg.kind, msg.secs, msg.fatal, msg.sites, msg.half);
         break;
       case S.PURSE: this.hooks.onPurse?.(msg.coins, msg.gained); break;
       case S.LEDGER: this.hooks.onLedger?.(msg.rows); break;
       case S.BLACKOUT: this.hooks.onBlackout?.(msg.secs); break;
       case S.STRANGER: this.hooks.onStranger?.(msg.on, msg.x, msg.z); break;
       case S.RIDDLE: this.hooks.onRiddle?.(msg.text); break;
-      case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id); break;
+      case S.UFO:
+        /* secs is a duration, like every other clock on the wire — the two
+           machines have no shared one. The scanner belongs to the visit, so
+           it arrives and leaves with it. */
+        this.ufo = msg.on ? { until: performance.now() / 1000 + (msg.secs || 0) } : null;
+        this.scannerBy = null;
+        this.scannerSpent = false;
+        this.hooks.onUfo?.(!!msg.on, msg.secs || 0);
+        break;
+      case S.SCANNER:
+        this.scannerBy = msg.byId || null;
+        this.scannerSpent = !!msg.spent;
+        this.hooks.onScanner?.(this.scannerBy, this.scannerSpent);
+        break;
+      /* Only ever addressed to one person, and only ever about one scan. */
+      case S.SCANRESULT: this.hooks.onScanResult?.(msg.targetId, !!msg.agent); break;
+      case S.DROP: this.hooks.onDrop?.(msg.x, msg.y, msg.z, msg.coins, msg.id, msg.did, msg.room | 0); break;
+      case S.DROPGONE: this.hooks.onDropGone?.(msg.did, msg.byId); break;
       case S.SHOT: this.hooks.onShot?.(msg.byId, msg.victimId, msg, msg.secs); break;
       /* A refused shot has its own message rather than a flag on S.SHOT: that
          case spends the shell and stuns a victim who is not there. */
       case S.SNAPDENY: this.hooks.onSnapDeny?.(msg.why); break;
       case S.SNAPOPEN: this.hooks.onSnapOpen?.(msg.victimId, msg.byId, msg.secs, msg.voters); break;
-      case S.SNAPTALLY: this.hooks.onSnapTally?.(msg.yes, msg.no, msg.need); break;
+      case S.SNAPTALLY: this.hooks.onSnapTally?.(msg.yes, msg.no, msg.need, msg.voters); break;
       case S.SNAPDONE:
         if (msg.exiled) { const p2 = this.players.get(msg.victimId); if (p2) p2.alive = false; }
         this.hooks.onSnapDone?.(msg.victimId, msg.exiled, msg.wasAgent, msg.yes, msg.no);
@@ -1498,7 +1839,7 @@ export class MirrorSession {
       case S.SAVED: this.hooks.onSaved?.(msg.victimId); break;
       case S.FIXPROGRESS:
         if (this.sabotage) { this.sabotage.done = msg.done; this.sabotage.need = msg.need; }
-        this.hooks.onFixProgress?.(msg.kind, msg.done, msg.need);
+        this.hooks.onFixProgress?.(msg.kind, msg.done, msg.need, msg.at);
         break;
       case S.FIXED: this.sabotage = null; this.hooks.onFixed?.(msg.kind, msg.cooldown || 0, msg.why); break;
       case S.OVER: this.over = msg; this.hooks.onOver?.(msg.winner, msg.agents, msg.reason); break;

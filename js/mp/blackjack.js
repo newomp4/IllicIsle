@@ -92,7 +92,7 @@ export function deal({ bet, rand = Math.random, shoe = null }) {
     reshuffled: s !== shoe,
   };
   // a natural ends it there and then
-  if (score(state.hands[0].cards).blackjack) {
+  if (score(state.hands[0].cards).blackjack || score(state.dealer).blackjack) {
     state.hands[0].done = true;
     state.phase = 'dealer';
   }
@@ -110,18 +110,18 @@ function take(st) {
 
 export function canDouble(st) {
   const h = st.hands[st.active];
-  return !!h && !h.done && h.cards.length === 2 && !h.doubled;
+  return st.phase === 'player' && !!h && !h.done && h.cards.length === 2 && !h.doubled;
 }
 
 export function canSplit(st) {
   const h = st.hands[st.active];
-  if (!h || h.done || h.cards.length !== 2 || st.hands.length >= 4) return false;
+  if (st.phase !== 'player' || !h || h.done || h.cards.length !== 2 || st.hands.length >= 4) return false;
   return cardValue(h.cards[0]) === cardValue(h.cards[1]);
 }
 
 export function hit(st) {
   const h = st.hands[st.active];
-  if (!h || h.done) return st;
+  if (st.phase !== 'player' || !h || h.done) return st;
   h.cards.push(take(st));
   const sc = score(h.cards);
   if (sc.bust || sc.total === 21) h.done = true;
@@ -131,7 +131,7 @@ export function hit(st) {
 
 export function stand(st) {
   const h = st.hands[st.active];
-  if (!h) return st;
+  if (st.phase !== 'player' || !h || h.done) return st;
   h.done = true;
   advance(st);
   return st;
@@ -186,6 +186,11 @@ function settle(st) {
   st.results = st.hands.map((h) => {
     const p = score(h.cards);
     if (p.bust) return { outcome: 'bust', pays: 0, staked: h.bet };
+    // A dealer natural beats every ordinary 21, including split hands.
+    if (d.blackjack) {
+      const push = p.blackjack && !h.split;
+      return { outcome: push ? 'push' : 'lose', pays: push ? h.bet : 0, staked: h.bet };
+    }
     // a natural pays three to two, and only on a hand that was not split
     if (p.blackjack && !h.split && !d.blackjack) {
       return { outcome: 'blackjack', pays: Math.round(h.bet * 2.5), staked: h.bet };

@@ -458,6 +458,10 @@ export function buildSurf() {
 
   // the wobble below depends on the bearing and the clock, never on the band
   const wobBuf = new Float64Array(SEGS + 1);
+  /* How far up the sand a wash may reach, in metres. The beach between the
+     waterline and the h=1.5 contour is a median of 21 m wide here, so left
+     uncapped a wash covered the whole of it. */
+  const RUN_UP = 5;
 
   /** Ground height along a bearing, read out of the baked profile. */
   const yAt = (R, r) => {
@@ -513,8 +517,22 @@ export function buildSurf() {
 
       for (let s = 0; s <= SEGS; s++) {
         const R = rings[s];
-        const r = THREE.MathUtils.lerp(R.rLow + 2, R.rHigh, ease) + wobBuf[s];
-        const rIn = r - band.width;
+        /* A wash STRETCHES up the sand, it does not slide up it. The whole
+           ribbon used to travel from the waterline to the h=1.5 contour, and
+           that contour is a median of 21 metres up the beach and 31 at worst
+           — so at full run-up the foam was a band of surf sitting twenty
+           metres inland with clean wet sand between it and the sea it came
+           out of. Now the seaward edge stays with the water and only the
+           landward edge climbs, which is both what the sea does and what
+           keeps the two joined.
+
+           RUN_UP caps how far a wash can reach, because the h=1.5 contour is
+           a property of how shallow that bearing happens to be, not of how
+           hard the wave hit — and on the shallowest bearings it was most of
+           the beach. */
+        const reach = Math.min(R.rLow - R.rHigh, RUN_UP);
+        const r = R.rLow + 2 - reach * 0.2 * ease + wobBuf[s];
+        const rIn = r - band.width - reach * ease;
         /* Ride the sand, but never below the water: the seaward edge goes on
            floating on the sea exactly as it did and only the landward part
            climbs the beach. */

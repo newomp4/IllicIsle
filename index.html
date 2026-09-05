@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Illic Isle — The Idol of Illic Isle</title>
-<meta name="description" content="A PS1-style castaway adventure. Wash ashore, follow the Rogue Agents' map, wake the four Rogue Pendulums, and take the Golden Idol of Chris Illic from El Bass Presidente." />
+<title>Illic Isle — Castaways Online</title>
+<meta name="description" content="A PS1-style online social deduction game for 3–10 friends. Work the island, uncover the Rogue Agents, and survive the next council. Join with a room code or invite link." />
 <meta property="og:title" content="Illic Isle" />
-<meta property="og:description" content="PS1-style castaway adventure. Find the Golden Idol of Chris Illic." />
+<meta property="og:description" content="Online social deduction for 3–10 friends. One island. Hidden Rogue Agents. Trust carefully." />
 <link rel="stylesheet" href="css/style.css" />
 <link rel="preload" href="fonts/pressstart2p.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="fonts/silkscreen.woff2" as="font" type="font/woff2" crossorigin />
@@ -23,8 +23,9 @@
   <div class="load-inner">
     <div class="load-logo">ILLIC ISLE</div>
     <div class="load-bar"><div id="load-fill"></div></div>
-    <div id="load-text" class="load-text">NOW LOADING</div>
+    <div id="load-text" class="load-text" role="status" aria-live="polite">NOW LOADING</div>
     <div class="load-hint">DO NOT TURN OFF YOUR CONSOLE</div>
+    <button class="mbtn hidden" id="load-retry" type="button">RELOAD GAME</button>
   </div>
 </div>
 
@@ -60,17 +61,24 @@
   function fail(what, detail) {
     if (fired) return;
     fired = true;
+    window.illicLoadFailed = true;
     var t = el(); if (!t) return;
     var stale = /does not provide an export|Cannot find module|Failed to fetch|Unexpected/i.test(detail || '');
-    t.innerHTML = what + '<br><span style="font-size:.7em;opacity:.85">' + (detail || '') + '</span>'
-      + (stale ? '<br><span style="font-size:.7em;color:#ffd24a">RELOAD WITH SHIFT HELD TO CLEAR THE CACHE</span>' : '');
+    t.textContent = what + '\n' + (detail || '')
+      + (stale ? '\nRELOAD WITH SHIFT HELD TO CLEAR THE CACHE' : '');
     t.style.color = '#e0453a';
     var f = document.getElementById('load-fill'); if (f) f.style.background = '#8a2018';
+    document.querySelector('.load-hint')?.classList.add('hidden');
+    document.getElementById('load-retry')?.classList.remove('hidden');
   }
+  window.illicLoadError = fail;
+  document.getElementById('load-retry').addEventListener('click', function () { location.reload(); });
   window.addEventListener('error', function (e) {
+    if (document.getElementById('loading').classList.contains('hidden')) return;
     if (e.message || e.error) fail('FAILED TO START', String((e.error && e.error.message) || e.message));
   }, true);
   window.addEventListener('unhandledrejection', function (e) {
+    if (document.getElementById('loading').classList.contains('hidden')) return;
     fail('FAILED TO START', String((e.reason && e.reason.message) || e.reason));
   });
   // and a backstop, in case something hangs without throwing at all

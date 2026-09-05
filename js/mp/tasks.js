@@ -93,8 +93,9 @@ export function taskStageCount(id) {
 
 /** The nth stage of a chore, 0-based. */
 export function taskStage(id, step) {
+  if (!Number.isInteger(step) || step < 0) return undefined;
   let d = taskById(id);
-  for (let i = 0; i < step && d?.then; i++) d = d.then;
+  for (let i = 0; i < step && d; i++) d = d.then;
   return d;
 }
 

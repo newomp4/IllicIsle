@@ -231,6 +231,12 @@ void main(){
   vec2 c = uv - 0.5;
   float r2 = dot(c, c);
   uv = 0.5 + c * (1.0 + 0.055 * r2 * uCrt);
+  // Menus and instruments stay readable while the world sways after a drink.
+  vec2 hudUv = uv;
+  if (hudUv.x < 0.0 || hudUv.x > 1.0 || hudUv.y < 0.0 || hudUv.y > 1.0) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
 
   /* ---- drink ----
      Three things happen to a room when you have had too much, and all
@@ -248,14 +254,10 @@ void main(){
     uv = 0.5 + (uv - 0.5) * breathe;
   }
 
-  if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0){
-    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    return;
-  }
+  bool outsideWorld = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
+  vec3 col = outsideWorld ? vec3(0.0) : texture2D(tDiffuse, uv).rgb;
 
-  vec3 col = texture2D(tDiffuse, uv).rgb;
-
-  if (dz > 0.001) {
+  if (dz > 0.001 && !outsideWorld) {
     // the second image, offset and rolling, at half strength
     vec2 ghost = vec2(sin(uTime * 0.63) * 0.017, cos(uTime * 0.47) * 0.011) * dz;
     vec2 guv = clamp(uv + ghost, 0.0, 1.0);
@@ -276,7 +278,7 @@ void main(){
      overlay pasted onto a PSX game, which is exactly the wrong feel.
      Its canvas is authored in sRGB, so bring it into linear to mix. */
   if (uHudOn > 0.5) {
-    vec4 hud = texture2D(tHud, uv);
+    vec4 hud = texture2D(tHud, hudUv);
     vec3 hudLin = pow(max(hud.rgb, vec3(0.0)), vec3(2.2));
     col = mix(col, hudLin, hud.a);
   }
@@ -290,7 +292,7 @@ void main(){
   );
 
   // 15-bit colour (32 levels per channel) with ordered dithering.
-  vec2 px = uv * uRes;
+  vec2 px = hudUv * uRes;
   /* The dither belongs to the console, not to the tube, so uCrt must not gate
      it: with CRT off the frame was still crushed to 32 levels with nothing left
      to break up the steps, and smooth gradients like the sky dome banded. */
@@ -403,6 +405,13 @@ export class RetroPipeline {
     this.quadMat.uniforms.uCrt.value = this.crt;
   }
 
+  /** Map a viewport point onto the curved interface, matching the shader. */
+  screenToHud(u, v) {
+    const x = u - 0.5, y = v - 0.5;
+    const curve = 1 + 0.055 * (x * x + y * y) * this.crt;
+    return [0.5 + x * curve, 0.5 + y * curve];
+  }
+
   setSize(w, h) {
     this.size.set(w, h);
     const aspect = w / Math.max(1, h);
@@ -420,12 +429,13 @@ export class RetroPipeline {
          resolution rather than squashing or letterboxing: at an unchanged
          aspect, MIN_INTERNAL_W / aspect is precisely the height at which the
          frame comes out 240 wide, so a tall thin window simply gets a tall
-         thin picture with more lines in it. Something phone-shaped would ask
-         for an absurd height that way, so stop at twice the base — under what
-         NATIVE already hands a 1080-line display — and beyond that take the
+         thin picture with more lines in it. A portrait window needs 400 lines
+         even at the 180-line setting; the old twice-base cap gave it only
+         216 pixels across and clipped the menus. Use the native 1080-line
+         budget, and beyond that take the
          narrow frame in preference to distorting the picture. */
       if (iw < MIN_INTERNAL_W) {
-        ih = Math.min(this.baseHeight * 2, Math.ceil(MIN_INTERNAL_W / aspect));
+        ih = Math.min(1080, Math.ceil(MIN_INTERNAL_W / aspect));
         iw = Math.round(ih * aspect);
       }
     }
@@ -511,6 +521,9 @@ export class RetroPipeline {
   dispose() {
     this.target.dispose();
     this.quadMat.dispose();
+    this.hudTexture?.dispose();
+    this.hudTexture = null;
+    for (const child of this.quadScene.children) child.geometry?.dispose();
     for (const k in (this._rts || {})) this._rts[k].dispose();
     this._rts = null;
   }

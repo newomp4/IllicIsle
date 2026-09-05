@@ -9,9 +9,10 @@
    pixelate, dither, band and curve exactly like the world does.
    =========================================================== */
 
-import { drawText, textWidth, wrapText, panel, ditherRect } from './bitfont.js';
+import { drawText, textWidth, wrapText, fitText, panel, ditherRect } from './bitfont.js';
 import { drawRelicIcon, drawShopIcon, drawPoiIcon, POI_ICONS, POI_ICON_W } from './hud.js';
 import { COLOURS } from '../net/protocol.js';
+import { parseRoomCode, roomInviteURL } from '../net/net.js';
 import { SABOTAGE_DEFS } from '../mp/tasks.js';
 import { MINIGAMES, bindText } from '../mp/minigames.js';
 import * as DARTS from '../mp/darts.js';
@@ -146,11 +147,11 @@ function frame(x, W, H, title, sub) {
   const m = 10;
   panel(x, m, m, W - m * 2, H - m * 2, { border: 2, dither: 0.45, hi: GOLD_DK, lo: '#241708' });
   if (title) {
-    drawText(x, title, { x: W / 2, y: m + 7, scale: 1, align: 'center', color: GOLD });
+    fitLine(x, title, W / 2, m + 7, W - 40, { color: GOLD });
     x.fillStyle = GOLD_DK;
     x.fillRect(m + 8, m + 18, W - m * 2 - 16, 1);
   }
-  if (sub) drawText(x, sub, { x: W / 2, y: m + 22, scale: 1, align: 'center', color: DIM });
+  if (sub) fitLine(x, sub, W / 2, m + 22, W - 40, { color: DIM });
   return { m, top: m + (sub ? 32 : 24), bottom: H - m - 12 };
 }
 
@@ -374,8 +375,7 @@ function pressButton(x, bx, by, bw, label, opts = {}) {
     x.fillStyle = 'rgba(255,240,190,.22)';
     x.fillRect(bx + 1, by + 1, bw - 2, 1);
   }
-  drawText(x, label, {
-    x: bx + bw / 2, y: by + 3 + down, scale: 1, align: 'center',
+  fitLine(x, label, bx + bw / 2, by + 3 + down, bw - 8, {
     color: down ? '#160c04' : (on ? (opts.text || GOLD_LT) : '#7a6a4a'),
   });
   return { x: bx, y: by, w: bw, h };
@@ -446,7 +446,37 @@ function fitLine(x, text, cx, y, max, opts = {}) {
     t = String(text).replace(/ {2,}/g, (run) => ' '.repeat(Math.min(n, run.length)));
   }
   if (textWidth(t, 1, tracking) > max) tracking = 0;
-  drawText(x, t, { x: cx, y, scale: 1, align: 'center', tracking, ...opts });
+  drawText(x, fitText(t, max, 1, tracking), { x: cx, y, scale: 1, align: 'center', tracking, ...opts });
+}
+
+function proseLines(text, width) {
+  return String(text ?? '').split('\n').flatMap((para) =>
+    para.trim() ? wrapText(para, width, 1, 1) : ['']);
+}
+
+/** Keep scroll position and its thumb inside the exact same content area. */
+function scrollBar(x, s, count, visible, right, top, height, color = GOLD_DK) {
+  s.visible = Math.max(1, visible);
+  s.maxScroll = Math.max(0, count - s.visible);
+  s.scroll = THREE_CLAMP(s.scroll || 0, 0, s.maxScroll);
+  if (!s.maxScroll) return;
+  const thumb = Math.max(6, Math.floor(height * s.visible / count));
+  const at = top + Math.round((height - thumb) * s.scroll / s.maxScroll);
+  x.fillStyle = '#3a2a10'; x.fillRect(right, top, 2, height);
+  x.fillStyle = color; x.fillRect(right, at, 2, thumb);
+}
+
+function scrollKey(code, s) {
+  let next = s.scroll || 0;
+  if (code === 'ArrowUp' || code === 'KeyW') next--;
+  else if (code === 'ArrowDown' || code === 'KeyS') next++;
+  else if (code === 'PageUp') next -= Math.max(1, (s.visible || 2) - 1);
+  else if (code === 'PageDown') next += Math.max(1, (s.visible || 2) - 1);
+  else if (code === 'Home') next = 0;
+  else if (code === 'End') next = s.maxScroll || 0;
+  else return false;
+  s.scroll = THREE_CLAMP(next, 0, s.maxScroll ?? Infinity);
+  return true;
 }
 
 /**
@@ -796,8 +826,7 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
       x.fillRect(ax + 1, y + 2, 1, 1);
       x.fillRect(ax - 1, y, 1, 5);
     }
-    drawText(x, label, {
-      x: cx + off, y, scale: 1, align: 'center',
+    fitLine(x, label, cx + off, y, w - 22, {
       color: dis ? '#6a5c40' : (on ? (m.hit > 0.5 ? '#fffbe8' : GOLD_LT) : DIM),
     });
     rows.push({ y: y - 3, h: 11, x: cx - w / 2, w });
@@ -810,6 +839,14 @@ function menuList(x, items, sel, cx, top, t, opts = {}) {
    =========================================================== */
 /** clamp, without dragging three into this file for one line. */
 const THREE_CLAMP = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+
+// Characters present in the bitmap font. Typing and paste share this set;
+// unsupported layout characters must never become a different physical key.
+const CHAT_PUNCTUATION = new Set(Array.from(" .,:;!?'-\"_+/\\()[]<>=*%#&@$"));
+function chatCharacter(raw) {
+  const ch = String(raw ?? '').toUpperCase();
+  return ch.length === 1 && (/^[A-Z0-9]$/.test(ch) || CHAT_PUNCTUATION.has(ch)) ? ch : '';
+}
 
 const EMPTY_MODS = Object.freeze({ shift: false, ctrl: false, alt: false, repeat: false });
 
@@ -877,6 +914,7 @@ export class ScreenStack {
       catch (e) { console.error(`[screens] ${name}.init failed`, e); }
     }
     this.clearHeld();          // whatever opened this is not still held
+    this.game._clearHeldInput?.();
     /* The hit-test rows are last frame's, and last frame was another
        screen's. A council or a snap vote can replace the stack between a
        draw and a mousedown, and the click was then tested against rows
@@ -902,6 +940,7 @@ export class ScreenStack {
     const s = this.stack.pop();
     this._discard(s);
     this.clearHeld();
+    this.game._clearHeldInput?.();
     this._rows.length = 0;
     this.game.audio?.sfx('select');
     return s;
@@ -913,18 +952,15 @@ export class ScreenStack {
     this.stack = [];
     for (let i = old.length - 1; i >= 0; i--) this._discard(old[i]);
     this.clearHeld();
+    this.game._clearHeldInput?.();
     this._rows.length = 0;
   }
   replace(name, data) { this.clear(); return this.push(name, data); }
   has(name) { return this.stack.some((s) => s.name === name); }
 
-  /**
-   * `mods` carries shift/ctrl/alt for the few screens that want a chord —
-   * the title's shift+enter into the old single-player story, for one.
-   * Everything else ignores it, and a caller that passes nothing gets an
-   * empty object rather than undefined.
-   */
+  /** Modifier and typed-character information for keyboard input. */
   key(code, mods = EMPTY_MODS) {
+    if (code === 'NumpadEnter') code = 'Enter';
     const s = this.top;
     if (!s) return false;
     const def = SCREENS[s.name];
@@ -934,7 +970,8 @@ export class ScreenStack {
        a predicate, because the council only takes text while the chat box is
        open. Swallowed rather than passed on: the event is still consumed. */
     const typing = typeof def.typing === 'function' ? def.typing(s) : !!def.typing;
-    if (mods.repeat && !typing && COMMIT_KEYS.has(code)) return true;
+    if (mods.repeat && COMMIT_KEYS.has(code)
+      && (!typing || (code !== 'KeyE' && code !== 'Space'))) return true;
     return def.key ? def.key(code, s, this.game, this, mods) !== false : false;
   }
 
@@ -959,7 +996,7 @@ export class ScreenStack {
     for (let i = 0; i < this._rows.length; i++) {
       const r = this._rows[i];
       if (!r) continue;
-      if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
+      if (cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h) {
         /* Some screens have rows that are not menu entries — a chat box, a
            confirm button — so they get told which row was hit rather than
            having the index forced into `sel`. */
@@ -1214,6 +1251,8 @@ const BOOT_LEN = 1.9;
    pairs menuSnap() with a 'select', and the shared helper did not — so the
    title, the pause menu and the results card were the silent ones. */
 const nav = (code, s, len, onOk, onBack, g) => {
+  if (code === 'Escape' || code === 'Backspace') { onBack?.(); return true; }
+  if (len <= 0) return true;
   if (code === 'ArrowUp' || code === 'KeyW') {
     const was = s.sel;
     s.sel = (s.sel + len - 1) % len;
@@ -1233,7 +1272,6 @@ const nav = (code, s, len, onOk, onBack, g) => {
     onOk?.(s.sel);
     return true;
   }
-  if (code === 'Escape' || code === 'Backspace') { onBack?.(); return true; }
   return false;
 };
 
@@ -1265,24 +1303,20 @@ const panMotor = (s, dt, st, span) => {
   s.cz += s.panZ * rate * dt;
 };
 
-/* The pause menu is not the same list in both modes, and it used to pretend
-   it was. JOURNAL pushed the Idol quest journal in the middle of a Castaways
-   round — a list of pendulums and relics from a game nobody in the room is
-   playing — and MAP called openChart, which refuses when you have no chart,
-   and in Castaways until the round starts, so the row beeped and did
-   nothing. There is no journal in a round, and a refused MAP says why. */
+function roomClosed(g) {
+  return g.mp?.net?.closed === true || g.mp?.net?.health?.state === 'closed';
+}
+
 function pauseItems(g) {
-  const inRound = !!g.mp?.active;
-  const refusal = inRound
-    ? (g.mp.started ? null : 'THE ROUND HAS NOT STARTED')
-    : (g.hasChart ? null : 'YOU HAVE NO CHART');
-  const items = [{ id: 'resume', label: 'RESUME' }];
-  if (!inRound) items.push({ id: 'journal', label: 'JOURNAL' });
-  items.push({ id: 'map', label: 'MAP', disabled: !!refusal, refusal });
-  items.push({ id: 'controls', label: 'CONTROLS' });
-  items.push({ id: 'options', label: 'OPTIONS' });
-  items.push({ id: 'quit', label: 'QUIT TO TITLE' });
-  return items;
+  const refusal = g.mp?.active && g.mp.started ? null : 'THE ROUND HAS NOT STARTED';
+  return [
+    { id: 'resume', label: 'RESUME' },
+    { id: 'map', label: 'MAP + JOBS', disabled: !!refusal, refusal },
+    { id: 'guide', label: 'HOW TO PLAY' },
+    { id: 'controls', label: 'CONTROLS' },
+    { id: 'options', label: 'OPTIONS' },
+    { id: 'quit', label: 'LEAVE ROOM' },
+  ];
 }
 
 /* The title's left-hand scrim depends on nothing but the size of the frame,
@@ -1316,185 +1350,124 @@ export const SCREENS = {
 
   /* ---------------- HOST OR JOIN ---------------- */
   mpMenu: {
-    /* The name and the room code are typed in here, so E and space are
-       letters rather than a confirmation and a held key has to keep
-       arriving — the stack's repeat guard must not swallow them. */
     typing: true,
-    init(s, g) {
-      /* Same hazard as the write below: in a private window, with site data
-         blocked, or inside a cross-origin frame, touching localStorage at all
-         throws — and this threw out through push() before the screen reached
-         the stack, leaving an empty stack and a game with no interface. */
+    init(s) {
       let saved = '';
-      try { saved = localStorage.getItem('illicisle.name') || ''; } catch { /* not fatal */ }
-      s.who = saved.toUpperCase();
-      /* A room code in the address bar fills the box in and puts the caret
-         on your name, which is the only thing left to type. That is what
-         the LINK button in the lobby copies. */
-      const hash = (location.hash || '').replace('#', '').toUpperCase()
-        .replace(/[^A-Z0-9]/g, '').slice(0, 4);
-      s.code = hash;
-      s.field = hash ? 0 : 0;
-      s.invited = !!hash;
+      try { saved = localStorage.getItem('illicisle.name') || ''; } catch { /* optional */ }
+      s.who = saved.toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 12);
+      s.code = parseRoomCode(location.href || location.hash || '') || '';
+      s.field = 0;
+      s.invited = !!s.code;
       s.busy = false;
       s.err = '';
       s.status = '';
+      s.elapsed = 0;
     },
+    tick(s, g, dt) { if (s.busy) s.elapsed += dt; },
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, s.invited ? 'YOU WERE INVITED' : 'CASTAWAYS');
-      const caret = (on) => (on && Math.floor(t * 3) % 2 ? '_' : '');
-
-      // name
+      const b = frame(x, W, H, s.invited ? 'JOIN YOUR FRIENDS' : 'PLAY ONLINE');
+      const caret = (on) => (on && !s.busy && Math.floor(t * 3) % 2 ? '_' : '');
       const rows = [];
-      let y = b.top + 4;
+      const y = b.top + 4;
       const nw = 120, nx = Math.round((W - nw) / 2);
       drawText(x, 'YOUR NAME', { x: W / 2, y, scale: 1, align: 'center', color: s.field === 0 ? GOLD : DIM });
-      field(x, nx, y + 10, nw, 15, s.field === 0);
-      drawText(x, s.who + caret(s.field === 0), {
-        x: W / 2, y: y + 14, scale: 1, align: 'center', color: GOLD_LT,
+      field(x, nx, y + 10, nw, 15, s.field === 0 && !s.busy);
+      drawText(x, (s.who || (s.field ? 'CASTAWAY' : '')) + caret(s.field === 0), {
+        x: W / 2, y: y + 14, scale: 1, align: 'center', color: s.who ? GOLD_LT : DIM,
       });
       rows.push({ x: nx - 4, y: y + 7, w: nw + 8, h: 21, focus: 0 });
-
-      // room
-      y += 36;
-      drawText(x, 'ROOM CODE', { x: W / 2, y, scale: 1, align: 'center', color: s.field === 1 ? GOLD : DIM });
-      const rw = 78, rx = Math.round((W - rw) / 2);
-      field(x, rx, y + 10, rw, 20, s.field === 1);
+      drawText(x, 'ROOM CODE', { x: W / 2, y: y + 34, scale: 1, align: 'center', color: s.field === 1 ? GOLD : DIM });
+      const rw = 90, rx = Math.round((W - rw) / 2);
+      field(x, rx, y + 44, rw, 20, s.field === 1 && !s.busy);
       drawText(x, s.code + caret(s.field === 1), {
-        x: W / 2, y: y + 16, scale: 2, align: 'center', color: GOLD_LT,
+        x: W / 2, y: y + 50, scale: 2, align: 'center', color: GOLD_LT,
       });
-      rows.push({ x: rx - 4, y: y + 7, w: rw + 8, h: 26, focus: 1 });
-      /* These were centred with nothing measuring them, so on a 240 wide
-         buffer they ran off both ends of the first screen anybody sees. */
-      fitLine(x, 'CLICK A BOX TO TYPE IN IT   CTRL V PASTES', W / 2, y + 36, W - 24, { color: DIM });
-      fitLine(x, 'BLANK CODE OPENS A NEW ROOM', W / 2, y + 45, W - 24, { color: '#6a5c40' });
-
-      y += 60;
-      for (const r of menuList(x, [s.code ? 'JOIN THAT ROOM' : 'OPEN A NEW ROOM'],
-        0, W / 2, y, t, { width: 150 })) rows.push({ ...r, go: true });
-      const rules = [
-        'THREE TO TEN CASTAWAYS. SOME ARE ROGUE AGENTS.',
-        'CASTAWAYS FINISH THE WORK. AGENTS CUT THEM DOWN.',
-        'FIND A BODY, CALL A COUNCIL, THROW SOMEBODY TO THE SEA.',
-      ];
-      /* fitLine closes the spaces and then gives up the tracking, and that
-         is as small as a line goes: the last rule is still 275 pixels on a
-         240 wide buffer against a 216 pixel panel, so it hung eighteen off
-         both ends of the first screen anybody sees. Nothing is cut here
-         either — they wrap, and the block is measured by the rows it
-         actually takes, because a rule that became two lines needs two. */
-      const ruleLines = [];
-      for (const r of rules) ruleLines.push(...wrapText(r, W - 24, 1, 1));
-      const ruleBot = y + 28 + (ruleLines.length - 1) * 10 + 7;   // the last line is 7 rows tall
-      /* footer() draws at H - 17, and on a 180 tall buffer these started at
-         162: the first rule printed through the key hints and the third fell
-         off the bottom entirely. There is no room for them at that height, so
-         the screen ends at the button instead. */
-      if (!s.busy && !s.err && ruleBot <= H - 20) {
-        x.fillStyle = GOLD_DK; x.fillRect(W / 2 - 70, y + 22, 140, 1);
-        let ry = y + 28;
-        for (const ln of ruleLines) {
-          fitLine(x, ln, W / 2, ry, W - 24, { color: DIM });
-          ry += 10;
-        }
-      }
-      if (s.busy) drawText(x, s.status || 'CONNECTING', { x: W / 2, y: y + 20, scale: 1, align: 'center', color: JADE });
-      if (s.err) {
-        let ey = y + 20;
-        for (const ln of wrapText(s.err, W - 50, 1, 1)) {
-          drawText(x, ln, { x: W / 2, y: ey, scale: 1, align: 'center', color: RED }); ey += 9;
-        }
-      }
-      footer(x, W, H, 'TAB SWITCH FIELD   ENTER GO   ESC BACK');
+      rows.push({ x: rx - 4, y: y + 41, w: rw + 8, h: 26, focus: 1 });
+      fitLine(x, 'PASTE A CODE OR INVITE LINK', W / 2, y + 71, W - 40, { color: DIM });
+      const by = y + 88;
+      rows.push({ ...pressButton(x, W / 2 - 99, by, 94,
+        s.busy && !s.joining ? 'CREATING...' : 'CREATE ROOM', { enabled: !s.busy }), create: true });
+      rows.push({ ...pressButton(x, W / 2 + 5, by, 94,
+        s.busy && s.joining ? 'JOINING...' : 'JOIN ROOM', { enabled: !s.busy && s.code.length === 4 }), join: true });
+      const status = s.err || (s.busy ? `${s.status || 'CONNECTING'}  ${Math.floor(s.elapsed)}S`
+        : '3-10 PLAYERS. HOST STARTS THE ROUND.');
+      const lines = wrapText(status.toUpperCase(), W - 40, 1, 1);
+      const capacity = Math.max(1, Math.floor((H - 23 - (by + 18)) / 9) + 1);
+      if (lines.length > capacity) lines[capacity - 1] = fitText(lines.slice(capacity - 1).join(' '), W - 40, 1);
+      lines.slice(0, capacity).forEach((ln, i) => {
+        drawText(x, ln, { x: W / 2, y: by + 18 + i * 9, scale: 1, align: 'center', color: s.err ? RED : s.busy ? JADE : DIM });
+      });
+      footer(x, W, H, s.busy ? 'ESC CANCEL CONNECTION' : 'TAB FIELD   ENTER GO   ESC BACK');
       return rows;
     },
-
-    /** Clicking a box puts the caret in it. */
     click(row, i, s, g, st) {
+      if (s.busy) return true;
       if (row?.focus !== undefined) { s.field = row.focus; g.audio?.sfx('select'); return true; }
-      if (row?.go) this.key('Enter', s, g, st);
+      if (row?.create || row?.join) this._connect(s, g, st, !!row.join);
       return true;
     },
-
-    /** Ctrl/Cmd+V. Room codes get read out loud and pasted, not retyped. */
     paste(text, s) {
-      /* The lobby's L LINK copies a whole URL, and pasting that in here used
-         to leave HTTPSO: the strip below eats the punctuation and six
-         characters is all the box takes. The room is the fragment. */
-      let raw = String(text || '');
-      const hash = raw.lastIndexOf('#');
-      if (hash >= 0 && /https?:\/\//i.test(raw)) raw = raw.slice(hash + 1);
-      const clean = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, '');
-      if (!clean) return true;
-      if (s.field === 1) s.code = (s.code + clean).replace(/\s/g, '').slice(0, 6);
-      else s.who = (s.who + clean).replace(/^\s+/, '').slice(0, 12);
+      if (s.busy) return true;
+      const raw = String(text || '').trim();
+      // A full invite belongs in the room field even if the name had focus.
+      if (s.field === 1 || /^https?:\/\//i.test(raw)) {
+        const room = parseRoomCode(raw);
+        if (!room) { s.err = 'PASTE THE 4-CHARACTER CODE OR INVITE'; s.field = 1; return true; }
+        s.code = room; s.field = 1;
+      } else {
+        const clean = raw.toUpperCase().replace(/[^A-Z0-9 ]/g, '');
+        s.who = (s.who + clean).replace(/^\s+/, '').slice(0, 12);
+      }
+      s.err = '';
       return true;
     },
-
+    _connect(s, g, st, joining) {
+      if (s.busy) return true;
+      const room = joining ? parseRoomCode(s.code) : null;
+      if (joining && !room) {
+        s.err = 'ENTER THE COMPLETE 4-CHARACTER CODE';
+        s.field = 1; g.audio?.sfx('deny'); return true;
+      }
+      const name = s.who.trim() || 'CASTAWAY';
+      s.who = name;
+      s.busy = true; s.joining = joining; s.err = ''; s.status = ''; s.elapsed = 0;
+      const gen = (s.gen = (s.gen || 0) + 1);
+      try { localStorage.setItem('illicisle.name', name); } catch { /* optional */ }
+      const failed = (e) => {
+        if (s.gen !== gen || st.top !== s) return;
+        s.busy = false; s.err = e?.message || String(e || 'CONNECTION FAILED. TRY AGAIN.');
+      };
+      // The call itself can throw before it returns a promise. Either kind
+      // of failure must leave the fields editable and the retry usable.
+      try {
+        Promise.resolve(joining ? g.joinGame(name, room) : g.hostGame(name, null)).then(() => {
+          if (s.gen === gen && st.top === s) st.replace('mpLobby');
+        }).catch(failed);
+      } catch (e) { failed(e); }
+      return true;
+    },
     key(code, s, g, st, mods) {
-      /* A signalling server that has stopped answering leaves CONNECTING on
-         the screen for as long as it likes, and every key after it was
-         swallowed by the line below — there was no way out of the menu but
-         a reload. Escape gives up on the attempt instead. */
-      if (s.busy && code === 'Escape') {
-        s.busy = false;
-        s.gen = (s.gen || 0) + 1;
-        g.cancelConnect?.();
-        st.replace('title');
-        return true;
+      if (code === 'Escape') {
+        if (s.busy) { s.busy = false; s.gen = (s.gen || 0) + 1; g.cancelConnect?.(); }
+        st.replace('title'); return true;
       }
       if (s.busy) return true;
       if (code === 'Tab') { s.field = 1 - s.field; return true; }
-      /* Back to where you actually came from. PLAY on the title comes
-         straight here (the mode chooser is not on the way in any more), so
-         sending Escape back to the old mode chooser dropped you on a screen
-         you had never seen and made getting out take two presses. */
-      if (code === 'Escape') { st.replace('title'); return true; }
-      if (code === 'Backspace') {
-        if (s.field === 0) s.who = s.who.slice(0, -1); else s.code = s.code.slice(0, -1);
-        return true;
+      if (code === 'Enter') return this._connect(s, g, st, !!s.code);
+      if (code === 'Backspace' || code === 'Delete') {
+        if (s.field === 0) s.who = code === 'Delete' ? '' : s.who.slice(0, -1);
+        else s.code = code === 'Delete' ? '' : s.code.slice(0, -1);
+        s.err = ''; return true;
       }
-      if (code === 'Enter' || code === 'NumpadEnter') {
-        s.busy = true; s.err = '';
-        const name = s.who.trim() || 'CASTAWAY';
-        /* Storage is a convenience, not a precondition. In a private window,
-           with site data blocked, or on a full quota this throws — and it
-           threw between `s.busy = true` and the connect, so busy stayed true
-           for ever and the first line of key() swallowed every key after it,
-           Escape included. Remembering the name is not worth a dead menu. */
-        try { localStorage.setItem('illicisle.name', name); } catch { /* not fatal */ }
-        const go = s.code
-          ? g.joinGame(name, s.code.trim().toUpperCase())
-          : g.hostGame(name, null);
-        /* An attempt that lands after you have walked away is not yours any
-           more: without this it yanked you off the title screen into a lobby
-           you had already given up on. Each press takes a ticket, and only
-           the current one is allowed to finish. */
-        const gen = (s.gen = (s.gen || 0) + 1);
-        go.then(() => {
-          if (s.gen === gen) st.replace('mpLobby');
-          else g.cancelConnect?.();
-        }).catch((e) => {
-          if (s.gen !== gen) return;
-          s.busy = false; s.err = e.message || String(e);
-        });
-        return true;
-      }
-      /* Typed characters. `code` is the PHYSICAL key on a US board, so on
-         AZERTY the key marked A reports KeyQ and a room code read out over
-         voice went into the box as a different code entirely. The layout's
-         own character is preferred where there is one; the physical code
-         stays as the fallback, because AZERTY's unshifted top row gives
-         "é" for the key that is still Digit2. */
-      const raw = mods && mods.ch;
+      const raw = mods?.ch;
       const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
-      const ch = (raw && /^[a-zA-Z0-9]$/.test(raw)) ? raw.toUpperCase() : (m ? m[1] : null);
+      const ch = raw != null ? (/^[a-zA-Z0-9]$/.test(raw) ? raw.toUpperCase() : null) : m?.[1];
       if (ch) {
-        if (s.field === 0) { if (s.who.length < 12) s.who += ch; }
-        else if (s.code.length < 6) s.code += ch;
-        return true;
+        if (s.field === 0 && s.who.length < 12) s.who += ch;
+        else if (s.field === 1 && s.code.length < 4) s.code += ch;
+        s.err = ''; return true;
       }
-      if (code === 'Space' && s.field === 0 && s.who.length < 12) { s.who += ' '; return true; }
+      if (code === 'Space' && (raw == null || raw === ' ') && s.field === 0 && s.who.length < 12 && s.who && !s.who.endsWith(' ')) s.who += ' ';
       return true;
     },
   },
@@ -1503,7 +1476,17 @@ export const SCREENS = {
   mpLobby: {
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'THE BEACH');
-      const players = [...g.mp.view.players.values()];
+      const players = [...(g.mp?.view?.players?.values() || [])];
+      const compact = H < 200;
+      const health = g.mp?.net?.health;
+      if (health) {
+        const warning = health.state === 'degraded' || health.state === 'closed'
+          || health.broker === 'reconnecting' || health.broker === 'offline';
+        const label = health.state === 'closed' ? 'OFFLINE'
+          : health.broker === 'reconnecting' || health.broker === 'offline' ? 'RETRYING'
+          : health.rtt != null ? `${Math.round(health.rtt)}MS` : 'ONLINE';
+        drawText(x, label, { x: W - 20, y: 17, scale: 1, align: 'right', color: warning ? RED : JADE });
+      }
 
       /* The code, big, with two ways of getting it to somebody: COPY puts
          the code on the clipboard, LINK puts a whole URL on it that opens
@@ -1511,17 +1494,18 @@ export const SCREENS = {
          voice call was the only way to do this and it is the one part of
          starting a game that people got wrong. */
       const code = g.mp.room || '----';
-      const cw = textWidth(code, 3) + 22;
-      const cx = Math.round((W - cw) / 2);
-      field(x, cx, b.top - 1, cw, 29, true);
-      drawText(x, code, { x: W / 2, y: b.top + 3, scale: 3, align: 'center', color: GOLD });
+      const codeScale = compact ? 2 : 3;
+      const cw = textWidth(code, codeScale) + (compact ? 14 : 22);
+      const cx = Math.round((W - cw - (compact ? 122 : 0)) / 2);
+      field(x, cx, b.top - 1, cw, compact ? 21 : 29, true);
+      drawText(x, code, { x: cx + cw / 2, y: b.top + 3, scale: codeScale, align: 'center', color: GOLD });
 
       const rows = [];
       {
         const BW = 54, GAP = 6;
-        const by = b.top + 32;
-        const bx0 = Math.round(W / 2 - (BW * 2 + GAP) / 2);
-        const fresh = s.copied && s.t - s.copied < 1.6;
+        const by = b.top + (compact ? 3 : 32);
+        const bx0 = compact ? cx + cw + 8 : Math.round(W / 2 - (BW * 2 + GAP) / 2);
+        const fresh = s.copied !== undefined && s.t - s.copied < 1.6;
         rows.push({
           ...pressButton(x, bx0, by, BW, fresh && s.copiedWhat === 'code' ? 'COPIED' : 'C  COPY', {
             hit: fresh && s.copiedWhat === 'code' ? 1 - (s.t - s.copied) / 1.6 : 0,
@@ -1530,31 +1514,31 @@ export const SCREENS = {
         });
         rows.push({
           ...pressButton(x, bx0 + BW + GAP, by, BW,
-            fresh && s.copiedWhat === 'link' ? 'COPIED' : 'L  LINK', {
+            fresh && s.copiedWhat === 'link' ? 'COPIED' : 'L INVITE', {
               hit: fresh && s.copiedWhat === 'link' ? 1 - (s.t - s.copied) / 1.6 : 0,
             }),
           copyLink: true,
         });
         const failed = fresh && s.copiedWhat === 'failed';
-        drawText(x, failed ? 'CLIPBOARD SAID NO - READ THE CODE'
+        fitLine(x, failed ? 'CLIPBOARD SAID NO - READ THE CODE'
           : (fresh
             ? (s.copiedWhat === 'link' ? 'A LINK IS ON YOUR CLIPBOARD' : 'THE CODE IS ON YOUR CLIPBOARD')
             : 'SEND THIS TO YOUR FRIENDS'),
-        { x: W / 2, y: by + 15, scale: 1, align: 'center',
+        W / 2, compact ? H - 30 : by + 15, W - 32, {
           color: failed ? RED : (fresh ? JADE : DIM) });
       }
 
-      drawText(x, `${players.length} ASHORE`, { x: 30, y: b.top + 62, scale: 1, color: DIM });
+      drawText(x, `${players.length}/10 ASHORE`, { x: 30, y: b.top + (compact ? 24 : 62), scale: 1, color: DIM });
       /* Ten castaways at eleven pixels a row ran the roster through the
          host's menu and off the bottom of the panel. It is laid out against
          the space that actually exists instead: the floor is whatever the
          menu or the WAITING line owns, and the names spill into a second
          column rather than overrunning it. */
-      const floorY = g.isHost ? b.bottom - 44 : b.bottom - 24;
-      const y0 = b.top + 74;
+      const floorY = b.bottom - 44;
+      const y0 = b.top + (compact ? 36 : 74);
       const room = floorY - y0;
       const pitch = room < 60 ? 9 : 11;
-      const perCol = Math.max(1, Math.floor(room / pitch));
+      const perCol = Math.max(1, Math.floor((room - 7) / pitch) + 1);
       const cols = Math.min(2, Math.ceil(Math.max(1, players.length) / perCol));
       if (perCol < 2 && players.length > perCol * cols) {
         /* Not even two short columns fit — at the 180 setting there is room
@@ -1584,15 +1568,15 @@ export const SCREENS = {
           x.fillStyle = colourOf(p.colour); x.fillRect(px2, py2, 7, 7);
           x.fillStyle = '#000'; x.fillRect(px2, py2 + 7, 7, 1);
           const host = p.id === 'host';
-          let nm = p.name || '?';
-          const roomFor = colW - 20 - (host ? 26 : 0);
-          while (nm.length > 1 && textWidth(nm, 1) > roomFor) nm = nm.slice(0, -1);
+          const hostTag = cols > 1 ? 'H' : 'HOST';
+          const roomFor = colW - 20 - (host ? textWidth(hostTag, 1) + 3 : 0);
+          const nm = fitText(p.name || '?', roomFor, 1);
           drawText(x, nm, {
             x: px2 + 12, y: py2, scale: 1,
             color: p.id === g.mp.view.selfId ? GOLD : GOLD_LT,
           });
           if (host) {
-            drawText(x, 'HOST', {
+            drawText(x, hostTag, {
               x: px2 + colW - 6, y: py2, scale: 1, align: 'right', color: JADE,
             });
           }
@@ -1614,7 +1598,7 @@ export const SCREENS = {
            it to — the label above and the roster below both own theirs — so
            it says as much as the gap actually holds. */
         const S = agents === 1 ? '' : 'S';
-        const free = (W - 30) - (30 + textWidth(`${n} ASHORE`, 1)) - 6;
+        const free = (W - 30) - (30 + textWidth(`${n}/10 ASHORE`, 1)) - 6;
         const label = [
           `${agents} ROGUE AGENT${S} AMONG YOU`,
           `${agents} ROGUE AGENT${S}`,
@@ -1622,31 +1606,28 @@ export const SCREENS = {
         ].find((c) => textWidth(c, 1) <= free);
         if (label) {
           drawText(x, label,
-            { x: W - 30, y: b.top + 62, scale: 1, align: 'right', color: RED });
+            { x: W - 30, y: b.top + (compact ? 24 : 62), scale: 1, align: 'right', color: RED });
         }
       }
 
       // [RELEASE] REMOVE BEFORE RELEASE — the 7226 workshop's badge.
-      if (g.mp.dev) {
+      if (g.mp.dev && !compact) {
         drawText(x, 'DEV MODE', { x: W - 14, y: b.top + 4, scale: 1, align: 'right', color: JADE });
       }
       if (g.isHost) {
         /* [RELEASE] REMOVE BEFORE RELEASE — `g.mp.dev ? 1 :` lets the workshop
            put to sea alone. The line should read `players.length >= 3`. */
         const can = players.length >= (g.mp.dev ? 1 : 3);
-        rows.push(...menuList(x, [can ? 'PUT TO SEA' : 'NEED 3 PLAYERS', 'ROUND SETTINGS'],
-          s.sel, W / 2, b.bottom - 40, t, { width: 150, gap: 15 }));
-        if (!can) drawText(x, 'THREE ASHORE AT LEAST, TEN AT MOST',
-          { x: W / 2, y: b.bottom - 52, scale: 1, align: 'center', color: DIM });
+        rows.push(...menuList(x, [{ label: can ? 'START ROUND' : `WAITING FOR ${3 - players.length} MORE`, disabled: !can }, 'ROUND SETTINGS'],
+          s.sel, W / 2, b.bottom - 40, t, { width: 170, gap: 15 }).map((row, i) => ({ ...row, lobbyAction: i })));
+        if (!can) fitLine(x, 'SHARE THE CODE TO BRING FRIENDS ASHORE', W / 2, b.bottom - 52, W - 40, { color: DIM });
       } else {
         // something that moves, so a wait does not look like a hang
         const dots = '.'.repeat(1 + (Math.floor(t * 1.6) % 3));
-        drawText(x, `WAITING FOR THE HOST${dots}`,
-          { x: W / 2, y: b.bottom - 22, scale: 1, align: 'center', color: JADE });
+        fitLine(x, `WAITING FOR THE HOST${dots}`, W / 2, b.bottom - 35, W - 40, { color: JADE });
+        rows.push({ ...pressButton(x, W / 2 - 72, b.bottom - 22, 144, 'VIEW ROUND SETTINGS'), settings: true });
       }
-      footer(x, W, H, g.isHost
-        ? 'C COPY   L LINK   ENTER PICK   ESC LEAVE'
-        : 'C COPY   L LINK   ESC LEAVE');
+      footer(x, W, H, 'C COPY   L INVITE   H HELP   ESC LEAVE');
       return rows;
     },
     /**
@@ -1661,23 +1642,21 @@ export const SCREENS = {
     _copy(s, g, what) {
       const code = g.mp.room || '';
       if (!code) { g.audio?.sfx('deny'); return; }
-      const text = what === 'link'
-        ? `${location.origin}${location.pathname}#${code}`
-        : code;
+      const text = what === 'link' ? roomInviteURL(code) : code;
 
       const ok = () => { s.copied = s.t; s.copiedWhat = what; g.audio?.sfx('confirm'); };
       const oldWay = () => {
+        let ta;
         try {
-          const ta = document.createElement('textarea');
+          ta = document.createElement('textarea');
           ta.value = text;
           ta.setAttribute('readonly', '');
           ta.style.cssText = 'position:fixed;top:-999px;opacity:0';
           document.body.appendChild(ta);
           ta.select();
-          const done = document.execCommand('copy');
-          document.body.removeChild(ta);
-          if (done) { ok(); return true; }
-        } catch (e) { /* fall through to saying it did not work */ }
+          if (document.execCommand('copy')) { ok(); return true; }
+        } catch { /* show the fallback below */ }
+        finally { ta?.remove(); }
         return false;
       };
 
@@ -1689,8 +1668,6 @@ export const SCREENS = {
             g.audio?.sfx('deny');
           }
         });
-        // assume it worked until told otherwise, so the press feels instant
-        ok();
         return;
       }
       if (!oldWay()) {
@@ -1700,28 +1677,30 @@ export const SCREENS = {
       }
     },
     key(code, s, g, st) {
-      if (code === 'Escape') { location.reload(); return true; }
+      if (code === 'Escape') { g.quitToTitle(); return true; }
+      if (code === 'KeyH') { st.push('mpGuide'); return true; }
       if (code === 'KeyC') { this._copy(s, g, 'code'); return true; }
       if (code === 'KeyL') { this._copy(s, g, 'link'); return true; }
-      if (!g.isHost) return true;
+      if (!g.isHost) {
+        if (code === 'Enter' || code === 'KeyE' || code === 'Space') st.push('mpSettings');
+        return true;
+      }
       if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % 2; g.audio?.sfx('select'); return true; }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
         if (s.sel === 1) { st.push('mpSettings'); return true; }
-        g.startMatch();
+        if (g.mp.view.players.size >= (g.mp.dev ? 1 : 3)) g.startMatch();
+        else g.audio?.sfx('deny');
       }
       return true;
     },
     click(row, i, s, g, st) {
       if (row?.copyCode) { this._copy(s, g, 'code'); return true; }
       if (row?.copyLink) { this._copy(s, g, 'link'); return true; }
-      /* The menu rows are no longer the first thing in the list — the two
-         copy buttons are — so they cannot be found by index any more. */
-      if (!g.isHost) return true;
-      const menuAt = i - 2;
-      if (menuAt === 1) { st.push('mpSettings'); return true; }
-      if (menuAt === 0) g.startMatch();
-      return true;
+      if (row?.settings) { st.push('mpSettings'); return true; }
+      if (!g.isHost || row?.lobbyAction === undefined) return true;
+      s.sel = row.lobbyAction;
+      return this.key('Enter', s, g, st);
     },
   },
 
@@ -1735,13 +1714,13 @@ export const SCREENS = {
   mpSettings: {
     init(s) { s.sel = s.sel || 0; },
     draw(x, W, H, s, g, t) {
-      const S2 = g.mp.host?.settings;
-      if (!S2) return [];
+      const S2 = g.mp.host?.settings || g.mp.view?.settings;
+      if (!S2) { frame(x, W, H, 'ROUND SETTINGS'); footer(x, W, H, 'WAITING FOR SETTINGS   ESC BACK'); return []; }
       const n = [...g.mp.view.players.values()].length;
       // the dial shows the unclamped automatic figure, not the effective one
       const auto = autoAgents(n);
 
-      const b = frame(x, W, H, 'ROUND SETTINGS');
+      const b = frame(x, W, H, g.mp.host ? 'ROUND SETTINGS' : 'HOST ROUND SETTINGS');
       const ROWS = SETTING_ROWS;
       const rows = [];
       /* Twelve pixels a row is nine rows plus a divider, which on a 180 tall
@@ -1761,20 +1740,19 @@ export const SCREENS = {
           x.fillRect(22, y - 2, W - 44, ROW + 1);
           x.fillStyle = GOLD; x.fillRect(22, y - 2, 2, ROW + 1);
         }
-        /* The name was pinned to 30 and the value to W - 30 with nothing
-           measured between them, so the long ones printed through each
-           other on a narrow frame. The value is the load-bearing half, so
-           the name is what gives. */
-        let nm = r.name;
-        const roomFor = W - 60 - textWidth(val, 1) - 6;
-        while (nm.length > 3 && textWidth(nm, 1) > roomFor) nm = nm.slice(0, -1);
-        if (nm !== r.name) nm = nm.slice(0, -1) + '.';
-        drawText(x, nm, { x: 30, y, scale: 1, color: on ? GOLD_LT : '#c9b98a' });
-        drawText(x, val, {
-          x: W - 30, y, scale: 1, align: 'right',
-          color: on ? GOLD : '#8a7a52',
-        });
-        rows.push({ x: 22, y: y - 2, w: W - 44, h: ROW, pick: i });
+        const editable = !!g.mp.host;
+        const valueRight = W - (editable ? 43 : 30);
+        const valueLeft = valueRight - textWidth(val, 1);
+        const nameWidth = valueLeft - 30 - (editable ? 16 : 6);
+        drawText(x, fitText(r.name, nameWidth, 1), { x: 30, y, scale: 1, color: on ? GOLD_LT : '#c9b98a' });
+        drawText(x, val, { x: valueRight, y, scale: 1, align: 'right', color: on ? GOLD : DIM });
+        if (editable) {
+          drawText(x, '<', { x: valueLeft - 11, y, scale: 1, color: on ? GOLD : DIM });
+          drawText(x, '>', { x: W - 30, y, scale: 1, color: on ? GOLD : DIM });
+          rows.push({ x: 22, y: y - 2, w: Math.max(1, valueLeft - 36), h: ROW, pick: i });
+          rows.push({ x: valueLeft - 14, y: y - 2, w: 12, h: ROW, pick: i, step: -1 });
+          rows.push({ x: valueLeft - 2, y: y - 2, w: W - 20 - (valueLeft - 2), h: ROW, pick: i, step: 1 });
+        } else rows.push({ x: 22, y: y - 2, w: W - 44, h: ROW, pick: i });
         y += ROW;
       });
 
@@ -1783,41 +1761,49 @@ export const SCREENS = {
          pixels a row the description was clipped to one. */
       const cur = ROWS[s.sel];
       x.fillStyle = '#5c3f1c'; x.fillRect(30, y + 2, W - 60, 1);
-      let by = y + 8;
-      for (const ln of wrapText(cur.blurb.toUpperCase(), W - 60, 1, 1)) {
-        if (by > b.bottom - 8) break;
-        drawText(x, ln, { x: 30, y: by, scale: 1, color: DIM });
-        by += 9;
-      }
+      const by = y + 8;
+      const lines = wrapText(cur.blurb.toUpperCase(), W - 60, 1, 1);
+      const visible = Math.max(1, Math.floor((b.bottom - 8 - by) / 9) + 1);
+      if (s.detailFor !== s.sel) { s.scroll = 0; s.detailFor = s.sel; }
+      scrollBar(x, s, lines.length, visible, W - 23, by, visible * 9);
+      lines.slice(s.scroll, s.scroll + visible).forEach((ln, i) => {
+        drawText(x, ln, { x: 30, y: by + i * 9, scale: 1, color: DIM });
+      });
 
-      footer(x, W, H, 'UP DOWN PICK   LEFT RIGHT CHANGE   ESC BACK TO THE BEACH');
+      footer(x, W, H, !g.mp.host ? 'UP DOWN READ   WHEEL SCROLL   ESC BACK'
+        : s.maxScroll ? 'UP DOWN PICK   <> CHANGE   WHEEL READ   ESC BACK'
+        : 'UP DOWN PICK   <> CHANGE   ESC BACK');
       return rows;
     },
+    wheel(dir, s) { return scrollKey(dir < 0 ? 'ArrowUp' : 'ArrowDown', s); },
     key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
+      if (['PageUp', 'PageDown', 'Home', 'End'].includes(code)) return scrollKey(code, s);
+      const ROWS = SETTING_ROWS;
+      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + ROWS.length - 1) % ROWS.length; g.audio?.sfx('select'); return true; }
+      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % ROWS.length; g.audio?.sfx('select'); return true; }
       const S2 = g.mp.host?.settings;
       if (!S2) return true;
-      const ROWS = SETTING_ROWS;
       /* The dials are mutated in place on the host's own object, and guests
          were handed settings exactly once, inside WELCOME. Anyone already on
          the beach when the host tuned the round went on playing by the
          defaults — their own client refusing kills the host would have
          allowed, or sending ones he silently drops. */
       const turn = (d) => { ROWS[s.sel].step(S2, d); g.mp.host?.pushSettings?.(); g.audio?.sfx('confirm'); return true; };
-      if (code === 'ArrowUp' || code === 'KeyW') { s.sel = (s.sel + ROWS.length - 1) % ROWS.length; g.audio?.sfx('select'); return true; }
-      if (code === 'ArrowDown' || code === 'KeyS') { s.sel = (s.sel + 1) % ROWS.length; g.audio?.sfx('select'); return true; }
       if (code === 'ArrowLeft' || code === 'KeyA') return turn(-1);
       if (code === 'ArrowRight' || code === 'KeyD'
         || code === 'Enter' || code === 'KeyE' || code === 'Space') return turn(1);
-      if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
       return true;
     },
     click(row, i, s, g) {
-      const S2 = g.mp.host?.settings;
-      if (!S2 || row?.pick === undefined) return true;
-      if (row.pick !== s.sel) { s.sel = row.pick; g.audio?.sfx('select'); return true; }
-      SETTING_ROWS[s.sel].step(S2, 1);
-      g.mp.host?.pushSettings?.();
-      g.audio?.sfx('confirm');
+      if (row?.pick === undefined) return true;
+      s.sel = row.pick;
+      const settings = g.mp.host?.settings;
+      if (settings && row.step) {
+        SETTING_ROWS[s.sel].step(settings, row.step);
+        g.mp.host?.pushSettings?.();
+        g.audio?.sfx('confirm');
+      } else g.audio?.sfx('select');
       return true;
     },
   },
@@ -1965,7 +1951,7 @@ export const SCREENS = {
     /* Only while the chat box is open: there space is a letter, and
        everywhere else on this screen it is a vote. */
     typing: (s) => s.talking,
-    init(s) { s.sel = 0; s.selId = null; s.typing = ''; s.talking = false; s.cast = null; s.stampT = 0; },
+    init(s) { s.sel = 0; s.selId = 'skip'; s.typing = ''; s.talking = false; s.cast = null; s.stampT = 0; s.chatScroll = 0; },
     /* The stamp's overshoot used to count itself up inside draw, a fixed
        step a frame, which made it land faster the faster the monitor. */
     tick(s, g, dt) {
@@ -2043,7 +2029,7 @@ export const SCREENS = {
       const ROW = Math.min(10, Math.max(8, Math.floor((BTN_TOP - 3 - 42) / ROWS)));
       let y = 42;
       const rows = [];
-      const canPick = g.amAlive && !s.cast;
+      const canPick = g.amAlive && !s.cast && left > 0;
 
       const line = (id, label, swatch, dead, tag, tagCol) => {
         const idx = s.targets.indexOf(id);
@@ -2061,7 +2047,7 @@ export const SCREENS = {
         drawText(x, shown, { x: LX + 14, y, scale: 1,
           color: dead ? '#6a6a6a' : (on ? GOLD_LT : '#c9b98a') });
         if (tag) drawText(x, tag, { x: LX + LW - 4, y, scale: 1, align: 'right', color: tagCol });
-        if (idx >= 0 && canPick) rows[idx] = { x: LX, y: y - 1, w: LW, h: ROW, pick: idx };
+        if (idx >= 0 && canPick) rows[idx] = { x: LX, y: y - 1, w: LW, h: ROW, pick: idx, targetId: id };
         y += ROW;
       };
 
@@ -2082,12 +2068,12 @@ export const SCREENS = {
       /* one button, and it says who it is for */
       y = Math.min(y + 3, BTN_TOP);
       if (!g.amAlive) {
-        drawText(x, 'THE DEAD DO NOT VOTE', { x: LX, y, scale: 1, color: '#6a6a6a' });
+        fitLine(x, 'GHOST - NO VOTE', LX + LW / 2, y, LW - 6, { color: '#8fb0c8' });
       } else if (s.cast) {
         const who = s.cast === 'skip' ? 'NOBODY'
           : (players.find((p) => p.id === s.cast)?.name || '?');
         const k = Math.min(1, s.stampT / 0.2);
-        const over = 1 + (1 - k) * 0.3;
+        const over = 1 + (1 - k) * 0.08;
         x.save();
         x.translate(LX + LW / 2, y + 8); x.scale(over, over); x.translate(-(LX + LW / 2), -(y + 8));
         x.fillStyle = '#12301f'; x.fillRect(LX, y, LW, 17);
@@ -2102,14 +2088,14 @@ export const SCREENS = {
       } else {
         const who = s.targets[s.sel] === 'skip' ? 'NOBODY'
           : (players.find((p) => p.id === s.targets[s.sel])?.name || '?');
-        let lbl = `ENTER  VOTE ${who}`;
+        let lbl = s.voteErr ? 'PICK AGAIN' : left <= 0 ? 'VOTING CLOSED' : `VOTE ${who}`;
         while (lbl.length > 8 && textWidth(lbl, 1) > LW - 10) lbl = lbl.slice(0, -1);
         x.fillStyle = '#2a0a08'; x.fillRect(LX, y, LW, 13);
         x.fillStyle = RED;
         x.fillRect(LX, y, LW, 1); x.fillRect(LX, y + 12, LW, 1);
         x.fillRect(LX, y, 1, 13); x.fillRect(LX + LW - 1, y, 1, 13);
         drawText(x, lbl, { x: LX + LW / 2, y: y + 3, scale: 1, align: 'center', color: '#ffd8ce' });
-        rows.push({ x: LX, y, w: LW, h: 13, vote: true });
+        if (left > 0) rows.push({ x: LX, y, w: LW, h: 13, vote: true });
       }
 
       /* chat, alongside — not before */
@@ -2121,21 +2107,38 @@ export const SCREENS = {
       x.fillRect(cx, ctop, cw, 1); x.fillRect(cx, cbot - 1, cw, 1);
       x.fillRect(cx, ctop, 1, cbot - ctop); x.fillRect(cx + cw - 1, ctop, 1, cbot - ctop);
 
-      const lines = [];
-      for (const m of g.mp.chat.slice(-16)) {
-        wrapText(`${m.from}: ${m.text}`, cw - 7, 1, 1).forEach((ln, i) => lines.push({
-          ln, kind: m.kind, from: i === 0 ? m.from : null, colour: m.colour,
-        }));
+      const messages = g.mp.chat || [];
+      const messageLines = (m) => [
+        { ln: fitText(m.from || '?', cw - 15, 1) + ':', kind: m.kind, sender: true, colour: m.colour },
+        ...wrapText(m.text || '', cw - 10, 1, 1).map((ln) => ({ ln, kind: m.kind })),
+      ];
+      const lines = messages.flatMap(messageLines);
+      // Keep the text under the reader's eyes when a new message arrives.
+      const previous = messages.indexOf(s.chatLast);
+      if (s.chatScroll > 0 && previous >= 0) {
+        s.chatScroll += messages.slice(previous + 1).reduce((n, m) => n + messageLines(m).length, 0);
       }
-      const fit = Math.floor((cbot - ctop - 5) / 8);
-      let cy = ctop + 3;
-      for (const l of lines.slice(-fit)) {
-        drawText(x, l.ln, { x: cx + 3, y: cy, scale: 1, color: l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT });
-        if (l.from) drawText(x, l.from + ':', { x: cx + 3, y: cy, scale: 1, color: colourOf(l.colour) });
+      s.chatLast = messages[messages.length - 1];
+      const chatY = ctop + 13;
+      const fit = Math.max(1, Math.floor((cbot - chatY - 3) / 8));
+      s.chatVisible = fit;
+      s.chatMax = Math.max(0, lines.length - fit);
+      s.chatScroll = THREE_CLAMP(s.chatScroll || 0, 0, s.chatMax);
+      const chatHead = s.chatScroll ? 'OLDER - END: LIVE' : g.amAlive ? 'COUNCIL CHAT' : 'GHOST CHAT ONLY';
+      fitLine(x, chatHead, cx + cw / 2, ctop + 3, cw - 8, { color: s.chatScroll ? GOLD : DIM });
+      const end = lines.length - s.chatScroll;
+      let cy = chatY;
+      for (const l of lines.slice(Math.max(0, end - fit), end)) {
+        drawText(x, l.ln, { x: cx + 3, y: cy, scale: 1,
+          color: l.sender ? colourOf(l.colour) : l.kind === 'ghost' ? '#8fb0c8' : GOLD_LT });
         cy += 8;
       }
-      if (!lines.length) {
-        drawText(x, 'NOBODY HAS SPOKEN YET', { x: cx + cw / 2, y: ctop + 6, scale: 1, align: 'center', color: '#4a3f2a' });
+      if (!lines.length) fitLine(x, 'T TO TALK', cx + cw / 2, chatY + 6, cw - 8, { color: '#8a7a52' });
+      if (s.chatMax) {
+        const trackY = chatY, trackH = cbot - trackY - 3;
+        const thumbH = Math.max(3, Math.round(trackH * fit / lines.length));
+        const thumbY = trackY + Math.round((trackH - thumbH) * (1 - s.chatScroll / s.chatMax));
+        x.fillStyle = GOLD_DK; x.fillRect(cx + cw - 3, thumbY, 1, thumbH);
       }
 
       field(x, cx, H - 31, cw, 11, s.talking);
@@ -2160,73 +2163,83 @@ export const SCREENS = {
          its two-row fallback — and the second row lands at H - 26, straight
          across the chat field at H - 31. This is the only screen with
          anything that low, so the hint gives way rather than the field. */
-      footer(x, W, H, s.talking ? 'ENTER SENDS   ESC STOPS TYPING'
-        : (s.cast ? 'YOUR VOTE IS IN   T TALKS'
-          : 'CLICK A NAME   ENTER VOTES   T TALKS'));
+      footer(x, W, H, s.talking ? `${s.typing.length}/60   ENTER SEND   ESC BACK`
+        : s.chatScroll ? 'WHEEL READ   END LATEST   T CHAT'
+        : !g.amAlive ? 'GHOST CHAT ONLY   T TALKS'
+        : s.cast ? 'VOTE SENT   WHEEL CHAT   T TALKS'
+        : 'CLICK SELECT   ENTER VOTE   T CHAT');
       return rows;
     },
 
     paste(text, s) {
       if (!s.talking) return false;
-      s.typing = (s.typing + String(text || '').toUpperCase().replace(/[^A-Z0-9 .,'?-]/g, '')).slice(0, 60);
+      s.typing = (s.typing + Array.from(String(text || '').replace(/\s/g, ' '), chatCharacter).join('')).slice(0, 60);
       return true;
     },
 
+    wheel(dir, s) {
+      s.chatScroll = THREE_CLAMP((s.chatScroll || 0) + (dir < 0 ? 1 : -1), 0, s.chatMax || 0);
+      return true;
+    },
     key(code, s, g, st, mods) {
+      if (code === 'PageUp' || code === 'PageDown' || code === 'Home' || code === 'End') {
+        s.chatScroll = code === 'Home' ? s.chatMax || 0 : code === 'End' ? 0
+          : THREE_CLAMP((s.chatScroll || 0) + (code === 'PageUp' ? 1 : -1) * (s.chatVisible || 1), 0, s.chatMax || 0);
+        return true;
+      }
       if (s.talking) {
-        if (code === 'Escape') { s.talking = false; s.typing = ''; return true; }
-        if (code === 'Enter' || code === 'NumpadEnter') {
-          if (s.typing.trim()) g.sendChat(s.typing.trim());
-          s.typing = ''; s.talking = false;
-          return true;
+        if (code === 'Escape') { s.talking = false; return true; }
+        if (code === 'Enter') {
+          if (s.typing.trim()) {
+            if (g.sendChat(s.typing.trim()) === false) return true;
+            s.typing = ''; s.chatScroll = 0;
+          }
+          s.talking = false; return true;
         }
-        if (code === 'Backspace') { s.typing = s.typing.slice(0, -1); return true; }
-        /* The layout's own character where there is one, the physical key
-           otherwise — on AZERTY the comma sits on the QWERTY M key, so
-           typing a comma into the council put an M in the message. */
-        const raw = mods && mods.ch;
+        if (code === 'Backspace' || code === 'Delete') { s.typing = code === 'Delete' ? '' : s.typing.slice(0, -1); return true; }
+        // Prefer the actual character, including punctuation on non-US
+        // keyboards, before falling back to the physical key position.
+        const raw = mods?.ch;
         const m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
-        const ch = (raw && /^[a-zA-Z0-9]$/.test(raw)) ? raw.toUpperCase() : (m ? m[1] : null);
-        if (ch && s.typing.length < 60) { s.typing += ch; return true; }
-        const punct = { Space: ' ', Period: '.', Comma: ',', Slash: '?', Minus: '-', Quote: "'" };
-        const p = (raw && /^[ .,'?-]$/.test(raw)) ? raw : punct[code];
-        if (p && s.typing.length < 60) { s.typing += p; return true; }
+        const punct = { Space: ' ', Period: '.', Comma: ',', Slash: '/', Minus: '-', Quote: "'", Semicolon: ';', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\' };
+        const ch = raw != null ? chatCharacter(raw) : m?.[1] || punct[code];
+        if (ch && s.typing.length < 60) s.typing += ch;
         return true;
       }
       if (code === 'KeyT') { s.talking = true; return true; }
       if (code === 'ArrowUp' || code === 'ArrowDown' || code === 'KeyW' || code === 'KeyS') {
-        const n2 = s.targets?.length || 1;
-        s.sel = (s.sel + ((code === 'ArrowUp' || code === 'KeyW') ? n2 - 1 : 1)) % n2;
-        s.selId = s.targets?.[s.sel] ?? null;
-        g.audio?.sfx('select');
-        return true;
+        const n = s.targets?.length || 1;
+        s.sel = (s.sel + ((code === 'ArrowUp' || code === 'KeyW') ? n - 1 : 1)) % n;
+        s.selId = s.targets?.[s.sel] ?? 'skip'; s.voteErr = false;
+        g.audio?.sfx('select'); return true;
       }
-      if (code === 'Enter' || code === 'NumpadEnter' || code === 'KeyE' || code === 'Space') {
-        if (!g.amAlive || s.cast) return true;
-        s.cast = s.targets?.[s.sel] || 'skip';
-        s.stampT = 0;
-        g.sendVote(s.cast);
-        return true;
-      }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') return this._vote(s, g);
       return true;
     },
-
-    /** Click a name to pick it, click it again (or the button) to send it. */
+    _vote(s, g) {
+      if (!g.amAlive || s.cast || g.mp.view.votes?.voted?.includes(g.mp.view.selfId)) return true;
+      if (g.mp.view.phaseEndsAt && g.mp.view.phaseEndsAt <= performance.now() / 1000) return true;
+      const target = s.selId || 'skip';
+      if (target !== 'skip') {
+        const p = g.mp.view.players.get(target);
+        if (!p || p.alive === false) {
+          s.selId = 'skip'; s.voteErr = true; g.audio?.sfx('deny'); return true;
+        }
+      }
+      // Commit before sending: the host's local loopback may synchronously
+      // finish the council and replace this very screen.
+      s.cast = target; s.stampT = 0;
+      if (g.sendVote(target) === false) s.cast = null;
+      return true;
+    },
     click(row, i, s, g) {
       if (row?.talk) { s.talking = true; return true; }
       if (!g.amAlive || s.cast) return true;
-      if (row?.vote) {
-        s.cast = s.targets?.[s.sel] || 'skip';
-        s.stampT = 0;
-        g.sendVote(s.cast);
-        return true;
-      }
-      if (row?.pick !== undefined) {
-        if (row.pick === s.sel) {
-          s.cast = s.targets[s.sel];
-          s.stampT = 0;
-          g.sendVote(s.cast);
-        } else { s.sel = row.pick; s.selId = s.targets?.[s.sel] ?? null; g.audio?.sfx('select'); }
+      if (row?.vote) { s.talking = false; return this._vote(s, g); }
+      if (row?.targetId !== undefined) {
+        s.selId = row.targetId;
+        s.sel = s.targets?.indexOf(row.targetId) ?? 0;
+        s.talking = false; s.voteErr = false; g.audio?.sfx('select');
       }
       return true;
     },
@@ -3831,7 +3844,9 @@ export const SCREENS = {
        tick and 'bet' has nothing staked yet. */
     discard(s, g) {
       const BJ = g.bjRules;
-      if (BJ && s.st && s.phase !== 'bet' && s.phase !== 'paid') g.bjSettle?.(BJ.staked(s.st));
+      if (BJ && s.st && s.phase !== 'bet' && s.phase !== 'paid') {
+        const refund = BJ.staked(s.st); s.phase = 'paid'; g.bjSettle?.(refund);
+      }
     },
     key(code, s, g, st2) {
       const BJ = g.bjRules;
@@ -4186,6 +4201,7 @@ export const SCREENS = {
       s.flash = 0;
       s.wipe = 0;             // the shutter, 1 down to 0 up
       s.wipeTo = null;
+      s.feedbackT = 0;
     },
     /** The shutter comes down, the side changes behind it, and it goes up. */
     tick(s, g, dt) {
@@ -4193,6 +4209,7 @@ export const SCREENS = {
          went faster the faster the monitor. It is decayed here — above the
          shutter check, or it would only ever run while the shutter moved. */
       if (s.flash > 0) s.flash = Math.max(0, s.flash - dt);
+      s.feedbackT = Math.max(0, (s.feedbackT || 0) - dt);
       if (!s.wipe) return;
       s.wipe = Math.max(0, s.wipe - dt * 1.5);
       if (s.wipeTo !== null && s.wipe <= 0.5) {
@@ -4609,7 +4626,7 @@ export const SCREENS = {
       }
 
       // the counter itself: price and the buy key
-      const owned = d && g.hasItem?.(d.id);
+      const owned = d && d.tag === 'PASSIVE' && g.hasItem?.(d.id);
       const dPrice2 = d ? (g.priceOf ? g.priceOf(d.id) : d.cost) : 0;
       const afford = d && (g.coins || 0) >= dPrice2;
       /* Every channel on the relay is already spoken for. The buy guard has
@@ -4625,6 +4642,7 @@ export const SCREENS = {
         label = owned && d.tag === 'PASSIVE' ? 'YOURS'
           : (full ? 'FULL' : (afford ? `E BUY ${dPrice2}` : 'NO COIN'));
       }
+      if (s.feedbackT > 0 && s.feedbackId === d?.id) label = s.feedback;
       pressButton(x, bx, byy, bw, label, {
         hit: s.flash / 0.3, enabled: afford && !owned && !full, accent,
         fill: black ? '#3a0e0b' : '#3a2a10',
@@ -4793,8 +4811,16 @@ export const SCREENS = {
       }
       if (code === 'Enter' || code === 'KeyE' || code === 'Space') {
         menuFlash();
-        if (list[s.sel] && g.buyItem(list[s.sel].id)) {
-          s.flash = 0.3;
+        const item = list[s.sel];
+        if (item) {
+          const bought = g.buyItem(item.id);
+          if (bought) s.flash = 0.3;
+          s.feedback = bought ? 'BOUGHT' : 'CANNOT BUY';
+          if (!bought && item.tag === 'PASSIVE' && g.hasItem?.(item.id)) s.feedback = 'YOURS';
+          else if (!bought && item.id === 'camera' && (g.camsSpare?.() ?? 1) <= 0) s.feedback = 'RELAY FULL';
+          else if (!bought && (g.coins || 0) < (g.priceOf?.(item.id) ?? item.cost)) s.feedback = 'NEED COINS';
+          s.feedbackId = item.id;
+          s.feedbackT = 2;
         }
         return true;
       }
@@ -4809,6 +4835,7 @@ export const SCREENS = {
       }
       return true;
     },
+    wheel(dir, s, g, st) { return this.key(dir < 0 ? 'ArrowUp' : 'ArrowDown', s, g, st); },
   },
 
   /* ---------------- CATHY'S STALL ---------------- */
@@ -6848,6 +6875,7 @@ export const SCREENS = {
 
   /* ---------------- A CHORE THAT IS ACTUALLY A TASK ---------------- */
   mpMinigame: {
+    discard(s) { clearTimeout(s._soundTimer); clearTimeout(s._closeTimer); },
     init(s, g) {
       const G = MINIGAMES[s.game];
       s.rng = mulberryLocal((s.seed || 1) * 2654435761);
@@ -6862,7 +6890,7 @@ export const SCREENS = {
 
       const b = frame(x, W, H, s.title || G?.name || 'WORK',
         s.hard ? 'STORM DAMAGE - THIS ONE IS WORSE' : null);
-      if (!G) { footer(x, W, H, 'ESC'); return []; }
+      if (!G) { fitLine(x, 'THIS TASK IS UNAVAILABLE', W / 2, H / 2, W - 40, { color: RED }); footer(x, W, H, 'ESC RETURN TO ISLAND'); return []; }
 
       let rows = [];
       if (!s.done) {
@@ -6969,6 +6997,7 @@ export const SCREENS = {
       return true;
     },
     _win(s, g, st) {
+      if (s.done) return;
       s.done = true;
       s.doneT = 0;
       s._spark = null;
@@ -6979,14 +7008,14 @@ export const SCREENS = {
          left the soundtrack near-silent from the first chore onwards. */
       g.audio?.sfx('confirm');
       g.audio?.sfx('gemHit');
-      setTimeout(() => g.audio?.sfx('victory'), 90);
+      s._soundTimer = setTimeout(() => { if (st.top === s) g.audio?.sfx('victory'); }, 90);
       /* The work is banked here, not when the card comes down. A body
          reported inside those 620ms had the host in COUNCIL by the time
          DO_TASK arrived and it was dropped, so the chore was played and
          lost with nothing said about it. The timer only owns the card. */
       g.finishMinigame?.(s.taskId);
-      setTimeout(() => {
-        if (st.name === 'mpMinigame') { st.pop(); g.afterOverlayClose(); }
+      s._closeTimer = setTimeout(() => {
+        if (st.top === s) { st.pop(); g.afterOverlayClose(); }
       }, 620);
     },
   },
@@ -7629,13 +7658,21 @@ export const SCREENS = {
       ditherRect(x, 0, 0, W, H, win ? '#04120c' : '#160404', win ? '#071c12' : '#200707', 0.5, 2);
       for (let y = 0; y < H; y += 2) { x.fillStyle = 'rgba(0,0,0,.42)'; x.fillRect(0, y, W, 1); }
 
-      drawText(x, s.winner ? (win ? 'THE CASTAWAYS' : 'THE ROGUE AGENTS') : 'GAME OVER', {
-        x: W / 2, y: 22, scale: 2, align: 'center', color: win ? '#8fe8c8' : '#ff6a5a',
+      drawText(x, s.winner ? (win ? 'THE CASTAWAYS' : 'THE ROGUE AGENTS') : 'ROOM CLOSED', {
+        x: W / 2, y: 14, scale: 2, align: 'center', color: s.winner ? (win ? '#8fe8c8' : '#ff6a5a') : GOLD,
       });
-      if (s.winner) drawText(x, 'WIN', { x: W / 2, y: 42, scale: 2, align: 'center', color: GOLD });
+      if (s.winner) drawText(x, 'WIN', { x: W / 2, y: 34, scale: 2, align: 'center', color: GOLD });
       x.fillStyle = win ? '#2f6a5c' : '#8a2018';
-      x.fillRect(W / 2 - 80, 62, 160, 1);
-      drawText(x, s.reason || '', { x: W / 2, y: 68, scale: 1, align: 'center', color: GOLD_LT });
+      x.fillRect(W / 2 - 80, 54, 160, 1);
+      const reason = wrapText(s.reason || '', W - 36, 1, 1);
+      const reasonCapacity = s.winner ? 2 : Math.max(1, Math.floor((H - 95) / 9));
+      if (reason.length > reasonCapacity) reason[reasonCapacity - 1] = fitText(reason.slice(reasonCapacity - 1).join(' '), W - 36, 1);
+      reason.slice(0, reasonCapacity).forEach((ln, i) => {
+        drawText(x, ln, { x: W / 2, y: 60 + i * 9, scale: 1, align: 'center', color: GOLD_LT });
+      });
+      if (!s.winner) {
+        return menuList(x, ['RETURN TO TITLE'], 0, W / 2, H - 35, t, { width: 160 });
+      }
 
       /* Everybody's role, revealed. Half the fun of losing is finding out
          how close you were. */
@@ -7648,47 +7685,49 @@ export const SCREENS = {
          it spills into a second column, and a roster that still will not fit
          says how many it is not showing. */
       const bottom = H - 52;                     // the first pixel the menu owns
-      const top = (bottom - 86) >= players.length * 10 ? 86 : 78;
+      const top = (bottom - 86) >= players.length * 10 ? 86 : 80;
       const step = (bottom - top) >= players.length * 10 ? 10 : 9;
       const perCol = Math.max(1, Math.floor((bottom - top) / step));
       const cols = Math.min(2, Math.max(1, Math.ceil(players.length / perCol)));
-      const colW = Math.min(184, Math.floor((W - 12) / cols));
+      const colW = Math.min(198, Math.floor((W - 12) / cols));
       const wide = cols === 1;
       const x0 = Math.round(W / 2 - (cols * colW) / 2);
+      const roleW = textWidth(wide ? 'ROGUE AGENT' : 'ROGUE', 1);
+      const lifeW = wide ? textWidth('ALIVE', 1) : 0;
+      const gap = 6;
       players.slice(0, perCol * cols).forEach((p, i) => {
-        /* Keyed by id: nothing stops two players seating themselves under
-           the same name, and on the one screen whose job is saying who was
-           lying, matching by name convicts the innocent one of the pair.
-           S.OVER carries ids now, so the name is never consulted. */
+        // Match roles by id, so duplicate names cannot convict the wrong player.
         const wasAgent = agents.has(p.id);
         const dead = p.alive === false;
         const lx = x0 + Math.floor(i / perCol) * colW;
         const y = top + (i % perCol) * step;
         x.fillStyle = colourOf(p.colour); x.fillRect(lx, y, 7, 7);
-        let nm = p.name || '?';
-        const room = (wide ? 88 : colW - 36) - 14;
-        while (nm.length > 1 && textWidth(nm, 1) > room) nm = nm.slice(0, -1);
-        drawText(x, nm, {
-          x: lx + 12, y, scale: 1, color: (dead && !wide) ? '#6a5c40' : GOLD_LT,
+        // Reserve the widest role and status before measuring the name.
+        // The old constants left ROGUE AGENT touching ALIVE at 320x180.
+        const right = lx + colW - gap;
+        const lifeLeft = right - lifeW;
+        const roleLeft = (wide ? lifeLeft - gap : right) - roleW;
+        const nameLeft = lx + 12;
+        drawText(x, fitText(p.name || '?', roleLeft - gap - nameLeft, 1), {
+          x: nameLeft, y, scale: 1, color: (dead && !wide) ? '#6a5c40' : GOLD_LT,
         });
-        drawText(x, wide ? (wasAgent ? 'ROGUE AGENT' : 'CASTAWAY')
-          : (wasAgent ? 'ROGUE' : 'CREW'), {
-          x: wide ? lx + 88 : lx + colW - 2, y, scale: 1,
-          align: wide ? 'left' : 'right',
-          color: wasAgent ? '#ff6a5a' : '#8fb0c8',
+        drawText(x, wide ? (wasAgent ? 'ROGUE AGENT' : 'CASTAWAY') : (wasAgent ? 'ROGUE' : 'CREW'), {
+          x: roleLeft, y, scale: 1, color: wasAgent ? '#ff6a5a' : '#8fb0c8',
         });
-        // a narrow column has no room for the word; the dimmed name says LOST
-        if (wide) {
-          drawText(x, dead ? 'LOST' : 'ALIVE', {
-            x: lx + colW, y, scale: 1, align: 'right',
-            color: dead ? '#6a5c40' : JADE,
-          });
-        }
+        // Narrow columns retain every player; dim names denote the lost.
+        if (wide) drawText(x, dead ? 'LOST' : 'ALIVE', {
+          x: lifeLeft, y, scale: 1, color: dead ? '#6a5c40' : JADE,
+        });
       });
       if (players.length > perCol * cols) {
         drawText(x, `+${players.length - perCol * cols} MORE`, {
           x: W / 2, y: bottom - 9, scale: 1, align: 'center', color: DIM,
         });
+      }
+
+      if (roomClosed(g)) {
+        fitLine(x, 'HOST LEFT - ROOM CLOSED', W / 2, H - 12, W - 30, { color: DIM });
+        return menuList(x, ['RETURN TO TITLE'], 0, W / 2, H - 35, t, { width: 160 });
       }
 
       /* Another round without losing the lobby.
@@ -7712,10 +7751,10 @@ export const SCREENS = {
       return rows;
     },
     key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') { g.quitToTitle(); return true; }
+      if (!s.winner || roomClosed(g)) return nav(code, s, 1, () => g.quitToTitle(), null, g);
       return nav(code, s, 2, (i) => {
         if (i === 0) { g.playAgain(); if (!g.mp?.host) s.waited = performance.now() / 1000; }
-        // a reload is the thing the card above exists to avoid: the island
-        // regenerates and everybody types the room code in again
         else g.quitToTitle();
       }, null, g);
     },
@@ -7724,147 +7763,114 @@ export const SCREENS = {
   /* ---------------- TITLE ---------------- */
   title: {
     draw(x, W, H, s, g, t) {
-      // the idol renders behind; scrim only the left third
       x.drawImage(titleScrim(W, H), 0, 0);
       x.fillStyle = 'rgba(0,0,0,.30)';
       for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
-
       const L = 14;
-      /* The whole left column was written against a 224 tall buffer while the
-         captions below are pinned to H, so at the 180 setting the fourth menu
-         row fell off the bottom and the SHIFT+ENTER hint printed straight
-         through CONTROLS. The captions cannot move — they belong to the foot
-         of the screen — so the head of it gives instead. */
       const tight = H < 200;
       const ts = tight ? 3 : 4;
       const yRule = tight ? 72 : 106;
       const rw = 27 * ts;
-      drawText(x, 'THE LEGEND OF', { x: L, y: tight ? 14 : 30, scale: 1, color: DIM });
+      drawText(x, 'CASTAWAYS ONLINE', { x: L, y: tight ? 14 : 30, scale: 1, color: DIM });
       drawText(x, 'ILLIC', { x: L, y: tight ? 24 : 42, scale: ts, color: GOLD_LT });
       drawText(x, 'ISLE', { x: L, y: tight ? 46 : 74, scale: ts, color: GOLD });
-      // rule
       x.fillStyle = GOLD_DK; x.fillRect(L, yRule, rw, 2);
       x.fillStyle = GOLD; x.fillRect(L + rw, yRule - 1, 4, 4);
-      drawText(x, 'THE IDOL OF ILLIC ISLE', { x: L, y: tight ? 78 : 114, scale: 1, color: GOLD });
-
-      const rows = menuList(x, ['PLAY', 'CONTROLS', 'OPTIONS', 'THE LEGEND'],
-        s.sel, L + 66, tight ? 96 : 136, t, { width: 132 });
+      drawText(x, '3-10 PLAYERS. TRUST NOBODY.', { x: L, y: tight ? 78 : 114, scale: 1, color: GOLD });
+      const rows = menuList(x, ['PLAY ONLINE', 'HOW TO PLAY', 'CONTROLS', 'OPTIONS'],
+        s.sel, L + 76, tight ? 100 : 137, t, { width: 152, gap: tight ? 13 : 15 });
       drawText(x, '(C) 1998 SCHWAB TECHNOLOGY', { x: L, y: H - 22, scale: 1, color: '#6a5c40' });
       if (Math.floor(t * 1.5) % 2 === 0) {
-        drawText(x, 'PRESS ENTER', { x: L, y: H - 13, scale: 1, color: GOLD });
-      }
-      /* The castaway story is still in here, but it is not the front door
-         any more. Holding shift on PLAY takes you to it, and the hint only
-         appears once you are sitting on PLAY. */
-      if (s.sel === 0) {
-        drawText(x, 'SHIFT+ENTER  THE OLD STORY', {
-          x: L, y: H - 32, scale: 1,
-          color: Math.floor(t * 2) % 2 ? '#6a5c40' : '#4a4030',
-        });
+        drawText(x, 'CLICK OR PRESS ENTER', { x: L, y: H - 13, scale: 1, color: GOLD });
       }
       return rows;
     },
-    key(code, s, g, st, mods) {
-      /* PLAY is Castaways. That is the game now; the single-player hunt for
-         the Idol is the thing that was here first and it is kept on a key
-         combination rather than given half the front page. */
-      if ((code === 'Enter' || code === 'KeyE' || code === 'Space') && s.sel === 0
-          && mods && mods.shift) {
-        menuFlash();
-        g.screens.clear();
-        g.beginGame();
-        return true;
-      }
+    key(code, s, g, st) {
       return nav(code, s, 4, (i) => {
-        if (i === 0) g.screens.replace('mpMenu');
-        else if (i === 1) g.screens.push('controls');
-        else if (i === 2) g.screens.push('options');
-        else g.screens.push('lore');
+        if (i === 0) st.replace('mpMenu');
+        else st.push(['', 'mpGuide', 'controls', 'options'][i]);
       }, null, g);
     },
   },
 
-  /* ---------------- THE LEGEND (lore codex) ---------------- */
-  lore: {
-    init(s, g) { s.page = 0; },
-    draw(x, W, H, s, g, t) {
-      const L = LORE_PAGES[s.page];
-      const b = frame(x, W, H, 'THE LEGEND', `${s.page + 1} / ${LORE_PAGES.length}`);
-      drawText(x, L.title, { x: W / 2, y: b.top + 2, scale: 1, align: 'center', color: GOLD });
-      /* Every page is written with paragraph breaks in it, and handing the
-         whole string to wrapText — which splits on any whitespace — ran them
-         into one block. The journal and the reader both split first. */
-      let y = b.top + 16;
-      // how far right the copy reaches across the rows the icon would sit in
-      let bandMax = 0;
-      const bandTop = b.bottom - 44, bandBot = b.bottom - 12;
-      for (const para of String(L.text).split('\n')) {
-        if (!para.trim()) { y += 5; continue; }
-        for (const ln of wrapText(para, W - 44, 1, 1)) {
-          drawText(x, ln, { x: 22, y, scale: 1, color: GOLD_LT });
-          if (y >= bandTop && y <= bandBot) bandMax = Math.max(bandMax, 22 + textWidth(ln, 1, 1));
-          y += 9;
-        }
-      }
-      /* The icon is drawn over the top of the copy, so on a narrow frame it
-         sat on the tail of it. It is decoration: it gives way only where a
-         line really does reach into its column, not merely where the page
-         is long — the copy is left-aligned and usually nowhere near it. */
-      if (L.icon && bandMax < W - 54) {
-        drawRelicIcon(x, L.icon, W - 52, b.bottom - 44, 32, Math.sin(t * 2) * 0.4);
-      }
-      footer(x, W, H, '< > TURN PAGE   ESC BACK');
-      return [];
+  /* A short, reusable guide available before joining and while waiting. */
+  mpGuide: {
+    init(s) { s.page = 0; },
+    draw(x, W, H, s) {
+      const page = ONLINE_GUIDE[s.page];
+      const b = frame(x, W, H, 'HOW TO PLAY', `${s.page + 1} / ${ONLINE_GUIDE.length}  ${page.title}`);
+      const top = b.top + 5;
+      const lines = proseLines(page.text, W - 48);
+      const visible = Math.max(1, Math.floor((b.bottom - top - 13) / 9));
+      scrollBar(x, s, lines.length, visible, W - 22, top, visible * 9);
+      lines.slice(s.scroll, s.scroll + visible).forEach((ln, i) => {
+        drawText(x, ln, { x: 24, y: top + i * 9, scale: 1, color: GOLD_LT });
+      });
+      const rows = [
+        { ...pressButton(x, 22, H - 39, 60, '< PREV'), page: -1 },
+        { ...pressButton(x, W - 82, H - 39, 60, 'NEXT >'), page: 1 },
+      ];
+      footer(x, W, H, s.maxScroll ? '< > PAGE   WHEEL READ   ESC BACK' : '< > PAGE   ESC BACK');
+      return rows;
     },
+    wheel(dir, s) { return scrollKey(dir < 0 ? 'ArrowUp' : 'ArrowDown', s); },
     key(code, s, g, st) {
-      if (code === 'ArrowLeft' || code === 'KeyA') { s.page = (s.page + LORE_PAGES.length - 1) % LORE_PAGES.length; return true; }
-      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Enter' || code === 'KeyE') {
-        s.page = (s.page + 1) % LORE_PAGES.length; return true;
-      }
-      if (code === 'Escape' || code === 'Tab') { st.pop(); return true; }
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
+      if (scrollKey(code, s)) return true;
+      let d = 0;
+      if (code === 'ArrowLeft' || code === 'KeyA') d = -1;
+      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Enter' || code === 'Space') d = 1;
+      if (d) { s.page = (s.page + d + ONLINE_GUIDE.length) % ONLINE_GUIDE.length; s.scroll = 0; g.audio?.sfx('page'); }
       return true;
     },
+    click(row, i, s, g, st) { return this.key(row.page < 0 ? 'ArrowLeft' : 'ArrowRight', s, g, st); },
   },
 
   /* ---------------- CONTROLS ---------------- */
   controls: {
-    draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, 'CONTROLS');
-      /* The pause menu offers this page in both modes, and it only ever
-         described the single-player one — it promised a coconut throw
-         Castaways refuses and a journal that opens the chart instead, and
-         named none of the keys the mode adds. Values stay short because
-         they start at W/2 + 8 and the narrowest frame is 240 wide. */
-      const mp = !!g.mp?.active;
-      const rows = mp ? [
-        ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
-        ['SPACE', 'JUMP'], ['E', 'WORK / USE'], ['CLICK', 'REACH OR FIRE'],
-        ['F', 'KNIFE / FLARE'], ['Q', 'SABOTAGE'], ['G', 'DRAW PISTOL'],
-        ['1-9', 'THE BELT'], ['V', 'SET A CAMERA'], ['M / TAB', 'THE CHART'],
-        ['C', 'VIEW'], ['ESC', 'PAUSE'],
-      ] : [
-        ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
-        ['SPACE', 'JUMP'], ['E', 'INTERACT'], ['CLICK', 'THROW COCONUT'],
-        ['M / F', 'MAP'], ['TAB', 'JOURNAL'], ['C', 'VIEW'], ['ESC', 'PAUSE'],
+    init(s) { s.page = 0; },
+    draw(x, W, H, s) {
+      const pages = [
+        { title: 'ON THE ISLAND', rows: [
+          ['W A S D', 'MOVE'], ['MOUSE', 'LOOK'], ['SHIFT', 'SPRINT'],
+          ['SPACE', 'JUMP'], ['E / HOLD E', 'WORK / USE'], ['CLICK', 'REACH / FIRE'],
+          ['M / TAB', 'MAP + JOBS'], ['C', 'CAMERA VIEW'], ['ESC', 'PAUSE'],
+        ] },
+        { title: 'GEAR AND ROLES', rows: [
+          ['F', 'KNIFE / FLARE'], ['Q', 'SABOTAGE'], ['G', 'DRAW PISTOL'],
+          ['1-9', 'USE BELT ITEM'], ['V', 'SET A CAMERA'], ['B', 'SCAN NEXT'],
+          ['N', 'LAST RECEIPT'], ['F (GHOST)', 'FOLLOW PLAYER'],
+        ] },
+        { title: 'AT THE COUNCIL', rows: [
+          ['CLICK NAME', 'SELECT PLAYER'], ['UP / DOWN', 'SELECT PLAYER'],
+          ['ENTER', 'CONFIRM VOTE'], ['T', 'TYPE A MESSAGE'], ['ENTER', 'SEND MESSAGE'],
+          ['ESC', 'STOP TYPING'], ['WHEEL', 'CHAT HISTORY'], ['END', 'LATEST CHAT'],
+        ] },
       ];
-      // fourteen rows at a fixed eleven walk out of a 180-tall frame
-      const ROW = Math.max(8, Math.min(11,
-        Math.floor((b.bottom - 4 - (b.top + 2)) / rows.length)));
-      let y = b.top + 2;
-      for (const [k, v] of rows) {
-        drawText(x, k, { x: W / 2 - 8, y, scale: 1, align: 'right', color: GOLD });
-        drawText(x, v, { x: W / 2 + 8, y, scale: 1, color: GOLD_LT });
-        y += ROW;
-      }
-      if (!mp) {
-        drawText(x, 'COCONUTS GROW UNDER THE PALMS.', {
-          x: W / 2, y: y + 4, scale: 1, align: 'center', color: DIM,
+      const page = pages[s.page];
+      const b = frame(x, W, H, 'CONTROLS', `${s.page + 1} / ${pages.length}  ${page.title}`);
+      const pitch = Math.max(9, Math.min(12, Math.floor((H - 43 - b.top) / page.rows.length)));
+      const leftW = Math.floor((W - 48) * 0.45);
+      page.rows.forEach(([key, label], i) => {
+        drawText(x, fitText(key, leftW - 4, 1), { x: 24, y: b.top + i * pitch, scale: 1, color: GOLD });
+        drawText(x, fitText(label, W - 48 - leftW - 4, 1, 0), {
+          x: 24 + leftW + 4, y: b.top + i * pitch, scale: 1, tracking: 0, color: GOLD_LT,
         });
-      }
-      footer(x, W, H, 'ESC BACK');
-      return [];
+      });
+      const rows = [
+        { ...pressButton(x, 22, H - 39, 60, '< PREV'), page: -1 },
+        { ...pressButton(x, W - 82, H - 39, 60, 'NEXT >'), page: 1 },
+      ];
+      footer(x, W, H, '< > PAGE   ESC BACK');
+      return rows;
     },
-    key(code, s, g, st) { if (code === 'Escape' || code === 'Enter' || code === 'KeyE') st.pop(); return true; },
+    key(code, s, g, st) {
+      if (code === 'Escape' || code === 'Backspace') { st.pop(); return true; }
+      if (code === 'ArrowLeft' || code === 'KeyA') s.page = (s.page + 2) % 3;
+      if (code === 'ArrowRight' || code === 'KeyD' || code === 'Enter' || code === 'Space') s.page = (s.page + 1) % 3;
+      return true;
+    },
+    click(row, i, s, g, st) { return this.key(row.page < 0 ? 'ArrowLeft' : 'ArrowRight', s, g, st); },
   },
 
   /* ---------------- OPTIONS ---------------- */
@@ -7877,17 +7883,31 @@ export const SCREENS = {
       O.forEach((o, i) => {
         const on = i === s.sel;
         if (on) { x.fillStyle = '#3a2a10'; x.fillRect(16, y - 3, W - 32, 12); }
-        drawText(x, o.label, { x: 22, y, scale: 1, color: on ? GOLD_LT : DIM });
         const cur = o.get(g);
         const vi = o.values.findIndex((v) => String(v.v) === String(cur));
         const name = vi >= 0 ? o.values[vi].n : '?';
-        drawText(x, `< ${name} >`, { x: W - 22, y, scale: 1, align: 'right', color: on ? GOLD : DIM });
-        rows.push({ x: 16, y: y - 3, w: W - 32, h: 12 });
+        const value = `< ${name} >`;
+        const valueX = W - 22 - textWidth(value, 1);
+        drawText(x, fitText(o.label, valueX - 28, 1), { x: 22, y, scale: 1, color: on ? GOLD_LT : DIM });
+        drawText(x, value, { x: W - 22, y, scale: 1, align: 'right', color: on ? GOLD : DIM });
+        rows.push({ x: 16, y: y - 3, w: valueX - 16, h: 12, pick: i });
+        rows.push({ x: valueX, y: y - 3, w: 12, h: 12, pick: i, step: -1 });
+        rows.push({ x: valueX + 12, y: y - 3, w: W - 16 - valueX - 12, h: 12, pick: i, step: 1 });
         y += 13;
       });
+      if (O[s.sel].label === 'FOLIAGE') {
+        fitLine(x, 'FOLIAGE CHANGES APPLY AFTER RELOAD', W / 2, H - 30, W - 40, { color: JADE });
+      }
       footer(x, W, H, 'UP DOWN SELECT   < > CHANGE   ESC BACK');
       return rows;
     },
+    click(row, i, s, g, st) {
+      s.sel = row.pick;
+      if (row.step) this.key(row.step < 0 ? 'ArrowLeft' : 'ArrowRight', s, g, st);
+      else g.audio?.sfx('select');
+      return true;
+    },
+    wheel(dir, s, g, st) { return this.key(dir < 0 ? 'ArrowUp' : 'ArrowDown', s, g, st); },
     key(code, s, g, st) {
       const O = OPTION_DEFS;
       if (code === 'ArrowUp' || code === 'KeyW') {
@@ -7924,7 +7944,7 @@ export const SCREENS = {
        panel as on a 60. */
     tick(s, g, dt) { if (s.msgT > 0) s.msgT = Math.max(0, s.msgT - dt); },
     draw(x, W, H, s, g, t) {
-      const b = frame(x, W, H, 'PAUSED');
+      const b = frame(x, W, H, 'GAME MENU');
       const items = pauseItems(g);
       s.sel = Math.max(0, Math.min(s.sel || 0, items.length - 1));
       const rows = menuList(x, items, s.sel, W / 2, b.top + 10, t, { width: 140 });
@@ -7932,7 +7952,9 @@ export const SCREENS = {
          the whole buffer over everything the HUD drew, so a toast raised
          from here is painted out before anybody sees it. */
       if (s.msgT > 0) {
-        drawText(x, s.msg, { x: W / 2, y: H - 40, scale: 1, align: 'center', color: RED });
+        fitLine(x, s.msg, W / 2, H - 40, W - 40, { color: RED });
+      } else if (g.mp?.active && g.mp.started) {
+        fitLine(x, 'THE ONLINE ROUND KEEPS GOING', W / 2, H - 40, W - 40, { color: JADE });
       }
       const mm = String(Math.floor(g.runTime / 60)).padStart(2, '0');
       const ss = String(Math.floor(g.runTime % 60)).padStart(2, '0');
@@ -7946,7 +7968,7 @@ export const SCREENS = {
       return nav(code, s, items.length, (i) => {
         const it = items[i];
         if (it.id === 'resume') g.pause(false);
-        else if (it.id === 'journal') st.push('journal');
+        else if (it.id === 'guide') st.push('mpGuide');
         else if (it.id === 'map') {
           if (it.refusal) { g.audio?.sfx('deny'); s.msg = it.refusal; s.msgT = 1.5; return; }
           g.openChart();
@@ -7964,40 +7986,30 @@ export const SCREENS = {
       const b = frame(x, W, H, "CASTAWAY'S JOURNAL",
         s.entries.length ? `${s.sel + 1} / ${s.entries.length}` : '');
       const e = s.entries[s.sel] || { found: false, hint: 'NOTHING IN IT YET.' };
-      drawText(x, e.found ? e.title : 'NOT YET FOUND', {
-        x: W / 2, y: b.top, scale: 1, align: 'center', color: e.found ? GOLD : '#6a5c40',
+      fitLine(x, e.found ? e.title : 'NOT YET FOUND', W / 2, b.top, W - 46, {
+        color: e.found ? GOLD : '#6a5c40',
       });
       x.fillStyle = '#4a3a1c';
       x.fillRect(20, b.top + 11, W - 40, 1);
 
       const body = e.found ? e.text : e.hint;
-      const lines = [];
-      for (const para of String(body).split('\n')) {
-        if (!para.trim()) { lines.push(''); continue; }
-        lines.push(...wrapText(para, W - 46, 1, 1));
-      }
-      const visible = Math.floor((b.bottom - b.top - 24) / 9);
-      s.scroll = Math.max(0, Math.min(s.scroll, Math.max(0, lines.length - visible)));
+      const lines = proseLines(body, W - 46);
+      const visible = Math.max(1, Math.floor((b.bottom - b.top - 24) / 9));
+      scrollBar(x, s, lines.length, visible, W - 17, b.top + 17, visible * 9);
       let y = b.top + 17;
       for (let i = s.scroll; i < Math.min(lines.length, s.scroll + visible); i++) {
         drawText(x, lines[i], { x: 23, y, scale: 1, color: e.found ? GOLD_LT : '#7a6a48' });
         y += 9;
       }
-      if (lines.length > visible) {
-        const barH = Math.max(6, (visible / lines.length) * (b.bottom - b.top - 20));
-        const barY = b.top + 17 + (s.scroll / lines.length) * (b.bottom - b.top - 20);
-        x.fillStyle = '#3a2a10'; x.fillRect(W - 17, b.top + 16, 3, b.bottom - b.top - 18);
-        x.fillStyle = GOLD_DK; x.fillRect(W - 17, barY, 3, barH);
-      }
       footer(x, W, H, '< > ENTRY   UP DOWN SCROLL   TAB CLOSE');
       return [];
     },
+    wheel(dir, s) { return scrollKey(dir < 0 ? 'ArrowUp' : 'ArrowDown', s); },
     key(code, s, g, st) {
       const n = s.entries.length;
       if (n && (code === 'ArrowLeft' || code === 'KeyA')) { s.sel = (s.sel + n - 1) % n; s.scroll = 0; return true; }
       if (n && (code === 'ArrowRight' || code === 'KeyD')) { s.sel = (s.sel + 1) % n; s.scroll = 0; return true; }
-      if (code === 'ArrowUp' || code === 'KeyW') { s.scroll = Math.max(0, s.scroll - 1); return true; }
-      if (code === 'ArrowDown' || code === 'KeyS') { s.scroll += 1; return true; }
+      if (scrollKey(code, s)) return true;
       if (code === 'Tab' || code === 'Escape') { st.pop(); g.afterOverlayClose(); return true; }
       return true;
     },
@@ -8005,6 +8017,11 @@ export const SCREENS = {
 
   /* ---------------- THE MAP ---------------- */
   chart: {
+    init(s) {
+      s.zoom = s.zoom || 1;
+      s.cx ??= s.data?.player?.x || 0;
+      s.cz ??= s.data?.player?.z || 0;
+    },
     /* ARROWS PAN, says the hint, so they pan — the paper is only centred on
        you by the first draw, which is why an untouched view is left alone. */
     tick(s, g, dt, t, st) {
@@ -8086,6 +8103,7 @@ export const SCREENS = {
         });
         fitLine(x, 'ESC  CLOSE', W / 2, top + openH - 12, W - 8,
           { color: '#5a3a18', shadowColor: PAPER });
+        x.restore();
         return [];
       }
       s.data.zoom = s.zoom;
@@ -8099,12 +8117,12 @@ export const SCREENS = {
       /* On the paper, above its bottom rod — printed at b.bottom it landed
          squarely on the key hints underneath. */
       const subY = oy + size + 3;
-      if (s.data.marks.length && !s.subtitle) {
+      if (s.data.marks?.length && !s.subtitle) {
         const left = s.data.marks.filter((mk) => !mk.found).length;
         drawText(x, left ? `${left} PENDULUM${left === 1 ? '' : 'S'} STILL UNREAD` : 'ALL FOUR READ',
           { x: W / 2, y: subY, scale: 1, align: 'center', color: left ? '#7a2418' : '#2f6a4a' });
       } else if (s.subtitle) {
-        drawText(x, s.subtitle, { x: W / 2, y: subY, scale: 1, align: 'center', color: '#2f6a4a' });
+        fitLine(x, s.subtitle, W / 2, subY, W - 40, { color: '#2f6a4a' });
       }
       /* The hints belong on the paper. footer() prints at H - 17, which is
          exactly where the closing rod lies, so the bottom two rows of every
@@ -8148,7 +8166,11 @@ export const SCREENS = {
     },
     /** Drag to pan. The wheel arrives through this screen's own wheel(). */
     pointer(kind, cx, cy, s) {
-      if (kind === 'down') { s._drag = [cx, cy]; return true; }
+      if (kind === 'down') {
+        s.cx ??= s.data?.player?.x || 0;
+        s.cz ??= s.data?.player?.z || 0;
+        s._drag = [cx, cy]; return true;
+      }
       if (kind === 'move' && s._drag) {
         const R = s.data?.radius || 200;
         const size = Math.min((s.data?._size || 180), 400);
@@ -8166,8 +8188,11 @@ export const SCREENS = {
   /* ---------------- FERDI'S SHOP ---------------- */
   shop: {
     init(s) { s.sel = s.sel || 0; s.shake = 0; },
+    tick(s, g, dt) {
+      s.shake = Math.max(0, (s.shake || 0) - dt);
+      s.msgT = Math.max(0, (s.msgT || 0) - dt);
+    },
     draw(x, W, H, s, g, t) {
-      if (s.shake > 0) s.shake -= 0.016;
       const jitter = s.shake > 0 ? Math.round(Math.sin(s.shake * 60) * 2) : 0;
       const b = frame(x, W, H, "FERDI STEINMAN'S SUPPLIES");
 
@@ -8175,10 +8200,10 @@ export const SCREENS = {
       drawFerdiPortrait(x, 16, b.top + 2, t);
       const bubbleX = 58;
       panel(x, bubbleX, b.top + 2, W - bubbleX - 16, 26, { border: 1, dither: 0.35 });
-      const quip = FERDI_LINES[Math.floor(t / 4) % FERDI_LINES.length];
+      const quip = s.msgT > 0 ? s.msg : FERDI_LINES[Math.floor(t / 4) % FERDI_LINES.length];
       let qy = b.top + 7;
       for (const ln of wrapText(quip, W - bubbleX - 26, 1, 1).slice(0, 2)) {
-        drawText(x, ln, { x: bubbleX + 5, y: qy, scale: 1, color: GOLD_LT }); qy += 9;
+        drawText(x, ln, { x: bubbleX + 5, y: qy, scale: 1, color: s.msgT > 0 ? (s.shake > 0 ? RED : JADE) : GOLD_LT }); qy += 9;
       }
 
       // purse
@@ -8203,16 +8228,14 @@ export const SCREENS = {
            whatever is actually going to sit there, the way the names on the
            Castaways shelf do. */
         const right = it.owned ? 'SOLD' : `${it.cost}`;
-        const room = W - 48 - textWidth(right, 1);
-        let blurb = it.desc;
-        while (blurb.length > 3 && textWidth(blurb, 1) > room) blurb = blurb.slice(0, -1);
-        if (blurb !== it.desc) blurb = blurb.slice(0, -1) + '.';
+        const room = W - 65 - textWidth(right, 1);
+        const blurb = fitText(it.desc, room, 1);
         drawText(x, blurb, { x: bx + 6, y: y + 13, scale: 1, color: '#8a7a52' });
         drawText(x, right, {
-          x: bx + W - 38, y: y + 8, scale: 1, align: 'right',
+          x: bx + W - 55, y: y + 8, scale: 1, align: 'right',
           color: it.owned ? JADE : (g.coins >= it.cost ? GOLD : RED),
         });
-        if (!it.owned) drawRelicIcon(x, 'coin', bx + W - 34, y + 4, 12);
+        if (!it.owned) drawRelicIcon(x, 'coin', bx + W - 48, y + 4, 12);
         rows.push({ x: bx, y, w: W - 32, h: 22 });
         y += 25;
       });
@@ -8226,54 +8249,66 @@ export const SCREENS = {
     key(code, s, g, st) {
       const stock = g.shopStock();
       return nav(code, s, stock.length,
-        () => { if (!g.buy(stock[s.sel].id)) s.shake = 0.28; },
+        () => {
+          const item = stock[s.sel];
+          const bought = g.buy(item.id);
+          s.msg = bought ? `${item.name}. YOURS. NO REFUNDS.`
+            : (item.owned ? 'YOU ALREADY OWN THAT.' : `YOU NEED ${Math.max(0, item.cost - g.coins)} MORE COINS.`);
+          s.msgT = 3;
+          if (!bought) s.shake = 0.28;
+        },
         () => { st.pop(); g.afterOverlayClose(); }, g);
     },
+    wheel(dir, s, g, st) { return this.key(dir < 0 ? 'ArrowUp' : 'ArrowDown', s, g, st); },
   },
 
   /* ---------------- READER ---------------- */
   reader: {
-    init(s) { s.shown = 0; s.done = false; s.scroll = 0; },
+    init(s) { s.shown = 0; s.done = false; s.scroll = 0; s.manualScroll = false; },
     /* Two characters a draw is two characters a refresh, so the same page
        typed itself out two and a half times faster on a 144Hz panel than on
        a 60Hz one and every story beat lost its pacing. On the clock now, at
        the speed it used to have at sixty. */
     tick(s, g, dt) {
-      const len = String(s.body).length;
+      const len = String(s.body ?? '').length;
       s.shown = Math.min(len, s.shown + dt * 120);
       s.done = s.shown >= len;
     },
     draw(x, W, H, s, g, t) {
-      const full = String(s.body);
+      const full = String(s.body ?? '');
 
       const boxH = Math.min(H - 24, 116);
       const top = H - boxH - 8;
       panel(x, 8, top, W - 16, boxH, { border: 2, dither: 0.30, hi: '#f4e8c4', lo: '#7a5a24', fill: '#d8c79a', fill2: '#e6d6ac' });
 
-      drawText(x, s.head, { x: 15, y: top + 6, scale: 1, color: '#6b4a18', shadowColor: '#e6d6ac' });
+      drawText(x, fitText(s.head, W - 32, 1), { x: 15, y: top + 6, scale: 1, color: '#6b4a18', shadowColor: '#e6d6ac' });
       x.fillStyle = '#a8946a'; x.fillRect(14, top + 16, W - 28, 1);
 
       const shownText = full.slice(0, Math.floor(s.shown));
-      const lines = [];
-      for (const para of shownText.split('\n')) {
-        if (!para.trim()) { lines.push(''); continue; }
-        lines.push(...wrapText(para, W - 34, 1, 1));
-      }
-      const visible = Math.floor((boxH - 34) / 9);
-      const start = Math.max(0, lines.length - visible);
+      const lines = proseLines(shownText, W - 38);
+      const visible = Math.max(1, Math.floor((boxH - 42) / 9));
+      if (!s.manualScroll) s.scroll = Math.max(0, lines.length - visible);
+      scrollBar(x, s, lines.length, visible, W - 15, top + 22, visible * 9, '#7a5a24');
       let y = top + 22;
-      for (let i = start; i < lines.length; i++) {
+      for (let i = s.scroll; i < Math.min(lines.length, s.scroll + visible); i++) {
         drawText(x, lines[i], { x: 16, y, scale: 1, color: INK, shadow: false });
         y += 9;
       }
-      if (s.done && Math.floor(t * 2) % 2 === 0) {
-        drawText(x, 'E', { x: W - 18, y: top + boxH - 11, scale: 1, color: '#6b4a18', shadow: false });
-      }
-      return [];
+      const hint = s.done
+        ? (s.maxScroll ? 'UP DOWN READ   E OR ESC CLOSE' : 'E OR ESC CLOSE')
+        : 'E SHOW ALL';
+      fitLine(x, hint, W / 2, top + boxH - 12, W - 32, { color: '#6b4a18', shadow: false });
+      return [{ x: 8, y: top, w: W - 16, h: boxH }];
     },
+    wheel(dir, s) { s.manualScroll = true; return scrollKey(dir < 0 ? 'ArrowUp' : 'ArrowDown', s); },
     key(code, s, g, st) {
-      if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
-        if (!s.done) { s.shown = String(s.body).length; s.done = true; return true; }
+      if (scrollKey(code, s)) { s.manualScroll = true; return true; }
+      if (code === 'KeyE' || code === 'Enter' || code === 'Space' || code === 'Escape') {
+        if (!s.done) {
+          s.shown = String(s.body ?? '').length; s.done = true;
+          s.scroll = 0; s.manualScroll = true;
+          return true;
+        }
         st.pop();
         s.onDone?.();
         g.afterOverlayClose();
@@ -8285,9 +8320,9 @@ export const SCREENS = {
 
   /* ---------------- DIAL PUZZLE ---------------- */
   dials: {
+    tick(s, g, dt) { s.shake = Math.max(0, (s.shake || 0) - dt); },
     draw(x, W, H, s, g, t) {
       const b = frame(x, W, H, 'THE SEALED DOOR');
-      if (s.shake > 0) s.shake -= 0.016;
       const jit = s.shake > 0 ? Math.round(Math.sin(s.shake * 70) * 3) : 0;
 
       drawText(x, 'RECORDED FROM THE PENDULUMS', { x: W / 2, y: b.top, scale: 1, align: 'center', color: DIM });
@@ -8320,10 +8355,17 @@ export const SCREENS = {
           drawText(x, '↑', { x: bx + GW / 2, y: y - 8, scale: 1, align: 'center', color: GOLD });
           drawText(x, '↓', { x: bx + GW / 2, y: y + GW + 11, scale: 1, align: 'center', color: GOLD });
         }
-        rows.push({ x: bx, y, w: GW, h: GW + 10 });
+        rows.push({ x: bx, y, w: GW, h: GW + 10, socket: i });
       }
+      rows.push({ ...pressButton(x, W / 2 - 47, Math.min(H - 39, y + GW + 23), 94, 'E  CONFIRM'), confirm: true });
       footer(x, W, H, '< > SOCKET   UP DOWN GLYPH   E CONFIRM   ESC BACK');
       return rows;
+    },
+    click(row, i, s, g, st) {
+      if (row.confirm) return this.key('Enter', s, g, st);
+      if (row.socket === g.dialSel) g.cycleDial(1);
+      else { g.dialSel = row.socket; g.audio?.sfx('select'); }
+      return true;
     },
     key(code, s, g, st) {
       if (code === 'ArrowLeft' || code === 'KeyA') { g.dialSel = (g.dialSel + 3) % 4; g.audio?.sfx('select'); return true; }
@@ -8344,7 +8386,7 @@ export const SCREENS = {
       for (let y = 0; y < H; y += 2) x.fillRect(0, y, W, 1);
       const wob = Math.round(Math.sin(t * 4) * 1);
       drawText(x, 'YOU DIED', { x: W / 2 + wob, y: H / 2 - 34, scale: 3, align: 'center', color: '#c8352a' });
-      drawText(x, s.sub || '', { x: W / 2, y: H / 2 - 6, scale: 1, align: 'center', color: '#c9a89a' });
+      fitLine(x, s.sub || '', W / 2, H / 2 - 6, W - 32, { color: '#c9a89a' });
       const rows = menuList(x, ['WASH ASHORE AGAIN', 'QUIT TO TITLE'], s.sel, W / 2, H / 2 + 14, t, { width: 130 });
       return rows;
     },
@@ -8407,40 +8449,32 @@ export const SCREENS = {
 /* ===========================================================
    CONTENT
    =========================================================== */
-export const LORE_PAGES = [
-  {
-    title: 'ILLIC ISLE',
-    text: `A rock in a warm sea that nobody visits twice.\n\nIt was named for the man who owned it, and he owned it the way a fist owns a coin.`,
-  },
-  {
-    title: 'KING ILLIC',
-    text: `He ruled badly and at length.\n\nHe took a third of everything anyone grew, and when the wells failed he took a third of the water too. He built no roads. He built one temple, and he built it for himself.`,
-    icon: 'coin',
-  },
-  {
-    title: 'SYNERGY HOLDINGS',
-    text: `Before the king there was a company.\n\nThey dug here for something they never named, paid the diggers in their own coin, and left so completely that only the coins remain.`,
-    icon: 'syncoin',
-  },
-  {
-    title: 'THE ROGUE AGENTS',
-    text: `They came at night and they came for him.\n\nNobody agrees who sent them. They ended the king, sealed what was left of him in gold, and buried the gold under his own temple.\n\nThen they built four Pendulums to mark the way, and stayed, and grew old.`,
-  },
-  {
-    title: 'TASHA — UNIT 03',
-    text: `The Agents did not come alone.\n\nOne of them was not a person. She is still on the west shore, and her optic still flickers about once a minute, which is worse than if it did not.`,
-    icon: 'tasha',
-  },
-  {
-    title: 'HECTOR',
-    text: `The king's brother.\n\nHe arrived eleven years ago, killed every Rogue Agent on the island, found a staff that makes food out of nothing, and sat down on top of his brother's corpse.\n\nHe has not been hungry since. He calls the temple his LAYER.`,
-    icon: 'watermelon',
-  },
-  {
-    title: 'AND YOU',
-    text: `The storm took the ship, the crew, and most of your good sense.\n\nIt did not take the reason you came.`,
-    icon: 'aerlingus',
-  },
+const ONLINE_GUIDE = [
+  { title: 'GET ASHORE', text: `CREATE A ROOM, THEN SEND ITS CODE OR INVITE LINK TO YOUR FRIENDS. JOIN USING THAT CODE.
+
+THREE TO TEN PLAYERS SHARE ONE ISLAND. THE HOST CHOOSES THE RULES AND STARTS THE ROUND.
+
+KEEP THE HOST'S GAME OPEN. THE ROOM ENDS IF THE HOST LEAVES.` },
+  { title: 'CASTAWAYS', text: `YOUR ROLE IS PRIVATE. CASTAWAYS WIN BY FINISHING ALL THEIR JOBS OR EXILING EVERY ROGUE AGENT.
+
+OPEN M OR TAB FOR YOUR MAP AND JOBS. WALK TO A MARKER AND FOLLOW THE E PROMPT. SOME JOBS HAVE SEVERAL STEPS.
+
+WATCH WHO GOES WHERE. AN AGENT CAN STRIKE WHEN YOU ARE ALONE.` },
+  { title: 'ROGUE AGENTS', text: `BLEND IN WITH THE CREW. USE F NEAR A CASTAWAY TO STRIKE, THEN WAIT FOR YOUR COOLDOWN.
+
+Q OPENS SABOTAGE. HOLD E ON A SWITCH TO USE IT. SOME FAILURES MUST BE REPAIRED BEFORE TIME RUNS OUT.
+
+AGENTS WIN WHEN THEY MATCH THE LIVING CREW, OR A FATAL SABOTAGE RUNS OUT.` },
+  { title: 'THE COUNCIL', text: `USE E AT A BODY TO REPORT IT, OR AT THE CAMP BELL TO CALL AN EMERGENCY MEETING.
+
+T OPENS CHAT. ENTER SENDS YOUR MESSAGE. CLICK A NAME TO SELECT, THEN ENTER OR THE VOTE BUTTON TO COMMIT.
+
+CHOOSE NOBODY TO SKIP. VOTES ARE FINAL. A TIE EXILES NOBODY. THE MEETING ENDS WHEN ALL HAVE VOTED OR TIME RUNS OUT.` },
+  { title: 'STAY IN THE GAME', text: `LOST CASTAWAYS CAN STILL FINISH THEIR JOBS. F FOLLOWS A LIVING PLAYER. GHOST CHAT IS ONLY FOR THE DEAD.
+
+COINS BUY GEAR AND DISTRACTIONS AROUND THE ISLAND. NUMBER KEYS 1-9 USE ITEMS ON YOUR BELT.
+
+AFTER THE RESULT, THE HOST CAN START ANOTHER ROUND WITH THE SAME ROOM. ESC OPENS OPTIONS DURING PLAY.` },
 ];
 
 const FERDI_LINES = [
@@ -8458,11 +8492,11 @@ const OPTION_DEFS = [
     get: (g) => g.settings.sens, set: (g, v) => (g.settings.sens = v) },
   { label: 'INVERT LOOK', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
     get: (g) => g.settings.invert, set: (g, v) => (g.settings.invert = v) },
-  { label: 'RESOLUTION', values: [{ v: 180, n: '240x180' }, { v: 224, n: '320x224' }, { v: 320, n: '427x320' }, { v: 0, n: 'NATIVE' }],
+  { label: 'RESOLUTION', values: [{ v: 180, n: '180P' }, { v: 224, n: '224P' }, { v: 320, n: '320P' }, { v: 0, n: 'NATIVE' }],
     get: (g) => g.settings.res, set: (g, v) => (g.settings.res = v) },
   { label: 'VERTEX JITTER', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
     get: (g) => g.settings.jitter, set: (g, v) => (g.settings.jitter = v) },
-  { label: 'CRT / DITHER', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
+  { label: 'CRT EFFECTS', values: [{ v: false, n: 'OFF' }, { v: true, n: 'ON' }],
     get: (g) => g.settings.crt, set: (g, v) => (g.settings.crt = v) },
   { label: 'FOLIAGE', values: [{ v: 0.55, n: 'LOW' }, { v: 1, n: 'NORMAL' }, { v: 1.45, n: 'LUSH' }],
     get: (g) => g.settings.density, set: (g, v) => (g.settings.density = v) },

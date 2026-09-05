@@ -9,7 +9,7 @@
    because a PSX framebuffer was never perfectly still.
    =========================================================== */
 
-import { drawText, textWidth, wrapText, panel, ditherRect, normalize } from './bitfont.js';
+import { drawText, textWidth, wrapText, fitText, panel, ditherRect, normalize } from './bitfont.js';
 
 const GOLD = '#ffd24a';
 const GOLD_LT = '#fff3c4';
@@ -45,15 +45,64 @@ const compassX = (dA, left, W) => Math.round(left + W / 2 - (dA / COMPASS_HALF) 
    `bottom`. The overlay has to ask the same question as _toasts when it picks
    where the stack goes, and the two must not be able to disagree about
    whether a message is going to be cut. */
-const toastCap = (oy, bottom) => Math.max(1, Math.min(2, Math.floor((bottom - oy - 2) / 9)));
-/** Which name wins the lettering row when two land on the same bearing. */
-const PRI = { FIX: 0, COIN: 1, BOX: 2, POST: 3, CATHY: 4, MACHINE: 5, FIRE: 6, CAMP: 7 };
+const toastCap = (oy, bottom) => Math.max(0, Math.min(2, Math.floor((bottom - oy - 4) / 9)));
+/** Which of the island's fixtures wins the row when two land together. */
+const PRI = { BOX: 0, BELL: 1, POST: 2, FIRE: 3, CAMP: 3, CATHY: 5, MACHINE: 6 };
+/* Ten marks and a strip with room to letter three or four of them, so the
+   order they are worth having in has to be an order and not a wish: what is
+   about to kill you, then what you have been told to do, then what you are
+   walking towards, and the fixtures last. A vending machine two hundred
+   metres away is the first thing off the strip and the sabotage is the last. */
+const rank = (m) => (m.kind === 'fix' ? 0
+  : m.kind === 'job' ? 1
+    : m.kind === 'goal' ? 2
+      : m.kind === 'coin' ? (m.label ? 3 : 9)
+        : 4);
+/* Which way you are looking, for the tie inside a rank. The marks carry a
+   bearing and no distance, so the nearest of five identical chores cannot be
+   asked for; the one you are already turned towards is the one that answers
+   the same question. A module global because Array.sort hands a comparator
+   two marks and nothing else, and a closure per frame is a closure per frame. */
+let sortYaw = 0;
 const byNeed = (p, q) => {
   const cardP = p.kind === 'card' || p.kind === 'inter';
   const cardQ = q.kind === 'card' || q.kind === 'inter';
   if (cardP !== cardQ) return cardP ? -1 : 1;      // cardinals have their own row
-  return (PRI[p.label] ?? 9) - (PRI[q.label] ?? 9);
+  const r = rank(p) - rank(q);
+  if (r) return r;
+  const n = (PRI[p.label] ?? 4) - (PRI[q.label] ?? 4);
+  if (n) return n;
+  return Math.abs(compassWrap(p.angle - sortYaw)) - Math.abs(compassWrap(q.angle - sortYaw));
 };
+
+/* Words that carry none of which chore this is. LIGHT THE BRAZIERS and
+   LIGHT BRAZIERS are the same instruction; the THE is the first thing a
+   narrow plate can afford to lose. */
+const FILLER = /^(THE|A|AN|AT|TO|IN|OUT|OF|FOR)$/;
+/**
+ * As much of `name` as `px` will hold. It used to be cut a letter at a time
+ * until it fitted, which gave the player LIGHT THE BRAZIE and OPEN TASHA'S
+ * PAN — and, worse, gave them WIND TH twice over for two different
+ * pendulums. Whole words go instead, and they go from the front: WIND THE
+ * WEST and WIND THE RIDGE are told apart by their last word, and so is
+ * nearly every other pair on the list.
+ */
+function fitName(name, px) {
+  if (textWidth(name, 1) <= px) return name;
+  const words = normalize(name).split(' ').filter((w) => w);
+  let kept = words.filter((w) => !FILLER.test(w));
+  if (!kept.length) kept = words;
+  while (textWidth(kept.join(' '), 1) > px && kept.length > 1) {
+    const place = kept.findIndex((word) => /^(WEST|EAST|NORTH|SOUTH|RIDGE|BEACH)$/.test(word));
+    // WEST PENDULUM and RIDGE PENDULUM must not both become PENDULUM.
+    if (place === 0) kept.pop(); else kept.shift();
+  }
+  let one = kept.join(' ');
+  if (textWidth(one, 1) <= px) return one;
+  // one word and still over: cut it, and end it in a stop so it reads as cut
+  while (one.length > 1 && textWidth(`${one}.`, 1) > px) one = one.slice(0, -1);
+  return `${one}.`;
+}
 
 export class Hud {
   constructor() {
@@ -83,9 +132,14 @@ export class Hud {
       hurtT: 0,
     };
     this._wobble = 0;
-    /* Flat x0/x1 pairs of whatever the compass has already lettered this
+    /* Flat x0/x1 pairs of every span the compass has already given away this
        frame. Reused, because it is refilled sixty times a second. */
     this._compassTaken = [];
+    /* Names the compass has already lettered this frame, so it does not
+       letter one twice. Refilled beside _compassTaken. */
+    this._compassSaid = [];
+    /* Chore names can have different widths when a row has a step counter. */
+    this._fitCut = new Map();
   }
 
   /* Returns true when the canvas actually changed size, because the caller
@@ -102,31 +156,38 @@ export class Hud {
   }
 
   /** Wipe the stack. Used when a room change would otherwise pile four up. */
-  clearToasts() { this.data.toasts.length = 0; }
+  clearToasts() { this.data.toasts.length = 0; this._toastShown = null; }
 
   toast(text, kind = 'gold', ms = 2600) {
     /* The same message twice running is one message with its clock reset,
        not two lines saying the same thing. */
-    const t = normalize(text);
-    const last = this.data.toasts[this.data.toasts.length - 1];
-    if (last && last.text === t) { last.life = ms / 1000; last.max = ms / 1000; return; }
-    this.data.toasts.push({ text: t, kind, life: ms / 1000, max: ms / 1000 });
+    const t = normalize(text ?? '').trim();
+    if (!t) return;
+    const duration = Number.isFinite(ms) ? Math.max(0.8, Math.min(12, ms / 1000)) : 2.6;
+    const old = this.data.toasts.findIndex((entry) => entry.text === t);
+    if (old >= 0) this.data.toasts.splice(old, 1);
+    this.data.toasts.push({ text: t, kind, life: duration, max: duration, age: 0, elapsed: 0 });
     while (this.data.toasts.length > 4) this.data.toasts.shift();
   }
 
   /** A collectible card that slides in with its own drawn icon. */
   showPopup(title, sub, icon, head) {
-    this.data.popup = { title, sub, icon, head, t: 0, dur: 4.6 };
+    this.data.popup = { title: normalize(title ?? ''), sub: normalize(sub ?? ''), icon,
+      head: normalize(head || 'RELIC FOUND'), t: 0, dur: 3.8 };
   }
 
   update(dt) {
     const d = this.data;
     for (let i = d.toasts.length - 1; i >= 0; i--) {
-      d.toasts[i].life -= dt;
-      if (d.toasts[i].life <= 0) d.toasts.splice(i, 1);
+      const toast = d.toasts[i];
+      toast.age = (toast.age || 0) + dt;
+      if (toast === this._toastShown) { toast.life -= dt; toast.elapsed = (toast.elapsed || 0) + dt; }
+      // Hidden messages get their reading time, but never outlive the event
+      // by an entire round when a busy scene keeps replacing the surface.
+      if (toast.life <= 0 || toast.age - (toast.elapsed || 0) > 16) d.toasts.splice(i, 1);
     }
     if (d.popup) {
-      d.popup.t += dt;
+      if (d.popup === this._popupShown) d.popup.t += dt;
       if (d.popup.t > d.popup.dur) d.popup = null;
     }
     if (d.hurtT > 0) d.hurtT -= dt;
@@ -178,12 +239,19 @@ export class Hud {
          above them can move, so where the frame cannot hold both, the belt
          stands down to a line naming its keys — the instrument you have
          just switched on is the thing you are reading. */
-      const inst = !!(d.mp.scanner?.on || d.mp.printer?.on);
-      const beltRow = !inst || H - 62 >= 162;
+      /* The saucer's machine is an instrument too, and it is the one you
+         cannot put down, cannot buy again and only get to use once — so it
+         takes the left bay off the belt's own set for as long as it is in
+         your hands. Nobody reads two boxes at once, and the set is one key
+         away again afterwards. */
+      const assay = !!(d.mp.ufo && (d.mp.ufo.held || d.mp.ufo.scan));
+      const sigOn = !!d.mp.scanner?.on && !assay;
+      const inst = !!(sigOn || assay || d.mp.printer?.on);
+      const agent = d.mp.role === 'agent';
+      const beltColumns = Math.max(1, Math.min(9, Math.floor((W - (agent ? 128 : 12) - 4) / 18)));
+      const beltRows = Math.max(1, Math.ceil(Math.min(9, d.mp.belt?.length || 0) / beltColumns));
+      const beltRow = !inst || H - 62 - (beltRows - 1) * 20 >= 163;
       if (beltRow) this._mpBelt(4, H - 52, d.mp);
-      else if (d.mp.belt?.length) {
-        drawText(x, '1-9  BELT', { x: 4, y: 164, scale: 1, color: '#8a7a52' });
-      }
       /* The knife panel hangs off the bottom right corner and the till
          roll's case ends at 163, so on a 180-tall frame the panel was drawn
          last and over the top of the docket — the price, how long ago it
@@ -191,11 +259,14 @@ export class Hud {
          takes whichever bottom corner the belt has already vacated, and
          where neither is free the roll stands down to a line naming its
          key, the way the belt does above. */
-      const agent = d.mp.role === 'agent';
-      const aPH = 30 + Math.min(3, (d.mp.cools || []).length) * 7;
+      const aPH = 33 + Math.min(3, (d.mp.cools || []).length) * 9;
       const clash = agent && !!d.mp.printer?.on && H - 16 - aPH < 163;
-      const agentLeft = clash && !d.mp.scanner?.on && !beltRow;
-      if (d.mp.scanner?.on) this._scanner(4, 86, d.mp.scanner);
+      const agentLeft = clash && !sigOn && !assay && !beltRow;
+      if (!beltRow && d.mp.belt?.length) drawText(x, '1-9  BELT', {
+        x: 4, y: agentLeft ? 86 : 164, scale: 1, color: '#9a8a62',
+      });
+      if (assay) this._assay(4, 86, d.mp.ufo);
+      else if (sigOn) this._scanner(4, 86, d.mp.scanner);
       /* The till roll, mirroring the scanner on the other side. Both are
          belt instruments and both are read the same way. */
       if (d.mp.printer?.on) {
@@ -216,17 +287,18 @@ export class Hud {
          the caption and the key under it. There is nothing 17 tall between
          the toasts and the case, so the prompt stands down to its own key
          and its own line, under everything, the way the belt does. */
-      const flat = inst && H - 34 < 163;
-      if (d.prompt) {
-        this._prompt(flat || !agent ? W / 2 : (W - 118) / 2,
-          flat ? H - 9 : H - 34, d.prompt, 'E', flat);
+      // One predictable interaction row below the belt and instruments.
+      // The active task already names HOLD E in its progress panel.
+      if (d.prompt && !d.mp.task) {
+        const action = /^([A-Z0-9])\s{2,}(.+)$/.exec(d.prompt);
+        this._prompt(W / 2, H - 9, action ? action[2] : d.prompt, action ? action[1] : 'E', true);
       }
       /* Where the toast stack can sit is decided by what the columns and
          the instrument band actually took this frame, and only this pass
          knows that, so it leaves the measurements for the overlay. */
       this._overlayFit = {
         colBot: Math.max(this._mpLeftBottom || 0, this._mpRightBottom || 0),
-        tBot: inst ? 85 : H - 62,
+        tBot: 83,
         /* The edges of the gap the columns leave, not the compass' slice of
            it: the needle has to stay on the middle of the rose and so `room`
            is only ever twice the shorter side, but a sentence has no such
@@ -235,6 +307,7 @@ export class Hud {
            'FERDI KEEPS THE PEACE - NOBODY DIES HERE' to twenty characters a
            line, three lines, cut to '...NOBODY DIE.' */
         bandL: pwLeft + 4, bandR: W - 81,
+        bandY: Math.max(22, (this._bannerBottom || 0) + 3),
       };
       return late ? this.c : this._drawOverlay(time);
     }
@@ -279,47 +352,46 @@ export class Hud {
      never both, so the stack is never composited twice and the panel behind
      it keeps the alpha it was drawn with. No clearRect: it is drawn on top,
      not instead. */
-  renderOverlay(time) {
+  renderOverlay(time, screenName = null) {
     this._overlayLate = true;
+    this._screenName = screenName;
     return this._drawOverlay(time);
   }
 
   _drawOverlay(time) {
+    this._toastShown = null;
+    this._popupShown = null;
     if (!this.data.visible) return this.c;
     const d = this.data;
     const W = this.c.width, H = this.c.height;
+    // Menus own the framebuffer and display their own feedback. Gameplay
+    // notices keep their reading time until the player returns to the island.
+    if (this._screenName) return this.c;
     if (d.mp) {
-      /* The stack is centred and was measured against nothing, so a long
-         toast lay across the purse and the stamina bar on one side and the
-         chore list on the other. It gets the band between the columns —
-         but at 240 across that band is thirteen characters, which is not a
-         sentence. No width on its own can say which of the two it is — 132
-         held a purchase and cut Ferdi's house rule to 'NOBODY DIE.' — so
-         the messages that are up are wrapped into the band first and the
-         stack keeps it only if they come out in the lines it has to draw
-         them in. Anything longer drops below both columns instead, where
-         the full width is free. Either way it stops before the belt or an
-         instrument.
-
-         The fit comes from render(), which measured the columns and the
-         instruments this frame; the fallbacks only stand in for a first
-         call that somehow beats it, and read as a frame with neither. */
       const fit = this._overlayFit || {};
-      const tBot = fit.tBot ?? H - 62;
-      const bandL = fit.bandL ?? 0, bandR = fit.bandR ?? 0;
-      const bandW = bandR - bandL;
-      const bandY = Math.min(Math.round(H * 0.26), tBot - 26);
-      const band = bandW >= 40 && d.toasts.slice(-2)
-        .every((t) => wrapText(t.text, bandW - 12, 1, 1).length <= toastCap(bandY, tBot));
-      const tb = this._toasts(band ? (bandL + bandR) / 2 : W / 2,
-        band ? bandY : Math.max(Math.round(H * 0.26), (fit.colBot || 0) + 3),
-        band ? bandW : W - 24, tBot);
-      if (d.popup) this._popup(W, H, d.popup, tb);
+      const left = fit.bandL ?? 84, right = fit.bandR ?? W - 81;
+      this._notifications((left + right) / 2, fit.bandY ?? 22,
+        Math.min(224, right - left), fit.tBot ?? 83);
       return this.c;
     }
-    const tb = this._toasts(W / 2, Math.round(H * 0.30));
-    if (d.popup) this._popup(W, H, d.popup, tb);
+    // Keep the centre of the world clear. With a boss bar, use the left
+    // shoulder below the hearts; otherwise the notification sits above aim.
+    const nw = d.boss ? Math.min(140, Math.floor(W / 2) - 14) : Math.min(224, W - 24);
+    this._notifications(d.boss ? 4 + nw / 2 : W / 2, d.boss ? 58 : 51,
+      nw, Math.min(H - 70, d.boss ? 106 : Math.floor(H / 2) - 4));
     return this.c;
+  }
+
+  _notifications(cx, top, width, bottom) {
+    const d = this.data;
+    if (width < 40 || bottom - top < 13) return;
+    // A warning can interrupt a souvenir. Other messages take turns with
+    // the card instead of forming a wall of opaque panels over the world.
+    const warning = [...d.toasts].reverse().find((t) => t.kind === 'bad');
+    if (warning) this._toasts(cx, top, width, bottom, warning);
+    else if (d.popup && bottom - top >= 32) this._popup(this.c.width, this.c.height,
+      d.popup, { cx, top, width, bottom });
+    else this._toasts(cx, top, width, bottom);
   }
 
   /* Letterbox + cutscene caption, drawn after everything else so it
@@ -339,15 +411,18 @@ export class Hud {
     x.fillRect(0, H - bar, W, 1);
 
     if (d.cinemaText && d.cinemaFade > 0.01) {
-      const lines = String(d.cinemaText).split('\n');
+      const lines = String(d.cinemaText).split('\n').flatMap((raw) => wrapText(raw, W - 40, 1, 1));
+      const cap = Math.max(1, Math.floor((H - bar * 2 - 24) / 10));
+      const shown = lines.slice(0, cap);
+      if (lines.length > cap) shown[cap - 1] = fitText(`${shown[cap - 1]}...`, W - 40, 1);
       const a = Math.min(1, d.cinemaFade);
       const dim = (c) => (a > 0.66 ? c : (a > 0.33 ? '#c9b98a' : '#7a6a48'));
-      let y = H - bar - 12 - lines.length * 10;
-      for (const raw of lines) {
-        for (const ln of wrapText(raw, W - 40, 1, 1)) {
-          drawText(x, ln, { x: W / 2, y, scale: 1, align: 'center', color: dim(GOLD_LT) });
-          y += 10;
-        }
+      let y = H - bar - 12 - shown.length * 10;
+      for (const line of shown) {
+        const w = textWidth(line, 1) + 8;
+        x.fillStyle = 'rgba(0,0,0,.65)'; x.fillRect(Math.round((W - w) / 2), y - 1, w, 10);
+        drawText(x, line, { x: W / 2, y, scale: 1, align: 'center', color: dim(GOLD_LT) });
+        y += 10;
       }
     }
     if (d.cinemaSkip && Math.floor(time * 1.4) % 2 === 0) {
@@ -364,16 +439,18 @@ export class Hud {
     const x = this.x;
     for (const t of (mp.tags || [])) {
       const hex = '#' + (t.colour >>> 0).toString(16).padStart(6, '0');
-      const w = textWidth(t.name, 1) + 3;
-      const bx = Math.round(t.x - w / 2), by = t.y - 8;
-      if (t.fade < 0.35) continue;
+      const name = fitText(t.name, Math.min(119, this.c.width - 12), 1);
+      const w = textWidth(name, 1) + 4;
+      const bx = Math.round(Math.max(3, Math.min(this.c.width - w - 3, t.x - w / 2)));
+      const by = Math.round(t.y - 9);
+      if (t.fade < 0.35 || by < 2 || by + 10 > this.c.height - 2) continue;
       // a dark plate so a pale name never vanishes into the sky
       x.fillStyle = 'rgba(8,6,4,.62)';
-      x.fillRect(bx, by, w, 8);
+      x.fillRect(bx, by, w, 10);
       x.fillStyle = t.dead ? '#7a2018' : hex;
-      x.fillRect(bx, by + 7, w, 1);
-      drawText(x, t.name, {
-        x: Math.round(t.x), y: by + 2, scale: 1, align: 'center',
+      x.fillRect(bx, by + 9, w, 1);
+      drawText(x, name, {
+        x: bx + 2, y: by + 1, scale: 1,
         color: t.dead ? '#e0453a' : (t.fade > 0.7 ? '#fff3c4' : '#c9b98a'),
       });
     }
@@ -399,7 +476,11 @@ export class Hud {
       const w = textWidth(t.name, 1) + (t.steps > 1 ? 24 : 0);
       if (w > widest) widest = w;
     }
-    const pw = Math.min(CAP, Math.max(64, widest + 15));
+    /* The gutter the row numbers sit in, sized to the longest number there
+       is to print. They are what ties a row to the green mark on the compass
+       carrying the same figure, and seven pixels is a cheap price for it. */
+    const numW = textWidth(String(tasks.length), 1) + 2;
+    const pw = Math.min(CAP, Math.max(64, widest + 15 + numW));
     /* The key hint under the list is drawn whichever side you are on, so
        the plate has to be tall enough for it either way — a Castaway's
        TAB MAP was printed on the sand a row below its own backing. */
@@ -413,7 +494,8 @@ export class Hud {
     });
     let y = oy + 9;
     const beat = Math.floor(performance.now() / 110) % 2 === 0;
-    for (const t of tasks) {
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
       const done = t.done;
       const hot = mp.flash === t.id;
       if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 1, pw, 8); }
@@ -421,12 +503,15 @@ export class Hud {
       x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : (t.half ? '#5a4a12' : '#2a1c0c');
       x.fillRect(ox + 1, y + 1, 3, 3);
       if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 3, 3, 1); }
-      let label = (!done && t.steps > 1) ? `${t.name} ${t.step + 1}/${t.steps}` : t.name;
-      while (label.length > 4 && textWidth(label, 1) > pw - 11) label = label.slice(0, -1);
-      drawText(x, label, {
-        x: ox + 8, y, scale: 1,
-        color: hot ? '#dfffc4' : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4'))),
-      });
+      const col = hot ? '#dfffc4'
+        : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4')));
+      drawText(x, String(i + 1), { x: ox + 8, y, scale: 1, color: done ? '#4a5a3a' : '#8a7a52' });
+      /* The step counter is the one part of the row that must survive whole —
+         it is the only thing on the panel that says how far in you are — so
+         the name is fitted to whatever is left after it. */
+      const step = (!done && t.steps > 1) ? ` ${t.step + 1}/${t.steps}` : '';
+      const room = pw - 11 - numW - (step ? textWidth(step, 1) + 1 : 0);
+      drawText(x, this._fitName(t.name, room) + step, { x: ox + 8 + numW, y, scale: 1, color: col });
       y += 8;
     }
     /* This used to say THESE ARE FOR SHOW, and it was true: an Agent's
@@ -442,6 +527,20 @@ export class Hud {
       : 'TAB  MAP';
     drawText(x, foot, { x: ox, y: y + 1, scale: 1, color: agent ? '#c08a5c' : '#7a6a4a' });
     return pw;                 // render() sizes the compass against this
+  }
+
+  /** As much of a chore's name as `px` will hold, cut between words rather
+      than through one. Memoised on the width it was cut to: the answer only
+      changes when the framebuffer does, and this is asked once a row a
+      frame. */
+  _fitName(name, px) {
+    const key = `${px}:${name}`;
+    let cut = this._fitCut.get(key);
+    if (cut === undefined) {
+      if (this._fitCut.size >= 128) this._fitCut.clear();
+      this._fitCut.set(key, cut = fitName(name, px));
+    }
+    return cut;
   }
 
   /* ===========================================================
@@ -646,6 +745,189 @@ export class Hud {
   }
 
   /* ===========================================================
+     THE AGENT SCANNER
+
+     Not the set above. This one comes off the saucer, and it is the
+     same make as the machine lying on her side in the jungle with
+     UNIT 03 stamped on her collar — steel plates, dark seams, brass
+     where a hand goes. It is drawn in the signal scanner's case
+     because it is read the same way: a head with a maker's plate, a
+     screen, and one line at the bottom saying what the key does.
+
+     What it is not is friendly. There is no shopkeeper on the other
+     end of this thing and it does not congratulate anybody.
+
+     And it holds exactly one reading, for the whole lobby, for the
+     whole night — so the cell is on the head in every state, the
+     panel says so in as many words while it is idle, and the answer
+     is printed in the same cold steel whichever way it went. The
+     Agent's red and the crew's jade would let whoever is sitting
+     beside you read the verdict off the glass from across the room,
+     and the entire point of this machine is that the answer lives in
+     one head until its owner decides what to say about it.
+     =========================================================== */
+  _assay(ox, oy, uf) {
+    const x = this.x;
+    const W = 98, H = 76;
+    const s = uf.scan;
+    /* Her spread, kept: plate, seam and joint are three separate values,
+       and anything out of the same yard reads like plastic without all
+       three of them. */
+    const PLATE = '#343b42', SEAM = '#14181c', BRASS = '#d8b464';
+    const GLASS = '#0a1512', LIT = '#cfe6da', DIM = '#71918a';
+
+    /* ---- the case ---- */
+    x.fillStyle = 'rgba(4,7,9,.92)'; x.fillRect(ox - 1, oy - 1, W + 2, H + 2);
+    x.fillStyle = PLATE; x.fillRect(ox, oy, W, H);
+    x.fillStyle = '#4e5a62'; x.fillRect(ox, oy, W, 1);
+    x.fillStyle = SEAM; x.fillRect(ox, oy + H - 1, W, 1);
+    for (const [sx, sy] of [[ox + 3, oy + 3], [ox + W - 5, oy + 3],
+      [ox + 3, oy + H - 5], [ox + W - 5, oy + H - 5]]) {
+      x.fillStyle = BRASS; x.fillRect(sx, sy, 2, 2);
+      x.fillStyle = SEAM; x.fillRect(sx, sy + 1, 2, 1);
+    }
+
+    /* ---- the head: the maker's plate, the cell, and the saucer's clock ---- */
+    const HX = ox + 5, HY = oy + 4, HW = W - 10;
+    x.fillStyle = SEAM; x.fillRect(HX, HY, HW, 9);
+    x.fillStyle = '#2a3036'; x.fillRect(HX, HY, HW, 1);
+    drawText(x, 'UNIT 03', { x: HX + 3, y: HY + 1, scale: 1, color: BRASS });
+    /* One cell, lit or dead, and it is there in every state the panel has.
+       It is the whole rule of the thing, and it should land before anybody
+       has read a word. */
+    const spent = !!uf.spent || !!(s && s.done);
+    x.fillStyle = SEAM; x.fillRect(HX + 49, HY + 1, 9, 7);
+    x.fillStyle = spent ? '#3a4148' : '#6cff9a';
+    x.fillRect(HX + 50, HY + 2, 7, 5);
+    if (spent) { x.fillStyle = '#8a949c'; x.fillRect(HX + 50, HY + 4, 7, 1); }
+    // the visit's own clock: the machine is only worth anything while it stands off
+    const left = Math.max(0, Math.floor(uf.left || 0));
+    const clock = uf.on
+      ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+      : 'GONE';
+    drawText(x, clock, {
+      x: HX + HW - 3, y: HY + 1, scale: 1, align: 'right',
+      color: uf.on ? '#8a949c' : BRASS,
+    });
+
+    /* ---- the glass ---- */
+    const SX = ox + 5, SY = oy + 16, SW = W - 10, SH = 48;
+    x.fillStyle = GLASS; x.fillRect(SX, SY, SW, SH);
+    x.fillStyle = 'rgba(140,200,180,.07)';
+    for (let i = 2; i < SH; i += 3) x.fillRect(SX + 1, SY + i, SW - 2, 1);
+    x.fillStyle = '#2a3036';
+    x.fillRect(SX, SY, SW, 1); x.fillRect(SX, SY + SH - 1, SW, 1);
+    x.fillStyle = '#1e2a26';
+    x.fillRect(SX, SY, 1, SH); x.fillRect(SX + SW - 1, SY, 1, SH);
+
+    /* The glass is eighty-eight across and a glyph is six, so a line inset
+       off both bezels gets eighty-two — fourteen characters at scale one,
+       five at scale two. Nothing below is guessed at; the two verdict words
+       are five glyphs each on purpose. */
+    const IW = SW - 6;
+    const fit = (str, room) => {
+      let v = String(str);
+      while (v.length > 2 && textWidth(v, 1) > room) v = v.slice(0, -1);
+      return v;
+    };
+    const pick = (...opts) => opts.find((t) => textWidth(t, 1) <= IW) || opts[opts.length - 1];
+    const foot = (t, col) => drawText(x, t, {
+      x: ox + W / 2, y: oy + H - 10, scale: 1, align: 'center', color: col,
+    });
+
+    /* ---- in your hands, and nothing asked of it yet ---- */
+    if (!s) {
+      drawText(x, 'AGENT SCANNER', { x: SX + 3, y: SY + 3, scale: 1, color: LIT });
+      // ten glyphs either way, so the row is the same shape whichever it says
+      drawText(x, spent ? 'CELL SPENT' : 'CELL ARMED', {
+        x: SX + 3, y: SY + 12, scale: 1, color: DIM,
+      });
+      x.fillStyle = '#1e2a26'; x.fillRect(SX + 3, SY + 21, IW, 1);
+      /* Cut out of a bar of steel rather than coloured. The one thing a
+         glance has to take off this panel is that there is no second go,
+         and inverting it says that without spending a colour that means
+         something else on the panel next to this one. */
+      x.fillStyle = spent ? '#5a666c' : LIT;
+      x.fillRect(SX + 3, SY + 24, IW, 11);
+      drawText(x, spent ? pick('NOTHING LEFT', 'SPENT') : 'ONE READING', {
+        x: ox + W / 2, y: SY + 26, scale: 1, align: 'center', color: GLASS,
+      });
+      drawText(x, spent ? 'AND NO OTHER' : 'NO SECOND ONE', {
+        x: ox + W / 2, y: SY + 38, scale: 1, align: 'center', color: DIM,
+      });
+      foot(spent ? 'DISCHARGED' : 'E  READ ONCE', spent ? '#8a949c' : BRASS);
+      return;
+    }
+
+    /* ---- who is on the end of it ----
+       The same two rows under the thinking and under the answer, so the
+       name does not move at the moment you most want to be sure of it. */
+    drawText(x, 'SUBJECT', { x: SX + 3, y: SY + 3, scale: 1, color: DIM });
+    // their shirt, so a name you half-read is still the person you aimed at
+    x.fillStyle = `#${(s.colour >>> 0).toString(16).padStart(6, '0')}`;
+    x.fillRect(SX + 3, SY + 12, 3, 7);
+    drawText(x, fit(s.name || '?', IW - 6), {
+      x: SX + 9, y: SY + 12, scale: 1, color: LIT,
+    });
+    x.fillStyle = '#1e2a26'; x.fillRect(SX + 3, SY + 21, IW, 1);
+
+    /* ---- thinking about it ---- */
+    if (!s.done) {
+      const k = Math.max(0, Math.min(1, s.k || 0));
+      const t = performance.now() / 1000;
+      /* Four passes. The wait wants a shape, or it reads as the network
+         being slow rather than the machine being careful. */
+      drawText(x, `${Math.min(4, 1 + Math.floor(k * 4))}/4`, {
+        x: SX + SW - 3, y: SY + 3, scale: 1, align: 'right', color: DIM,
+      });
+      /* A live trace that gets busier as it converges, and a sweep running
+         across it — the same trick as the band above and for the same
+         reason: an instrument that holds still reads as one that is off. */
+      const TY = SY + 24, TH = 13;
+      x.fillStyle = '#061410'; x.fillRect(SX + 3, TY, IW, TH);
+      x.fillStyle = 'rgba(108,255,154,.42)';
+      for (let i = 0; i < IW; i++) {
+        const n = Math.sin(i * 0.9 + t * 11) * 0.5 + Math.sin(i * 2.7 - t * 17) * 0.5;
+        const h = 1 + Math.round(Math.abs(n) * (1 + k * 6));
+        x.fillRect(SX + 3 + i, TY + TH - h, 1, h);
+      }
+      x.fillStyle = 'rgba(207,230,218,.5)';
+      x.fillRect(SX + 3 + Math.floor(((t * 0.8) % 1) * IW), TY, 1, TH);
+      // and the wait itself, ticked, so it reads as steps and not a slide
+      const bx = SX + 3, by = SY + 40;
+      x.fillStyle = INK; x.fillRect(bx - 1, by - 1, IW + 2, 7);
+      x.fillStyle = '#0b1f18'; x.fillRect(bx, by, IW, 5);
+      for (let i = 0; i < Math.round(k * IW); i += 3) {
+        x.fillStyle = i % 6 ? '#3a8a68' : '#6cff9a';
+        x.fillRect(bx + i, by, 2, 5);
+      }
+      foot(`COMPUTING${'.'.repeat(1 + (Math.floor(t * 2.5) % 3))}`, LIT);
+      return;
+    }
+
+    /* ---- the answer ----
+       AGENT and HUMAN are five glyphs apiece, printed in the same steel,
+       in the same brackets, in the same place. Across the room the panel
+       is the same picture whichever it says. At arm's length there is no
+       doubt at all, which is the only distance the doubt ever mattered at. */
+    const rogue = !!s.agent;
+    x.fillStyle = '#3d5a52';
+    for (const [bxx, tip] of [[SX + 6, SX + 7], [SX + SW - 7, SX + SW - 9]]) {
+      x.fillRect(bxx, SY + 24, 1, 14);
+      x.fillRect(tip, SY + 24, 2, 1);
+      x.fillRect(tip, SY + 37, 2, 1);
+    }
+    drawText(x, rogue ? 'AGENT' : 'HUMAN', {
+      x: ox + W / 2, y: SY + 24, scale: 2, align: 'center', color: '#e6f0f4',
+    });
+    /* Eleven glyphs either way, and the words the machine actually uses. */
+    drawText(x, rogue ? 'ROGUE AGENT' : 'READS HUMAN', {
+      x: ox + W / 2, y: SY + 40, scale: 1, align: 'center', color: LIT,
+    });
+    foot('READING SPENT', '#8a949c');
+  }
+
+  /* ===========================================================
      THE RECEIPT PRINTER
 
      Ferdi's docket machine, on your belt. Paper feeds out of the head at
@@ -784,7 +1066,7 @@ export class Hud {
     const x = this.x;
     const cools = mp.cools || [];
     const PW = 112;
-    const PH = 30 + Math.min(3, cools.length) * 7;
+    const PH = 33 + Math.min(3, cools.length) * 9;
     const ox = rx - PW, oy = by - PH;
     plate(x, ox, oy, PW, PH);
 
@@ -796,14 +1078,17 @@ export class Hud {
        second. killReady is never earlier than graceEnds, so this is the
        same wait, drawn as one monotone fill. */
     const left = Math.max(grace, cd);
-    const ready = left <= 0;
+    const ready = left <= 0 && mp.alive !== false && !mp.stunned && !mp.nightOnly;
     const total = Math.max(mp.killTotal || 1, 1);
 
     /* On neutral ground the kill is refused however cold the clock is, and
        the panel went on promising a knife over a key that did nothing. */
     const sanct = !!mp.sanct;
     drawKnife(x, ox + 3, oy + 3, ready && !sanct);
-    drawText(x, sanct ? 'NEUTRAL GROUND' : (ready ? 'KNIFE READY' : 'KILL COOLDOWN'), {
+    const label = mp.alive === false ? 'GHOST' : mp.stunned ? 'STUNNED'
+      : sanct ? 'NEUTRAL GROUND' : mp.nightOnly ? 'WAIT FOR NIGHT'
+        : ready ? 'KNIFE READY' : 'KILL COOLDOWN';
+    drawText(x, label, {
       x: ox + 14, y: oy + 3, scale: 1, color: ready && !sanct ? '#ff8a7a' : '#a87a70',
     });
     const bw = PW - 6, bx = ox + 3, by2 = oy + 12;
@@ -817,13 +1102,13 @@ export class Hud {
       x.fillRect(bx + i, by2, 2, 4);
     }
     // the seconds sit on the bar, not on top of the label
-    drawText(x, ready ? 'F' : `${Math.ceil(left)}`, {
+    drawText(x, ready && !sanct ? 'F' : (left > 0 ? `${Math.ceil(left)}` : '--'), {
       x: ox + PW - 4, y: by2 - 1, scale: 1, align: 'right',
       color: ready ? '#ffd8ce' : '#e2b0a4',
     });
 
     // the sabotage key, as an actual key
-    const sabReady = !cools.length && !mp.sabotage;
+    const sabReady = !cools.length && !mp.sabotage && mp.alive !== false && !mp.stunned;
     const ky = oy + 20;
     x.fillStyle = sabReady ? '#c39a2c' : '#3a2a18';
     x.fillRect(ox + 3, ky, 9, 9);
@@ -834,7 +1119,7 @@ export class Hud {
     drawText(x, sabReady ? 'SABOTAGE' : 'COOLING', {
       x: ox + 15, y: ky + 2, scale: 1, color: sabReady ? GOLD_LT : '#7a6a4a' });
 
-    let cy = oy + 31;
+    let cy = oy + 32;
     /* Six glyphs reach ox+38 with their shadow, and the bar was started at
        ox+30 and filled after them, so SCATTER printed as SCAT and two
        stubs. The bar starts clear of the label field and gives up the
@@ -850,7 +1135,7 @@ export class Hud {
         x.fillStyle = i % 6 ? '#6a4a24' : '#c39a2c';
         x.fillRect(ox + LX + 1 + i, cy + 1, 2, 3);
       }
-      cy += 7;
+      cy += 9;
     }
   }
 
@@ -887,7 +1172,13 @@ export class Hud {
     x.fillRect(px0, oy - 2, PW, 1);
     x.fillRect(px0, oy + PH - 3, PW, 1);
 
-    drawText(x, 'SYNCOIN', { x: px0 + 4, y: oy + 1, scale: 1, color: '#c9b98a' });
+    // A changing balance occupies its label, never the work count below it.
+    const moneyLabel = kick > 0 && this._purseDelta
+      ? `${this._purseDelta > 0 ? '+' : ''}${this._purseDelta} SYNCOIN` : 'SYNCOIN';
+    drawText(x, fitText(moneyLabel, PW - 8, 1), {
+      x: px0 + 4, y: oy + 1, scale: 1,
+      color: kick > 0 ? (gain ? JADE : RED) : '#c9b98a',
+    });
     drawCoinPip(x, px0 + 4, oy + 11);
     // the figure, at double height, with a flash on the way up
     const numCol = kick > 0
@@ -897,8 +1188,9 @@ export class Hud {
        kick is a colour flash and the floating delta below — it used to
        lift the number two pixels and at three digits or more that put it
        through the label. */
-    drawText(x, String(coins), {
-      x: ox - 4, y: oy + 8, scale: 2, align: 'right', color: numCol,
+    const coinScale = textWidth(String(coins), 2) <= PW - 22 ? 2 : 1;
+    drawText(x, fitText(String(coins), PW - 22, coinScale), {
+      x: ox - 4, y: oy + (coinScale === 2 ? 8 : 13), scale: coinScale, align: 'right', color: numCol,
     });
 
     /* --- the island's work --- */
@@ -941,18 +1233,6 @@ export class Hud {
        seen this. It floats below instead, under the panel it belongs to and
        drawn after it so the panel cannot bury it in turn; the backing keeps
        it legible over the work count for the second the kick lasts. */
-    if (kick > 0 && this._purseDelta) {
-      const rise = Math.round((1 - kick) * 5);
-      const label = (this._purseDelta > 0 ? '+' : '') + this._purseDelta;
-      const lw = textWidth(label, 1);
-      const lx = ox - 4 - lw;
-      const ly = oy + PH + 4 - rise;
-      x.fillStyle = 'rgba(8,6,3,.85)';
-      x.fillRect(lx - 2, ly - 1, lw + 4, 9);
-      drawText(x, label, {
-        x: lx, y: ly, scale: 1, color: gain ? '#8fe8a0' : '#ff8a7a',
-      });
-    }
 
     /* --- your stamina, where you can actually see it ---
        The crew strip lived here and told you nothing you could not read
@@ -986,6 +1266,22 @@ export class Hud {
     }
     /* What the banner and the toasts have to clear. */
     this._mpRightBottom = y + SH;
+    if (mp.connection) {
+      const health = mp.connection;
+      const bad = health.state === 'degraded' || health.state === 'closed';
+      const status = health.state === 'closed' ? 'OFFLINE'
+        : health.state === 'degraded' ? 'SLOW LINK'
+          : Number.isFinite(health.rtt) ? `${Math.min(9999, Math.round(health.rtt))} MS` : 'ONLINE';
+      const cy = this._mpRightBottom + 3;
+      x.fillStyle = bad ? RED : JADE;
+      for (let bar = 0; bar < 3; bar++) {
+        const bh = 2 + bar * 2;
+        if (!bad || bar === 0) x.fillRect(px0 + 4 + bar * 3, cy + 6 - bh, 2, bh);
+      }
+      drawText(x, status, { x: ox - 4, y: cy, align: 'right', scale: 1,
+        color: bad ? '#ff8a7a' : '#8a9f94' });
+      this._mpRightBottom = cy + 7;
+    }
   }
 
   /**
@@ -1010,10 +1306,15 @@ export class Hud {
     const MAX = 9;
     const shown = Math.min(belt.length, MAX);
     const spare = belt.length - shown;
+    const available = this.c.width - (mp.role === 'agent' ? 128 : 12);
+    const columns = Math.max(1, Math.min(MAX, Math.floor((available - 4) / SLOT)));
+    const rows = Math.max(1, Math.ceil(shown / columns));
+    const rowStep = SLOT + 2;
+    oy -= (rows - 1) * rowStep;
     if (shown) {
-      const w = Math.max(shown * SLOT + 4 + (spare > 0 ? 18 : 0),
+      const w = Math.max(Math.min(shown, columns) * SLOT + 4,
         textWidth('BELT', 1) + 10);
-      plate(x, ox, oy - 10, w, SLOT + 16);
+      plate(x, ox, oy - 10, w, rows * rowStep + 10);
       drawText(x, 'BELT', { x: ox + 3, y: oy - 8, scale: 1, color: '#8a7a52' });
       if (spare > 0) {
         drawText(x, `+${spare}`, {
@@ -1022,31 +1323,37 @@ export class Hud {
       }
       for (let i = 0; i < shown; i++) {
         const sl = belt[i];
-        const sx = ox + 2 + i * SLOT;
+        const sx = ox + 2 + (i % columns) * SLOT;
+        const sy = oy + Math.floor(i / columns) * rowStep;
         // the well
         x.fillStyle = sl.active ? '#3a2a10' : '#140e06';
-        x.fillRect(sx, oy + 2, SLOT - 2, SLOT - 2);
+        x.fillRect(sx, sy + 2, SLOT - 2, SLOT - 2);
         x.fillStyle = sl.active ? GOLD : '#4a3a1c';
-        x.fillRect(sx, oy + 2, SLOT - 2, 1);
-        x.fillRect(sx, oy + SLOT - 1, SLOT - 2, 1);
-        x.fillRect(sx, oy + 2, 1, SLOT - 3);
-        x.fillRect(sx + SLOT - 3, oy + 2, 1, SLOT - 3);
-        drawShopIcon(x, sl.icon, sx + 2, oy + 4, 12, true, t);
+        x.fillRect(sx, sy + 2, SLOT - 2, 1);
+        x.fillRect(sx, sy + SLOT - 1, SLOT - 2, 1);
+        x.fillRect(sx, sy + 2, 1, SLOT - 3);
+        x.fillRect(sx + SLOT - 3, sy + 2, 1, SLOT - 3);
+        drawShopIcon(x, sl.icon, sx + 2, sy + 4, 12, true, t);
         // the key that spends it, bottom-left of the well
         drawText(x, String(i + 1), {
-          x: sx + 1, y: oy + SLOT - 8, scale: 1,
+          x: sx + 1, y: sy + SLOT - 8, scale: 1,
           color: sl.active ? GOLD_LT : '#9a8a62', shadow: true,
         });
         // how many you have, if more than one
         if (sl.count > 1) {
-          drawText(x, `x${sl.count}`, {
-            x: sx + SLOT - 4, y: oy + SLOT - 8, scale: 1, align: 'right', color: GOLD_LT,
+          const count = sl.count > 99 ? '+' : String(sl.count);
+          const cw = textWidth(count, 1);
+          // Count above, key below: x12 used to cover its own number key.
+          x.fillStyle = 'rgba(8,5,3,.9)';
+          x.fillRect(sx + SLOT - 4 - cw, sy + 2, cw + 1, 8);
+          drawText(x, count, {
+            x: sx + SLOT - 4, y: sy + 2, scale: 1, align: 'right', color: GOLD_LT,
           });
         }
         // a drawn weapon pulses so you know it is in your hands
         if (sl.active && Math.floor(t * 5) % 2 === 0) {
           x.fillStyle = 'rgba(255,210,74,.28)';
-          x.fillRect(sx, oy + 2, SLOT - 2, SLOT - 2);
+          x.fillRect(sx, sy + 2, SLOT - 2, SLOT - 2);
         }
       }
     }
@@ -1056,7 +1363,7 @@ export class Hud {
        and no label — from a distance that reads as one small brown button
        nobody can identify. Labelled and plated now. */
     if (passives.length) {
-      const py = oy + (shown ? SLOT + 10 : 0);
+      const py = oy + (shown ? rows * rowStep + 8 : 0);
       const pw = Math.max(passives.length * 11 + 6, textWidth('ON YOU', 1) + 10);
       plate(x, ox, py - 10, pw, 21);
       drawText(x, 'ON YOU', { x: ox + 3, y: py - 8, scale: 1, color: '#8a7a52' });
@@ -1069,6 +1376,27 @@ export class Hud {
   /** Centre-bottom: whatever is currently urgent. */
   _mpBanner(W, H, mp, pwLeft = 0) {
     const x = this.x;
+    this._bannerBottom = 0;
+    const laneLeft = pwLeft + 4, laneRight = W - 81;
+    const laneW = Math.max(40, laneRight - laneLeft);
+    const laneX = (laneLeft + laneRight) / 2;
+
+    // The countdown is urgent enough to own the first row. The old footer
+    // sat through the Agent's cooldown list and the till-roll key.
+    if (mp.sabotage) {
+      const s = mp.sabotage;
+      const countdown = `  ${Math.max(0, Math.ceil(s.left))}`;
+      const label = this._fitName(s.name, laneW - 10 - textWidth(countdown, 1)) + countdown;
+      const w = Math.min(laneW, textWidth(label, 1) + 10);
+      const bx = Math.round(laneX - w / 2), by = 22;
+      x.fillStyle = s.fatal ? 'rgba(60,8,6,.9)' : 'rgba(30,20,6,.9)';
+      x.fillRect(bx, by, w, 11);
+      x.fillStyle = s.fatal ? RED : GOLD_DK;
+      x.fillRect(bx, by, 2, 11);
+      drawText(x, label, { x: laneX, y: by + 2, scale: 1, align: 'center',
+        color: s.fatal ? '#ffbdb7' : GOLD_LT });
+      this._bannerBottom = by + 11;
+    }
 
     /* The dead get a line of their own, above everything else the banner
        does. Being murdered is not the end of the round for you and the game
@@ -1083,20 +1411,20 @@ export class Hud {
          same measurement the compass is given — and where the hint will not
          fit on one line it goes on two, split at the keys rather than
          wrapped, because "SOMEBODY E" is not a hint. */
-      const room = 2 * Math.min(W / 2 - (pwLeft + 4), W / 2 - 81);
-      const inner = Math.max(30, room - 14);
-      const long = mp.watching ? 'F  NEXT     MOVE  LET GO' : 'F  WATCH SOMEBODY     E  WORK ON';
-      const hint = textWidth(long, 1) <= inner ? [long]
-        : (mp.watching ? ['F  NEXT', 'MOVE  LET GO'] : ['F  WATCH', 'E  WORK ON']);
-      const lines = [...wrapText(msg, inner, 1, 1), ...hint];
-      const gw = Math.min(room, lines.reduce((m, s2) => Math.max(m, textWidth(s2, 1)), 0) + 14);
-      const gx = Math.round((W - gw) / 2), gy = 22;
-      plate(x, gx, gy, gw, 4 + lines.length * 10);
-      const named = lines.length - hint.length;
+      const inner = laneW - 10;
+      const hint = mp.watching ? 'F NEXT / MOVE EXIT' : 'F WATCH / E WORK';
+      const compact = !!(mp.task || mp.sabotage);
+      const lines = compact ? [fitText('GHOST / F WATCH', inner, 1)]
+        : [fitText(msg, inner, 1), fitText(hint, inner, 1)];
+      const gw = Math.min(laneW, Math.max(...lines.map((line) => textWidth(line, 1))) + 10);
+      const gx = Math.round(laneX - gw / 2), gy = Math.max(22, this._bannerBottom + 3);
+      const gh = compact ? 13 : 23;
+      plate(x, gx, gy, gw, gh);
       lines.forEach((s2, i) => drawText(x, s2, {
-        x: W / 2, y: gy + 3 + i * 10, scale: 1, align: 'center',
-        color: i < named ? '#8fd8ff' : '#6a7a8a',
+        x: laneX, y: gy + 3 + i * 10, scale: 1, align: 'center',
+        color: i === 0 ? '#8fd8ff' : '#9aaaba',
       }));
+      this._bannerBottom = gy + gh;
     }
 
     // task hold — a single framed panel, not a bar with captions above and
@@ -1106,14 +1434,15 @@ export class Hud {
       /* The bottom line is the verb, which can be longer than the name the
          plate was measured from — SHOULDERING HOLD STILL ran twenty pixels
          off each end of its own backing onto the world. */
-      const hold = `${t2.verb || ''}  HOLD STILL`;
-      const pw = Math.min(W - 8,
-        Math.max(96, textWidth(t2.name || '', 1) + 14, textWidth(hold, 1) + 14));
-      const px = Math.round((W - pw) / 2), py = H - 56;
+      const hold = 'HOLD E - STAY STILL';
+      const pw = Math.min(224, laneW);
+      const px = Math.round(laneX - pw / 2), py = Math.max(22, this._bannerBottom + 3);
       plate(x, px, py, pw, 27);
       x.fillStyle = JADE;
       x.fillRect(px, py, pw, 1); x.fillRect(px, py + 26, pw, 1);
-      drawText(x, t2.name || '', { x: W / 2, y: py + 3, scale: 1, align: 'center', color: GOLD_LT });
+      drawText(x, this._fitName(t2.name || '', pw - 12), {
+        x: laneX, y: py + 3, scale: 1, align: 'center', color: GOLD_LT,
+      });
 
       const bw = pw - 12, bx = px + 6, by = py + 12;
       x.fillStyle = INK; x.fillRect(bx - 1, by - 1, bw + 2, 7);
@@ -1126,27 +1455,13 @@ export class Hud {
       // a chaser so it never looks frozen when progress is slow
       const cx2 = bx + ((performance.now() / 9) % bw | 0);
       x.fillStyle = 'rgba(190,255,230,.35)'; x.fillRect(cx2, by, 1, 5);
-      drawText(x, t2.holding ? hold : 'HOLD E',
-        { x: W / 2, y: py + 19, scale: 1, align: 'center',
+      drawText(x, t2.holding ? fitText(hold, pw - 10, 1) : 'HOLD E',
+        { x: laneX, y: py + 19, scale: 1, align: 'center',
           color: t2.holding ? '#9fd8c4' : (Math.floor(performance.now() / 200) % 2 ? GOLD : '#8a7a52') });
+      this._bannerBottom = py + 27;
     }
 
-    // sabotage countdown
-    if (mp.sabotage) {
-      const s = mp.sabotage;
-      const flash = s.fatal && Math.floor(performance.now() / 220) % 2 === 0;
-      const label = `${s.name}  ${Math.ceil(s.left)}`;
-      const w = textWidth(label, 1) + 10;
-      const bx = Math.round((W - w) / 2), by = H - 21;
-      x.fillStyle = s.fatal ? 'rgba(60,8,6,.82)' : 'rgba(30,20,6,.8)';
-      x.fillRect(bx, by, w, 11);
-      x.fillStyle = s.fatal ? (flash ? '#e0453a' : '#8a2018') : '#a8761c';
-      x.fillRect(bx, by, w, 1); x.fillRect(bx, by + 10, w, 1);
-      drawText(x, label, {
-        x: W / 2, y: by + 2, scale: 1, align: 'center',
-        color: s.fatal ? (flash ? '#fff3c4' : '#ffb0a4') : GOLD_LT,
-      });
-    }
+
   }
 
   /* ---------- hearts ---------- */
@@ -1193,7 +1508,7 @@ export class Hud {
     x.fillStyle = '#6b4a24'; x.fillRect(ox - 7, oy + 4, 2, 2);
     drawText(x, String(d.ammo), { x: ox - 12, y: oy + 1, scale: 2, color: GOLD_LT, align: 'right' });
 
-    let y = oy + 14;
+    let y = oy + 17;
     drawText(x, `PEND ${d.pendulums}/4`, {
       x: ox, y, scale: 1, align: 'right',
       color: d.pendulums >= 4 ? GOLD : '#c9b98a',
@@ -1231,15 +1546,40 @@ export class Hud {
       x.fillRect(tx, oy + H - (major ? 5 : 3), 1, major ? 5 : 3);
     }
 
+    /* Five identical green pips scattered along the strip said only one
+       thing, which is that the strip was full. Each chore carries the number
+       of its row on the list beside it instead, so the two panels are one
+       instrument: the third line down and the mark reading 3 are the same
+       errand. Numbered here, before the sort, because ui.js appends the
+       marks in list order and the sort is about to throw that away — and
+       only while the strip and the list agree on how many chores are
+       outstanding, since a chore whose site is unknown has a row and no mark
+       and a number pointing at the wrong row is worse than no number. */
+    const rows = this.data.mp?.myTasks;
+    let jobs = 0, open = 0;
+    for (const m of c.marks) if (m.kind === 'job') jobs++;
+    if (rows) for (const t of rows) if (!t.done) open++;
+    if (jobs) {
+      let r = 0;
+      for (const m of c.marks) {
+        if (m.kind !== 'job') continue;
+        if (jobs !== open) { m.no = 0; continue; }
+        while (r < rows.length && rows[r].done) r++;
+        m.no = ++r;
+      }
+    }
+
     /* Two named places on the same bearing used to print on top of each
        other — CAMP and COIN at the same angle came out as "CCOAIMNP". The
        place labels share one row, so they are drawn in order of how much you
        need them and anything that would land on top of one already there is
-       dropped. The pip or diamond still draws; only the lettering goes.
+       dropped altogether.
        Sorted where it lies: ui.js refills the same pooled marks in the same
        slots every frame, so a permuted pool is indistinguishable. */
+    sortYaw = c.yaw;
     c.marks.sort(byNeed);
     this._compassTaken.length = 0;
+    this._compassSaid.length = 0;
 
     for (const m of c.marks) {
       const dA = compassWrap(m.angle - c.yaw);
@@ -1254,25 +1594,6 @@ export class Hud {
             : m.kind === 'coin' ? GOLD_LT
               : '#8fd8ff';
       if (near < 0.10) continue;
-      /* Loose money, from something Cathy sold you. Unlabelled ones are the
-         seventy-metre sweep and get a pip; the one labelled COIN is the
-         needle on the nearest, and gets its name. */
-      if (m.kind === 'coin' && !m.label) {
-        x.fillStyle = col;
-        x.fillRect(px - 1, oy + 12, 3, 3);
-        x.fillStyle = '#8a6c2a';
-        x.fillRect(px, oy + 13, 1, 1);
-        continue;
-      }
-      if (m.kind === 'job' || m.kind === 'fix') {
-        // a small diamond, below the lettering rather than through it
-        x.fillStyle = col;
-        x.fillRect(px, oy + 11, 1, 1);
-        x.fillRect(px - 1, oy + 12, 3, 1);
-        x.fillRect(px - 2, oy + 13, 5, 1);
-        x.fillRect(px - 1, oy + 14, 3, 1);
-        continue;
-      }
       /* Cardinals on the top line, places on the bottom. They used to share
          a row and spell nonsense wherever a landmark lined up with a letter. */
       const card = m.kind === 'card' || m.kind === 'inter';
@@ -1284,13 +1605,25 @@ export class Hud {
         });
         continue;
       }
-      /* Picture first, name second, and the name is the part that gives way.
+      /* EVERYTHING that is not a cardinal shares this one row, and every one
+         of them claims its span before it draws. The chore diamonds and the
+         coin pips used to be painted straight out at their own bearing and
+         return before the reservation was ever consulted, so a chore pip
+         went through the middle of MACHINE — a word and a sprite on the same
+         pixels — and two chores on one bearing went through each other. They
+         are not below the lettering either: seventeen rows hold one line of
+         cardinals and one line of places and there is no third line to be
+         below.
+
+         Picture first, name second, and the name is the part that gives way.
          A place costs seven pixels as a sprite and up to thirty-five as a
          word, so on a crowded bearing the word is what will not fit — and a
          campfire you can recognise is worth more than a blank gap where
          CAMP used to be dropped for want of room. */
       const icon = m.icon && POI_ICONS[m.icon] ? m.icon : null;
-      const lw = textWidth(m.label, 1);
+      // A chore has no name of its own; it wears its row number off the list.
+      const tag = m.kind === 'job' ? (m.no ? String(m.no) : '') : m.label;
+      const lw = textWidth(tag, 1);
       const iw = icon ? POI_ICON_W + 2 : 0;   // two clear pixels, or the halo touches the first letter
       /* A mark survives to within a twentieth of the end of the strip, so a
          word centred on it lettered clean off the plate — onto a heart on
@@ -1300,23 +1633,44 @@ export class Hud {
          asked for, or two labels clamped to the same end re-collide. */
       const lo = left + 1, hi = left + W - 1;
       const place = (wd) => Math.max(lo, Math.min(hi - wd, Math.round(px - wd / 2)));
-      let showLabel = !!m.label;
+      /* What it will settle for when the span it wants is spoken for: the
+         picture without the word, or — for the seventy-metre coin sweep and
+         for a chore the list could not be matched to — three pixels that say
+         only that something is there. A named place never falls back to the
+         pip: an anonymous dot beside a lettered neighbour is what the strip
+         looked like before it had sprites, and it reads as dirt. */
+      const spare = icon ? POI_ICON_W : (tag ? 0 : 3);
+      /* Ferdi has two outlying machines and both ticks are called MACHINE,
+         which is how a strip with five chore pips on it came to read as five
+         things that say machine. A name is worth lettering once; the second
+         one that far away is a picture, and the picture is what says which
+         way it is. */
+      const said = !!tag && this._compassSaid.includes(tag);
       let wide = iw + lw;
       let x0 = place(wide);
-      if (wide > hi - lo || !this._compassRoom(x0, wide)) {
-        if (!icon) continue;                 // nothing to fall back on
-        showLabel = false;
-        wide = POI_ICON_W;
+      const full = !said && wide > 0 && wide <= hi - lo && this._compassRoom(x0, wide);
+      if (!full) {
+        if (!spare) continue;
+        wide = spare;
         x0 = place(wide);
         if (!this._compassRoom(x0, wide)) continue;
       }
       if (icon) drawPoiIcon(x, icon, x0, oy + 9, performance.now() / 1000);
-      if (showLabel) {
-        drawText(x, m.label, {
+      else if (!tag) {
+        x.fillStyle = col; x.fillRect(x0, oy + 11, 3, 3);
+        x.fillStyle = '#8a6c2a'; x.fillRect(x0 + 1, oy + 12, 1, 1);
+      }
+      if (full && tag) {
+        drawText(x, tag, {
           x: x0 + iw, y: oy + 9, scale: 1, align: 'left', color: col, shadow: false,
         });
+        this._compassSaid.push(tag);
       }
-      x.fillStyle = col; x.fillRect(px, oy + 7, 1, 2);
+      /* The true bearing, on the one row the two lines of lettering leave
+         between them. It was two pixels tall from oy+7, and oy+7 is the last
+         row of the cardinals — a place directly under the N put a dot in the
+         foot of it. */
+      x.fillStyle = col; x.fillRect(px, oy + 8, 1, 1);
     }
 
     // needle and frame
@@ -1396,15 +1750,17 @@ export class Hud {
   /* ---------- interaction prompt ---------- */
   _prompt(cx, cy, text, key = 'E', flat = false) {
     const x = this.x;
-    const label = String(text).toUpperCase();
     const capW = keycapWidth(key);
+    const label = fitText(text, this.c.width - (flat ? textWidth(`${key}  `, 1) + 19 : capW + 28), 1);
     /* Stood down to a line, because the caller has an instrument up and its
        case owns every row a 17-tall panel could have sat in. The key is
        still named, which is the part you are reading it for. */
     if (flat) {
-      drawText(x, `${key}  ${label}`, {
-        x: cx, y: cy, scale: 1, align: 'center', color: GOLD_LT,
-      });
+      const line = `${key}  ${label}`;
+      const w = textWidth(line, 1) + 8;
+      const left = Math.round(Math.max(4, Math.min(this.c.width - w - 4, cx - w / 2)));
+      x.fillStyle = 'rgba(8,5,3,.78)'; x.fillRect(left, cy - 1, w, 9);
+      drawText(x, line, { x: left + 4, y: cy, scale: 1, color: GOLD_LT });
       return;
     }
     const w = textWidth(label, 1, 1) + capW + 20;
@@ -1416,128 +1772,83 @@ export class Hud {
     drawText(x, label, { x: left + 10 + capW, y: cy + 6, scale: 1, color: GOLD_LT });
   }
 
-  /* ---------- toasts ----------
-     Two at a time, newest kept. An uncapped stack grows down the middle of
-     the screen and there is no panel you can put anywhere below it that a
-     tall enough stack will not eventually reach — the scanner sits under
-     this and was getting walked on.
-
-     Nothing measured the width either. A toast is centred on cx and was
-     drawn at whatever length it happened to be, so THEY WILL SWEAR YOU WERE
-     ELSEWHERE - PRESS AGAIN TO DROP IT was a 365-pixel plate on a 240-pixel
-     frame: nine characters off the left of the picture, ten off the right,
-     and the whole width blanked for eleven rows. It wraps into the room the
-     caller says it has, two lines at most so the stack cannot walk any
-     further down than it did, and it stops at `bottom` — dropping the older
-     toast rather than the one that has just arrived.
-
-     Returns the y the stack finished at, so the popup card can stay off it. */
-  _toasts(cx, oy, maxW = this.c.width - 24, bottom = this.c.height) {
+  /* A single, bounded notification surface. Long copy advances by whole
+     lines instead of losing its last instruction to an arbitrary slice. */
+  _toasts(cx, oy, maxW = this.c.width - 24, bottom = this.c.height, selected = null) {
     const x = this.x;
-    // as many lines as the budget below the stack can hold, never more than two
     const cap = toastCap(oy, bottom);
-    const rows = this.data.toasts.slice(-2).map((t) => {
-      const all = wrapText(t.text, maxW - 12, 1, 1);
-      const lines = all.length ? all.slice(0, cap) : [''];
-      // the same '.' the printer's dockets end a cut line with
-      if (all.length > cap) lines[cap - 1] = `${lines[cap - 1].slice(0, -1)}.`;
-      return {
-        t,
-        lines,
-        w: lines.reduce((m, l) => Math.max(m, textWidth(l, 1, 1)), 0) + 12,
-        h: lines.length * 9 + 2,
-      };
-    });
-    let y = oy;
-    while (rows.length > 1
-      && y + rows.reduce((n, r) => n + r.h + 2, 0) - 2 > bottom) rows.shift();
-    for (const r of rows) {
-      const left = Math.round(Math.max(3, Math.min(this.c.width - r.w - 3, cx - r.w / 2)));
-      const fade = Math.min(1, r.t.life * 3);
-      if (fade < 0.5 && Math.floor(r.t.life * 12) % 2 === 0) { y += r.h + 2; continue; }
-      x.fillStyle = 'rgba(8,5,3,.82)';
-      x.fillRect(left, y, r.w, r.h);
-      const col = r.t.kind === 'bad' ? RED : r.t.kind === 'jade' ? JADE : GOLD;
-      x.fillStyle = col; x.fillRect(left, y, 2, r.h);
-      const tc = r.t.kind === 'bad' ? '#ffbdb7' : GOLD_LT;
-      r.lines.forEach((ln, i) => drawText(x, ln, { x: left + 6, y: y + 2 + i * 9, scale: 1, color: tc }));
-      y += r.h + 2;
-    }
-    return y;
+    const t = selected || this.data.toasts[this.data.toasts.length - 1];
+    if (!t || !cap) return oy;
+    maxW = Math.min(224, maxW, this.c.width - 8);
+    const all = wrapText(t.text, maxW - 12, 1, 1);
+    const pages = Math.max(1, Math.ceil(all.length / cap));
+    const reading = Math.max(t.max, pages * 1.8 + 0.3);
+    if (reading > t.max) { t.life += reading - t.max; t.max = reading; }
+    const page = Math.min(pages - 1, Math.floor((t.elapsed || 0) / (reading / pages)));
+    const lines = all.slice(page * cap, (page + 1) * cap);
+    // Stable width across pages prevents the panel jumping while reading.
+    const w = Math.min(maxW, Math.max(40, ...all.map((line) => textWidth(line, 1) + 12)));
+    const h = Math.min(cap, all.length) * 9 + 4;
+    const left = Math.round(Math.max(4, Math.min(this.c.width - w - 4, cx - w / 2)));
+    x.save();
+    x.globalAlpha = Math.min(1, t.life / 0.3);
+    x.fillStyle = 'rgba(8,5,3,.88)'; x.fillRect(left, oy, w, h);
+    const col = t.kind === 'bad' ? RED : t.kind === 'jade' ? JADE : GOLD;
+    x.fillStyle = col; x.fillRect(left, oy, 2, h);
+    lines.forEach((line, i) => drawText(x, line, {
+      x: left + 6, y: oy + 2 + i * 9, scale: 1,
+      color: t.kind === 'bad' ? '#ffbdb7' : GOLD_LT,
+    }));
+    x.fillStyle = col;
+    x.fillRect(left + 3, oy + h - 1, Math.round((w - 3) * Math.max(0, t.life / t.max)), 1);
+    x.restore();
+    this._toastShown = t;
+    return oy + h;
   }
 
-  /* ===========================================================
-     COLLECTIBLE POPUP — a drawn card with its own pixel icon
-     =========================================================== */
-  _popup(W, H, p, toastBot = 0) {
+  /* Collectibles keep their pixel art, but use the same reserved lane as
+     messages. The old 52–74 pixel card occupied the reticle and instruments.
+     This receipt is 35 pixels tall and keeps long descriptions on pages. */
+  _popup(W, H, p, area = null) {
     const x = this.x;
-    /* CENTRED, and 110 wide.
-
-       It used to slide in against the right-hand edge, which is where the
-       till roll now lives — and the scanner is on the left. The middle of
-       that band, 105 to 215, is the one place nothing else uses, so the
-       card drops into it from above instead of sliding in from the side. */
-    /* Both were flat numbers, and the text field inside 110 is 68 pixels —
-       eleven characters — so YOU ARE SEEING STARS was cut to YOU ARE SEEING
-       and THEY ARE DECIDING ABOUT YOU lost ABOUT YOU. The card takes the
-       width its own header needs and grows downwards for the lines it
-       actually has, down being the one direction with room in it. */
-    const head = p.head || 'RELIC FOUND';
-    const CW = Math.max(110, Math.min(W - 24, textWidth(head, 1, 1) + 40));
-    const TL = wrapText(p.title, CW - 42, 1, 1).slice(0, 3);
-    const SL = p.sub ? wrapText(p.sub, CW - 42, 1, 1).slice(0, 3) : [];
-    const CH = Math.max(52, 24 + (TL.length + SL.length) * 8 + (SL.length ? 2 : 0));
-    const inT = Math.min(1, p.t / 0.28);
-    const outT = p.t > p.dur - 0.5 ? (p.dur - p.t) / 0.5 : 1;
-    const k = Math.min(inT, Math.max(0, outT));
-    const ease = 1 - Math.pow(1 - k, 3);
-    const left = Math.round(W / 2 - CW / 2);
-    /* The card is opaque and lands on the middle of the frame, which is
-       where the second toast still is at 180 tall — it cut it in half, and
-       buying at Ferdi's fires a toast and a card together. It drops to
-       just under whatever the stack actually used, and no further than the
-       furniture below it; with one toast or none it does not move at all,
-       and when it has been pushed it comes up from below rather than
-       sweeping down through the stack it was moved off. */
-    const rest = Math.round(H / 2 - CH / 2);
-    const floor = (this.data.mp ? H - 62 : H - 44) - CH - 2;
-    const restY = Math.min(Math.max(rest, toastBot + 2), Math.max(rest, floor));
-    const push = restY > rest;
-    const top = Math.round(restY + (push ? 1 : -1) * (1 - ease) * 26);
-
-    panel(x, left, top, CW, CH, { border: 2, dither: 0.45, hi: GOLD, lo: '#3a2610' });
-
-    // icon plate
-    const ix = left + 4, iy = top + 9;
-    x.fillStyle = '#0d0906'; x.fillRect(ix, iy, 28, 28);
-    x.fillStyle = '#2a1c0e'; x.fillRect(ix + 1, iy + 1, 26, 26);
-    drawRelicIcon(x, p.icon, ix + 2, iy + 2, 24, Math.sin(p.t * 3) * 0.5);
-
-    // sparkle corners
-    if (p.t % 0.6 < 0.3) {
-      x.fillStyle = GOLD_LT;
-      x.fillRect(ix - 2, iy - 2, 2, 2);
-      x.fillRect(ix + 28, iy + 28, 2, 2);
-    }
-
-    const tx = left + 36;
-    // the header is whatever the caller says it is; it used to always claim
-    // a relic had been found, including when you had just stoked a fire
-    drawText(x, head, { x: tx, y: top + 6, scale: 1, color: GOLD });
-    x.fillStyle = '#5c3f1c'; x.fillRect(tx, top + 13, CW - 42, 1);
-    let ty = top + 17;
-    for (const ln of TL) { drawText(x, ln, { x: tx, y: ty, scale: 1, color: GOLD_LT }); ty += 8; }
-    if (SL.length) {
-      ty += 2;
-      // laid out in sequence; clamping each line to the bottom edge stacked
-      // them all on the same row
-      for (const ln of SL) {
-        if (ty > top + CH - 9) break;
-        drawText(x, ln, { x: tx, y: ty, scale: 1, color: '#9fd8c4' });
-        ty += 8;
-      }
-    }
+    const box = area && typeof area === 'object' ? area
+      : { cx: W / 2, top: 51, width: Math.min(224, W - 24), bottom: H - 44 };
+    const CW = Math.max(40, Math.min(224, box.width, W - 8));
+    const cap = Math.max(1, Math.min(2, Math.floor((box.bottom - box.top - 17) / 9)));
+    const CH = 17 + cap * 9;
+    if (box.top + CH > box.bottom) return;
+    const rows = [
+      ...wrapText(p.title, CW - 12, 1, 1).map((text) => ({ text, color: GOLD_LT })),
+      ...wrapText(p.sub, CW - 12, 1, 1).map((text) => ({ text, color: '#9fd8c4' })),
+    ];
+    const pages = Math.max(1, Math.ceil(rows.length / cap));
+    p.dur = Math.max(3.8, pages * 1.9 + 0.35);
+    const page = Math.min(pages - 1, Math.floor(p.t / ((p.dur - 0.25) / pages)));
+    const left = Math.round(Math.max(4, Math.min(W - CW - 4, box.cx - CW / 2)));
+    const top = Math.round(box.top);
+    x.save();
+    // A fade stays inside the lane; sliding through the HUD did not.
+    x.globalAlpha = Math.min(1, (p.t + 0.08) / 0.18, Math.max(0, (p.dur - p.t) / 0.3));
+    plate(x, left, top, CW, CH);
+    x.fillStyle = GOLD_DK; x.fillRect(left, top, 2, CH);
+    drawRelicIcon(x, p.icon, left + 4, top + 2, 12, 0);
+    const indicator = pages > 1 ? `${page + 1}/${pages}` : '';
+    const pageW = indicator ? textWidth(indicator, 1) + 6 : 0;
+    drawText(x, fitText(p.head || 'RELIC FOUND', CW - 25 - pageW, 1), {
+      x: left + 20, y: top + 4, scale: 1, color: GOLD,
+    });
+    if (indicator) drawText(x, indicator, {
+      x: left + CW - 5, y: top + 4, scale: 1, align: 'right', color: '#8a7a52',
+    });
+    rows.slice(page * cap, (page + 1) * cap).forEach((row, i) => drawText(x, row.text, {
+      x: left + 6, y: top + 16 + i * 9, scale: 1, color: row.color,
+    }));
+    x.fillStyle = GOLD_DK;
+    x.fillRect(left + 3, top + CH - 1, Math.round((CW - 3) * Math.max(0, 1 - p.t / p.dur)), 1);
+    x.restore();
+    this._popupShown = p;
   }
+
 }
 
 /* ===========================================================
@@ -1647,6 +1958,13 @@ export const POI_ICONS = {
   // the way out of wherever you are
   out: [[0, 0, 5, 7, '#4a3a22'], [1, 1, 3, 5, '#150f06'], [5, 3, 2, 1, '#ffd24a'],
     [5, 2, 1, 1, '#ffd24a'], [5, 4, 1, 1, '#ffd24a']],
+  /* The light standing on the sand. mpgame has always asked for this one and
+     there has never been a sprite under the name, so the only mark for a
+     three-minute night event was the word LIGHT — and the word is the half
+     the strip drops first, which left the event with no mark at all on a
+     busy bearing. A saucer with its beam under it. */
+  ufo: [[1, 0, 5, 1, '#9a8ab0'], [0, 1, 7, 1, '#d0c0e8'], [2, 2, 3, 1, '#8fd8ff'],
+    [3, 3, 1, 1, '#8fd8ff'], [2, 4, 3, 3, '#3a5a7a'], [3, 5, 1, 2, '#8fd8ff']],
   // the bell you ring to call everybody in
   bell: [[2, 0, 3, 1, '#8a8478'], [1, 1, 5, 4, '#c9a03a'], [0, 5, 7, 1, '#e8c060'],
     [3, 6, 1, 1, '#8a6a20']],
@@ -1980,7 +2298,7 @@ export function drawRelicIcon(x, kind, ox, oy, size, bob = 0) {
       Math.ceil(w * u), Math.ceil(h * u));
   };
 
-  if (kind === 'syncoin') {
+  if (kind === 'syncoin' || kind === 'coin') {
     px(4, 2, 8, 12, '#c9a63c');
     px(5, 3, 6, 10, '#f0dc9a');
     px(6, 4, 4, 8, '#d8c070');

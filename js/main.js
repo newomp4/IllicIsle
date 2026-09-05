@@ -6,6 +6,7 @@
    =========================================================== */
 
 import { MPGame } from './mp/mpgame.js';
+import { parseRoomCode } from './net/net.js';
 
 const $ = (id) => document.getElementById(id);
 let game = null;
@@ -14,11 +15,12 @@ async function boot() {
   const canvas = $('game');
 
   const probe = document.createElement('canvas');
-  if (!(probe.getContext('webgl2') || probe.getContext('webgl'))) {
-    $('load-text').textContent = 'WEBGL NOT AVAILABLE';
-    $('load-text').style.color = '#e0453a';
+  const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+  if (!gl) {
+    window.illicLoadError('WEBGL NOT AVAILABLE', 'Enable hardware acceleration in your browser, then reload.');
     return;
   }
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
 
   const touchOnly = matchMedia('(pointer: coarse)').matches
     && !matchMedia('(pointer: fine)').matches;
@@ -32,29 +34,35 @@ async function boot() {
     game = new MPGame(canvas);
   } catch (err) {
     console.error(err);
-    $('load-text').textContent = 'FAILED TO START: ' + err.message;
-    $('load-text').style.color = '#e0453a';
+    window.illicLoadError('FAILED TO START', err.message);
     return;
   }
-  /* [RELEASE] REMOVE BEFORE RELEASE — a console handle on the whole game.
-     Everything is reachable through it: coins, roles, the host's own rules
-     object. Harmless in development and an open cheat menu in a browser
-     console once this is public. */
-  window.__game = game;
+  // Local regression tools inspect the live game without exposing that
+  // convenience handle on the public online game.
+  if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) window.__game = game;
+  canvas.addEventListener('webglcontextlost', () => {
+    game._clearHeldInput();
+    game.paused = true;
+    game.audio.setEnabled(false);
+    document.exitPointerLock?.();
+    $('loading').classList.remove('hidden', 'going');
+    window.illicLoadError('GRAPHICS INTERRUPTED', 'Reload the game to reconnect to your graphics device.');
+  });
 
   const fill = $('load-fill');
   const text = $('load-text');
   try {
     await game.load((frac, label) => {
+      if (window.illicLoadFailed) return;
       fill.style.width = `${Math.round(frac * 100)}%`;
       text.textContent = label;
     });
   } catch (err) {
     console.error(err);
-    text.textContent = 'LOAD ERROR: ' + err.message;
-    text.style.color = '#e0453a';
+    window.illicLoadError('LOAD ERROR', err.message);
     return;
   }
+  if (window.illicLoadFailed) return;
 
   /* ---- straight in ----
      There used to be a PRESS ANY KEY here, and it was not a flourish: a
@@ -76,8 +84,8 @@ async function boot() {
       game.audio.init();
       game.audio.setEnabled(game.settings.audio);
       game.audio.resume();
-      // whatever the title asked for, now that there is something to play it
-      game.audio.playMusic(game.state === 'title' ? 'title' : null);
+      // init resumes the latest requested track, including an intro begun
+      // by this same first gesture.
     } catch (e) { /* no sound is not a reason to have no game */ }
   };
   window.addEventListener('keydown', startAudio);
@@ -88,10 +96,13 @@ async function boot() {
      from a full progress bar to a title screen reads as a glitch; a third
      of a second reads as the thing finishing. */
   game.startTitle();
+  const invitedRoom = parseRoomCode(location.href);
+  if (invitedRoom) game.screens.replace('mpMenu', { room: invitedRoom });
   game.loop();
   await new Promise((r) => setTimeout(r, 260));
+  if (window.illicLoadFailed) return;
   $('loading').classList.add('going');
-  setTimeout(() => $('loading').classList.add('hidden'), 400);
+  setTimeout(() => { if (!window.illicLoadFailed) $('loading').classList.add('hidden'); }, 400);
 }
 
 $('nomobile-anyway')?.addEventListener('click', () => {

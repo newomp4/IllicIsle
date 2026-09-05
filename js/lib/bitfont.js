@@ -97,7 +97,7 @@ const SUBS = {
 /** Fold text down to glyphs the font can actually draw. */
 export function normalize(text) {
   let out = '';
-  for (const ch of String(text).toUpperCase()) {
+  for (const ch of String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
     out += SUBS[ch] !== undefined ? SUBS[ch] : ch;
   }
   return out;
@@ -108,9 +108,19 @@ export const GLYPH_H = 7;
 
 /** Width in pixels of `text` at scale `s` with `tracking` px between glyphs. */
 export function textWidth(text, s = 1, tracking = 1) {
-  if (!text) return 0;
+  if (text === null || text === undefined || text === '') return 0;
   const n = normalize(text).length;
   return n * (GLYPH_W + tracking) * s - tracking * s;
+}
+
+/** Fit a single label without letting an ellipsis escape its allotted width. */
+export function fitText(text, maxPx, s = 1, tracking = 1) {
+  const str = normalize(text).replace(/\s+/g, ' ').trim();
+  if (!(maxPx >= GLYPH_W * s)) return '';
+  if (textWidth(str, s, tracking) <= maxPx) return str;
+  const count = Math.max(0, Math.floor((maxPx + tracking * s) / ((GLYPH_W + tracking) * s)));
+  const suffix = '.'.repeat(Math.min(3, count));
+  return str.slice(0, count - suffix.length).trimEnd() + suffix;
 }
 
 /**
@@ -185,7 +195,11 @@ function glyphMask() {
 function glyphAtlas(col, s) {
   const key = col + '|' + s;
   let a = _glyphAtlases.get(key);
-  if (a) return a;
+  if (a) {
+    _glyphAtlases.delete(key);
+    _glyphAtlases.set(key, a);
+    return a;
+  }
   const m = glyphMask();
   a = document.createElement('canvas');
   a.width = m.width * s; a.height = m.height * s;
@@ -195,6 +209,8 @@ function glyphAtlas(col, s) {
   ax.globalCompositeOperation = 'source-in';
   ax.fillStyle = col;
   ax.fillRect(0, 0, a.width, a.height);
+  // Animated colours must not retain a new canvas on every frame forever.
+  if (_glyphAtlases.size >= 128) _glyphAtlases.delete(_glyphAtlases.keys().next().value);
   _glyphAtlases.set(key, a);
   return a;
 }
@@ -263,7 +279,16 @@ export function drawText(ctx, text, o = {}) {
 
 /** Wrap `text` to `maxPx` and return the lines. */
 export function wrapText(text, maxPx, s = 2, tracking = 1) {
-  const words = normalize(text).split(/\s+/);
+  if (!(maxPx >= GLYPH_W * s)) return [];
+  const normalized = normalize(text).replace(/\r\n?/g, '\n');
+  // Paragraphs are intentional in journal entries, dialogue and help copy.
+  if (normalized.includes('\n')) {
+    return normalized.split('\n').flatMap((line) => {
+      const wrapped = wrapText(line, maxPx, s, tracking);
+      return wrapped.length ? wrapped : [''];
+    });
+  }
+  const words = normalized.split(/\s+/);
   const lines = [];
   const cell = (GLYPH_W + tracking) * s;
   /* The words came out of an already-normalized string, so measuring with
@@ -299,6 +324,7 @@ const _ditherTiles = new Map();
 
 /** 2x2 ordered dither between two colours; `amount` 0..1 picks the mix. */
 export function ditherRect(ctx, x, y, w, h, colA, colB, amount, px = 2) {
+  if (!(w > 0 && h > 0 && px > 0)) return;
   const M = [[0, 2], [3, 1]];
   /* A full-screen dither is fifteen thousand fills a frame, repainted every
      frame for as long as a menu is up, and only the ordering of `amount`
@@ -313,7 +339,7 @@ export function ditherRect(ctx, x, y, w, h, colA, colB, amount, px = 2) {
       for (let i = 0; i < w; i += px) {
         const t = M[(j / px) & 1][(i / px) & 1] / 4;
         ctx.fillStyle = amount > t ? colB : colA;
-        ctx.fillRect(x + i, y + j, px, px);
+        ctx.fillRect(x + i, y + j, Math.min(px, w - i), Math.min(px, h - j));
       }
     }
     return;
