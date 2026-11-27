@@ -72,9 +72,15 @@ export function buildCastaway(mats) {
   parts.torso = torso;
 
   /* ---- head ---- */
+  /* The head and both arms hang off the TORSO, not the hips. They used to
+     be siblings of it, so every degree of lean or counter-twist the walk
+     gave the chest slid the shirt out from under a head and two shoulders
+     that stayed put: ten centimetres of neck showing at a run, and the
+     shoulders sitting outside the sleeves. Same positions, since the torso
+     sits at the hips' origin. */
   const headGroup = new THREE.Group();
   headGroup.position.y = 0.70;
-  hips.add(headGroup);
+  torso.add(headGroup);
   parts.head = headGroup;
 
   const headParts = [];
@@ -114,7 +120,7 @@ export function buildCastaway(mats) {
   for (const side of [-1, 1]) {
     const g = new THREE.Group();
     g.position.set(side * 0.255, 0.54, 0);
-    hips.add(g);
+    torso.add(g);
 
     /* The arm is two pieces on a hinge, not one stick. An elbow is the
        difference between a person walking and a mannequin being carried:
@@ -131,6 +137,9 @@ export function buildCastaway(mats) {
     const foreParts = [];
     const fore = limb([0, 0, 0], [side * 0.01, -0.25, 0.02], 0.058, 0.05, 'skin');
     tint(fore, SKIN); foreParts.push(fore);
+    // an elbow, so a bent arm is not two sticks with daylight between them
+    const elb = ico(0.064, 0, 'skin', { pos: [0, 0, 0] });
+    tint(elb, SKIN); foreParts.push(elb);
     const hand = ico(0.062, 0, 'skin', { pos: [side * 0.01, -0.29, 0.02] });
     tint(hand, SKIN); foreParts.push(hand);
     elbow.add(new THREE.Mesh(mergeGeos(foreParts), mats.opaque));
@@ -159,9 +168,17 @@ export function buildCastaway(mats) {
     knee.position.set(side * 0.01, -0.34, 0);
     g.add(knee);
     const shinParts = [];
-    const shin = limb([0, 0, 0], [0, -0.32, 0.01], 0.072, 0.055, 'skin');
+    /* Knee to sole is SHIN_SOLE (0.345), so a standing leg is 0.685 long
+       against a hip joint 0.68 off the ground. It used to be 0.725, which
+       buried both feet four and a half centimetres in the sand at rest and
+       left the leg IK nothing to work with: a leg longer than the drop
+       from the hip has to stand with its knee bent forty degrees. */
+    const shin = limb([0, 0, 0], [0, -0.28, 0.01], 0.072, 0.055, 'skin');
     tint(shin, SKIN); shinParts.push(shin);
-    const foot = box(0.11, 0.07, 0.22, 'skin', { pos: [0, -0.35, 0.05] });
+    // a kneecap, for the same reason as the elbow
+    const kneeCap = ico(0.082, 0, 'skin', { pos: [0, 0, 0.005] });
+    tint(kneeCap, SKIN); shinParts.push(kneeCap);
+    const foot = box(0.11, 0.07, 0.22, 'skin', { pos: [0, -0.31, 0.05] });
     tint(foot, new THREE.Color(0xb08a5e)); shinParts.push(foot);
     knee.add(new THREE.Mesh(mergeGeos(shinParts), mats.opaque));
 
@@ -169,6 +186,9 @@ export function buildCastaway(mats) {
     (parts.knees = parts.knees || {})[side < 0 ? 'l' : 'r'] = knee;
   }
 
+  /* Tag the body's own nodes, so the rig can tell a pistol or a scanner
+     somebody has put in the hand from the hand itself. */
+  root.traverse((o) => { o.userData.rigPart = true; });
   root.userData.parts = parts;
   return root;
 }
@@ -343,6 +363,214 @@ export function buildSkeleton(mats, shirtHex = 0xc9bda0) {
 }
 
 /* ===========================================================
+   THE GAIT — one rig for everybody
+
+   You and every remote castaway are posed by the same code. They used to
+   run two copies of the walk that had drifted apart (the remote one still
+   had the knee and elbow signs the local one had fixed, so everybody else
+   ran with their knees folding in front of them), and both drove the legs
+   off a sine with no idea where the ground was:
+
+   - The leg cycle was a fixed swing whose foot travel had nothing to do
+     with ground speed, so the planted foot slid forward about a metre on
+     every step — the ice-skating that read as "the walk looks weird".
+   - Stopping, starting, jumping and landing switched between poses
+     outright or eased them with per-frame lerps, so they snapped, and ran
+     at a different speed at 30fps and 144fps.
+
+   Now each foot follows a path in the hip's frame — planted, it travels
+   backward at exactly the ground speed, so it cannot slide; lifted, it arcs
+   forward — and a two-bone IK solve turns that into a thigh and a knee.
+   Stance shortens as speed rises until both feet leave the ground, which is
+   the difference between a walk and a run. Every transition is a weight
+   eased with exp(-k·dt), so it is the same at any frame rate.
+   =========================================================== */
+const TAU = Math.PI * 2;
+const THIGH = 0.34;          // hip joint to knee
+const SHIN_SOLE = 0.345;     // knee to the sole of the foot
+const LEG_Y = -0.22;         // leg joints below the hips group
+const _ik = { t: 0, k: 0 };
+const _lg = { z: 0, y: 0 };
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const smooth01 = (x) => { x = clamp01(x); return x * x * (3 - 2 * x); };
+const lerp = (a, b, k) => a + (b - a) * k;
+/** Frame-rate independent easing factor for a rate in 1/s. */
+const ease = (rate, dt) => 1 - Math.exp(-rate * dt);
+const frac = (x) => x - Math.floor(x);
+
+/** Phase advance in radians per second at a ground speed: half a turn per
+    footfall, and the cadence rises with speed (a sprint is quicker steps as
+    well as longer ones). Zero at a standstill so an idle stance stays put. */
+export function gaitRate(speed) {
+  return speed > 0.05 ? Math.PI * Math.min(4.4, 1.6 + 0.3 * speed) : 0;
+}
+
+/* Two-bone IK in the leg's own plane. z forward, y up, from the hip joint
+   to the sole. A positive rotation.x swings a limb BACK (-Z), and the knee
+   always bends that way. */
+function solveLeg(z, y) {
+  const d = Math.min(Math.max(Math.hypot(z, y), 0.2), THIGH + SHIN_SOLE - 1e-4);
+  const a = Math.atan2(-z, -y);
+  const cb = (THIGH * THIGH + d * d - SHIN_SOLE * SHIN_SOLE) / (2 * THIGH * d);
+  const cg = (THIGH * THIGH + SHIN_SOLE * SHIN_SOLE - d * d) / (2 * THIGH * SHIN_SOLE);
+  _ik.t = a - Math.acos(Math.max(-1, Math.min(1, cb)));
+  _ik.k = Math.PI - Math.acos(Math.max(-1, Math.min(1, cg)));
+}
+
+/* Where one foot is at cycle position u (0 = touchdown in front), relative
+   to its hip joint's spot on the ground. D is the stance fraction, C the
+   contact length, H the lift and K the swing's end tangent. */
+function footPath(u, D, C, H, K) {
+  if (u < D) {
+    _lg.z = C * 0.5 - C * (u / D);
+    _lg.y = 0;
+  } else {
+    const s = (u - D) / (1 - D);
+    /* A Hermite curve whose ends move BACKWARD (tangent K < 0), as a foot
+       does: it leaves the ground still travelling back and is drawn back
+       again just before it lands, so it meets the ground part of the way to
+       ground speed instead of stamping down dead still from a full swing.
+       The same tangents give the heel-kick early and the reach late. */
+    const s2 = s * s, s3 = s2 * s;
+    _lg.z = (2 * s3 - 3 * s2 + 1) * (-C * 0.5) + (s3 - 2 * s2 + s) * K
+      + (-2 * s3 + 3 * s2) * (C * 0.5) + (s3 - s2) * K;
+    // the heel comes up early, the foot comes down late
+    _lg.y = H * Math.sin(Math.PI * Math.pow(s, 0.8));
+  }
+}
+
+/** Is anything other than the rig's own pieces hanging off this joint? */
+function holding(node) {
+  const ch = node.children;
+  for (let i = 0; i < ch.length; i++) {
+    const c = ch[i];
+    if (c.visible && !c.userData.rigPart) return true;
+  }
+  return false;
+}
+
+export class CastawayRig {
+  constructor() {
+    this.walkW = 0;    // 0 standing .. 1 moving
+    this.runW = 0;     // 0 walk .. 1 sprint
+    this.airW = 0;     // 0 on the ground .. 1 airborne
+    this.taskW = 0;    // hands busy at a chore
+    this.airT = 0;
+    this.turn = 0;     // smoothed yaw rate, for leaning into turns
+    this.t = 0;
+  }
+
+  /**
+   * @param parts  the rig from buildCastaway
+   * @param dt     seconds
+   * @param s      { phase, speed, grounded, vy, task, squash, turn, look }
+   *               a reusable object: nothing here allocates.
+   */
+  pose(parts, dt, s) {
+    const p = parts;
+    const sp = s.speed;
+    this.t += dt;
+    this.walkW += (smooth01((sp - 0.15) / 1.4) - this.walkW) * ease(10, dt);
+    this.runW += (clamp01((sp - 2) / 9) - this.runW) * ease(6, dt);
+    this.airT = s.grounded ? 0 : this.airT + dt;
+    // a bump in the ground is not a jump: only go limp after a beat aloft
+    const airGoal = !s.grounded && (this.airT > 0.12 || s.vy > 1.5) ? 1 : 0;
+    this.airW += (airGoal - this.airW) * ease(airGoal ? 9 : 16, dt);
+    const taskGoal = s.task ? 1 - this.walkW : 0;
+    this.taskW += (taskGoal - this.taskW) * ease(7, dt);
+    const tr = Math.max(-6, Math.min(6, s.turn || 0));
+    this.turn += (tr - this.turn) * ease(8, dt);
+
+    const w = this.walkW, r = this.runW, aw = this.airW, tw = this.taskW;
+
+    /* ---- gait geometry ---- */
+    const rate = gaitRate(Math.max(sp, 0.06));
+    const T = TAU / rate;                                       // seconds a cycle
+    /* The planted foot can only travel as far as the leg reaches from a hip
+       0.65 up: about a quarter of a metre either side. So the contact length
+       is held to 0.42 and the stance shortens instead as speed rises. */
+    const D = Math.max(0.08, Math.min(0.62, 0.42 / Math.max(1e-3, sp * T)));
+    const C = Math.min(sp * D * T, 0.6);                        // contact length
+    const H = 0.08 + 0.15 * r;                                  // foot lift
+    const K = -Math.min(0.45, sp * (1 - D) * T * 0.12);       // swing end tangents
+    const uL = frac(s.phase / TAU), uR = frac(s.phase / TAU + 0.5);
+
+    /* ---- hips: bob, crouch, twist, roll ---- */
+    // walking: highest over the planted foot; running: lowest there
+    const bob = Math.cos(2 * TAU * (uL - D * 0.5)) * (0.012 * (1 - r) - 0.026 * r);
+    const breathe = Math.sin(this.t * 1.7) * 0.006;
+    let hipY = lerp(0.895 + breathe, 0.885 - 0.03 * r + bob, w);
+    hipY -= (s.squash || 0) * 0.22 + tw * 0.05;
+    p.hips.position.y = hipY;
+    p.hips.scale.set(1, 1, 1);
+    const fwdL = Math.cos(TAU * uL);                            // +1: that foot in front
+    const twist = fwdL * (0.025 + 0.05 * r) * w;
+    p.hips.rotation.x = 0;
+    p.hips.rotation.y = twist;
+    // roll toward the planted side, and bank into a turn at speed
+    const bank = Math.max(-0.16, Math.min(0.16, -this.turn * sp * 0.006));
+    p.hips.rotation.z = Math.sin(TAU * uL) * 0.018 * w + bank;
+
+    /* ---- upper body ---- */
+    const lean = (0.03 + 0.11 * r * w) * (1 - aw) + aw * 0.10 + (s.squash || 0) * 0.3 + tw * 0.2;
+    p.torso.rotation.x = lean;
+    p.torso.rotation.y = -twist * 1.8;
+    p.torso.rotation.z = -Math.sin(TAU * uL) * 0.012 * w;
+    p.head.rotation.y = twist * 0.8;
+    p.head.rotation.x = Math.max(-0.4, Math.min(0.5, s.look || 0)) - lean * 0.7;
+
+    /* ---- legs ---- */
+    const h = hipY + LEG_Y;                                     // joint over the soles
+    const ta = clamp01(-(s.vy || 0) / 12 + 0.5);                // 0 rising .. 1 falling
+    for (let i = 0; i < 2; i++) {
+      const side = i ? 1 : -1;
+      footPath(i ? uR : uL, D, C, H, K);
+      const z = lerp(side * 0.03, _lg.z, w);
+      const y = _lg.y * w;
+      solveLeg(z, y - h);
+      // tucked in the air: one knee up, one trailing
+      const airT = i ? 0.30 - ta * 0.45 : -0.62 + ta * 0.8;
+      const airK = i ? 0.35 + ta * 0.30 : 0.95 - ta * 0.55;
+      const leg = i ? p.legs.r : p.legs.l;
+      leg.rotation.x = lerp(_ik.t, airT, aw);
+      leg.rotation.z = 0;
+      if (p.knees) (i ? p.knees.r : p.knees.l).rotation.x = lerp(_ik.k, airK, aw);
+    }
+
+    /* ---- arms ---- */
+    const holdR = holding(p.arms.r) || (p.elbows && holding(p.elbows.r));
+    const aAmp = (0.30 + 0.55 * r) * w;
+    for (let i = 0; i < 2; i++) {
+      const side = i ? 1 : -1;
+      const u = i ? uR : uL;
+      const a = aAmp * Math.cos(TAU * u - 0.3) * (i && holdR ? 0.25 : 1);
+      const idle = 0.06 + (i ? -breathe : breathe) * 2;
+      let x = lerp(idle, a, w);
+      // out from the body: a positive roll on the left arm swings the hand
+      // INTO the belt, which is where both of them used to hang
+      let zr = side * (0.12 + 0.06 * r * w);
+      let el = lerp(0.15, 0.25 + 0.7 * r + Math.max(0, -a) * 0.4, w);
+      if (i && holdR) el = 0.45;   // whatever is in the hand, held out in front
+      x = lerp(x, -1.02 + Math.sin(this.t * 7.6 + i * 2.1) * 0.18, tw);
+      zr = lerp(zr, -side * 0.22, tw);
+      el = lerp(el, 0.75, tw);
+      // aloft: arms out for balance, not held up in front like a sleepwalker
+      x = lerp(x, -0.35, aw);
+      zr = lerp(zr, side * 0.55, aw);
+      el = lerp(el, 0.5, aw);
+      const arm = i ? p.arms.r : p.arms.l;
+      arm.rotation.x = x;
+      arm.rotation.z = zr;
+      /* NEGATIVE: an elbow folds the forearm forward and up. Every
+         elbow value here used to be positive, which folds it backward — a
+         small bend read as a slightly odd arm, and a running bend put the
+         forearms out behind him like a bird's wings. */
+      if (p.elbows) (i ? p.elbows.r : p.elbows.l).rotation.x = -el;
+    }
+  }
+}
+
+/* ===========================================================
    PLAYER
    =========================================================== */
 export class Player {
@@ -386,6 +614,9 @@ export class Player {
     this.staminaRegen = this.BASE_REGEN;
 
     this.walkPhase = 0;
+    this.rig = new CastawayRig();
+    this._pose = { phase: 0, speed: 0, grounded: true, vy: 0, task: 0, squash: 0, turn: 0, look: 0 };
+    this._turn = 0;
     this.throwAnim = 0;
     this.bobT = 0;
     this.landSquash = 0;
@@ -557,53 +788,80 @@ export class Player {
 
       // two numbers, not a Vector3: the y of it was never once read
       const tx = wx * speed, tz = wz * speed;
-      const accel = this.grounded ? 15 : 6;
-      this.vel.x += (tx - this.vel.x) * Math.min(1, accel * dt);
-      this.vel.z += (tz - this.vel.z) * Math.min(1, accel * dt);
+      /* exp(-k·dt), not min(1, k·dt): the clamp form is a different curve
+         at every frame rate, so the same tap of a key carried you a
+         different distance at 30fps than at 144. */
+      const ka = ease(this.grounded ? 15 : 6, dt);
+      this.vel.x += (tx - this.vel.x) * ka;
+      this.vel.z += (tz - this.vel.z) * ka;
 
-      // face the direction of travel
+      // face the direction of travel, the short way round
       const want = Math.atan2(wx, wz);
-      let d = want - this.facing;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      this.facing += d * Math.min(1, 13 * dt);
+      const d = Math.atan2(Math.sin(want - this.facing), Math.cos(want - this.facing));
+      const before = this.facing;
+      this.facing += d * ease(13, dt);
+      // kept in one turn, so the number on the wire never grows without end
+      if (this.facing > Math.PI) this.facing -= TAU;
+      else if (this.facing < -Math.PI) this.facing += TAU;
+      const turned = Math.atan2(Math.sin(this.facing - before), Math.cos(this.facing - before));
+      this._turn = dt > 0 ? turned / dt : 0;
     } else {
-      const damp = this.grounded ? 14 : 3;
-      this.vel.x -= this.vel.x * Math.min(1, damp * dt);
-      this.vel.z -= this.vel.z * Math.min(1, damp * dt);
+      const kd = ease(this.grounded ? 14 : 3, dt);
+      this.vel.x -= this.vel.x * kd;
+      this.vel.z -= this.vel.z * kd;
+      this._turn = 0;
     }
 
     /* ---------- gravity + jump ---------- */
-    this.vel.y -= 26 * dt;
+    const wasGrounded = this.grounded;
     if (input.jump && this.grounded && !this.frozen && !this.dead) {
-      this.vel.y = 9.2;
+      /* 9.4 with exact integration clears the 1.70m the old 9.2 cleared at
+         60fps (it gave 1.78 at 30fps and 1.66 at 144). */
+      this.vel.y = 9.4;
       this.grounded = false;
       if (this.onJump) this.onJump();
     }
+    /* Integrated exactly for constant gravity — the average of the speeds
+       at either end of the step. The old Euler step gave a jump 1.78m high
+       at 30fps and 1.66m at 144, so the same ledge was clearable on one
+       machine and not another. */
+    const vy0 = this.vel.y;
+    this.vel.y -= 26 * dt;
+    const dy = (vy0 + this.vel.y) * 0.5 * dt;
 
     /* ---------- integrate + resolve ---------- */
-    const nx = this.pos.x + this.vel.x * dt;
-    const nz = this.pos.z + this.vel.z * dt;
-    let px = nx, pz = nz;
-
-    // prop collision — push out of overlapping cylinders
-    for (const c of this.nearbyColliders(px, pz)) {
-      const dx = px - c.x, dz = pz - c.z;
-      const rr = c.r + this.RADIUS;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < rr * rr) {
-        // A spawn or newly surfaced chest can place both centres exactly
-        // together. There is still an overlap even without a normal.
-        if (d2 <= 1e-6) {
-          const ox = this.pos.x - c.x, oz = this.pos.z - c.z;
-          const oldD = Math.hypot(ox, oz);
-          px = c.x + (oldD > 1e-6 ? ox / oldD : 1) * rr;
-          pz = c.z + (oldD > 1e-6 ? oz / oldD : 0) * rr;
-          continue;
+    let px = this.pos.x, pz = this.pos.z;
+    /* Sub-stepped so a sprint on a slow frame cannot step clean over a thin
+       trunk: no single step moves further than a third of the body radius. */
+    const mdx = this.vel.x * dt, mdz = this.vel.z * dt;
+    const steps = Math.min(8, Math.max(1, Math.ceil(Math.hypot(mdx, mdz) / (this.RADIUS * 0.33))));
+    for (let st = 0; st < steps; st++) {
+      px += mdx / steps; pz += mdz / steps;
+      /* Two passes: being pushed out of one prop can push you into the one
+         beside it, and a single pass then leaves you inside that one, which
+         is the stutter and the occasional wedge between two rocks. */
+      for (let pass = 0; pass < 2; pass++) {
+        const near = this.nearbyColliders(px, pz);
+        for (let ci = 0; ci < near.length; ci++) {
+          const c = near[ci];
+          const dx = px - c.x, dz = pz - c.z;
+          const rr = c.r + this.RADIUS;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < rr * rr) {
+            // A spawn or newly surfaced chest can place both centres exactly
+            // together. There is still an overlap even without a normal.
+            if (d2 <= 1e-6) {
+              const ox = this.pos.x - c.x, oz = this.pos.z - c.z;
+              const oldD = Math.hypot(ox, oz);
+              px = c.x + (oldD > 1e-6 ? ox / oldD : 1) * rr;
+              pz = c.z + (oldD > 1e-6 ? oz / oldD : 0) * rr;
+              continue;
+            }
+            const d = Math.sqrt(d2);
+            px = c.x + (dx / d) * rr;
+            pz = c.z + (dz / d) * rr;
+          }
         }
-        const d = Math.sqrt(d2);
-        px = c.x + (dx / d) * rr;
-        pz = c.z + (dz / d) * rr;
       }
     }
 
@@ -629,12 +887,21 @@ export class Player {
     }
 
     this.pos.x = px; this.pos.z = pz;
-    this.pos.y += this.vel.y * dt;
+    this.pos.y += dy;
 
     /* ---------- ground ---------- */
     // the third argument lets a platform decide whether you are on top of it
     const g = groundOf(this.pos.x, this.pos.z, this.pos.y);
     const floor = water ? Math.max(g, -1.35) : g;
+
+    /* Stick to the ground going downhill. Without this, running down any
+       slope steeper than gravity can follow in one frame left you a few
+       centimetres up, `grounded` went false, and you flickered between the
+       run and the falling pose (and could not jump) all the way down. */
+    if (wasGrounded && this.grounded && vy0 <= 0 && this.pos.y > floor) {
+      const reach = 0.12 + Math.hypot(this.vel.x, this.vel.z) * dt * 1.2;
+      if (this.pos.y - floor < reach) { this.pos.y = floor; }
+    }
 
     if (this.pos.y <= floor) {
       if (!this.grounded && this.vel.y < -9) {
@@ -668,14 +935,17 @@ export class Player {
        every footfall at any speed. It fires at PI/2 and 3PI/2 rather than on
        the multiples of PI because those are the phases where a foot is
        planted; on the multiples the legs are level underneath him. */
-    const STRIDE = 2.2;   // metres of ground per footfall
-    if (hspeed > 0.4) {
-      const wasStep = Math.floor(this.walkPhase / Math.PI - 0.5);
-      this.walkPhase += hspeed * dt * (Math.PI / STRIDE);
+    /* The phase now drives a foot that is planted on the ground for the
+       stance, so a footfall is the moment one touches down: phase 0 for one
+       foot and PI for the other. */
+    {
+      const wasStep = Math.floor(this.walkPhase / Math.PI);
+      this.walkPhase += gaitRate(hspeed) * dt;
       if (this.grounded && hspeed > 1.2 && this.onFootstep
-          && Math.floor(this.walkPhase / Math.PI - 0.5) > wasStep) {
+          && Math.floor(this.walkPhase / Math.PI) > wasStep) {
         this.onFootstep(this.inWater > 0.25 ? 'water' : biomeAt(this.pos.x, this.pos.z));
       }
+      if (this.walkPhase > TAU * 512) this.walkPhase -= TAU * 512;
     }
 
     /* ---------- animate ---------- */
@@ -705,24 +975,42 @@ export class Player {
     this.bobT += dt;
 
     const running = THREE.MathUtils.clamp(hspeed / this.SPEED, 0, 1.5);
-    // walkPhase itself is advanced in update(), off distance travelled, so the
-    // feet and the footstep sounds cannot come off one another's clock.
+    // walkPhase itself is advanced in update(), so the feet and the footstep
+    // sounds cannot come off one another's clock.
+    // the same decay at every frame rate: 0.86 a frame at 60fps
+    this.landSquash *= Math.exp(-9 * dt);
 
-    if (Player.walkStyle === 'plain') this._walkPlain(hspeed, running);
-    else this._walkWeighted(hspeed, running);
-
-    // throw pose overrides the right arm
-    if (this.throwAnim > 0) {
-      this.throwAnim -= dt * 3.4;
-      const t = THREE.MathUtils.clamp(this.throwAnim, 0, 1);
-      p.arms.r.rotation.x = -Math.PI * 1.05 * t + (1 - t) * 0.5;
-      p.arms.r.rotation.z = -0.4 * t;
-      if (p.elbows) p.elbows.r.rotation.x = 0.3 * t;
-      p.torso.rotation.y = -0.35 * t;
+    if (Player.walkStyle === 'plain') {
+      this._walkPlain(hspeed, running);
+      p.head.rotation.x = THREE.MathUtils.clamp(-this.pitch * 0.45, -0.4, 0.5);
+    } else {
+      const s = this._pose;
+      s.phase = this.walkPhase;
+      s.speed = hspeed;
+      s.grounded = this.grounded;
+      s.vy = this.vel.y;
+      s.task = 0;
+      s.squash = this.landSquash;
+      s.turn = this._turn;
+      // head looks where the camera looks
+      s.look = -this.pitch * 0.45;
+      this.rig.pose(p, dt, s);
     }
 
-    // head looks where the camera looks
-    p.head.rotation.x = THREE.MathUtils.clamp(-this.pitch * 0.45, -0.4, 0.5);
+    /* The throw overrides the right arm, and eases back out of it: the old
+       version handed the arm straight back to the walk on the last frame,
+       which snapped it from over the head to the hip. */
+    if (this._throwing && this.throwAnim <= -0.25) this._throwing = false;
+    if (this._throwing) {
+      this.throwAnim -= dt * 3.4;
+      const t = THREE.MathUtils.clamp(this.throwAnim, 0, 1);
+      const out = this.throwAnim > 0 ? 1 : 1 + this.throwAnim * 4;   // 1 -> 0 over the tail
+      const k = smooth01(out);
+      p.arms.r.rotation.x = lerp(p.arms.r.rotation.x, -Math.PI * 1.05 * t + (1 - t) * 0.5, k);
+      p.arms.r.rotation.z = lerp(p.arms.r.rotation.z, -0.4 * t, k);
+      if (p.elbows) p.elbows.r.rotation.x = lerp(p.elbows.r.rotation.x, -0.3 * t, k);
+      p.torso.rotation.y += -0.35 * t;
+    }
 
     // wading dip
     const sink = this.inWater * 0.42;
@@ -754,6 +1042,7 @@ export class Player {
     p.hips.rotation.z = 0;
     p.hips.rotation.y = 0;
     p.torso.rotation.x = 0;
+    p.torso.rotation.y = 0;
     p.torso.rotation.z = 0;
 
     if (this.grounded) {
@@ -761,8 +1050,9 @@ export class Player {
       p.legs.r.rotation.x = swing2;
       p.arms.l.rotation.x = swing2 * 0.85;
       p.arms.r.rotation.x = swing * 0.85;
-      p.arms.l.rotation.z = 0.16;
-      p.arms.r.rotation.z = -0.16;
+      // outward; the old signs swung both hands into the belt
+      p.arms.l.rotation.z = -0.16;
+      p.arms.r.rotation.z = 0.16;
     } else {
       const t = THREE.MathUtils.clamp(-this.vel.y / 12 + 0.5, 0, 1);
       p.legs.l.rotation.x = THREE.MathUtils.lerp(p.legs.l.rotation.x, -0.5 + t * 0.7, 0.2);
@@ -770,10 +1060,8 @@ export class Player {
       p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, -1.6, 0.2);
       p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, -1.6, 0.2);
     }
-    if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
 
     const bob = this.grounded ? Math.abs(Math.sin(ph)) * 0.045 * running : 0;
-    this.landSquash *= 0.86;
     p.hips.position.y = 0.90 + bob - this.landSquash * 0.28;
     p.hips.scale.y = 1 - this.landSquash * 0.18;
     p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
@@ -786,192 +1074,6 @@ export class Player {
       p.arms.l.rotation.x = THREE.MathUtils.lerp(p.arms.l.rotation.x, 0.06 + b, 0.12);
       p.arms.r.rotation.x = THREE.MathUtils.lerp(p.arms.r.rotation.x, 0.06 - b, 0.12);
     }
-  }
-
-  /* ===========================================================
-     THE NEW WALK
-
-     Six things the old one did not do, in rough order of how much each
-     one is worth:
-
-     1. KNEES. The swinging leg bends and the standing leg stays straight.
-        Without this the stride has to be small enough that the foot never
-        goes through the floor, which is why the old one shuffled.
-     2. WEIGHT. The hips drop onto the leg that is taking the load and
-        rise off it — twice a stride, and out of phase with the bob, so
-        the body settles rather than hovering.
-     3. SWAY. The hips roll toward the standing leg. This is the single
-        cue that reads as "there is a person in there".
-     4. COUNTER-ROTATION. The shoulders turn against the hips. Every
-        walking animal does it and it is invisible until it is missing.
-     5. LEAN. You lean into a run, and the faster you go the more.
-     6. AN UNEVEN STRIDE. A leg swings forward faster than it swings back.
-        A plain sine spends equal time either way, which is what makes a
-        pendulum look like a pendulum.
-     =========================================================== */
-  _walkWeighted(hspeed, running) {
-    const p = this.parts;
-    const ph = this.walkPhase;
-    const moving = hspeed > 0.4;
-
-    /* ---- the airborne tuck, which is its own thing ---- */
-    if (!this.grounded) {
-      const t = THREE.MathUtils.clamp(-this.vel.y / 12 + 0.5, 0, 1);
-      const L = (a, b, k = 0.2) => THREE.MathUtils.lerp(a, b, k);
-      p.legs.l.rotation.x = L(p.legs.l.rotation.x, -0.62 + t * 0.8);
-      p.legs.r.rotation.x = L(p.legs.r.rotation.x, 0.30 - t * 0.45);
-      if (p.knees) {
-        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.95 - t * 0.55);
-        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.35 + t * 0.30);
-      }
-      p.arms.l.rotation.x = L(p.arms.l.rotation.x, -1.5);
-      p.arms.r.rotation.x = L(p.arms.r.rotation.x, -1.5);
-      if (p.elbows) {
-        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.55);
-        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.55);
-      }
-      p.hips.rotation.z = L(p.hips.rotation.z, 0);
-      p.torso.rotation.x = L(p.torso.rotation.x, 0.10);
-      p.torso.rotation.z = L(p.torso.rotation.z, 0);
-      this.landSquash *= 0.86;
-      p.hips.position.y = 0.90 - this.landSquash * 0.28;
-      p.hips.scale.y = 1 - this.landSquash * 0.18;
-      p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
-      if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
-      return;
-    }
-
-    /* ---- standing still ---- */
-    if (!moving) {
-      const b = Math.sin(this.bobT * 1.7) * 0.02;
-      const sh = Math.sin(this.bobT * 0.9) * 0.03;
-      const L = (a, b2, k = 0.12) => THREE.MathUtils.lerp(a, b2, k);
-      p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.02);
-      p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.02);
-      if (p.knees) {
-        // never locked straight; a standing person keeps a little bend
-        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.07);
-        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.05);
-      }
-      p.arms.l.rotation.x = L(p.arms.l.rotation.x, 0.06 + b);
-      p.arms.r.rotation.x = L(p.arms.r.rotation.x, 0.06 - b);
-      p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.13);
-      p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.13);
-      if (p.elbows) {
-        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.16);
-        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.14);
-      }
-      // he shifts his weight while he stands there, very slowly
-      p.hips.rotation.z = L(p.hips.rotation.z, sh * 0.22);
-      p.hips.rotation.y = L(p.hips.rotation.y, 0);
-      p.torso.rotation.x = L(p.torso.rotation.x, 0.02);
-      p.torso.rotation.z = L(p.torso.rotation.z, -sh * 0.16);
-      this.landSquash *= 0.86;
-      p.hips.position.y = 0.90 + b - this.landSquash * 0.28;
-      p.hips.scale.y = 1 - this.landSquash * 0.18;
-      p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
-      if (this.throwAnim <= 0) p.torso.rotation.y *= 0.85;
-      return;
-    }
-
-    /* ---- walking ----
-       FIRST, THE DIRECTION EVERYTHING IS MEASURED IN.
-
-       The model faces +Z: the beard is built at +0.10 and the toes at
-       +0.05. A leg hangs down from a hip joint at the top, so a POSITIVE
-       rotation.x swings the foot toward -Z — which is BEHIND you. Every
-       sign below depends on that and the old cycle had three of them the
-       wrong way round, which is why he read as running in reverse.
-
-       So: L > 0 means that leg is behind you. L < 0 means it is in front.
-
-       `skew` bends the sine so the stride is not a metronome. Stance —
-       the foot planted, the body travelling over it, the leg going from
-       in front to behind — takes LONGER than the swing back through. The
-       old skew had it the other way about, which on its own makes a walk
-       look like film run backwards. */
-    const amp = 0.52 + running * 0.46;
-    const skew = (a) => Math.sin(a - Math.sin(a) * 0.28);
-    const L = skew(ph);
-    const R = skew(ph + Math.PI);
-
-    p.legs.l.rotation.x = L * amp;
-    p.legs.r.rotation.x = R * amp;
-
-    /* THE KNEE. This is the one that made him look like he was going the
-       wrong way, and it is worth being exact about.
-
-       A knee is near enough straight when the leg is stretched out in
-       FRONT of you about to take the weight, and it is folded hardest in
-       the middle of the SWING, when the foot has to get from behind you
-       to in front of you without dragging through the ground.
-
-       Fully behind is ph = PI/2. Fully in front is ph = 3PI/2. So the
-       swing is the half from PI/2 round to 3PI/2, its middle is ph = PI,
-       and max(0, -cos ph) is exactly that half with its peak in the
-       middle of it — zero for the whole of stance, one at mid-swing.
-
-       The old line folded the knee on max(0, -L), which is the half the
-       leg spends IN FRONT. He reached forward with a tucked knee and
-       straightened it as it trailed behind him, which is what a leg does
-       in a film played backwards. */
-    if (p.knees) {
-      const kAmp = 0.55 + running * 0.75;
-      const swing = (a) => Math.max(0, -Math.cos(a));
-      // never quite locked, even at full stretch
-      p.knees.l.rotation.x = (0.10 + swing(ph) * 1.40) * kAmp;
-      p.knees.r.rotation.x = (0.10 + swing(ph + Math.PI) * 1.40) * kAmp;
-    }
-
-    /* Arms swing against the legs, and lag them by about a tenth of a
-       stride — an arm is heavier than it looks and does not turn round
-       the instant the leg does. */
-    const lag = 0.32;
-    const aL = skew(ph + Math.PI - lag), aR = skew(ph - lag);
-    const aAmp = 0.42 + running * 0.62;
-    p.arms.l.rotation.x = aL * aAmp;
-    p.arms.r.rotation.x = aR * aAmp;
-    p.arms.l.rotation.z = 0.14 + running * 0.06;
-    p.arms.r.rotation.z = -0.14 - running * 0.06;
-    if (p.elbows) {
-      /* The elbow closes as the arm comes FORWARD and opens as it goes
-         behind — watch anybody run. Forward is a negative rotation, same
-         as the legs, so this is max(0, -a) and not max(0, a), which is
-         what it said and which had him running with his elbows locked in
-         front and folded behind. */
-      const eAmp = 0.30 + running * 0.55;
-      p.elbows.l.rotation.x = (0.18 + Math.max(0, -aL) * 0.9) * eAmp;
-      p.elbows.r.rotation.x = (0.18 + Math.max(0, -aR) * 0.9) * eAmp;
-    }
-
-    /* ---- what the body does about all that ----
-       Everything here is a THIRD of what it was. The first pass rolled the
-       hips five and a half degrees and twisted them eight and a half, and
-       because the legs and arms hang off the hips the whole body went with
-       it — from behind he looked like he was walking a deck in a swell.
-
-       A real walk has all of these and they are all nearly invisible: you
-       notice them missing, not present. Two degrees of roll is plenty. */
-    // the hips roll toward whichever leg is carrying you
-    p.hips.rotation.z = -Math.sin(ph) * (0.014 + running * 0.016);
-    // and twist with the stride, with the shoulders twisting back
-    const twist = Math.sin(ph) * (0.022 + running * 0.030);
-    p.hips.rotation.y = twist;
-    if (this.throwAnim <= 0) {
-      p.torso.rotation.y = THREE.MathUtils.lerp(p.torso.rotation.y, -twist * 1.6, 0.4);
-    }
-    p.torso.rotation.z = Math.sin(ph) * (0.010 + running * 0.012);
-    // you lean into a run, but you do not fold over
-    p.torso.rotation.x = 0.02 + running * 0.085;
-
-    /* The body drops onto each foot and rises off it: twice a stride, and
-       lowest just after the foot lands, which is a quarter-stride out of
-       phase with the naive |sin| the old cycle used. */
-    const drop = Math.cos(ph * 2) * (0.013 + running * 0.020);
-    this.landSquash *= 0.86;
-    p.hips.position.y = 0.90 + drop - 0.012 * running - this.landSquash * 0.28;
-    p.hips.scale.y = 1 - this.landSquash * 0.18;
-    p.hips.scale.x = p.hips.scale.z = 1 + this.landSquash * 0.12;
   }
 
   updateCamera(dt, groundOf) {
@@ -1016,12 +1118,30 @@ export class Player {
          boundaries as you turn — and because the camera snaps inward
          instantly and eases outward slowly, every jump is a visible pump. */
       if (!this.insideBox) {
+        /* Eight coarse samples find the first step that is under the
+           ground, then a bisection between it and the step before finds
+           where the ray actually crosses. Taking the coarse step itself
+           made the boom length jump by a whole step (half a metre) as the
+           crossing moved past a sample, and every jump was a visible pump. */
+        const under = (t) => {
+          const sy = targetY + dirY * t;
+          return sy < groundOf(ox + dirX * t, oz + dirZ * t, sy) + 0.55;
+        };
         for (let s = 1; s <= 8; s++) {
           const t = (s / 8) * dist;
-          const sx = ox + dirX * t;
-          const sz = oz + dirZ * t;
-          const sy = targetY + dirY * t;
-          if (sy < groundOf(sx, sz, sy) + 0.55) { dist = Math.max(2.1, t - 0.45); break; }
+          if (!under(t)) continue;
+          let lo = ((s - 1) / 8) * dist, hi = t;
+          for (let b = 0; b < 5; b++) {
+            const mid = (lo + hi) * 0.5;
+            if (under(mid)) hi = mid; else lo = mid;
+          }
+          /* The floor on this was 2.1m, so on a slope steeper than the boom
+             (the cliffs under the radio mast run past 60 degrees) the
+             camera was held inside the hillside and the sky showed through
+             the ground. Let it come in to a metre; the guard below handles
+             anything closer. */
+          dist = Math.max(1.0, lo - 0.45);
+          break;
         }
       }
 
@@ -1031,6 +1151,7 @@ export class Player {
          Solved rather than sampled: the first hit along the ray comes out of
          the quadratic, so the distance changes smoothly as you turn instead
          of stepping between six sample points. */
+      let hard = Infinity;     // a trunk in the way: no easing, ever
       if (this.grid) {
         const a2 = dirX * dirX + dirZ * dirZ;
         if (a2 > 1e-6) {
@@ -1050,7 +1171,7 @@ export class Player {
             const disc = b2 * b2 - 4 * a2 * cc;
             if (disc <= 0) continue;
             const t = (-b2 - Math.sqrt(disc)) / (2 * a2);
-            if (t > 0 && t < dist) dist = Math.max(1.3, t - 0.15);
+            if (t > 0 && t < dist) { dist = Math.max(1.3, t - 0.15); hard = Math.min(hard, dist); }
           }
         }
       }
@@ -1136,8 +1257,16 @@ export class Player {
       /* Snap in fast, ease out slow — avoids nauseating pops. Indoors it
          eases out faster, because in a tight room the free distance changes
          very quickly as you turn and a slow recovery reads as lag. */
-      const k = dist < this.camDistCur ? 1 : Math.min(1, (this.insideBox ? 10 : 5) * dt);
+      /* Outdoors the pull-in is fast rather than instant. A bump in the
+         dunes that the boom suddenly passes behind changes the free
+         distance by most of a metre in one frame, and an instant snap made
+         that a visible jolt; the ground guard below keeps the lens out of
+         the sand while it closes. Indoors a wall is a wall: still instant. */
+      const k = dist < this.camDistCur
+        ? (this.insideBox ? 1 : ease(24, dt))
+        : ease(this.insideBox ? 10 : 5, dt);
       this.camDistCur += (dist - this.camDistCur) * k;
+      if (this.camDistCur > hard) this.camDistCur = hard;
 
       cam.position.set(
         this.pos.x + dirX * this.camDistCur + rightX * SHOULDER,
@@ -1154,6 +1283,26 @@ export class Player {
         cam.position.y += Math.sin(this.shake * 31) * j3;
       }
       if (cam.position.y < camFloorY) cam.position.y = camFloorY;
+      /* The last word outdoors: wherever the boom ended up, the lens stays
+         clear of the ground right under it and of the sea. The ray march
+         above runs from the shoulder, so a camera swung over a dune crest
+         or out past the waterline could still end up inside the sand or
+         under the surface — where nothing draws the sea from below and the
+         whole ocean vanishes. */
+      if (!this.insideBox) {
+        /* Sampled under the camera AND around it: the near plane is 0.35m out
+           and about 0.46m from centre to corner, so on a steep slope the
+           ground beside the lens can be a metre higher than the ground under
+           it, and one sample left a corner of the view inside the hill. */
+        const cx = cam.position.x, cy = cam.position.y, cz = cam.position.z;
+        const R = 0.6;
+        const gy = Math.max(
+          groundOf(cx, cz, cy),
+          groundOf(cx + R, cz, cy), groundOf(cx - R, cz, cy),
+          groundOf(cx, cz + R, cy), groundOf(cx, cz - R, cy));
+        const floorY = Math.max(gy + 0.3, gy < SEA_LEVEL + 0.35 ? SEA_LEVEL + 0.35 : -Infinity);
+        if (cy < floorY) cam.position.y = floorY;
+      }
       cam.lookAt(
         this.pos.x + rightX * SHOULDER * 0.45,
         targetY + 0.22,
@@ -1283,7 +1432,7 @@ export class Player {
     return this.thirdPerson;
   }
 
-  playThrow() { this.throwAnim = 1; }
+  playThrow() { this.throwAnim = 1; this._throwing = true; }
 
   /** Knock the camera about for a moment. 0..1. */
   punch(amount = 0.5) { this.shake = Math.max(this.shake || 0, amount); }

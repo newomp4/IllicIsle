@@ -21,6 +21,15 @@ const BROKER_PREFIX = 'illicisle-';       // namespaces our room codes on the sh
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no I/O/0/1
 const PING = 'n.ping', PONG = 'n.pong';
 const HEARTBEAT_MS = 2500, SLOW_AFTER_MS = 8000;
+/* Silence long enough that the link is gone, not slow. WebRTC only reports
+   a vanished peer once ICE gives up, and a laptop lid shut mid-round can
+   leave a channel that never closes: a seat that holds every council to
+   its full clock and keeps a body standing on the crew's side of the
+   count. A healthy guest answers our ping within a tick from an event
+   handler, which background throttling does not touch. The guest's side
+   waits longer, because a hidden host's own timers really do slow to
+   about once a minute. */
+const HOST_DROPS_GUEST_MS = 60000, GUEST_DROPS_HOST_MS = 150000;
 const clock = () => performance.now();
 
 /** Read a code or a shared invite without guessing around invalid characters. */
@@ -176,6 +185,11 @@ export class Net {
     for (const conn of links) {
       const link = this._watch(conn);
       if (woke) { link.seen = t; link.pending = null; }
+      if (t - link.seen > (this.isHost ? HOST_DROPS_GUEST_MS : GUEST_DROPS_HOST_MS)) {
+        this._dropSilent(conn);
+        if (this.closed) return;
+        continue;
+      }
       if (link.pending === null || t - link.sent > SLOW_AFTER_MS) {
         link.nonce = (link.nonce + 1) % 0x7fffffff;
         link.sent = t;
@@ -184,6 +198,20 @@ export class Net {
       }
     }
     this._refreshHealth(t);
+  }
+
+  /** A link that has said nothing for far too long, closed as a departure. */
+  _dropSilent(conn) {
+    if (this.isHost) {
+      const id = conn.peer;
+      if (this.conns.get(id) !== conn) return;
+      this.conns.delete(id);               // first, so the late 'close' is not a second leave
+      try { conn.close(); } catch { /* already gone */ }
+      this.onPeerLeave?.(id);
+    } else if (this.hostConn === conn) {
+      this.destroy();
+      this.onHostGone?.();
+    }
   }
 
   _receive(conn, raw, from) {

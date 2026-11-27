@@ -394,3 +394,40 @@ test('host loss after the result preserves known roles but cannot offer an impos
   }
   assert.equal(quits,2);assert.equal(rematches,0);
 });
+
+test('framed menus keep their key hints off the panel border, and control labels keep letter spacing', () => {
+  const g=game();
+  for (const [W,H] of [[240,180],[320,180],[398,224]]) {
+    for (const name of ['options','controls','mpGuide','pause']) {
+      const st=new ScreenStack(g); st.push(name);
+      drawn.length=0; st.draw(context2D(),W,H);
+      const hints=drawn.filter(d=>d.color==='#8a7a52' && d.y>=H-30);
+      assert.ok(hints.length, `${name} has a hint row`);
+      // the panel's bottom border is rows H-12 and H-11; the glyphs end above it
+      // (the one-pixel black shadow may touch the dark border, where it is invisible)
+      for (const h of hints) assert.ok(h.y+7<=H-12, `${name} ${W}x${H}: hint at ${h.y} reaches the border`);
+    }
+  }
+  const st=new ScreenStack(g); st.push('controls');
+  drawn.length=0; st.draw(context2D(),320,180);
+  assert.ok(drawn.some(d=>d.text==='MOVE'));
+  assert.ok(drawn.every(d=>d.tracking!==0), 'no control label is drawn with its glyphs touching');
+});
+
+test('a full-bleed screen keeps its key hints where it laid them out after a framed menu', () => {
+  const g=game(), st=new ScreenStack(g);
+  st.push('options'); drawn.length=0; st.draw(context2D(),320,180);
+  st.replace('reader',{head:'A',body:'B'}); drawn.length=0; st.draw(context2D(),320,180);
+  const hint=drawn.find(d=>d.color==='#8a7a52' && d.y>=150);
+  if (hint) assert.equal(hint.y,180-17);
+});
+
+test('hovering a plain list moves its highlight to the row under the pointer', () => {
+  const g=game(), st=new ScreenStack(g), s=st.push('pause');
+  st.draw(context2D(),320,180);
+  const r=st._rows[2];
+  st.pointer('move', r.x+2, r.y+2);
+  assert.equal(s.sel,2);
+  st.pointer('move', 1, 1);
+  assert.equal(s.sel,2, 'moving off the list leaves the selection alone');
+});

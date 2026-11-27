@@ -159,7 +159,9 @@ export function aimFor(left) {
   }
   if (left === 50) return { bed: 25, ring: 'inner', why: 'BULL' };
   // otherwise set one up: treble twenty until it is worth leaving a double
-  if (left > 60) return { bed: 20, ring: 'treble', why: 'T20' };
+  /* Not from 61: a clean treble twenty leaves one, which is a bust and the
+     whole turn scrubbed. A single nineteen from there leaves a double. */
+  if (left > 61) return { bed: 20, ring: 'treble', why: 'T20' };
   if (left > 40) {
     // leave himself an even number he can finish on
     const want = left - 20;

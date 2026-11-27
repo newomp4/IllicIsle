@@ -95,9 +95,16 @@ const SUBS = {
 };
 
 /** Fold text down to glyphs the font can actually draw. */
+/* Every drawText and textWidth comes through here, a few hundred times a
+   frame between the HUD and a screen. Nearly all of it is plain printable
+   ASCII, which needs nothing but upper-casing, so that skips the Unicode
+   decomposition, the regex and the per-character rebuild. */
+const PLAIN = /^[\x20-\x7e]*$/;
 export function normalize(text) {
+  const str = typeof text === 'string' ? text : String(text ?? '');
+  if (PLAIN.test(str)) return str.toUpperCase();
   let out = '';
-  for (const ch of String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
+  for (const ch of str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
     out += SUBS[ch] !== undefined ? SUBS[ch] : ch;
   }
   return out;

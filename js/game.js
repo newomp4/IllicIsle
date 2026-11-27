@@ -493,7 +493,14 @@ export class Game {
       canvas: this.canvas, antialias: false,
       powerPreference: 'high-performance', stencil: false,
     });
-    this.renderer.setPixelRatio(1);
+    /* The world is drawn into the low-res target whatever this is; the ratio
+       only sizes the final composite. At 1 a HiDPI screen got a 398-wide
+       frame stretched to 960 CSS pixels in uneven two- and three-pixel
+       columns, then doubled again by the browser — the uneven columns crawl
+       as the camera turns. At device resolution the steps are four and five
+       pixels, which reads as even. Capped at 2: past that it is fill rate
+       for nothing. */
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.autoClear = false;
     this.renderer.setClearColor(0x000000, 1);
@@ -528,8 +535,11 @@ export class Game {
     const r = this.canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(r.width || window.innerWidth));
     const h = Math.max(1, Math.round(r.height || window.innerHeight));
-    if (this._lastW === w && this._lastH === h) return;
-    this._lastW = w; this._lastH = h;
+    // dragged to a monitor of another density, same CSS size
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (this._lastW === w && this._lastH === h && this._lastDpr === dpr) return;
+    this._lastW = w; this._lastH = h; this._lastDpr = dpr;
+    if (this.renderer.getPixelRatio() !== dpr) this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.pipeline.setSize(w, h);
     /* Match the interface canvas here rather than waiting for render(). On a
@@ -1454,6 +1464,8 @@ export class Game {
     for (const [hx, hz] of [[92, -74], [-118, 8]]) {
       const vg = findFlatGround(hx, hz, VENDOR_FOOT, {
         rng, radius: 20, minH: 2, maxH: 30, maxRise: 0.45, yaw: 0,
+        // not on a hatch's apron: the east machine was standing on its rim
+        avoid: BUNKER_SPOTS.map((b) => ({ x: b.x, z: b.z, r: 7 })),
       });
       let lo = vg.y;
       for (let k = 0; k < 8; k++) {
@@ -5307,11 +5319,25 @@ I have snacks."`);
        through the island. A scripted camera wants real time, or the whole
        shot list stretches out on a slow machine and drifts away from the
        music and the phase timer it is supposed to fit inside. */
-    this.rawDt = Math.min(0.25, raw);
-    const dt = Math.min(0.05, raw);
-    this.update(dt);
-    this.render(dt);
-    this._fpsAccum = (this._fpsAccum || 0) + dt;
+    const frame = Math.min(0.25, raw);
+    /* Below twenty frames a second the old single step, capped at 0.05 s,
+       ran the whole game in slow motion: walking, animation, chores and the
+       clock all fell behind the host's wall-clock timers. Cut the frame into
+       equal steps of at most 0.05 s instead, so physics keeps its small step
+       and the world keeps real time up to the 0.25 s cap. rawDt is the time
+       each update call stands for, or its real-time readers would wind N
+       times a frame; render gets the whole frame. */
+    /* At most three updates per drawn frame: on a machine already behind,
+       more would lengthen the frame and spiral. Past 0.15 s the world runs
+       slightly slow rather than stalling. */
+    const steps = Math.min(3, Math.max(1, Math.ceil(frame / 0.05 - 1e-6)));
+    const dt = Math.min(0.05, frame / steps);
+    this.rawDt = dt;
+    for (let i = 0; i < steps; i++) this.update(dt);
+    this.rawDt = frame;
+    if (this.renderer?.info) { this.renderer.info.autoReset = false; this.renderer.info.reset(); }
+    this.render(frame);
+    this._fpsAccum = (this._fpsAccum || 0) + frame;
     this._fpsFrames = (this._fpsFrames || 0) + 1;
     if (this._fpsAccum > 0.5) {
       this._fpsSample = Math.round(this._fpsFrames / this._fpsAccum);

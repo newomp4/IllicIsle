@@ -363,8 +363,11 @@ export function buildHighRoller(mats, flameFactory) {
   const tableLamp = new THREE.PointLight(0xffe0b8, 4.0, 16, 1.5);
   tableLamp.position.set(0, 2.9, TZ);
   scene.add(tableLamp);
-  scene.add(new THREE.AmbientLight(0xb08880, 1.5));
-  scene.add(new THREE.HemisphereLight(0xd89a86, 0x54241e, 1.15));
+  /* Paler and a little stronger than it was: red panelling under a red
+     fill came out at a mean of 9 out of 255 on screen, a black box with a
+     green disc in it. The fires still make it red. */
+  scene.add(new THREE.AmbientLight(0xc8a49a, 2.2));
+  scene.add(new THREE.HemisphereLight(0xe8b8a0, 0x5a2a22, 1.4));
   // the shade it hangs in
   {
     const L = [];

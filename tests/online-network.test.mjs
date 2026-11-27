@@ -156,3 +156,21 @@ test('host loss terminates the guest transport once and ignores late packets', a
   assert.equal(net.peer.destroyed, true);
   assert.equal(net.health.state, 'closed');
 });
+
+test('a guest that goes silent for good is dropped, but a slow or sleeping link is not', t => {
+  let ms = 1000;
+  t.mock.method(performance, 'now', () => ms);
+  const net = host(), conn = accept(net), leaves = [];
+  net.onPeerLeave = id => leaves.push(id);
+  net._lastHealthTick = ms;
+  // ticking every 2.5 s with no answer at all
+  for (let i = 0; i < 16; i++) { ms += 2500; net._pollHealth(); }
+  assert.deepEqual(leaves, [], 'forty seconds of silence is only degraded');
+  for (let i = 0; i < 10; i++) { ms += 2500; net._pollHealth(); }
+  assert.deepEqual(leaves, ['guest']);
+  assert.equal(net.conns.size, 0);
+  assert.equal(conn.open, false);
+  conn.emit('close');
+  assert.deepEqual(leaves, ['guest'], 'one departure only');
+  net.destroy();
+});

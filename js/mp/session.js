@@ -118,6 +118,7 @@ export class HostSession {
   _leave(id) {
     const p = this.players.get(id);
     if (!p) return;
+    if (p.role === ROLE.AGENT && p.alive !== false) this._agentLeft = true;
     this.players.delete(id);
     /* Nobody was ever told the body had gone with them, so it stood on every
        client with a REPORT prompt the host would refuse for the rest of the
@@ -151,8 +152,13 @@ export class HostSession {
        Castaways' share alone, so the clamp landed on tasksDone exactly and
        the bar snapped to a hundred the moment a slacker pulled the plug. */
     if (this.phase !== PHASE.LOBBY) {
+      /* Castaways only. An Agent's list is his own — _tryTask refuses
+         anybody a chore that is not on their card — so counting his
+         untouched chores as work still available left a bar the Castaways
+         could never fill once one of them had pulled the plug. */
       let avail = 0;
       for (const q of this.players.values()) {
+        if (q.role !== ROLE.CASTAWAY) continue;
         for (const t of q.tasks || []) {
           if (q.doneTasks?.has(t)) continue;
           avail += taskSteps(t) - ((q.step && q.step[t]) || 0);
@@ -276,9 +282,16 @@ export class HostSession {
       case C.PERK: {
         /* Some purchases change what everyone else sees or how the rules
            treat you, so the host has to know about them. */
-        if (!p || !p.alive || this.phase !== PHASE.ROAM) break;
-        // Expiring an effect may arrive while stunned; using a new one may not.
-        if (msg.on !== false && p.stunnedUntil > now()) break;
+        if (!p || !p.alive) break;
+        /* Expiring an effect may arrive while stunned, or while seated at a
+           meeting — soles and alibis run out on their own clock, and a
+           switch-off dropped there left the host carrying the perk for the
+           rest of the round. Using a new one needs the island. */
+        if (msg.on === false) {
+          if (this.phase === PHASE.LOBBY || this.phase === PHASE.OVER) break;
+          // only a switch can be switched off; a whistle or a blackout cannot
+          if (!['quiet', 'vest', 'printer', 'whetstone', 'alibi'].includes(msg.perk)) break;
+        } else if (this.phase !== PHASE.ROAM || p.stunnedUntil > now()) break;
         const perks = ['quiet', 'vest', 'whetstone', 'printer', 'nightfall', 'speaker',
           'chaff', 'whistle', 'alibi', 'shroud', 'blackout'];
         if (!perks.includes(msg.perk)) break;
@@ -415,6 +428,7 @@ export class HostSession {
 
   start() {
     if (!this.canStart()) return false;
+    this._agentLeft = false;
     const ids = [...this.players.keys()];
     // shuffle, deal roles
     for (let i = ids.length - 1; i > 0; i--) {
@@ -430,6 +444,13 @@ export class HostSession {
       ? 0                                   // alone, you are whatever you choose
       : Math.max(1, Math.min(want, Math.floor((ids.length - 1) / 2)));
     const agents = new Set(ids.slice(0, agentCount));
+    /* A channel that opened but never said hello is still on every
+       broadcast, and from here on that is every position on the island.
+       _join's ten-second timer would get to it, but ten seconds of the
+       round is ten seconds too many. */
+    for (const cid of [...(this.net.conns?.keys?.() || [])]) {
+      if (!this.players.has(cid)) this.net.close?.(cid);
+    }
 
     this.tasksDone = 0;
     this.tasksTotal = 0;
@@ -1487,7 +1508,9 @@ export class HostSession {
     // per-kind cooldown, so the fatal one cannot simply be run back
     this.cool = this.cool || {};
     if (this.cool[kind] && now() < this.cool[kind]) {
-      this.net.sendTo(id, { t: S.SABOTAGE, kind, secs: 0, fatal: false, refused: true });
+      // the host has no channel to itself
+      if (id === 'host') this.hooks.onRefused?.(kind);
+      else this.net.sendTo(id, { t: S.SABOTAGE, kind, secs: 0, fatal: false, refused: true });
       return;
     }
     /* Where they were standing when they pulled it. Not a position — a
@@ -1565,7 +1588,12 @@ export class HostSession {
     const crew = alive.filter((p) => p.role === ROLE.CASTAWAY);
 
     let winner = null, reason = '';
-    if (agents.length === 0) { winner = 'castaways'; reason = 'EVERY AGENT EXILED'; }
+    if (agents.length === 0) {
+      winner = 'castaways';
+      /* Agents are never killed, only exiled or gone. If the last live
+         Agent disconnected (flagged in _leave), they walked out. */
+      reason = this._agentLeft ? 'THE AGENTS LEFT THE ISLAND' : 'EVERY AGENT EXILED';
+    }
     else if (agents.length >= crew.length) { winner = 'agents'; reason = 'THE AGENTS OUTNUMBER YOU'; }
     else if (this.tasksTotal > 0 && this.tasksDone >= this.tasksTotal) {
       winner = 'castaways'; reason = 'ALL WORK COMPLETE';
@@ -1735,8 +1763,10 @@ export class MirrorSession {
       case S.WELCOME: this.selfId = msg.youAre; this.settings = msg.settings || this.settings; break;
       case S.SETTINGS: this.settings = msg.settings || this.settings; break;
       case S.ROSTER: {
+        if (!Array.isArray(msg.players)) break;
         const seen = new Set();
         for (const r of msg.players) {
+          if (!r || typeof r !== 'object' || r.id == null) continue;
           seen.add(r.id);
           const p = this.players.get(r.id) || { x: 0, y: 0, z: 0, yaw: 0, anim: 0 };
           Object.assign(p, r);
@@ -1758,7 +1788,10 @@ export class MirrorSession {
         this.hooks.onRole?.(msg);
         break;
       case S.SNAPSHOT:
-        for (const [id, x, y, z, yaw, anim, alive, room = 0] of msg.p) {
+        if (!Array.isArray(msg.p)) break;
+        for (const row of msg.p) {
+          if (!Array.isArray(row)) continue;
+          const [id, x, y, z, yaw, anim, alive, room = 0] = row;
           const p = this.players.get(id) || {};
           p.id = id;
           p.tx = x; p.ty = y; p.tz = z; p.tyaw = yaw; p.anim = anim; p.alive = !!alive;

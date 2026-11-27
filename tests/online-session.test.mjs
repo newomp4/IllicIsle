@@ -448,3 +448,90 @@ test('a dealer blackjack ends the initial deal before double or split can spend 
   blackjack.dealerStep(st);
   assert.equal(blackjack.payout(st), 0);
 });
+
+test('a departing castaway never leaves the bar waiting on chores only an Agent can do', (t) => {
+  const { h } = host(t, 4);
+  // host is the Agent; alice, bob and carol are Castaways with one 1-step chore each
+  for (const id of ['host', 'alice', 'bob', 'carol']) {
+    const p = h.players.get(id); p.tasks = [['coco', 'fire', 'sand', 'net'][['host', 'alice', 'bob', 'carol'].indexOf(id)]];
+    p.doneTasks = new Set(); p.step = {};
+  }
+  h.tasksTotal = 3; h.tasksDone = 0;
+  h._leave('carol');
+  // the Agent's coconuts are not work the Castaways can do for him
+  assert.equal(h.tasksTotal, 2);
+  h.players.get('alice').doneTasks.add('fire'); h.tasksDone++;
+  h.players.get('bob').doneTasks.add('sand'); h.tasksDone++;
+  assert.ok(h.tasksDone >= h.tasksTotal);
+});
+
+test('switching a perk off is honoured during a meeting, but switching one on is not', (t) => {
+  const { h } = host(t);
+  const p = h.players.get('alice');
+  h._recv({ t: C.PERK, perk: 'quiet', on: true }, p.id);
+  assert.equal(p.quiet, true);
+  h.phase = PHASE.COUNCIL;
+  h._recv({ t: C.PERK, perk: 'quiet', on: false }, p.id);
+  assert.equal(p.quiet, false);
+  h._recv({ t: C.PERK, perk: 'quiet', on: true }, p.id);
+  assert.equal(p.quiet, false);
+  h._recv({ t: C.PERK, perk: 'blackout', on: true }, p.id);
+  assert.equal(h.chaffUntil || 0, 0);
+});
+
+test('starting a round closes channels that never said hello', (t) => {
+  const { h } = host(t, 3);
+  const closed = [];
+  h.net.conns = new Map([['alice', {}], ['bob', {}], ['lurker', {}]]);
+  h.net.close = (id) => closed.push(id);
+  h.phase = PHASE.LOBBY;
+  assert.equal(h.start(), true);
+  assert.deepEqual(closed, ['lurker']);
+});
+
+test('a round whose last Agent disconnects says so rather than calling it an exile', (t) => {
+  const { h, messages } = host(t, 4);
+  h._leave('host_missing');
+  h._leave('host');            // the real disconnect path
+  h._checkWin();
+  assert.equal(messages.find((m) => m.t === S.OVER)?.reason, 'THE AGENTS LEFT THE ISLAND');
+});
+
+test('a cooling sabotage refused to the host reaches the host hook', (t) => {
+  const { h } = host(t);
+  const refused = [];
+  h.hooks.onRefused = (k) => refused.push(k);
+  h.cool = { douse: 1e9 };
+  h._trySabotage('host', 'douse');
+  assert.deepEqual(refused, ['douse']);
+});
+
+test('the mirror shrugs off a malformed roster or snapshot', () => {
+  const m = new MirrorSession();
+  assert.doesNotThrow(() => m.handle({ t: S.ROSTER }));
+  assert.doesNotThrow(() => m.handle({ t: S.SNAPSHOT, p: 5 }));
+  assert.doesNotThrow(() => m.handle({ t: S.SNAPSHOT, p: [null, 3, ['a', 1, 2, 3, 0, 0, 1, 0]] }));
+  assert.equal(m.players.get('a')?.tx, 1);
+});
+
+test('a switch-off message cannot fire a one-shot perk', (t) => {
+  const { h, messages } = host(t);
+  const p = h.players.get('alice');
+  for (const perk of ['nightfall', 'blackout', 'chaff', 'speaker', 'whistle', 'shroud']) {
+    h._recv({ t: C.PERK, perk, on: false }, p.id);
+  }
+  assert.equal(messages.some((m) => [S.NIGHTFALL, S.BLACKOUT, S.CHAFF, S.SPEAKER].includes(m.t)), false);
+  assert.equal(p.whistleUntil || 0, 0);
+  assert.equal(p.shroudUntil || 0, 0);
+});
+
+test('an exiled Agent left in the roster does not mislabel a later walk-out', (t) => {
+  const { h, messages } = host(t, 5);
+  const agents = [...h.players.values()].filter((p) => p.role === ROLE.AGENT);
+  if (agents.length < 1) return;
+  // Add a second Agent record that was exiled earlier and is still listed.
+  h.players.set('exiled', { ...agents[0], id: 'exiled', alive: false, role: ROLE.AGENT });
+  h._leave(agents[0].id);
+  h._checkWin();
+  assert.equal(messages.find((m) => m.t === S.OVER)?.reason, 'THE AGENTS LEFT THE ISLAND');
+});

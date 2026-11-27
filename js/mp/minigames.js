@@ -157,12 +157,28 @@ function fxFlash(x, W, H, k, rgb) {
 
 /* ---------- shared chrome ---------- */
 /** A cheap two-tone weave, so a big flat rectangle has some grain in it. */
+/* The weave repeats every four pixels, so it is one cached 4x4 tile and one
+   fill — it was a 1x1 fill per grain, thousands a frame for the bail hull. */
+const _weave = new Map();
+function weaveFill(x, ox, oy, w, h, key, paint, size = 4) {
+  let pat = _weave.get(key);
+  if (!pat) {
+    if (typeof document === 'undefined') return false;   // headless tests: grain only
+    const t = document.createElement('canvas'); t.width = size; t.height = size;
+    paint(t.getContext('2d'));
+    pat = x.createPattern(t, 'repeat');
+    if (!pat) return false;
+    _weave.set(key, pat);
+  }
+  x.save(); x.translate(ox, oy); x.fillStyle = pat; x.fillRect(0, 0, w, h); x.restore();
+  return true;
+}
 function ditherRect3(x, ox, oy, w, h, a, b) {
   x.fillStyle = a; x.fillRect(ox, oy, w, h);
-  x.fillStyle = b;
-  for (let yy = 0; yy < h; yy += 2) {
-    for (let xx = (yy / 2) % 2; xx < w; xx += 2) x.fillRect(ox + xx, oy + yy, 1, 1);
-  }
+  weaveFill(x, ox, oy, w, h, `3|${b}`, (t) => {
+    t.fillStyle = b;
+    t.fillRect(0, 0, 1, 1); t.fillRect(2, 0, 1, 1); t.fillRect(1, 2, 1, 1); t.fillRect(3, 2, 1, 1);
+  });
 }
 
 function bar(x, bx, by, bw, bh, k, colour) {
@@ -994,13 +1010,16 @@ const dials = {
     const TOTAL = n * DW + (n - 1) * GAP;
     const OX = Math.round((W - TOTAL) / 2);
     const PLATE_Y = 42;          // the stamped code, clear of the title
-    const PLATE_H = 26;
+    const PLATE_H = 28;          // SET TO, a clear row, then the double-height code
     const DRUM_Y = PLATE_Y + PLATE_H + 12;
     /* The bolt strip and its readout have to finish above the key hints,
        which footer() prints at H-17; a fixed 54 stamped the readout over
        them at 180 tall. The 12 under the drums belongs to the turn arrows
        and cannot give, so the drums are what shrinks. */
-    const DRUM_H = Math.max(34, Math.min(54, (H - 19) - 23 - 12 - DRUM_Y) & ~1);
+    /* The readout now sits under the case (BOLT_Y + 22, eight rows with its
+       shadow) rather than on the case's bottom edge, and footer() prints at
+       H - 19, so the bolt strip has to end by H - 51. */
+    const DRUM_H = Math.max(34, Math.min(54, (H - 63) - DRUM_Y) & ~1);
     const BOLT_Y = DRUM_Y + DRUM_H + 12;
 
     /* ---- the brass case ---- */
@@ -1031,7 +1050,7 @@ const dials = {
     x.fillStyle = '#8a6a2a';
     x.fillRect(OX - 4, PLATE_Y, TOTAL + 8, 1);
     x.fillRect(OX - 4, PLATE_Y + PLATE_H - 1, TOTAL + 8, 1);
-    drawText3(x, 'SET TO', OX + TOTAL / 2, PLATE_Y + 3, '#a89050');
+    drawText3(x, 'SET TO', OX + TOTAL / 2, PLATE_Y + 2, '#a89050');
     for (let i = 0; i < n; i++) {
       const bx = OX + i * (DW + GAP);
       const ok = s.have[i] === s.want[i];
@@ -1039,7 +1058,8 @@ const dials = {
          routine, which already lays a shadow down behind every glyph — the
          extra pass I added on top of it read as a smudge stuck to each
          figure. */
-      drawBigDigit(x, s.want[i], bx + DW / 2, PLATE_Y + 16, 2, ok ? JADE : '#e8cf9a');
+      // under SET TO, not through it: rows PLATE_Y + 11 to + 25
+      drawBigDigit(x, s.want[i], bx + DW / 2, PLATE_Y + 18, 2, ok ? JADE : '#e8cf9a');
     }
 
     /* ---- the drums ---- */
@@ -1080,6 +1100,7 @@ const dials = {
       for (let d = -2; d <= 2; d++) {
         const v = ((s.have[i] - 1 + d + 9) % 9) + 1;
         const cy = DRUM_Y + DRUM_H / 2 + d * STEP + off;
+        if (cy < DRUM_Y - 8 || cy > DRUM_Y + DRUM_H + 8) continue;   // wholly outside the window
         const centre = Math.abs(cy - (DRUM_Y + DRUM_H / 2)) < 5;
         drawBigDigit(x, v, bx + DW / 2, Math.round(cy), centre ? 2 : 1,
           centre ? (ok ? '#dfffc4' : GOLD_LT) : '#4a3a1c');
@@ -1141,7 +1162,7 @@ const dials = {
     x.fillRect(OX + BW - 6, BOLT_Y + 1, 4, 10);
 
     drawText3(x, solved ? 'THE BOLT IS OVER' : `${done} OF ${n}`,
-      W / 2, BOLT_Y + 16, solved ? JADE : DIM);
+      W / 2, BOLT_Y + 22, solved ? JADE : DIM);
 
     /* a wash of green over everything the moment it opens */
     if (solved && s.bolt < 1) {
@@ -1192,6 +1213,10 @@ const dials = {
 /* ===========================================================
    5. BAIL OUT THE HULL — keep the water down. Timed, not clicky.
    =========================================================== */
+const WATER_LUT = Array.from({ length: 32 }, (_, i) => {
+  const k = i / 31;
+  return `rgb(${Math.round(26 + k * 8)},${Math.round(62 - k * 18)},${Math.round(102 - k * 30)})`;
+});
 const bail = {
   name: 'BAIL OUT THE HULL',
   hint: 'LEFT RIGHT MOVE   SPACE SCOOP',
@@ -1279,10 +1304,15 @@ const bail = {
       const cw = Math.ceil(hw / COLS);
       const cx0 = hx + Math.floor((i / COLS) * hw);
       const wy = Math.round(hy + hh - d * hh);
-      for (let yy = wy; yy < hy + hh; yy++) {
-        const k = (yy - wy) / Math.max(1, hy + hh - wy);
-        x.fillStyle = `rgb(${Math.round(26 + k * 8)},${Math.round(62 - k * 18)},${Math.round(102 - k * 30)})`;
-        x.fillRect(cx0, yy, cw, 1);
+      /* Shaded in at most 16 bands rather than one fill (and one new colour
+         string) per pixel row: the steps are a pixel or two either way. */
+      const depthPx = hy + hh - wy;
+      const bands = Math.min(16, depthPx);
+      for (let bnd = 0; bnd < bands; bnd++) {
+        const y0 = wy + Math.floor((bnd / bands) * depthPx);
+        const y1 = wy + Math.floor(((bnd + 1) / bands) * depthPx);
+        x.fillStyle = WATER_LUT[Math.round((bnd / Math.max(1, bands - 1)) * 31)];
+        x.fillRect(cx0, y0, cw, y1 - y0);
       }
       // the lit surface, brighter where it is deepest
       x.fillStyle = d > 0.02 ? `rgba(159,216,255,${(0.35 + d * 0.5).toFixed(2)})` : 'rgba(0,0,0,0)';
@@ -1427,20 +1457,17 @@ function drawBigDigit(x, v, cx, cy, scale, col) {
   _draw?.(x, String(v), { x: cx, y: cy - (scale === 2 ? 7 : 3), scale, align: 'center', color: col });
 }
 function ditherRect2(x, ox, oy, w, h) {
-  for (let j = 0; j < h; j += 2) {
-    for (let i = 0; i < w; i += 2) {
-      if (((i + j) >> 1) % 2) continue;
-      x.fillStyle = 'rgba(0,0,0,.22)';
-      x.fillRect(ox + i, oy + j, 2, 2);
-    }
-  }
+  // a 2x2-cell checker: one tile, one fill
+  weaveFill(x, ox, oy, w, h, '2', (t) => {
+    t.fillStyle = 'rgba(0,0,0,.22)'; t.fillRect(0, 0, 2, 2); t.fillRect(2, 2, 2, 2);
+  });
 }
 function ditherPatch(x, ox, oy, w, h) {
-  for (let j = 0; j < h; j += 2) {
-    for (let i = 0; i < w; i += 2) {
-      if (((i + j) >> 1) % 3) continue;
-      x.fillStyle = 'rgba(160,148,120,.35)';
-      x.fillRect(ox + i, oy + j, 2, 2);
+  // 2px cells on every third diagonal: a 6px tile
+  weaveFill(x, ox, oy, w, h, 'p', (t) => {
+    t.fillStyle = 'rgba(160,148,120,.35)';
+    for (let cj = 0; cj < 3; cj++) for (let ci = 0; ci < 3; ci++) {
+      if ((ci + cj) % 3 === 0) t.fillRect(ci * 2, cj * 2, 2, 2);
     }
-  }
+  }, 6);
 }

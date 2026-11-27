@@ -361,3 +361,99 @@ test('network health and changing purse labels never cover other HUD text', () =
     }
   }
 });
+
+test('the death shot and the beam swallow world input', () => {
+  for (const which of ['deathShot', 'lift']) {
+    const g = game();
+    if (which === 'deathShot') g.deathShot = {}; else g.mp.lift = {};
+    let asked = 0, killed = 0, belt = 0;
+    g.nearestInteractable = () => { asked++; return { kind: 'mpTask', taskId: 'x', prompt: 'X' }; };
+    g.tryKill = () => { killed++; };
+    g.cycleSpectate = () => { killed++; };
+    g.useBeltSlot = () => { belt++; };
+    g.interact();
+    g.throwCoconut();
+    for (const code of ['KeyF', 'Digit1', 'KeyQ', 'KeyG']) g._key({ code, repeat: false }, true);
+    assert.equal(asked, 0, which);
+    assert.equal(killed, 0, which);
+    assert.equal(belt, 0, which);
+    assert.equal(g.mp.taskProgress ?? null, null, which);
+    assert.ok(!g.screens.open, which);
+  }
+});
+
+test('a council holsters the flare pistol and a knife on the way up keeps the death shot framed', () => {
+  const g = game();
+  g.pistolOut = true;
+  g.pistolModel = { visible: true };
+  g.leaveRoom = () => {}; g._teleportToCamp = () => {};
+  g._phase(PHASE.COUNCIL, 60);
+  assert.equal(g.pistolOut, false);
+  assert.equal(g.pistolModel.visible, false);
+
+  let shown = 0;
+  g.ui.show = () => { shown++; };
+  g.player.mesh = { position: new THREE.Vector3() };
+  g.mp.lift = {};
+  g.deathShot = {};
+  g._endLift(true);
+  assert.equal(g.mp.lift, null);
+  assert.equal(shown, 0);
+});
+
+test('ghosts are not offered machines, the Stranger or the tables', () => {
+  const g = game();
+  g.mp.view.players.get('self').alive = false;
+  g.mp.view.tasks = [];
+  g.vendors = [{ x: 1, z: 0 }];
+  g.mp.stranger = { x: 0, z: 1 };
+  assert.equal(g.nearestInteractable(), null);
+  assert.equal(g.vendPay(g.vendors[0]), null);
+  assert.equal(g.sent.length, 0);
+  g.state = 'highroller';
+  g.player.pos.set(0, 0, -3.4);
+  assert.equal(g.nearestInteractable(), null);
+});
+
+test('a refused sabotage is said out loud on both ends and arms nothing', async (t) => {
+  const g = game();
+  const toasts = [];
+  g.ui.toast = (txt) => toasts.push(txt);
+  g._clientMsg({ t: S.SABOTAGE, kind: 'douse', refused: true });
+  assert.equal(g.mp.view.sabotage ?? null, null);
+  assert.deepEqual(toasts, ['THAT ONE IS STILL COOLING']);
+
+  t.mock.method(Net.prototype, 'host', async () => {});
+  t.mock.method(globalThis, 'setInterval', () => 0);
+  const h = game(); h.mp.active = false;
+  h._startNetTimer = () => {};
+  const said = [];
+  h.ui.toast = (txt) => said.push(txt);
+  await h.hostGame('TEST', '1234');
+  assert.equal(typeof h.mp.host.hooks.onRefused, 'function');
+  h.mp.host.hooks.onRefused('douse');
+  assert.deepEqual(said, ['THAT ONE IS STILL COOLING']);
+  h.cancelConnect();
+});
+
+test('a burst of snapshots after a stall is filed, not dropped', async () => {
+  const { noteSnapshot } = await import('../js/mp/avatar.js');
+  resetSnapshotTiming();
+  const av = avatar();
+  let t = 10, x = 0, kept = 0, sent = 0;
+  const send = (at) => { t = at; x += 0.3; sent++; noteSnapshot(t); const n = av.buf.length; av.push(t, x, 2, 3, 0, 0, 0); if (av.buf.length > n || av.buf.length >= 2) kept++; };
+  for (let i = 0; i < 50; i++) send(t + 0.04);
+  const before = av.buf.length;
+  const base = t + 0.2;
+  for (let i = 0; i < 5; i++) send(base + i * 0.001);
+  assert.ok(av.buf[av.buf.length - 1].x === x, 'the newest position in the burst is in the buffer');
+  for (let i = 1; i < av.buf.length; i++) assert.ok(av.buf[i].t > av.buf[i - 1].t, 'filed times stay increasing');
+  av.dispose();
+});
+
+test('a malformed snapshot reaching the client does not throw', () => {
+  const g = game();
+  g.mp.view = g.mp.view || { selfId: 'me' };
+  assert.doesNotThrow(() => g._applySnapshot({ p: 5 }));
+  assert.doesNotThrow(() => g._applySnapshot({ p: [null, 7, ['x', 1, 2, 3, 0, 0, 1, 0]] }));
+});

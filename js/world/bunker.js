@@ -82,6 +82,10 @@ export function buildHatch(rng, mats) {
     open += (want - open) * Math.min(1, dt * 4);
     hinge.rotation.z = -open * 2.1;
     lamp.intensity = open * 2.6;
+    /* As the comment above it says: only once it is open. The open-ended
+       shaft stands a little proud of the rim, and on any slope its far wall
+       showed through the closed lid's edge as a black crescent. */
+    shaft.visible = open > 0.02;
   };
   return g;
 }

@@ -164,7 +164,7 @@ export function buildBar(mats, flameFactory) {
         WOOD_D.clone().lerp(WOOD, 0.25 + mid * 0.3 + ((i * 3 + j) % 5) / 40)));
       // and a low, dark, beamed ceiling
       P.push(tint(box(PANEL - 0.02, 0.4, PANEL - 0.02, 'planks', { pos: [px, H + 0.2, pz] }),
-        G(0x2a1a10)));
+        G(0x3c2616)));
     }
   }
   // the beams, running across
@@ -531,8 +531,13 @@ export function buildBar(mats, flameFactory) {
      to be a room you can SEE — the warmth comes from the colour, not from
      the absence of light. These are the same intensities as the high
      rollers room next door, in a browner key. */
-  scene.add(new THREE.AmbientLight(0xc08858, 1.55));
-  scene.add(new THREE.HemisphereLight(0xe0a868, 0x3a2010, 1.05));
+  /* And still it measured a mean of 8 out of 255 on screen. A saturated
+     orange fill has almost no green or blue in it, and the brown panelling
+     has almost none either, so the two multiplied to nothing but a dull red.
+     A paler, less saturated fill lets the browns read as wood; the fire and
+     the lamps still carry the colour. */
+  scene.add(new THREE.AmbientLight(0xd8b48c, 2.3));
+  scene.add(new THREE.HemisphereLight(0xf0c898, 0x4a3020, 1.4));
 
   const fire = new THREE.PointLight(0xff8c30, 5.4, 22, 1.5);
   fire.position.set(-2.6, 1.0, FZ + 0.5);

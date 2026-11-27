@@ -453,7 +453,28 @@ export function buildSurf() {
     for (let i = 0; i < prof.length; i++) {
       prof[i] = heightAt(cos * (r0 - i), sin * (r0 - i));
     }
-    rings.push({ a, cos, sin, rLow, rHigh, r0, prof });
+    /* How far up the sand foam may climb on this bearing: until the ground
+       is a metre above the sea. Most of the coast is a long, flat beach and
+       this changes nothing there. But the bearings that run in through the
+       lagoon mouth find their waterline on the lagoon's inner bank, which is
+       steep and green, and the band used to drape sixteen metres up it — a
+       white sheet lying across the grass. */
+    let rCap = rLow - 40;
+    for (let r = rLow; r > rLow - 40; r -= 0.5) {
+      if (heightAt(cos * r, sin * r) > 1.0) { rCap = r; break; }
+    }
+    rings.push({ a, cos, sin, rLow, rHigh, r0, prof, rCap, fade: 1 });
+  }
+  /* Where the waterline found by neighbouring bearings jumps — at the two
+     edges of the lagoon mouth one bearing stops on the outer coast and the
+     next runs on to the lagoon's far bank, twenty metres further in — the
+     quad between them would be stretched straight across dry land. Those
+     bearings are faded out rather than drawn. */
+  for (let s = 0; s <= SEGS; s++) {
+    const here = rings[s].rLow;
+    const prev = rings[s === 0 ? SEGS - 1 : s - 1].rLow;
+    const next = rings[s === SEGS ? 1 : s + 1].rLow;
+    if (Math.abs(here - prev) > 6 || Math.abs(here - next) > 6) rings[s].fade = 0;
   }
 
   // the wobble below depends on the bearing and the clock, never on the band
@@ -475,7 +496,16 @@ export function buildSurf() {
   const meshes = [];
   for (let b = 0; b < BANDS; b++) {
     const geo = new THREE.PlaneGeometry(1, 1, SEGS, 1);
+    /* Per-vertex alpha carries the fade above; it never changes, so it is
+       written once here and not touched by the tick. */
+    const ca = new Float32Array((SEGS + 1) * 2 * 4).fill(1);
+    for (let s = 0; s <= SEGS; s++) {
+      ca[s * 4 + 3] = rings[s].fade;
+      ca[(SEGS + 1 + s) * 4 + 3] = rings[s].fade;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(ca, 4));
     const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
       map: tex, transparent: true, opacity: 0.7,
       depthWrite: false, side: THREE.DoubleSide, fog: true,
       /* A transparent DoubleSide material is submitted twice, back faces
@@ -532,7 +562,9 @@ export function buildSurf() {
            the beach. */
         const reach = Math.min(R.rLow - R.rHigh, RUN_UP);
         const r = R.rLow + 2 - reach * 0.2 * ease + wobBuf[s];
-        const rIn = r - band.width - reach * ease;
+        /* ...and never further up than the ground allows (rCap), but always
+           a metre and a half of band so the ribbon does not fold over. */
+        const rIn = Math.min(r - 1.5, Math.max(R.rCap, r - band.width - reach * ease));
         /* Ride the sand, but never below the water: the seaward edge goes on
            floating on the sea exactly as it did and only the landward part
            climbs the beach. */

@@ -279,7 +279,12 @@ void main(){
      Its canvas is authored in sRGB, so bring it into linear to mix. */
   if (uHudOn > 0.5) {
     vec4 hud = texture2D(tHud, hudUv);
-    vec3 hudLin = pow(max(hud.rgb, vec3(0.0)), vec3(2.2));
+    /* The exact sRGB curve, the inverse of the encode below. A 2.2 power
+       is not its inverse: the round trip crushed every dark interface
+       colour (panel fills, text shadows) — 0.10 came out 0.073, a whole
+       15-bit step down, and the near-blacks sank to black. */
+    vec3 hc = max(hud.rgb, vec3(0.0));
+    vec3 hudLin = mix(hc / 12.92, pow((hc + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), hc));
     col = mix(col, hudLin, hud.a);
   }
 
@@ -501,7 +506,44 @@ export class RetroPipeline {
     return { buf, w, h };
   }
 
+  /**
+   * Stand down every blended material that has faded to nothing.
+   *
+   * A transparent mesh at opacity zero is still sorted, bound and drawn —
+   * glows waiting for night, beams waiting for a wake, surf bands at the
+   * bottom of their swell, which actually swings below zero. From the beach
+   * that was twenty-odd draws a frame of nothing. material.visible is the
+   * flag three checks before it queues an object, so flip it while the
+   * opacity is nothing and flip it back the moment it is not. Only ever
+   * undoes what it did itself. Depth-writing materials are left alone: an
+   * invisible one is still an occluder, and somebody may mean that.
+   */
+  _standDownClear(scene) {
+    const now = performance.now();
+    let c = scene.userData.__clearMats;
+    if (!c || now - c.at > 500) {
+      const mats = c ? c.mats : new Set();
+      mats.clear();
+      const add = (m) => {
+        if (m && m.transparent && !m.depthWrite && !m.isShaderMaterial && !m.isRawShaderMaterial) mats.add(m);
+      };
+      scene.traverse((o) => {
+        const m = o.material;
+        if (!m) return;
+        if (Array.isArray(m)) m.forEach(add); else add(m);
+      });
+      c = scene.userData.__clearMats = { at: now, mats };
+    }
+    const hid = this._hidClear || (this._hidClear = new Set());
+    for (const m of c.mats) {
+      if (m.opacity <= 0.002) {
+        if (m.visible) { m.visible = false; hid.add(m); }
+      } else if (hid.has(m)) { m.visible = true; hid.delete(m); }
+    }
+  }
+
   render(scene, camera, dt = 0) {
+    this._standDownClear(scene);
     const u = this.quadMat.uniforms;
     u.uTime.value += dt;
     u.uFade.value = this.fade;
@@ -510,6 +552,11 @@ export class RetroPipeline {
     u.uDrunk.value = this.drunk;
 
     const r = this.renderer;
+    /* Count the whole frame, not just the last draw: with autoReset on,
+       renderer.info only ever showed the composite quad (1 call, 2 tris)
+       and every extra pass (feeds, shadows) was invisible. */
+    // Reset once per frame in Game.loop, before any feed pass renders.
+    r.info.autoReset = false;
     r.setRenderTarget(this.target);
     r.clear();
     r.render(scene, camera);

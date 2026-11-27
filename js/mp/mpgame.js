@@ -272,6 +272,10 @@ export class MPGame extends Game {
         this._compassForTasks();
       },
       onFixProgress: (k, d, n, at) => this._fixProgress(k, d, n, at),
+      /* A pull the host turned down (still cooling). The guest has always
+         been told through S.SABOTAGE { refused }; the host has no channel to
+         itself, so without this hook its own Q wheel closed on nothing. */
+      onRefused: (k) => this._onSabotageRefused(k),
       siteOf: (at) => this._namedSite(at),
       onOver: (w, a, r) => this._onOver(w, a, r),
       onEvent: (e) => { if (e.kind === 'left') this._notice(`${e.name} LEFT`); },
@@ -448,7 +452,7 @@ export class MPGame extends Game {
       case S.CHAT: this._onChat(msg); break;
       case S.EXILE: this._onExile(msg); break;
       case S.SABOTAGE:
-        if (msg.refused) { this.ui.toast('THAT ONE IS STILL COOLING', 'bad', 1600); this.audio.sfx('deny'); break; }
+        if (msg.refused) { this._onSabotageRefused(msg.kind); break; }
         this._onSabotage(msg.kind, msg.secs, msg.fatal, msg.sites, msg.half);
         break;
       case S.FIXPROGRESS: this._fixProgress(msg.kind, msg.done, msg.need, msg.at); break;
@@ -547,8 +551,11 @@ export class MPGame extends Game {
       const d = (((msg.c24 - this.clock24) % L) + L * 1.5) % L - L / 2;
       this.clock24 = (((this.clock24 + d * 0.05) % L) + L) % L;
     }
+    if (!Array.isArray(msg.p)) return;
     const mine = this.roomId;
-    for (const [id, x, y, z, yaw, anim, alive, room] of msg.p) {
+    for (const row of msg.p) {
+      if (!Array.isArray(row)) continue;
+      const [id, x, y, z, yaw, anim, alive, room] = row;
       if (id === M.view.selfId) continue;
       const av = M.avatars.get(id);
       if (!av) continue;
@@ -580,6 +587,10 @@ export class MPGame extends Game {
       this._clearHeldInput();
       M.taskProgress = null;
       this.stopSpectate(true);
+      /* A drawn flare pistol stayed in your hand through the council — on
+         the ring of faces at the fire, and still drawn when the round came
+         back, where the first click fired it instead of reaching for E. */
+      this._holster();
     }
 
     if (phase === PHASE.REVEAL) {
@@ -952,6 +963,11 @@ export class MPGame extends Game {
          and finish itself over your body. */
       M.taskProgress = null;
       this._clearHeldInput();
+      /* A ghost cannot fire it (fireFlare refuses the dead), but a drawn
+         pistol routes every click to fireFlare, so the dead lost the click
+         reach for chores for the rest of the round — and it hung, drawn,
+         off a see-through hand. */
+      this._holster();
       if (['mpMinigame', 'mpShop', 'mpVend', 'mpBar', 'mpCathy', 'mpBlackjack',
         'mpDarts', 'mpSlot', 'mpSabotage', 'mpFlopper'].includes(this.screens.name)) this.screens.clear();
       this._beginDeathShot(x, gy, z);
@@ -1372,6 +1388,11 @@ export class MPGame extends Game {
     if (this.taskFx && site) {
       this.taskFx.burst(site.x, heightAt(site.x, site.z), site.z, 0x8fe8c8);
     }
+  }
+
+  _onSabotageRefused() {
+    this.ui.toast('THAT ONE IS STILL COOLING', 'bad', 1600);
+    this.audio.sfx('deny');
   }
 
   _onSabotage(kind, secs, fatal, sites, half) {
@@ -2102,7 +2123,11 @@ export class MPGame extends Game {
       // brighter the further away you are, so it is a signpost, not a glare
       const d = Math.hypot(this.player.pos.x - site.x, this.player.pos.z - site.z);
       const near = Math.max(0, Math.min(1, (d - 6) / 40));
-      m.material.opacity = 0.05 + near * 0.16 + Math.sin(this.time * 2) * 0.02;
+      /* Gone once you are standing at the chore: a faint additive column a
+         metre and a half wide, right in front of the camera, read as a pale
+         translucent box over the job you came to do. */
+      m.material.opacity = near * (0.21 + Math.sin(this.time * 2) * 0.02);
+      if (near <= 0) m.visible = false;
     }
   }
 
@@ -2344,7 +2369,7 @@ export class MPGame extends Game {
     }
     if (this.state === 'highroller') {
       const dt3 = Math.hypot(p.x - 0, p.z - (-3.4));
-      if (dt3 < 4.6) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
+      if (dt3 < 4.6 && this.amAlive) return { kind: 'mpTable2', prompt: 'SIT DOWN' };
       const dd = Math.hypot(p.x - 0, p.z - 10.2);
       if (dd < 3.0) return { kind: 'mpDoorOut', prompt: 'BACK ON DECK' };
       // the door in the west panelling, which has no plate on it
@@ -2364,10 +2389,12 @@ export class MPGame extends Game {
     if (this.state === 'bar') {
       // the bar itself: stand at it and he will serve you
       const dq = Math.hypot(p.x - (BAR_KEEP.x + 1.9), p.z - BAR_KEEP.z);
-      if (dq < 3.4) return { kind: 'mpBar', prompt: 'QUEZETRIEL QUEBOLIUS' };
+      /* Neither sells to the dead: buyDrink and dartsStake both refuse a
+         ghost, so the prompt was an offer the counter would not honour. */
+      if (dq < 3.4 && this.amAlive) return { kind: 'mpBar', prompt: 'QUEZETRIEL QUEBOLIUS' };
       // the oche, at the far end
       const do2 = Math.hypot(p.x - BAR_OCHE.x, p.z - BAR_OCHE.z);
-      if (do2 < 2.2) return { kind: 'mpDarts', prompt: 'PLAY HIM AT DARTS' };
+      if (do2 < 2.2 && this.amAlive) return { kind: 'mpDarts', prompt: 'PLAY HIM AT DARTS' };
       // and the way back
       const dbk = Math.hypot(p.x - BAR_DOOR.x, p.z - BAR_DOOR.z);
       if (dbk < 2.6 && !this._barCooldown) return { kind: 'mpBarOut', prompt: 'BACK THROUGH' };
@@ -2429,7 +2456,8 @@ export class MPGame extends Game {
        and the man on the wall. */
     if (this.casino) {
       const _wp = (this._wp = this._wp || new THREE.Vector3());
-      for (const s2 of (this.casino.userData.slots || [])) {
+      /* pullSlot refuses the dead, so the machines are not offered to them. */
+      for (const s2 of (this.amAlive ? (this.casino.userData.slots || []) : [])) {
         s2.getWorldPosition(_wp);
         const ds = Math.hypot(p.x - _wp.x, p.z - _wp.z);
         if (ds < 3.0 && ds < bestD) {
@@ -2489,14 +2517,16 @@ export class MPGame extends Game {
       if (dc < 5.0 && dc < bestD) { bestD = dc; best = { kind: 'mpCathy', prompt: 'CATHY' }; }
     }
 
-    // the one who is not on the roster
-    if (M.stranger) {
+    // the one who is not on the roster — who will not speak to a ghost
+    if (M.stranger && this.amAlive) {
       const ds = Math.hypot(p.x - M.stranger.x, p.z - M.stranger.z);
       if (ds < 6.0 && ds < bestD) { bestD = ds; best = { kind: 'mpStranger', prompt: 'SPEAK TO HIM' }; }
     }
 
-    // Ferdi's outlying machines
-    for (const v of (this.vendors || [])) {
+    /* Ferdi's outlying machines. The host refuses a pull from the dead, so a
+       ghost offered one fed the drum, watched it turn and got an EMPTY tray
+       for a machine that was still full for everybody else. */
+    if (this.amAlive) for (const v of (this.vendors || [])) {
       const dv = Math.hypot(p.x - v.x, p.z - v.z);
       if (dv < 4.0 && dv < bestD) {
         bestD = dv;
@@ -2560,6 +2590,11 @@ export class MPGame extends Game {
   interact() {
     if (!this.mp.active) return super.interact();
     if (this.screens.open || this.paused) return;
+    /* The death shot and the lift drive the camera while the world runs on,
+       and E reached straight through them: a chore hold started under the
+       letterbox, a minigame opened over the body, the hatch pulled you down
+       a ladder mid-shot. */
+    if (this._cinematic) return;
     if (this.stunnedUntil && now() < this.stunnedUntil) return;
     const it = this.nearestInteractable();
     if (!it) return;
@@ -2960,6 +2995,11 @@ export class MPGame extends Game {
          here rather than guarded on the `if` above, because a repeat that
          falls through reaches Game._key, where KeyF still opens the chart. */
       if (e.repeat && /^(Digit[1-9]|Key[GVBNFQ])$/.test(e.code)) return;
+      /* Under the death shot or the beam the belt, the knife, the pistol and
+         the spectate key all reached the world: F was a kill (or, for the
+         newly dead, a hop into somebody else's room) while the camera was
+         still flying, and Q's wheel cut the lift off halfway up. */
+      if (this._cinematic && /^(Digit[1-9]|Key[GVBNFQ])$/.test(e.code)) return;
       /* The belt. 1-9 uses what you are carrying — the one thing the game
          had no way of doing at all. */
       if (/^Digit[1-9]$/.test(e.code)) { this.useBeltSlot(+e.code.slice(5)); return; }
@@ -3508,7 +3548,7 @@ export class MPGame extends Game {
    * you for a drum that stopped on nothing.
    */
   vendPay(vendor) {
-    if (!vendor || vendor.spent) return null;
+    if (!vendor || vendor.spent || !this.amAlive) return null;
     if ((this.coins || 0) < VEND_COST) {
       this.ui.toast('NOT ENOUGH SYNCOIN', 'bad', 1600);
       return null;
@@ -3693,6 +3733,7 @@ export class MPGame extends Game {
    */
   throwCoconut() {
     if (!this.mp.active) return super.throwCoconut();
+    if (this._cinematic) return;
     if (this.pistolOut) { this.fireFlare(); return; }
     /* If the click is the same reach as E it has to be the same HOLD as E.
        The chore bar is driven by the held-E flag alone, so a chore or a
@@ -3736,6 +3777,15 @@ export class MPGame extends Game {
     this.audio.sfx(this.pistolOut ? 'charge' : 'select');
     this.ui.toast(this.pistolOut ? 'FLARE PISTOL  -  CLICK OR F TO FIRE' : 'HOLSTERED', 'gold', 2200);
   }
+
+  /** Put the pistol away without a word: the round took it out of your hand. */
+  _holster() {
+    this.pistolOut = false;
+    if (this.pistolModel) this.pistolModel.visible = false;
+  }
+
+  /** The death shot and the beam both own the camera and the body. */
+  get _cinematic() { return !!(this.deathShot || this.mp?.lift); }
 
   /** Whoever is nearest the middle of the screen, within range. */
   _flareTarget() {
@@ -4586,8 +4636,14 @@ export class MPGame extends Game {
     if (!M || !M.lift) return;
     M.lift = null;
     M.liftRise = null;
-    setCinemaBars(false);
-    this.ui.show();
+    /* A knife on the way up ends the lift from render(), AFTER the death
+       shot has put its own mattes up and hidden the HUD — and this took both
+       straight back down, so the last three seconds played with the belt and
+       the compass over them and no letterbox. The shot puts them back itself. */
+    if (!this.deathShot) {
+      setCinemaBars(false);
+      this.ui.show();
+    }
     /* Put the body back where the controller still thinks it is. Only the
        mesh was ever moved — pos was never touched — so this is one line and
        the next frame of player.update() would have done it anyway. */
@@ -4953,7 +5009,12 @@ export class MPGame extends Game {
     if (!bu || bu.state.taken) return;
     bu.state.taken = true;
     // the lid swings over the next second, in the node's own tick
-    const swing = setInterval(() => {
+    /* Stops itself if the hole is filled in under it: a new round resets
+       `taken` and `open`, and a swing still running would lift the lid of a
+       chest nobody had dug up yet. */
+    clearInterval(this._chestSwing);
+    const swing = this._chestSwing = setInterval(() => {
+      if (!bu.state.taken) { clearInterval(swing); return; }
       bu.state.open = Math.min(1, bu.state.open + 0.06);
       if (bu.state.open >= 1) clearInterval(swing);
     }, 16);
@@ -6219,7 +6280,8 @@ export class MPGame extends Game {
        not follow you into a room the way a live Vector3 would. The chart has
        no way to draw an interior, and every interior is its own local space. */
     if (this.state === 'island') {
-      this._islandPos = { x: this.player.pos.x, z: this.player.pos.z };
+      const ip = this._islandPos || (this._islandPos = { x: 0, z: 0 });
+      ip.x = this.player.pos.x; ip.z = this.player.pos.z;
     }
 
     /* Whatever happened — a pause card, an alt-tab, a stray Escape — if the
@@ -6304,7 +6366,11 @@ export class MPGame extends Game {
         }
       } else {
         tp.slack = 0;
-        tp.t += dt;
+        /* Real time, like the death shot. `dt` is capped at a twentieth of a
+           second, so below 20 fps a 3.5 s chore took seven on the wall clock
+           — measured at the temple steps on a slow machine — while everybody
+           else's ran at the advertised length. rawDt is capped at 0.25 s. */
+        tp.t += this.rawDt > 0 ? this.rawDt : dt;
         if (tp.t >= tp.secs) {
           if (tp.fix) this._send({ t: C.FIX, kind: tp.fix, at: tp.at });
           else this._send({ t: C.DO_TASK, taskId: tp.taskId, step: tp.step });
@@ -6734,10 +6800,13 @@ export class MPGame extends Game {
     d.cools.length = 0;
     if (this.amAgent && M.cool) {
       const t = now();
+      const pool = d.cools._pool || (d.cools._pool = []);
       for (const k in M.cool) {
         const left = M.cool[k] - t;
         if (left > 0) {
-          d.cools.push({ kind: k, left, total: SABOTAGE_DEFS[k]?.cooldown || 1 });
+          const row = pool[d.cools.length] || (pool[d.cools.length] = {});
+          row.kind = k; row.left = left; row.total = SABOTAGE_DEFS[k]?.cooldown || 1;
+          d.cools.push(row);
         }
       }
     }

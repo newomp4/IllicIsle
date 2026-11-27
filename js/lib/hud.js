@@ -47,6 +47,17 @@ const compassX = (dA, left, W) => Math.round(left + W / 2 - (dA / COMPASS_HALF) 
    whether a message is going to be cut. */
 const toastCap = (oy, bottom) => Math.max(0, Math.min(2, Math.floor((bottom - oy - 4) / 9)));
 /** Which of the island's fixtures wins the row when two land together. */
+/* Belt geometry, shared by the belt and by render(), which has to know how
+   tall the belt will be before deciding whether it fits beside an
+   instrument. A row is its key numbers, a 16-tall well and its counts;
+   the plate is 37 tall for one row and BELT_ROW more for each after. */
+const BELT_SLOT = 20;
+const BELT_ROW = 34;   // keys 9 + well 16 + counts 9
+const beltColumnsFor = (W, agent) => Math.max(1, Math.min(9,
+  Math.floor((W - (agent ? 128 : 12) - 2) / BELT_SLOT)));
+
+const AGENT_FOOT = ['THESE COUNT FOR THEM', 'COUNTS FOR THEM', 'THEY COUNT', 'COUNTS'];
+
 const PRI = { BOX: 0, BELL: 1, POST: 2, FIRE: 3, CAMP: 3, CATHY: 5, MACHINE: 6 };
 /* Ten marks and a strip with room to letter three or four of them, so the
    order they are worth having in has to be an order and not a wish: what is
@@ -248,10 +259,11 @@ export class Hud {
       const sigOn = !!d.mp.scanner?.on && !assay;
       const inst = !!(sigOn || assay || d.mp.printer?.on);
       const agent = d.mp.role === 'agent';
-      const beltColumns = Math.max(1, Math.min(9, Math.floor((W - (agent ? 128 : 12) - 4) / 18)));
+      const beltColumns = beltColumnsFor(W, agent);
       const beltRows = Math.max(1, Math.ceil(Math.min(9, d.mp.belt?.length || 0) / beltColumns));
-      const beltRow = !inst || H - 62 - (beltRows - 1) * 20 >= 163;
-      if (beltRow) this._mpBelt(4, H - 52, d.mp);
+      // the belt's plate starts ten above its first row, at H - 66
+      const beltRow = !inst || H - 66 - (beltRows - 1) * BELT_ROW >= 163;
+      if (beltRow) this._mpBelt(4, H - 56, d.mp);
       /* The knife panel hangs off the bottom right corner and the till
          roll's case ends at 163, so on a 180-tall frame the panel was drawn
          last and over the top of the docket — the price, how long ago it
@@ -387,7 +399,9 @@ export class Hud {
     if (width < 40 || bottom - top < 13) return;
     // A warning can interrupt a souvenir. Other messages take turns with
     // the card instead of forming a wall of opaque panels over the world.
-    const warning = [...d.toasts].reverse().find((t) => t.kind === 'bad');
+    // newest warning first; walked in place, as this runs every frame
+    let warning = null;
+    for (let i = d.toasts.length - 1; i >= 0 && !warning; i--) if (d.toasts[i].kind === 'bad') warning = d.toasts[i];
     if (warning) this._toasts(cx, top, width, bottom, warning);
     else if (d.popup && bottom - top >= 32) this._popup(this.c.width, this.c.height,
       d.popup, { cx, top, width, bottom });
@@ -479,12 +493,19 @@ export class Hud {
     /* The gutter the row numbers sit in, sized to the longest number there
        is to print. They are what ties a row to the green mark on the compass
        carrying the same figure, and seven pixels is a cheap price for it. */
-    const numW = textWidth(String(tasks.length), 1) + 2;
-    const pw = Math.min(CAP, Math.max(64, widest + 15 + numW));
+    /* Box, gap, number, gap, name. The number used to start three pixels
+       after the box and the name two after the number, and with the glyph
+       shadow taking one of those the row read as "1GATHER COCONUTS". */
+    const numW = textWidth(String(tasks.length), 1) + 4;
+    const pw = Math.min(CAP, Math.max(64, widest + 16 + numW));
+    /* A row pitch of 8 is the glyph and its shadow with nothing between, so
+       the rows ran together. Nine reads as a list; a nine-chore lobby keeps
+       eight so the list still clears the instrument bay below it. */
+    const rowH = tasks.length <= 6 ? 9 : 8;
     /* The key hint under the list is drawn whichever side you are on, so
        the plate has to be tall enough for it either way — a Castaway's
        TAB MAP was printed on the sand a row below its own backing. */
-    const ph = 12 + tasks.length * 8 + 8;
+    const ph = 12 + tasks.length * rowH + 8;
     plate(x, ox - 2, oy - 2, pw, ph);
     /* What the banner and the toasts have to clear. */
     this._mpLeftBottom = oy - 2 + ph;
@@ -498,11 +519,12 @@ export class Hud {
       const t = tasks[i];
       const done = t.done;
       const hot = mp.flash === t.id;
-      if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 1, pw, 8); }
-      x.fillStyle = INK; x.fillRect(ox, y, 5, 5);
+      if (hot && beat) { x.fillStyle = 'rgba(126,200,80,.30)'; x.fillRect(ox - 2, y - 1, pw, rowH); }
+      // the box sits on the middle of the seven-row glyph, not its top
+      x.fillStyle = INK; x.fillRect(ox, y + 1, 5, 5);
       x.fillStyle = done ? (hot && beat ? '#9fe870' : '#3a5a2c') : (t.half ? '#5a4a12' : '#2a1c0c');
-      x.fillRect(ox + 1, y + 1, 3, 3);
-      if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 3, 3, 1); }
+      x.fillRect(ox + 1, y + 2, 3, 3);
+      if (!done && t.half) { x.fillStyle = '#ffd24a'; x.fillRect(ox + 1, y + 4, 3, 1); }
       const col = hot ? '#dfffc4'
         : (done ? '#5f7a4a' : (t.half ? '#ffd88a' : (agent ? '#d8a898' : '#e2d2a4')));
       drawText(x, String(i + 1), { x: ox + 8, y, scale: 1, color: done ? '#4a5a3a' : '#8a7a52' });
@@ -510,9 +532,9 @@ export class Hud {
          it is the only thing on the panel that says how far in you are — so
          the name is fitted to whatever is left after it. */
       const step = (!done && t.steps > 1) ? ` ${t.step + 1}/${t.steps}` : '';
-      const room = pw - 11 - numW - (step ? textWidth(step, 1) + 1 : 0);
+      const room = pw - 12 - numW - (step ? textWidth(step, 1) + 1 : 0);
       drawText(x, this._fitName(t.name, room) + step, { x: ox + 8 + numW, y, scale: 1, color: col });
-      y += 8;
+      y += rowH;
     }
     /* This used to say THESE ARE FOR SHOW, and it was true: an Agent's
        chores did not move the bar, which is exactly the tell the crew
@@ -521,10 +543,7 @@ export class Hud {
     /* Every chore row above is cut to the plate; this line was not, and at
        240 across it ran sixty-five pixels past the edge of its own backing
        and onto the world. It says as much of itself as the plate can hold. */
-    const foot = agent
-      ? (['THESE COUNT FOR THEM', 'COUNTS FOR THEM', 'THEY COUNT', 'COUNTS']
-        .find((t) => textWidth(t, 1) <= pw - 4) || 'COUNTS')
-      : 'TAB  MAP';
+    const foot = agent ? (AGENT_FOOT.find((t) => textWidth(t, 1) <= pw - 4) || 'COUNTS') : 'TAB  MAP';
     drawText(x, foot, { x: ox, y: y + 1, scale: 1, color: agent ? '#c08a5c' : '#7a6a4a' });
     return pw;                 // render() sizes the compass against this
   }
@@ -1298,77 +1317,84 @@ export class Hud {
     if (!belt.length && !passives.length) return;
     const t = this._wobble;
 
-    const SLOT = 18;
+    /* Each slot is a well holding the icon alone, with a caption row under
+       it: the key that spends it on the left and how many on the right.
+       The old sixteen-pixel well held the twelve-pixel icon, the key and the
+       count all at once, so the count sat on the icon's corner. */
+    const SLOT = BELT_SLOT;
     /* Nine at most. The keys are 1 to 9, so a tenth slot is a thing you can
-       see and cannot use — and its two-digit number does not fit in the cell
-       beside the count, so it printed over it. Anything past nine is shown
-       as a tally instead. */
+       see and cannot use. Anything past nine is shown as a tally instead. */
     const MAX = 9;
     const shown = Math.min(belt.length, MAX);
     const spare = belt.length - shown;
     const available = this.c.width - (mp.role === 'agent' ? 128 : 12);
-    const columns = Math.max(1, Math.min(MAX, Math.floor((available - 4) / SLOT)));
+    const columns = beltColumnsFor(this.c.width, mp.role === 'agent');
     const rows = Math.max(1, Math.ceil(shown / columns));
-    const rowStep = SLOT + 2;
+    const rowStep = BELT_ROW;
     oy -= (rows - 1) * rowStep;
     if (shown) {
-      const w = Math.max(Math.min(shown, columns) * SLOT + 4,
-        textWidth('BELT', 1) + 10);
-      plate(x, ox, oy - 10, w, rows * rowStep + 10);
-      drawText(x, 'BELT', { x: ox + 3, y: oy - 8, scale: 1, color: '#8a7a52' });
+      const spareW = spare > 0 ? textWidth(`+${spare}`, 1) + 4 : 0;
+      const w = Math.min(shown, columns) * SLOT + 2 + spareW;
+      plate(x, ox, oy - 10, w, (rows - 1) * rowStep + 37);
       if (spare > 0) {
         drawText(x, `+${spare}`, {
-          x: ox + w - 4, y: oy - 8, scale: 1, align: 'right', color: '#8a7a52',
+          x: ox + w - 4, y: oy + 4, scale: 1, align: 'right', color: '#8a7a52',
         });
       }
       for (let i = 0; i < shown; i++) {
         const sl = belt[i];
         const sx = ox + 2 + (i % columns) * SLOT;
         const sy = oy + Math.floor(i / columns) * rowStep;
+        const ww = SLOT - 2, wh = 16;
         // the well
         x.fillStyle = sl.active ? '#3a2a10' : '#140e06';
-        x.fillRect(sx, sy + 2, SLOT - 2, SLOT - 2);
+        x.fillRect(sx, sy, ww, wh);
         x.fillStyle = sl.active ? GOLD : '#4a3a1c';
-        x.fillRect(sx, sy + 2, SLOT - 2, 1);
-        x.fillRect(sx, sy + SLOT - 1, SLOT - 2, 1);
-        x.fillRect(sx, sy + 2, 1, SLOT - 3);
-        x.fillRect(sx + SLOT - 3, sy + 2, 1, SLOT - 3);
-        drawShopIcon(x, sl.icon, sx + 2, sy + 4, 12, true, t);
-        // the key that spends it, bottom-left of the well
-        drawText(x, String(i + 1), {
-          x: sx + 1, y: sy + SLOT - 8, scale: 1,
-          color: sl.active ? GOLD_LT : '#9a8a62', shadow: true,
-        });
-        // how many you have, if more than one
-        if (sl.count > 1) {
-          const count = sl.count > 99 ? '+' : String(sl.count);
-          const cw = textWidth(count, 1);
-          // Count above, key below: x12 used to cover its own number key.
-          x.fillStyle = 'rgba(8,5,3,.9)';
-          x.fillRect(sx + SLOT - 4 - cw, sy + 2, cw + 1, 8);
-          drawText(x, count, {
-            x: sx + SLOT - 4, y: sy + 2, scale: 1, align: 'right', color: GOLD_LT,
-          });
-        }
+        x.fillRect(sx, sy, ww, 1);
+        x.fillRect(sx, sy + wh - 1, ww, 1);
+        x.fillRect(sx, sy, 1, wh);
+        x.fillRect(sx + ww - 1, sy, 1, wh);
+        drawShopIcon(x, sl.icon, sx + ((ww - 12) >> 1), sy + 2, 12, true, t);
         // a drawn weapon pulses so you know it is in your hands
         if (sl.active && Math.floor(t * 5) % 2 === 0) {
           x.fillStyle = 'rgba(255,210,74,.28)';
-          x.fillRect(sx, sy + 2, SLOT - 2, SLOT - 2);
+          x.fillRect(sx + 1, sy + 1, ww - 2, wh - 2);
+        }
+        // the key that spends it, over the well, the way a hotbar reads
+        drawText(x, String(i + 1), {
+          x: sx + (ww >> 1), y: sy - 8, scale: 1, align: 'center',
+          color: sl.active ? GOLD_LT : '#9a8a62',
+        });
+        // and how many you have, under it
+        if (sl.count > 1) {
+          const count = sl.count > 99 ? '99+' : String(sl.count);
+          drawText(x, count, {
+            x: sx + (ww >> 1), y: sy + wh + 1, scale: 1, align: 'center', color: GOLD_LT,
+          });
         }
       }
     }
 
-    /* Passives are facts about you rather than keys you press. They used to
-       be a bare row of nine-pixel icons floating on the world with no panel
-       and no label — from a distance that reads as one small brown button
-       nobody can identify. Labelled and plated now. */
+    /* Passives are facts about you rather than keys you press: one plated
+       row, labelled on the left, with the icons lit and full size. They used
+       to be nine-pixel icons in their unlit colours, which from any distance
+       read as a row of brown smudges. */
     if (passives.length) {
-      const py = oy + (shown ? rows * rowStep + 8 : 0);
-      const pw = Math.max(passives.length * 11 + 6, textWidth('ON YOU', 1) + 10);
-      plate(x, ox, py - 10, pw, 21);
-      drawText(x, 'ON YOU', { x: ox + 3, y: py - 8, scale: 1, color: '#8a7a52' });
-      passives.forEach((icon, i) => {
-        drawShopIcon(x, icon, ox + 3 + i * 11, py + 1, 9, false, t);
+      const py = oy + (shown ? (rows - 1) * rowStep + 28 : 0);
+      const lw = textWidth('ON YOU', 1);
+      const fit = Math.max(1, Math.floor((available - lw - 12) / 13));
+      const n = Math.min(passives.length, fit);
+      const more = passives.length - n;
+      const moreW = more > 0 ? textWidth(`+${more}`, 1) + 3 : 0;
+      const pw = lw + 9 + n * 13 + moreW + 1;
+      plate(x, ox, py, pw, 16);
+      drawText(x, 'ON YOU', { x: ox + 3, y: py + 4, scale: 1, color: '#8a7a52' });
+      for (let i = 0; i < n; i++) {
+        // a fixed clock: lit colours, but no flicker on things you only own
+        drawShopIcon(x, passives[i], ox + lw + 7 + i * 13, py + 2, 12, true, 0.25);
+      }
+      if (more > 0) drawText(x, `+${more}`, {
+        x: ox + pw - 4, y: py + 4, scale: 1, align: 'right', color: '#8a7a52',
       });
     }
   }
@@ -1655,6 +1681,12 @@ export class Hud {
         x0 = place(wide);
         if (!this._compassRoom(x0, wide)) continue;
       }
+      /* The degree ticks were painted first and run up through this row,
+         and the lettering has no shadow, so a tick showing between the
+         strokes of a P turned POST into ROST. Lay the strip's own colour
+         back under whatever this mark is about to occupy. */
+      x.fillStyle = '#140d06';
+      x.fillRect(x0 - 1, oy + 9, wide + 2, H - 9);
       if (icon) drawPoiIcon(x, icon, x0, oy + 9, performance.now() / 1000);
       else if (!tag) {
         x.fillStyle = col; x.fillRect(x0, oy + 11, 3, 3);
@@ -1673,9 +1705,19 @@ export class Hud {
       x.fillStyle = col; x.fillRect(px, oy + 8, 1, 1);
     }
 
-    // needle and frame
+    /* Needle and frame. The needle used to run the full height, straight
+       through whatever name was lettered under it (F|IRE); where a mark has
+       claimed the centre it stops short of the place row and resumes below. */
     x.fillStyle = GOLD_LT;
-    x.fillRect(Math.round(cx), oy - 3, 1, H + 5);
+    const nx = Math.round(cx);
+    let split = false;
+    for (let i = 0; i < this._compassTaken.length; i += 2) {
+      if (nx >= this._compassTaken[i] - 1 && nx <= this._compassTaken[i + 1]) { split = true; break; }
+    }
+    if (split) {
+      x.fillRect(nx, oy - 3, 1, 11);            // to the row above the names
+      x.fillRect(nx, oy + 16, 1, H - 14);       // and on below them
+    } else x.fillRect(nx, oy - 3, 1, H + 5);
     x.fillRect(Math.round(cx) - 1, oy - 3, 3, 1);
     x.fillStyle = GOLD_DK;
     x.fillRect(left, oy, 1, H); x.fillRect(left + W - 1, oy, 1, H);
@@ -1973,11 +2015,13 @@ export const POI_ICONS = {
 export const POI_ICON_W = 7;
 
 /** One POI sprite, with the same pale halo the chart's larger icons carry. */
-export function drawPoiIcon(x, icon, ox, oy, t = 0) {
+export function drawPoiIcon(x, icon, ox, oy, t = 0, halo = 'rgba(20,13,6,.85)') {
   const spec = POI_ICONS[icon];
   if (!spec) return false;
   const px = Math.round(ox), py = Math.round(oy);
-  x.fillStyle = 'rgba(20,13,6,.85)';
+  /* The chart passes a paper-coloured halo; this used to ignore it, so the
+     chart's labelled sprites sat in dark blots on the parchment. */
+  x.fillStyle = halo;
   for (const [dx, dy, w, h] of spec) x.fillRect(px + dx - 1, py + dy - 1, w + 2, h + 2);
   const blink = Math.floor(t * 3) % 2 ? '#ff5a4a' : '#ffd0c0';
   for (const [dx, dy, w, h, col] of spec) {

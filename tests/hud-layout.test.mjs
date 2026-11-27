@@ -152,3 +152,77 @@ test('HUD numeric state clamps invalid and out-of-range inputs', () => {
   ui.setCoins(-3); assert.equal(ui.hud.data.coins, 0);
   ui.setAmmo(NaN); assert.equal(ui.hud.data.ammo, 0);
 });
+
+/* A context that remembers every fill and blit in order, so a test can ask
+   what actually ended up under a piece of text. */
+function recordingHud(w = 320, h = 180) {
+  const ops = [];
+  const ctx = new Proxy({
+    fillStyle: '#000', globalAlpha: 1,
+    save() {}, restore() {}, translate() {},
+    fillRect(x, y, w2, h2) { ops.push({ op: 'fill', c: this.fillStyle, x, y, w: w2, h: h2 }); },
+    drawImage(...a) { ops.push({ op: 'blit', x: a[5], y: a[6], w: a[7], h: a[8] }); },
+  }, { get(t, k) { return k in t ? t[k] : () => {}; } });
+  const hud = new Hud(); hud.setSize(w, h);
+  hud.x = ctx;
+  return { hud, ops };
+}
+const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+test('chore rows leave clear space between the box, the number and the name', () => {
+  const hud = new Hud(); hud.setSize(426, 224);   // wide enough for the whole names
+  const mp = mpData(); mp.role = 'castaway';
+  mp.myTasks = ['GATHER COCONUTS', 'WIND THE EAST'].map(name => ({ name, steps: 1, step: 0 }));
+  const boxes = capture(() => hud._mpLeft(3, 3, mp));
+  for (const [n, name] of [['1', 'GATHER COCONUTS'], ['2', 'WIND THE EAST']]) {
+    const num = boxes.find(b => b.t === n), label = boxes.find(b => b.t === name);
+    // two clear columns past the number's one-pixel shadow
+    assert.ok(label.x - (num.x + num.w) >= 3, `${name} touches its number`);
+    assert.ok(num.x - 3 - 5 >= 3, 'number touches its box');
+  }
+  const r1 = boxes.find(b => b.t === 'GATHER COCONUTS'), r2 = boxes.find(b => b.t === 'WIND THE EAST');
+  assert.ok(r2.y - r1.y >= 9, 'short chore lists are spaced a row apart');
+});
+
+test('compass place names are not overdrawn by the degree ticks under them', () => {
+  const { hud, ops } = recordingHud();
+  for (let yaw = 0; yaw < Math.PI * 2; yaw += 0.07) {
+    ops.length = 0;
+    const boxes = capture(() => hud._compass(160, 2, {
+      yaw, marks: [{ label: 'POST', angle: yaw + 0.3, kind: 'poi', icon: 'post' }],
+    }, 132));
+    const label = boxes.find(b => b.t === 'POST');
+    if (!label) continue;
+    const firstGlyph = ops.findIndex(o => o.op === 'blit' && o.y === label.y && o.x >= label.x);
+    for (let px = label.x; px < label.x + label.w; px++) {
+      for (let py = label.y; py < label.y + label.h; py++) {
+        let last = null;
+        for (let i = 0; i < firstGlyph; i++) {
+          const o = ops[i];
+          if (o.op === 'fill' && px >= o.x && px < o.x + o.w && py >= o.y && py < o.y + o.h) last = o;
+        }
+        assert.ok(!last || !['#7a6a3c', '#4a3a1c'].includes(last.c),
+          `a tick shows through POST at ${px},${py} (yaw ${yaw.toFixed(2)})`);
+      }
+    }
+  }
+});
+
+test('belt counts and keys sit outside the icon wells, and passives are drawn lit', () => {
+  for (const [w, role] of [[320, 'castaway'], [240, 'agent'], [426, 'castaway']]) {
+    const { hud, ops } = recordingHud(w, 224);
+    const mp = mpData(); mp.role = role; mp.passives = ['vest', 'lantern'];
+    mp.belt = mp.belt.map((s, i) => ({ ...s, count: [1, 3, 12, 150][i % 4] }));
+    const boxes = capture(() => hud._mpBelt(4, 224 - 56, mp));
+    const wells = ops.filter(o => o.op === 'fill' && ['#140e06', '#3a2a10'].includes(o.c) && o.h === 16);
+    assert.equal(wells.length, 9);
+    for (const b of boxes) for (const well of wells) {
+      assert.ok(!hit(b, well), `${w} ${role}: "${b.t}" is drawn inside an icon well`);
+    }
+    assert.ok(boxes.some(b => b.t === '12') && boxes.some(b => b.t === '99+'));
+    const fills = new Set(ops.map(o => o.c));
+    assert.ok(fills.has('#b8894a'), 'the vest is drawn in its lit colours');
+    assert.ok(!fills.has('#4a3c26'), 'no passive is drawn in its unlit colours');
+    assertLayout(boxes, w, 224, `belt ${w} ${role}`);
+  }
+});

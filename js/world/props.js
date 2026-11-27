@@ -69,11 +69,35 @@ const TIERS = {
    the centre column is the rib and gets lifted, the outer columns fall
    away, and the whole thing arcs up and then droops.
 */
+/* Set while a builder is making the distant copy of a tree. */
+let _far = false;
+
+/* The same tree twice: the full one, and a coarser one drawn past
+   SCATTER_LOD_M (see cullScatter). The far copy is built from a replay of
+   the same random numbers, so it is the identical tree with fewer bends and
+   facets — and the main stream is consumed exactly as before, so the island
+   is laid out the same. Looking across the island from the west shore the
+   trees were 380,000 of 590,000 triangles. */
+function withLod(build, rng, tierName) {
+  const seen = [];
+  const full = build(() => { const v = rng(); seen.push(v); return v; }, tierName);
+  let k = 0;
+  _far = true;
+  try {
+    // past the end of the replay only skipped detail asks; give it something
+    const far = build(() => (k < seen.length ? seen[k++] : 0.5), tierName);
+    full.lod = { opaque: far.opaque, cutout: far.cutout };
+  } finally { _far = false; }
+  return full;
+}
+
 function buildFrond(len, wid, droop, rng) {
   /* A coconut palm frond is LONG and NARROW — roughly 8:1 — and it leaves
      the crown almost horizontally before the last third bends over. Short
      wide leaves read as a banana plant, which is what these were. */
-  const SEG = 12;
+  // was 12: under the vertex snap seven reads the same and halves the canopy;
+  // the distant copy (withLod) drops to three
+  const SEG = _far ? 3 : 7;
   const g = new THREE.PlaneGeometry(wid, len, 2, SEG);   // 3 columns
   applyCell(g, 'palmFrond');
   const p = g.attributes.position;
@@ -109,14 +133,15 @@ function buildPalm(rng, tierName) {
   const leanZ = (rng() - 0.5) * (H * 0.16);
   const rBase = T.r * 1.9, rTop = T.r * 0.95;
 
-  const trunk = cyl(rTop, rBase, H, 8, 'bark', { pos: [0, H / 2, 0] });
+  const seg = _far ? 5 : 8;
+  const trunk = cyl(rTop, rBase, H, seg, 'bark', { pos: [0, H / 2, 0] });
   bendY(trunk, lean, 'x', 2.1);
   bendY(trunk, leanZ, 'z', 2.1);
   tint(trunk, G(0xb59a72).multiplyScalar(0.82 + rng() * 0.3));
 
   // Buried footing: on a slope a flat trunk base lifts off the ground and
   // you can see under the tree. Sink a wide plug well below zero.
-  const plug = cyl(rBase * 1.5, rBase * 2.4, 4.0, 8, 'bark', { pos: [0, -1.7, 0] });
+  const plug = cyl(rBase * 1.5, rBase * 2.4, 4.0, seg, 'bark', { pos: [0, -1.7, 0] });
   tint(plug, G(0x8d7550));
 
   const cx = lean, cz = leanZ;
@@ -124,7 +149,7 @@ function buildPalm(rng, tierName) {
   const cutoutParts = [];
 
   /* crownshaft: the smooth green collar under the fronds */
-  const collar = cyl(rTop * 0.8, rTop * 1.25, T.crown * 1.1, 8, 'vine', {
+  const collar = cyl(rTop * 0.8, rTop * 1.25, T.crown * 1.1, seg, 'vine', {
     pos: [cx, H - T.crown * 0.4, cz],
   });
   tint(collar, G(0x7f9456));
@@ -163,8 +188,9 @@ function buildPalm(rng, tierName) {
       tint(f, G(0xa79052).multiplyScalar(0.62 + rng() * 0.3));
       cutoutParts.push(f);
     }
-    // two young spears standing up out of the centre
-    for (let i = 0; i < 2; i++) {
+    // two young spears standing up out of the centre (lost in the crown
+    // at LOD range, and only coconuts, also skipped there, come after)
+    for (let i = 0; i < (_far ? 0 : 2); i++) {
       const a = rng() * Math.PI * 2;
       const f = buildFrond(frondLen * 0.5, T.crown * 0.42, 0.25, rng);
       place(f, { order: 'YXZ', rot: [0.12 + rng() * 0.14, a, 0], pos: [cx, H - T.crown * 0.05, cz] });
@@ -177,7 +203,9 @@ function buildPalm(rng, tierName) {
   tint(knot, G(0x8d7550));
   opaqueParts.push(knot);
 
-  if (tierName === 'sub' || tierName === 'canopy') {
+  // coconuts are a pixel at LOD range; last in the build, so skipping them
+  // cannot shift the replayed numbers of anything above
+  if (!_far && (tierName === 'sub' || tierName === 'canopy')) {
     const cn = 2 + ((rng() * 4) | 0);
     for (let i = 0; i < cn; i++) {
       const a = rng() * Math.PI * 2;
@@ -199,12 +227,13 @@ function buildJungleTree(rng, tierName) {
   const H = T.h[0] + rng() * (T.h[1] - T.h[0]);
   const rBase = T.r * 2.4, rTop = T.r * 1.1;
 
-  const trunk = cyl(rTop, rBase, H, 7, 'barkDark', { pos: [0, H / 2, 0] });
+  const seg = _far ? 4 : 7;
+  const trunk = cyl(rTop, rBase, H, seg, 'barkDark', { pos: [0, H / 2, 0] });
   bendY(trunk, (rng() - 0.5) * H * 0.10, 'x', 2);
   tint(trunk, G(0x7d6a4c).multiplyScalar(0.8 + rng() * 0.35));
 
   // buried footing so the trunk never lifts off a slope
-  const plug = cyl(rBase * 1.4, rBase * 2.6, 4.0, 7, 'barkDark', { pos: [0, -1.7, 0] });
+  const plug = cyl(rBase * 1.4, rBase * 2.6, 4.0, seg, 'barkDark', { pos: [0, -1.7, 0] });
   tint(plug, G(0x5f4f38));
 
   const opaqueParts = [trunk, plug];
@@ -233,7 +262,7 @@ function buildJungleTree(rng, tierName) {
       const b = limb(
         [0, y0, 0],
         [Math.cos(a) * reach, y0 + reach * 0.42, Math.sin(a) * reach],
-        T.r * 0.42, T.r * 0.18, 'barkDark', 5
+        T.r * 0.42, T.r * 0.18, 'barkDark', _far ? 3 : 5
       );
       tint(b, G(0x6f5c42));
       opaqueParts.push(b);
@@ -519,7 +548,7 @@ class Batcher {
     const meshes = [];
     for (const [key, v] of this.variants) {
       if (!v.list.length) continue;
-      const mk = (geo, mat) => {
+      const mk = (geo, mat, lodGeo) => {
         const im = new THREE.InstancedMesh(geo, mat, v.list.length);
         for (let i = 0; i < v.list.length; i++) im.setMatrixAt(i, v.list[i]);
         im.instanceMatrix.needsUpdate = true;
@@ -533,9 +562,23 @@ class Batcher {
         im.userData.shown = -1;
         scene.add(im);
         meshes.push(im);
+        /* The distant copy: same material, so same program, filled by
+           cullScatter from this mesh's own list. Not in `meshes` itself. */
+        if (lodGeo) {
+          const far = new THREE.InstancedMesh(lodGeo, mat, v.list.length);
+          far.frustumCulled = false;
+          far.name = key + 'Far';
+          far.count = 0;
+          far.visible = false;
+          scene.add(far);
+          im.userData.far = far;
+        }
       };
-      if (v.built.opaque) mk(v.built.opaque, this.mats[v.mats[0]]);
-      if (v.built.cutout) mk(v.built.cutout, this.mats[v.mats[1]]);
+      const lod = v.built.lod || {};
+      if (v.built.opaque) mk(v.built.opaque, this.mats[v.mats[0]], lod.opaque);
+      else lod.opaque?.dispose();
+      if (v.built.cutout) mk(v.built.cutout, this.mats[v.mats[1]], lod.cutout);
+      else lod.cutout?.dispose();
     }
     return meshes;
   }
@@ -559,6 +602,9 @@ const _dir = new THREE.Vector3();
 const _lastDir = new THREE.Vector3(0, 0, 0);
 let _haveDir = false;
 let _lastFog = -1;
+/* Past this many metres a palm crown is drawn from its three-segment copy.
+   At 224 lines a nine-metre frond is about thirty pixels tall out here. */
+const SCATTER_LOD_M = 40;
 
 export function cullScatter(meshes, camera, force = false, fogFar = 0) {
   if (!meshes || !meshes.length) return 0;
@@ -623,18 +669,30 @@ export function cullScatter(meshes, camera, force = false, fogFar = 0) {
        the far plane comes in to forty-six metres. */
     const cut = fogFar > 0 ? fogFar + reach : 0;
     const arr = im.instanceMatrix.array;
-    let n = 0;
+    const far = im.userData.far;
+    const farArr = far ? far.instanceMatrix.array : null;
+    const lod2 = SCATTER_LOD_M * SCATTER_LOD_M;
+    let n = 0, nf = 0;
     for (let i = 0; i < all.length; i++) {
       const e = all[i].elements;
-      if (cut) {
-        const dx = e[12] - eye.x, dy = e[13] - eye.y, dz = e[14] - eye.z;
-        if (dx * _dir.x + dy * _dir.y + dz * _dir.z > cut) continue;
-      }
+      const dx = e[12] - eye.x, dy = e[13] - eye.y, dz = e[14] - eye.z;
+      if (cut && dx * _dir.x + dy * _dir.y + dz * _dir.z > cut) continue;
       _sph.center.set(e[12], e[13], e[14]);
       _sph.radius = r;
       if (!_frustum.intersectsSphere(_sph)) continue;
+      if (farArr && dx * dx + dy * dy + dz * dz > lod2) { farArr.set(e, nf * 16); nf++; continue; }
       arr.set(e, n * 16);
       n++;
+    }
+    if (far) {
+      far.count = nf;
+      far.visible = nf > 0;
+      drawn += nf;
+      if (nf > 0) {
+        far.instanceMatrix.clearUpdateRanges();
+        far.instanceMatrix.addUpdateRange(0, nf * 16);
+        far.instanceMatrix.needsUpdate = true;
+      }
     }
     /* Always re-upload: turning can swap which instances survive without
        changing how many, and a buffer that is only refreshed when the
@@ -690,12 +748,17 @@ export const LANDMARKS = {
  */
 export function findFlatGround(x, z, foot, opts = {}) {
   const { minH = 1.2, maxH = 40, radius = 26, rng = Math.random, yaw = 0, maxRise = 1.4 } = opts;
+  /* Circles to keep out of, {x, z, r}. A carved apron is the flattest
+     ground for miles, so without this a search that passes one settles on
+     it: Ferdi's east machine was standing on the rim of a bunker hatch. */
+  const avoid = opts.avoid || null;
   const c = Math.cos(yaw), sn = Math.sin(yaw);
   let best = null, bestScore = -Infinity;
   for (let i = 0; i < 500; i++) {
     const a = rng() * Math.PI * 2;
     const r = Math.sqrt(rng()) * radius;
     const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+    if (avoid && avoid.some((q) => (px - q.x) ** 2 + (pz - q.z) ** 2 < q.r * q.r)) continue;
     let lo = Infinity, hi = -Infinity, wet = false;
     for (const [lx, lz] of foot) {
       const wx = px + lx * c + lz * sn;
@@ -925,7 +988,17 @@ export function findGround(x, z, opts = {}) {
     const score = -r * 0.6 - s * 20;
     if (score > bestScore) { bestScore = score; best = { x: px, y: h, z: pz }; }
   }
-  return best || { x, y: Math.max(heightAt(x, z), 0.5), z };
+  if (best) return best;
+  /* Nothing in reach met the brief. The old answer was the raw centre with
+     its height clamped up to 0.5, and a centre out past the shore sits over
+     open water: nine of the twenty-two coconut piles came out of here, two
+     of them hanging half a metre above the sea. Search again a little
+     further inland and a little wider before giving up on the brief. */
+  const tries = opts._retry || 0;
+  if (tries < 5) {
+    return findGround(x * 0.82, z * 0.82, { ...opts, radius: radius * 1.25, _retry: tries + 1 });
+  }
+  return { x, y: Math.max(heightAt(x, z), 0.5), z };
 }
 
 /* ===========================================================
@@ -942,14 +1015,14 @@ export function scatterIsland(scene, mats, rng, density, colliders, clearZones =
     treefern: 3, broad: 3, reeds: 2,
     rock: 3, bigrock: 3, drift: 2, gvine: 2,
   };
-  for (let i = 0; i < POOL.palmSap; i++) B.addVariant('palmSap' + i, buildPalm(rng, 'sapling'));
-  for (let i = 0; i < POOL.palmSub; i++) B.addVariant('palmSub' + i, buildPalm(rng, 'sub'));
-  for (let i = 0; i < POOL.palmCan; i++) B.addVariant('palmCan' + i, buildPalm(rng, 'canopy'));
-  for (let i = 0; i < POOL.palmEmg; i++) B.addVariant('palmEmg' + i, buildPalm(rng, 'emergent'));
-  for (let i = 0; i < POOL.treeSap; i++) B.addVariant('treeSap' + i, buildJungleTree(rng, 'sapling'));
-  for (let i = 0; i < POOL.treeSub; i++) B.addVariant('treeSub' + i, buildJungleTree(rng, 'sub'));
-  for (let i = 0; i < POOL.treeCan; i++) B.addVariant('treeCan' + i, buildJungleTree(rng, 'canopy'));
-  for (let i = 0; i < POOL.treeEmg; i++) B.addVariant('treeEmg' + i, buildJungleTree(rng, 'emergent'));
+  for (let i = 0; i < POOL.palmSap; i++) B.addVariant('palmSap' + i, withLod(buildPalm, rng, 'sapling'));
+  for (let i = 0; i < POOL.palmSub; i++) B.addVariant('palmSub' + i, withLod(buildPalm, rng, 'sub'));
+  for (let i = 0; i < POOL.palmCan; i++) B.addVariant('palmCan' + i, withLod(buildPalm, rng, 'canopy'));
+  for (let i = 0; i < POOL.palmEmg; i++) B.addVariant('palmEmg' + i, withLod(buildPalm, rng, 'emergent'));
+  for (let i = 0; i < POOL.treeSap; i++) B.addVariant('treeSap' + i, withLod(buildJungleTree, rng, 'sapling'));
+  for (let i = 0; i < POOL.treeSub; i++) B.addVariant('treeSub' + i, withLod(buildJungleTree, rng, 'sub'));
+  for (let i = 0; i < POOL.treeCan; i++) B.addVariant('treeCan' + i, withLod(buildJungleTree, rng, 'canopy'));
+  for (let i = 0; i < POOL.treeEmg; i++) B.addVariant('treeEmg' + i, withLod(buildJungleTree, rng, 'emergent'));
   for (let i = 0; i < POOL.bush; i++) B.addVariant('bush' + i, buildBush(rng));
   for (let i = 0; i < POOL.fern; i++) B.addVariant('fern' + i, buildFern(rng));
   for (let i = 0; i < POOL.tuft; i++) B.addVariant('tuft' + i, buildTuft(rng));

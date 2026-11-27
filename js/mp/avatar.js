@@ -11,8 +11,9 @@
    =========================================================== */
 
 import * as THREE from 'three';
-import { buildCastaway, buildSkeleton } from '../entities/player.js';
+import { buildCastaway, buildSkeleton, CastawayRig, gaitRate } from '../entities/player.js';
 import { COLOURS } from '../net/protocol.js';
+import { heightAt } from '../world/terrain.js';
 
 /* How far behind the newest snapshot we render.
 
@@ -29,25 +30,54 @@ import { COLOURS } from '../net/protocol.js';
 const DELAY_MIN = 0.09;
 const DELAY_MAX = 0.34;
 const BUFFER = 24;
-const COAST = 0.26;             // how long we will guess for before giving up
+const COAST = 0.22;             // how long we will guess for before giving up
+/* Smoothing rates, per second, all applied as 1 - exp(-rate·dt) so they
+   behave the same at any frame rate. */
+const ERR_DECAY = 11;           // how fast a correction is walked off
+const SPEED_RATE = 9;           // how fast the gait follows a change of speed
+const YAW_RATE = 16;
+const _e = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 /* Arrival statistics, shared by every avatar — snapshots come in one packet,
    so the timing is a property of the connection, not of any one player. */
-const net = { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14 };
+const net = { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14, stamp: 0, tick: 0.04 };
 
 /** A new room connection must not inherit the previous connection's jitter. */
 export function resetSnapshotTiming() {
-  Object.assign(net, { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14 });
+  Object.assign(net, { last: 0, mean: 0.055, jitter: 0.012, delay: 0.14, stamp: 0, tick: 0.04 });
 }
 
 /** Called once per snapshot, from whoever received it. */
 export function noteSnapshot(t) {
   if (!Number.isFinite(t)) return;
+  let ticks = 1;
   if (net.last) {
     const gap = Math.min(0.6, Math.max(0.005, t - net.last));
+    /* The send interval itself, learned only from gaps that look like one
+       tick — a dropped packet makes a gap of two, and folding that into the
+       estimate is what the mean below does and this must not. */
+    if (gap < net.tick * 1.6 && gap > net.tick * 0.4) net.tick += (gap - net.tick) * 0.05;
+    ticks = Math.max(1, Math.round(gap / net.tick));
     // exponential means: cheap, and they forget a bad patch soon enough
     net.mean += (gap - net.mean) * 0.12;
     net.jitter += (Math.abs(gap - net.mean) - net.jitter) * 0.12;
+  }
+  /* The time a snapshot is filed under. Positions are sent on a steady
+     tick but ARRIVE with jitter, and filing each under its arrival time
+     put evenly spaced positions at uneven times: interpolating those makes
+     the body speed up and slow down on every packet (a 7m/s run measured
+     +-2.7m/s frame to frame), which is the judder and the twitchy legs. So
+     the stamp runs on its own steady clock — the last stamp plus the mean
+     interval, counting any ticks a dropped packet skipped — and is only
+     nudged toward the arrival times, so it settles on their average. */
+  /* Resync only when the clock has drifted far from the arrivals. A burst
+     after a stall arrives slightly behind the steady clock; rewinding to it
+     filed that snapshot before the newest one and every avatar dropped it. */
+  if (!net.stamp || Math.abs(t - net.stamp) > 0.5) {
+    net.stamp = t;
+  } else {
+    const predicted = net.stamp + net.tick * ticks;
+    net.stamp = Math.max(net.stamp + 0.005, predicted + (t - predicted) * 0.08);
   }
   net.last = t;
   const want = net.mean + net.jitter * 2.5;
@@ -117,6 +147,23 @@ export class Avatar {
     this.yaw = 0;
     this.walkPhase = 0;
     this.speed = 0;
+    this.rig = new CastawayRig();
+    this._pose = { phase: 0, speed: 0, grounded: true, vy: 0, task: 0, squash: 0, turn: 0, look: 0 };
+    /* What is drawn is `pos` plus a correction that decays. When a late
+       packet lands and the interpolated position jumps — the coast guessed
+       on, and they had stopped — the jump goes into `err` and is walked off
+       over a fraction of a second instead of teleporting the body back. At
+       a steady speed `err` stays zero, so this costs no latency. */
+    this.err = new THREE.Vector3();
+    this._lastPos = new THREE.Vector3();
+    this._lastVel = new THREE.Vector3();
+    this._hasLast = false;
+    this.vy = 0;
+    this.air = false;
+    this.airT = 0;
+    this.drawYaw = 0;
+    this.turn = 0;
+    this.sink = 0;
     // A roster arrives before positions. Do not briefly spawn everyone at 0,0.
     this.visible = false;
     this.mesh.visible = false;
@@ -136,8 +183,17 @@ export class Avatar {
   /** Push a snapshot. `t` is the local receive time. */
   push(t, x, y, z, yaw, anim, room = this.room || 0) {
     if (![t, x, y, z, yaw].every(Number.isFinite)) return;
+    // filed on the de-jittered clock when this is the snapshot it was set for
+    const steady = t === net.last && net.stamp;
+    if (steady) t = net.stamp;
     const last = this.buf[this.buf.length - 1];
-    if (last && t < last.t) return;
+    if (last && t <= last.t) {
+      /* The live snapshot (reliable, ordered channel) is never stale: a
+         wobble in the steady clock must not throw it away. A genuinely
+         older raw time is. */
+      if (!steady) return;
+      t = last.t + 1e-3;
+    }
     // Interior coordinates are unrelated to the island. Interpolating a
     // ladder or council teleport sends a player flying through the walls.
     const jumped = last && (room !== this.room || Math.hypot(x - last.x, y - last.y, z - last.z) > 12);
@@ -146,6 +202,9 @@ export class Avatar {
       this.pos.set(x, y, z);
       this.yaw = yaw;
       this.speed = 0;
+      this.drawYaw = yaw;
+      this.err.set(0, 0, 0);
+      this._hasLast = false;
       this.mesh.position.copy(this.pos);
       this.mesh.rotation.y = yaw;
     } else if (last.t === t) {
@@ -168,16 +227,17 @@ export class Avatar {
     } else {
       const newest = b[b.length - 1];
       /* If the newest packet is older than where we want to be, the buffer
-         has run dry — a dropped or late snapshot. Carry on at the last
-         known speed for a fifth of a second rather than stopping dead,
-         because a body that freezes and teleports is far more obvious than
-         one that drifts a few centimetres wrong. */
+         has run dry — a dropped or late snapshot. Carry on for a fifth of a
+         second rather than stopping dead, because a body that freezes and
+         teleports is far more obvious than one that drifts a few centimetres
+         wrong — but slow to a stop over it instead of running on at full
+         speed, so a player who really did stop is overshot by half as much
+         and is walked back by `err` rather than snapped. */
       if (target > newest.t) {
         const prev = b[b.length - 2];
         const span = Math.max(1e-4, newest.t - prev.t);
         const over = Math.min(COAST, target - newest.t);
-        const k2 = over / span;
-        const px2 = this.pos.x, pz2 = this.pos.z;
+        const k2 = (over - (over * over) / (2 * COAST)) / span;
         this.pos.set(
           newest.x + (newest.x - prev.x) * k2,
           newest.y + (newest.y - prev.y) * k2,
@@ -193,37 +253,97 @@ export class Avatar {
         const y2 = newest.yaw + d2 * Math.min(1, k2);
         // a NaN written to rotation.y poisons the matrix and the body vanishes
         if (Number.isFinite(y2)) this.yaw = y2;
-        this.speed = Math.hypot(this.pos.x - px2, this.pos.z - pz2) / Math.max(1e-3, dt);
-        this.mesh.position.copy(this.pos);
-        this.mesh.rotation.y = this.yaw;
-        this._animate(dt, newest.anim);
-        this._shellFollow();
-        return;
+      } else {
+        // find the pair straddling `target`
+        let i = b.length - 1;
+        while (i > 0 && b[i - 1].t > target) i--;
+        const a = b[Math.max(0, i - 1)], c = b[i];
+        const span = Math.max(1e-4, c.t - a.t);
+        const k = THREE.MathUtils.clamp((target - a.t) / span, 0, 1);
+        this.pos.set(
+          THREE.MathUtils.lerp(a.x, c.x, k),
+          THREE.MathUtils.lerp(a.y, c.y, k),
+          THREE.MathUtils.lerp(a.z, c.z, k)
+        );
+        // shortest-way yaw, wrapped the way the coast branch above explains
+        const d = Math.atan2(Math.sin(c.yaw - a.yaw), Math.cos(c.yaw - a.yaw));
+        const y = a.yaw + d * k;
+        if (Number.isFinite(y)) this.yaw = y;
       }
-      // find the pair straddling `target`
-      let i = b.length - 1;
-      while (i > 0 && b[i - 1].t > target) i--;
-      const a = b[Math.max(0, i - 1)], c = b[i];
-      const span = Math.max(1e-4, c.t - a.t);
-      const k = THREE.MathUtils.clamp((target - a.t) / span, 0, 1);
-      const px = this.pos.x, pz = this.pos.z;
-      this.pos.set(
-        THREE.MathUtils.lerp(a.x, c.x, k),
-        THREE.MathUtils.lerp(a.y, c.y, k),
-        THREE.MathUtils.lerp(a.z, c.z, k)
-      );
-      // shortest-way yaw, wrapped the way the coast branch above explains
-      const d = Math.atan2(Math.sin(c.yaw - a.yaw), Math.cos(c.yaw - a.yaw));
-      const y = a.yaw + d * k;
-      if (Number.isFinite(y)) this.yaw = y;
-      this.speed = Math.hypot(this.pos.x - px, this.pos.z - pz) / Math.max(1e-3, dt);
     }
 
-    this.mesh.position.copy(this.pos);
-    this.mesh.rotation.y = this.yaw;
+    this._draw(dt);
     this._animate(dt, b[b.length - 1].anim);
-
     this._shellFollow();
+  }
+
+  /* Turn the logical position into what is drawn: the decaying correction,
+     a speed and vertical speed smoothed out of the stair-step a 12Hz
+     interpolation makes of them, a yaw that turns rather than ticks, and
+     the same wading dip your own castaway gets. */
+  _draw(dt) {
+    const p = this.pos;
+    const step = dt > 1e-4 ? dt : 1e-4;
+    if (this._hasLast) {
+      // where we would be if they had kept going as they were
+      const ex = this._lastPos.x + this._lastVel.x * step - p.x;
+      const ey = this._lastPos.y + this._lastVel.y * step - p.y;
+      const ez = this._lastPos.z + this._lastVel.z * step - p.z;
+      /* Only a real jump goes into the correction. A player stopping or
+         turning also misses the prediction, by a few centimetres a frame,
+         and feeding that in carried the body past where they stopped. */
+      const e2 = ex * ex + ey * ey + ez * ez;
+      if (e2 >= 9) this.err.set(0, 0, 0);
+      else if (e2 > 0.2 * 0.2) { this.err.x += ex; this.err.y += ey; this.err.z += ez; }
+      const vx = (p.x - this._lastPos.x) / step;
+      const vy = (p.y - this._lastPos.y) / step;
+      const vz = (p.z - this._lastPos.z) / step;
+      this._lastVel.set(vx, vy, vz);
+      const hs = Math.hypot(vx, vz);
+      // a teleport is not a sprint
+      if (hs < 40) this.speed += (hs - this.speed) * _e(SPEED_RATE, dt);
+      if (Math.abs(vy) < 40) this.vy += (vy - this.vy) * _e(14, dt);
+    } else {
+      this.err.set(0, 0, 0);
+      this._lastVel.set(0, 0, 0);
+      this.vy = 0;
+      this.drawYaw = this.yaw;
+    }
+    this._lastPos.copy(p);
+    this._hasLast = true;
+    if (this.buf.length === 1) this.speed = 0;
+    this.err.multiplyScalar(Math.exp(-ERR_DECAY * dt));
+
+    /* Airborne, inferred: nothing on the wire says so. A jump leaves at
+       nine metres a second and a fall comes back faster than any slope
+       anybody can walk; landing is the vertical speed coming back to rest. */
+    if (!this.air) {
+      if (this.vy > 5.5 || this.vy < -6.5) { this.air = true; this.airT = 0; }
+    } else {
+      this.airT += dt;
+      if ((this.airT > 0.15 && Math.abs(this.vy) < 1.2) || this.airT > 2.5) this.air = false;
+    }
+
+    // yaw: turn toward the interpolated heading, the short way round
+    const dy = Math.atan2(Math.sin(this.yaw - this.drawYaw), Math.cos(this.yaw - this.drawYaw));
+    const turnStep = dy * _e(YAW_RATE, dt);
+    this.drawYaw += turnStep;
+    if (this.drawYaw > Math.PI) this.drawYaw -= Math.PI * 2;
+    else if (this.drawYaw < -Math.PI) this.drawYaw += Math.PI * 2;
+    this.turn = dt > 0 ? turnStep / dt : 0;
+
+    /* Wading. Your own body drops 0.42 at full depth and theirs did not, so
+       everybody else swam standing on the water. Only outdoors: every room
+       has its own coordinates and no sea. */
+    let sinkGoal = 0;
+    if (!this.room && p.y < 0.5) {
+      const depth = Math.max(0, -heightAt(p.x, p.z));
+      sinkGoal = Math.min(1, depth / 1.4) * 0.42;
+    }
+    this.sink += (sinkGoal - this.sink) * _e(8, dt);
+
+    this.mesh.position.set(p.x + this.err.x, p.y + this.err.y - this.sink, p.z + this.err.z);
+    this.mesh.rotation.y = this.drawYaw;
   }
 
   _shellFollow() {
@@ -242,7 +362,7 @@ export class Avatar {
       }
       if (this.shellRing) {
         const p2 = performance.now() / 340;
-        this.shellRing.position.set(this.pos.x, this.pos.y + 0.06, this.pos.z);
+        this.shellRing.position.set(this.mesh.position.x, this.mesh.position.y + 0.06, this.mesh.position.z);
         const sc = 1 + Math.sin(p2) * 0.12;
         this.shellRing.scale.set(sc, 1, sc);
         this.shellRing.material.opacity = 0.6 + Math.sin(p2) * 0.25;
@@ -251,109 +371,29 @@ export class Avatar {
   }
 
   /**
-   * Everybody else walks the way you do.
+   * Everybody else walks the way you do — the same rig, the same IK feet,
+   * driven off the smoothed speed of the interpolated body. The old copy
+   * here had its own clock (a fixed rate that knew nothing about distance,
+   * so feet slid), the knee and elbow signs the local walk had long since
+   * fixed, and per-frame lerps that snapped between standing and walking.
    *
-   * The body is built by the same buildPlayer, so it has the same knees and
-   * elbows — it would be strange to be the only person on the island who
-   * bends their legs. This is the same cycle as Player._walkWeighted,
-   * driven off the interpolated speed off the wire instead of your own.
+   * Standing at a chore (anim 1) gets hands up in front, busy with
+   * something: that and standing over a body otherwise look identical, and
+   * telling those two apart across the island is most of what Castaways is.
    */
   _animate(dt, anim) {
-    const p = this.parts;
-    const running = THREE.MathUtils.clamp(this.speed / 7, 0, 1.5);
-    const moving = this.speed > 0.4;
-    this.walkPhase += dt * (4.4 + running * 5) * (moving ? 1 : 0);
-    const ph = this.walkPhase;
-
-    if (!moving) {
-      const L = (a, b, k = 0.12) => THREE.MathUtils.lerp(a, b, k);
-
-      /* Somebody standing at a task and somebody standing over a body look
-         identical otherwise, and telling those two apart across the island is
-         most of what Castaways is. The snapshot already carries the flag, so
-         spend it: hands up in front, busy with something. Negative rotation.x
-         is IN FRONT of the body — see the note in Player._walkWeighted. */
-      if (anim === 1) {
-        const w = Math.sin(performance.now() * 0.008) * 0.18;
-        p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.05);
-        p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.05);
-        if (p.knees) {
-          p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.14);
-          p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.14);
-        }
-        p.arms.l.rotation.x = L(p.arms.l.rotation.x, -1.02 + w);
-        p.arms.r.rotation.x = L(p.arms.r.rotation.x, -1.02 - w);
-        p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.22);
-        p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.22);
-        if (p.elbows) {
-          p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.75 - w);
-          p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.75 + w);
-        }
-        p.hips.rotation.z = L(p.hips.rotation.z, 0);
-        p.hips.rotation.y = L(p.hips.rotation.y, 0);
-        p.torso.rotation.x = L(p.torso.rotation.x, 0.22);
-        p.torso.rotation.z = L(p.torso.rotation.z, 0);
-        p.torso.rotation.y = L(p.torso.rotation.y, 0);
-        p.hips.position.y = L(p.hips.position.y, 0.88);
-        return;
-      }
-
-      const b2 = Math.sin(ph * 0.0 + performance.now() * 0.0017) * 0.02;
-      p.legs.l.rotation.x = L(p.legs.l.rotation.x, 0.02);
-      p.legs.r.rotation.x = L(p.legs.r.rotation.x, -0.02);
-      if (p.knees) {
-        p.knees.l.rotation.x = L(p.knees.l.rotation.x, 0.07);
-        p.knees.r.rotation.x = L(p.knees.r.rotation.x, 0.05);
-      }
-      p.arms.l.rotation.x = L(p.arms.l.rotation.x, 0.06 + b2);
-      p.arms.r.rotation.x = L(p.arms.r.rotation.x, 0.06 - b2);
-      p.arms.l.rotation.z = L(p.arms.l.rotation.z, 0.13);
-      p.arms.r.rotation.z = L(p.arms.r.rotation.z, -0.13);
-      if (p.elbows) {
-        p.elbows.l.rotation.x = L(p.elbows.l.rotation.x, 0.16);
-        p.elbows.r.rotation.x = L(p.elbows.r.rotation.x, 0.14);
-      }
-      p.hips.rotation.z = L(p.hips.rotation.z, 0);
-      p.hips.rotation.y = L(p.hips.rotation.y, 0);
-      p.torso.rotation.x = L(p.torso.rotation.x, 0.02);
-      p.torso.rotation.z = L(p.torso.rotation.z, 0);
-      p.torso.rotation.y = L(p.torso.rotation.y, 0);
-      p.hips.position.y = L(p.hips.position.y, 0.90 + b2);
-      return;
-    }
-
-    const amp = 0.52 + running * 0.46;
-    const skew = (a) => Math.sin(a + Math.sin(a) * 0.28);
-    const sl = skew(ph), sr = skew(ph + Math.PI);
-    p.legs.l.rotation.x = sl * amp;
-    p.legs.r.rotation.x = sr * amp;
-    if (p.knees) {
-      const bendL = Math.max(0, -Math.cos(ph * 2 + 0.6));
-      const kAmp = 0.55 + running * 0.75;
-      p.knees.l.rotation.x = (bendL * 0.55 + Math.max(0, -sl) * 0.75) * kAmp;
-      p.knees.r.rotation.x = (bendL * 0.55 + Math.max(0, -sr) * 0.75) * kAmp;
-    }
-    const lag = 0.32;
-    const aL = skew(ph + Math.PI - lag), aR = skew(ph - lag);
-    const aAmp = 0.42 + running * 0.62;
-    p.arms.l.rotation.x = aL * aAmp;
-    p.arms.r.rotation.x = aR * aAmp;
-    p.arms.l.rotation.z = 0.14 + running * 0.06;
-    p.arms.r.rotation.z = -0.14 - running * 0.06;
-    if (p.elbows) {
-      const eAmp = 0.30 + running * 0.55;
-      p.elbows.l.rotation.x = (0.18 + Math.max(0, aL) * 0.9) * eAmp;
-      p.elbows.r.rotation.x = (0.18 + Math.max(0, aR) * 0.9) * eAmp;
-    }
-    // the same numbers as Player._walkWeighted; see the note there about
-    // why they are a third of what they started at
-    p.hips.rotation.z = -Math.sin(ph) * (0.014 + running * 0.016);
-    const twist = Math.sin(ph) * (0.022 + running * 0.030);
-    p.hips.rotation.y = twist;
-    p.torso.rotation.y = -twist * 1.6;
-    p.torso.rotation.z = Math.sin(ph) * (0.010 + running * 0.012);
-    p.torso.rotation.x = 0.02 + running * 0.085;
-    p.hips.position.y = 0.90 + Math.cos(ph * 2) * (0.013 + running * 0.020) - 0.010 * running;
+    this.walkPhase += gaitRate(this.speed) * dt;
+    if (this.walkPhase > Math.PI * 1024) this.walkPhase -= Math.PI * 1024;
+    const s = this._pose;
+    s.phase = this.walkPhase;
+    s.speed = this.speed;
+    s.grounded = !this.air;
+    s.vy = this.vy;
+    s.task = anim === 1 ? 1 : 0;
+    s.squash = 0;
+    s.turn = this.turn;
+    s.look = 0;
+    this.rig.pose(this.parts, dt, s);
   }
 
   /* Unparenting the old shell left its material — and the ring's — alive on
